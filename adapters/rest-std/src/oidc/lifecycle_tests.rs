@@ -142,7 +142,12 @@ fn userinfo_denial_is_bearer_401_but_provider_failure_unknown_loss_and_timeout_a
                     let context = setup
                         .context(profile, Duration::from_millis(100))?
                         .with_oidc(&provider)?;
-                    let token = issue(&context, &provider, &key).await?;
+                    // Local grant verification/signing is setup for the consume
+                    // cases; its deadline must not be the no-response probe's.
+                    let issuance = setup
+                        .context(profile, Duration::from_secs(2))?
+                        .with_oidc(&provider)?;
+                    let token = issue(&issuance, &provider, &key).await?;
                     let bearer = bearer(&token);
                     for index in 0..6 {
                         let result = context
