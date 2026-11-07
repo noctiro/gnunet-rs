@@ -36,7 +36,9 @@ int main(int argc,char **argv){
    const char *release=getenv("GNUNET_PROCESS_TEST_RELEASE");if(!release)return 17;
    unsigned attempts=0;while(access(release,F_OK)){if(++attempts>3000)return 18;usleep(1000);}
    unsigned char buffer[4096];ssize_t n;do{n=read(fd,buffer,sizeof(buffer));}while(n>0||(n<0&&errno==EINTR));
-   if(n<0&&errno!=EAGAIN&&errno!=EWOULDBLOCK)return 19;fputs("drained=1\n",f);fflush(f);
+   if(n<0&&errno!=EAGAIN&&errno!=EWOULDBLOCK){return 19;}
+   fputs("drained=1\n",f);
+   fflush(f);
    for(unsigned i=0;i<2;i++){unsigned char byte;if(exact(fd,&byte,1))return 20;fprintf(f,"control=%u\n",byte);fflush(f);if(byte)raise((int)byte);}
    return 21;
   }

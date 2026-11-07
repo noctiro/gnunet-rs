@@ -1220,7 +1220,15 @@ fn valid_wire_reply_over_declared_host_rx_capacity_retires_mq_without_partial_ca
             let reply = list_reply(1, 1, &[0; 28], b"n\0");
             assert_eq!(reply.len(), 54);
             s.write_all(&reply).await?;
-            assert_eq!(s.read(&mut [0]).await?, 0);
+            match s.read(&mut [0]).await {
+                Ok(0) => {}
+                Err(error) if error.kind() == io::ErrorKind::ConnectionReset => {}
+                other => {
+                    return Err(io::Error::other(format!(
+                        "capacity retirement did not close peer: {other:?}"
+                    )));
+                }
+            }
             Ok::<_, io::Error>(())
         });
         let cfg = config(&dir.socket())?;

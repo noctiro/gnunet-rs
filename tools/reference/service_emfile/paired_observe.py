@@ -20,7 +20,7 @@ def connect(kind,path,port):
 def get(peer):peer.sendall(GET);return read_exact(peer,4)
 
 def profile(binary,env,output,fill_kind,language="c"):
- directory=pathlib.Path(tempfile.mkdtemp(prefix='gemfile-',dir='/private/tmp'));directory.chmod(0o700)
+ directory=pathlib.Path(tempfile.mkdtemp(prefix='gemfile-'));directory.chmod(0o700)
  for name in ['base','home','config','data','cache','runtime']:(directory/name).mkdir(mode=0o700)
  local=directory/'s';conf=directory/'c';reserve=socket.socket();reserve.bind(('127.0.0.1',0));port=reserve.getsockname()[1];reserve.close()
  conf.write_text('[statistics]\nUNIXPATH = '+str(local)+'\nHOSTNAME = 127.0.0.1\nBINDTO = 127.0.0.1\nPORT = '+str(port)+'\nDISABLEV6 = YES\n')

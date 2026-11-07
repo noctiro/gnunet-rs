@@ -42,14 +42,15 @@ impl Directory {
     }
     fn spawn(&self, attempt: u32) -> io::Result<OwnedChild> {
         let output = self.file(&format!("stdout-{attempt}"));
+        let errors = self.file(&format!("stderr-{attempt}"));
         let child = Command::new(env!("CARGO_BIN_EXE_gnunet-service-statistics"))
             .arg("-c")
             .arg(self.file("service.conf"))
             .stdin(Stdio::null())
             .stdout(File::create(&output)?)
-            .stderr(File::create(self.file(&format!("stderr-{attempt}")))?)
+            .stderr(File::create(&errors)?)
             .spawn()?;
-        Ok(OwnedChild(child, output))
+        Ok(OwnedChild(child, output, errors))
     }
 }
 impl Drop for Directory {
@@ -59,7 +60,7 @@ impl Drop for Directory {
         }
     }
 }
-struct OwnedChild(Child, PathBuf);
+struct OwnedChild(Child, PathBuf, PathBuf);
 impl OwnedChild {
     fn ready(&mut self) -> Result<()> {
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -71,7 +72,11 @@ impl OwnedChild {
                 return Ok(());
             }
             if let Some(status) = self.0.try_wait()? {
-                return Err(format!("service exited before readiness: {status}").into());
+                return Err(format!(
+                    "service exited before readiness: {status}: {}",
+                    fs::read_to_string(&self.2).unwrap_or_default()
+                )
+                .into());
             }
             if Instant::now() >= deadline {
                 return Err("service readiness deadline".into());

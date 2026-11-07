@@ -8,7 +8,7 @@ from paired import sha,save
 BASE=Path(__file__).resolve().parents[1]
 def actor(binary,target,flags,environment,destination):
     destination.mkdir()
-    with tempfile.TemporaryDirectory(prefix='gastd-',dir='/private/tmp')as owned:
+    with tempfile.TemporaryDirectory(prefix='gastd-')as owned:
         owned=Path(owned);home=owned/'home';home.mkdir();trace=destination/'target.json';config=destination/'arm.conf'
         config.write_bytes(b'[PATHS]\nGNUNET_HOME = '+os.fsencode(home)+b'\n[arm]\nUNIXPATH = '+os.fsencode(owned/'s')+b'\nBINARY = '+os.fsencode(target)+b'\nOPTIONS = --output '+os.fsencode(trace)+b'\n[TESTING]\nWEAKRANDOM = YES\n')
         env=environment.copy();env.update(HOME=str(owned/'user'),XDG_CONFIG_HOME=str(owned/'xdg'),GNUNET_ARGS='')

@@ -562,7 +562,15 @@ mod tests {
                         .write_all(b"\0\x14\0\xaa\x80\0\0\x03\0\0\0\0\0\0\0\x09a\0b\0\0\x04\0\xab")
                         .await?;
                     let mut byte = [0; 1];
-                    assert_eq!(stream.read(&mut byte).await?, 0);
+                    match stream.read(&mut byte).await {
+                        Ok(0) => {}
+                        Err(error) if error.kind() == io::ErrorKind::ConnectionReset => {}
+                        other => {
+                            return Err(io::Error::other(format!(
+                                "deadline retirement did not close peer: {other:?}"
+                            )));
+                        }
+                    }
                     Ok::<(), io::Error>(())
                 });
                 let mut client =

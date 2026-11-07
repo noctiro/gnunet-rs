@@ -6,7 +6,7 @@ from paired import sha,save
 MESSAGE=b'GNUnet not running, cannot stop the peer\n'
 def actor(binary,profile,environment,destination):
     destination.mkdir()
-    with tempfile.TemporaryDirectory(prefix='galog-',dir='/private/tmp')as owned:
+    with tempfile.TemporaryDirectory(prefix='galog-')as owned:
         owned=Path(owned);home=owned/'home';home.mkdir();config=destination/'arm.conf';config.write_bytes(b'[PATHS]\nGNUNET_HOME = '+os.fsencode(home)+b'\n[arm]\nUNIXPATH = '+os.fsencode(owned/'s')+b'\n[TESTING]\nWEAKRANDOM = YES\n')
         logfile=os.fsencode(owned)+b'/log/sub/raw-bytes.log';os.makedirs(os.path.dirname(logfile));initial=b'owned-preexisting\n'
         with open(logfile,'wb')as f:f.write(initial)

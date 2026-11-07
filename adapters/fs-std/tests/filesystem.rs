@@ -31,7 +31,7 @@ impl Directory {
             .duration_since(UNIX_EPOCH)
             .map_err(io::Error::other)?
             .as_nanos();
-        let path = Path::new("/private/tmp").join(format!(
+        let path = std::env::temp_dir().join(format!(
             "gnunet-fs-host-{}-{instant}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)

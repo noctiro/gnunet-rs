@@ -131,7 +131,7 @@ def main():
         report['host_files_sha256'] = {p: sha(p) for p in ['/etc/hosts', '/etc/resolv.conf']}
         alias, address = host_fixture()
         report['actual_hosts_fixture'] = {'alias': alias, 'address': address, 'fast_path_excluded': True}
-        owned = Path(tempfile.mkdtemp(prefix='grsv-owner-', dir='/private/tmp'))
+        owned = Path(tempfile.mkdtemp(prefix='grsv-owner-'))
         owned.chmod(0o700)
         profile = output / 'no_ip.sb'
         profile.write_text('(version 1)\n(allow default)\n(deny network-outbound (remote ip))\n')

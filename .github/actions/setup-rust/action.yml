@@ -61,5 +61,11 @@ runs:
           ~/.cargo/registry/index
           ~/.cargo/registry/cache
           ~/.cargo/git/db
-        key: cargo-inputs-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock', 'tests/embedded/noalloc/Cargo.lock') }}
+        key: cargo-inputs-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/Cargo.lock') }}
         restore-keys: cargo-inputs-v1-${{ runner.os }}-${{ runner.arch }}-
+    - name: Fetch locked dependency inputs
+      shell: bash
+      run: |
+        git ls-files -z -- Cargo.lock '**/Cargo.lock' | while IFS= read -r -d '' lockfile; do
+          cargo fetch --locked --manifest-path "${lockfile%Cargo.lock}Cargo.toml"
+        done

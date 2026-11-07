@@ -86,7 +86,14 @@ async fn frame(stream: &mut UnixStream) -> Result<Option<Vec<u8>>, Failure> {
     let mut h = [0; 4];
     match stream.read_exact(&mut h).await {
         Ok(_) => {}
-        Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => return Ok(None),
+        Err(e)
+            if matches!(
+                e.kind(),
+                io::ErrorKind::UnexpectedEof | io::ErrorKind::ConnectionReset
+            ) =>
+        {
+            return Ok(None);
+        }
         Err(e) => return Err(e.into()),
     }
     let len = usize::from(u16::from_be_bytes([h[0], h[1]]));
@@ -126,7 +133,14 @@ async fn core_frame(
     let mut h = [0; 4];
     match stream.read_exact(&mut h).await {
         Ok(_) => {}
-        Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => return Ok(None),
+        Err(e)
+            if matches!(
+                e.kind(),
+                io::ErrorKind::UnexpectedEof | io::ErrorKind::ConnectionReset
+            ) =>
+        {
+            return Ok(None);
+        }
         Err(e) => return Err(e.into()),
     }
     let len = usize::from(u16::from_be_bytes([h[0], h[1]]));

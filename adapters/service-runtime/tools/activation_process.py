@@ -58,7 +58,7 @@ def main():
     c_service = snapshot("c-service", receipt["artifacts"]["service"]["path"])
     if args.rust_service:
         args.rust_service = snapshot("rust-service", args.rust_service)
-    owned = Path(tempfile.mkdtemp(prefix="gn-act-", dir="/private/tmp"))
+    owned = Path(tempfile.mkdtemp(prefix="gn-act-"))
     owned.chmod(0o700)
     checks, commands = [], []
     base = {k: v for k, v in os.environ.items() if not k.startswith(("LISTEN_", "ACTIVATION_PROBE_", "GNUNET_"))}

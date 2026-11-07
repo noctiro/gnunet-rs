@@ -278,18 +278,15 @@ jobs:
         run: cargo install cargo-audit --version "=$CARGO_AUDIT_VERSION" --locked --no-default-features --root "$RUNNER_TEMP/cargo-audit"
       - name: Add the audit executable to PATH
         run: echo "$RUNNER_TEMP/cargo-audit/bin" >> "$GITHUB_PATH"
-      - name: Audit workspace and independent noalloc lockfiles
+      - name: Audit all source lockfiles
         run: |
           mkdir -p target/audit
           database="$RUNNER_TEMP/advisory-db"
           git clone --depth 1 https://github.com/RustSec/advisory-db "$database"
           git -C "$database" rev-parse HEAD > target/audit/database-revision.txt
           failed=0
-          for profile in workspace noalloc; do
-            case "$profile" in
-              workspace) lockfile=Cargo.lock ;;
-              noalloc) lockfile=tests/embedded/noalloc/Cargo.lock ;;
-            esac
+          while IFS= read -r -d '' lockfile; do
+            profile="${lockfile//\//_}"
             if cargo audit --db "$database" --no-fetch --file "$lockfile" --json --deny warnings > "target/audit/$profile.json"; then
               echo "$profile audit passed"
             else
@@ -297,7 +294,7 @@ jobs:
               echo "$profile audit failed"
             fi
             cat "target/audit/$profile.json"
-          done
+          done < <(git ls-files -z -- Cargo.lock '**/Cargo.lock')
           exit "$failed"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()

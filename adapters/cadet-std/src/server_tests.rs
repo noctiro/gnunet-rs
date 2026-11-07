@@ -58,14 +58,17 @@ async fn until<'id, 'slots, 'bytes>(
         })
         .await;
         match result {
-            Poll::Pending => tokio::task::yield_now().await,
+            Poll::Pending => {}
             Poll::Ready(Ok(Progress::WaitDeadline)) => {
-                return Err("native model observation timed out".into());
+                return Err(
+                    format!("native model observation timed out: {:?}", server.report()).into(),
+                );
             }
             Poll::Ready(result) => {
                 result?;
             }
         }
+        tokio::task::yield_now().await;
     }
     Ok(())
 }

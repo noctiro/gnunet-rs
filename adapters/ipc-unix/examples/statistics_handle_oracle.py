@@ -66,7 +66,7 @@ def main():
         report['participants'] = {name: {'original': str(path), 'snapshot': str(active[name]), 'sha256': digest(path)} for name, path in participants.items()}
         env = {name: value for name, value in os.environ.items() if not name.startswith('GNUNET_')}
         env.update(receipt['runtime_environment'], LC_ALL='C')
-        owned = Path(tempfile.mkdtemp(prefix='ghnd-', dir='/private/tmp'))
+        owned = Path(tempfile.mkdtemp(prefix='ghnd-'))
         owned.chmod(0o700)
         report['owned_runtime'] = str(owned)
         for name, relative in [('XDG_CONFIG_HOME', 'config'), ('XDG_DATA_HOME', 'data'), ('XDG_CACHE_HOME', 'cache'), ('XDG_RUNTIME_DIR', 'runtime')]:

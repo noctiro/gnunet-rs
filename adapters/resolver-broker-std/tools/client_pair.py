@@ -4,7 +4,7 @@ import argparse, asyncio, json, os, pathlib, shutil, socket, struct, tempfile
 from paired import sha, frame, decode, reply
 
 async def actor(binary, language, env, out):
-    runtime = pathlib.Path(tempfile.mkdtemp(prefix='rbclient-', dir='/private/tmp'))
+    runtime = pathlib.Path(tempfile.mkdtemp(prefix='rbclient-'))
     runtime.chmod(448)
     path = runtime / 'r'
     config = runtime / 'c'

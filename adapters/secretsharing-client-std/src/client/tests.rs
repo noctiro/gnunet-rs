@@ -9,11 +9,10 @@ type Failure = Box<dyn StdError>;
 struct Directory(PathBuf);
 impl Directory {
     fn new() -> Result<Self, Failure> {
-        let stamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?
-            .as_nanos();
-        // A short Unix path fits both macOS and Linux socket pathname limits.
-        let path = PathBuf::from("/tmp").join(format!("gsd-{}-{stamp:x}", std::process::id()));
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let serial = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        // The counter separates parallel tests even on a coarse system clock.
+        let path = std::env::temp_dir().join(format!("gsd-{}-{serial}", std::process::id()));
         std::fs::create_dir(&path)?;
         Ok(Self(path))
     }

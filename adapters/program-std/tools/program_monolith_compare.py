@@ -28,7 +28,7 @@ def main():
   c=out/'normal-program-monolith';compiled=compile_probe(BASE/'reference/program_monolith.c',c,r);save(out/'compile.json',compiled);rust=out/'rust-program-monolith';shutil.copy2(a.rust,rust);binaries={str(c):sha(c),str(rust):sha(rust)};env={k:v for k,v in os.environ.items()if not k.startswith(('GNUNET_','OWNED_','LISTEN_','DYLD_','LD_'))and k not in ['POSIXLY_CORRECT','JOURNAL_STREAM']};env.update(r['runtime_environment']);env.update(LC_ALL='C',GNUNET_FORCE_LOG='util-program;;;;DEBUG/;;;;NONE',GNUNET_ARGS='--ordinary-program-only-ignored')
   cases=[('provided',[],2),('help',['--help'],0),('version',['--version'],0),('unknown-option',['--not-an-option'],0)]
   for name,args,expected in cases:
-   folder=out/name;folder.mkdir();home=folder/'home';home.mkdir();base=folder/'base';base.mkdir();run=Path(__import__('tempfile').mkdtemp(prefix='pgmono-',dir='/private/tmp'));socket=run/'service';owned_runs.append(run);current=env.copy();current.update(HOME=str(home),XDG_CONFIG_HOME=str(home),GNUNET_BASE_CONFIG=str(base),OWNED_MONOLITH_PATH=str(socket))
+   folder=out/name;folder.mkdir();home=folder/'home';home.mkdir();base=folder/'base';base.mkdir();run=Path(__import__('tempfile').mkdtemp(prefix='pgmono-'));socket=run/'service';owned_runs.append(run);current=env.copy();current.update(HOME=str(home),XDG_CONFIG_HOME=str(home),GNUNET_BASE_CONFIG=str(base),OWNED_MONOLITH_PATH=str(socket))
    if expected==0:current['OWNED_OPTIONS_STOP']='1'
    actors=[]
    for label,binary in [('c',c),('rust',rust)]:

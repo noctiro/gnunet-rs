@@ -707,7 +707,7 @@ def main(argv=None):
         result["runtime_acquisition"] = directory.row
         def allocate():
             nonlocal runtime
-            runtime = Path(tempfile.mkdtemp(prefix="gcv-", dir="/private/tmp"))
+            runtime = Path(tempfile.mkdtemp(prefix="gcv-"))
             runtime.chmod(0o700)
         control.acquire(directory, allocate)
         result["private_runtime"] = str(runtime)

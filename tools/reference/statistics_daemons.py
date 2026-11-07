@@ -504,7 +504,7 @@ def run_suite(args):
         report["commands"], report["checks"] = harness.commands, harness.checks
         report["diagnostics"] = harness.diagnostics
         report["malformed_probes"] = harness.probes
-        owned = Path(tempfile.mkdtemp(prefix="gn-iop-", dir="/private/tmp"))
+        owned = Path(tempfile.mkdtemp(prefix="gn-iop-"))
         owned.chmod(0o700)
         for name, relative in (("XDG_CONFIG_HOME", "config"), ("XDG_DATA_HOME", "data"),
                                ("XDG_CACHE_HOME", "cache"), ("XDG_RUNTIME_DIR", "runtime")):

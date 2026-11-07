@@ -6,7 +6,7 @@ from paired import sha, save, status
 PROMPT = b'Now only monitoring, press CTRL-C to stop.\n'
 def actor(binary, number, environment, destination):
     destination.mkdir(); proc = None; peers = []; selection = selectors.DefaultSelector(); wire = []; pre_error = bytearray()
-    with tempfile.TemporaryDirectory(prefix='gasig-', dir='/private/tmp') as owned:
+    with tempfile.TemporaryDirectory(prefix='gasig-') as owned:
         owned = Path(owned); endpoint = owned/'s'; home = owned/'home'; home.mkdir(); config = destination/'arm.conf'
         config.write_bytes(b'[PATHS]\nGNUNET_HOME = '+os.fsencode(home)+b'\n[arm]\nUNIXPATH = '+os.fsencode(endpoint)+b'\n[TESTING]\nWEAKRANDOM = YES\n')
         listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); listener.bind(str(endpoint)); listener.listen(); listener.setblocking(False); selection.register(listener, selectors.EVENT_READ, 'listen')

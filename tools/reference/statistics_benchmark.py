@@ -351,7 +351,7 @@ def run(args):
         result["input_bindings"] = inputs.bindings
 
         def allocate_runtime():
-            runtime["path"] = Path(tempfile.mkdtemp(prefix="gsb-", dir="/private/tmp"))
+            runtime["path"] = Path(tempfile.mkdtemp(prefix="gsb-"))
             runtime["path"].chmod(0o700)
             st = runtime["path"].lstat()
             runtime["identity"] = (st.st_dev, st.st_ino)

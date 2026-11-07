@@ -224,7 +224,7 @@ async fn step<'a>(
     let mut cx = Context::from_waker(Waker::noop());
     let result = driving.as_mut().poll(&mut cx);
     drop(driving);
-    tokio::time::sleep(Duration::from_millis(1)).await;
+    tokio::task::yield_now().await;
     match result {
         Poll::Ready(r) => Ok(Some(r?)),
         Poll::Pending => Ok(None),
@@ -852,7 +852,7 @@ async fn runtime_only<'a>(
     let mut cx = Context::from_waker(Waker::noop());
     let value = future.as_mut().poll(&mut cx);
     drop(future);
-    tokio::time::sleep(Duration::from_millis(1)).await;
+    tokio::task::yield_now().await;
     match value {
         Poll::Ready(value) => Ok(Some(value?)),
         Poll::Pending => Ok(None),
@@ -1605,7 +1605,7 @@ async fn graceful_shutdown_finishes_original_partial_then_empty_and_returns_orig
     while !provider_addresses(&service)?.is_empty() {
         assert!(Instant::now() < until);
         service.poll_once(SystemClock.sample()?.now.as_micros())?;
-        tokio::task::yield_now().await;
+        tokio::time::sleep(Duration::from_millis(1)).await;
     }
     assert_eq!(tracking.active(), 0);
     Ok(())
@@ -1770,7 +1770,7 @@ async fn graceful_shutdown_original_pils_eof_keeps_unknown_result_and_never_acti
                 .requests,
             0
         );
-        tokio::task::yield_now().await;
+        tokio::time::sleep(Duration::from_millis(1)).await;
     }
     assert_eq!(runtime.report().activations, 1);
     assert_eq!(runtime.report().graceful_drains, 0);

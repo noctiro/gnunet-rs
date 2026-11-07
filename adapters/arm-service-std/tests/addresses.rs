@@ -16,7 +16,7 @@ impl Environment for Env {
         None
     }
     fn current_dir(&self) -> io::Result<PathBuf> {
-        Ok(PathBuf::from("/private/tmp"))
+        Ok(std::env::temp_dir())
     }
 }
 fn put(c: &mut Configuration, key: &[u8], value: &[u8]) {

@@ -592,7 +592,8 @@ pub fn exercise_arm(output: &mut [u8; 128]) -> Result<usize, Error> {
         1,
         ArmAbi::U64Align8,
     )?;
-    let Some(Effect::Connect(connection)) = client.take_effect(gnunet::types::MonoInstant(0))?
+    let Some(Effect::Connect(connection)) =
+        client.take_effect(gnunet::types::AbsoluteTime::from_micros(0))?
     else {
         return Err(Error::NotReady);
     };

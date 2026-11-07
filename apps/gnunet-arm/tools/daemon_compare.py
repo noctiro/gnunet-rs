@@ -13,7 +13,7 @@ def call(binary,config,arguments,env,directory,name):
  (directory/(name+'.stdout')).write_bytes(r.stdout);(directory/(name+'.stderr')).write_bytes(r.stderr)
  return {'arguments':[os.fsencode(a).hex()for a in arguments],'exit':r.returncode,'stdout_hex':r.stdout.hex(),'stderr_hex':r.stderr.hex()}
 def actor(binary,profile,env,service,target,directory):
- directory.mkdir();runtime=tempfile.TemporaryDirectory(prefix='garem-',dir='/private/tmp');owned=Path(runtime.name);home=owned/'home';home.mkdir();endpoint=owned/'arm.sock';server=directory/'server.conf';client=directory/'client.conf';port=0
+ directory.mkdir();runtime=tempfile.TemporaryDirectory(prefix='garem-');owned=Path(runtime.name);home=owned/'home';home.mkdir();endpoint=owned/'arm.sock';server=directory/'server.conf';client=directory/'client.conf';port=0
  if profile=='tcp4':
   with socket.socket(socket.AF_INET,socket.SOCK_STREAM)as probe:probe.bind(('127.0.0.1',0));port=probe.getsockname()[1]
  common='[PATHS]\nGNUNET_HOME = '+str(home)+'\nDEFAULTCONFIG = '+str(server)+'\n[arm]\nPORT = '+str(port)+'\nHOSTNAME = 127.0.0.1\nBINDTO = 127.0.0.1\nSTART_SYSTEM_SERVICES = NO\nSTART_USER_SERVICES = YES\nGLOBAL_PREFIX =\nGLOBAL_POSTFIX =\n[TESTING]\nWEAKRANDOM = YES\n'

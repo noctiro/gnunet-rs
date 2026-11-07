@@ -49,7 +49,7 @@ def main():
     for (path, digest) in inputs.items():
         if not sha(path) == digest:
             raise ValueError(path)
-    run = pathlib.Path(tempfile.mkdtemp(prefix='rbreal-', dir='/private/tmp'))
+    run = pathlib.Path(tempfile.mkdtemp(prefix='rbreal-'))
     run.chmod(448)
     config = run / 'c'
     sock = run / 'r'

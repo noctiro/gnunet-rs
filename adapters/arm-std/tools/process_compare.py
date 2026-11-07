@@ -35,7 +35,7 @@ def main():
     if label=='control-default-sigpipe':profile='default';env['GNUNET_PROCESS_TEST_HOLD_MS']='100'
    if label=='two-queued-listeners':
     mode='accept'
-    socket_directory=tempfile.TemporaryDirectory(prefix='gnunet-proc-',dir='/private/tmp')
+    socket_directory=tempfile.TemporaryDirectory(prefix='gnunet-proc-')
     u=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM);u.bind(str(pathlib.Path(socket_directory.name)/(actor+'.sock')));u.listen(5);u.setblocking(False);listeners.append(u)
     v=socket.socket(socket.AF_INET,socket.SOCK_STREAM);v.bind(('127.0.0.1',0));v.listen(5);v.setblocking(False);listeners.append(v)
     for listener in listeners:

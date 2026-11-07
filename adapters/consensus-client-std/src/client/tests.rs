@@ -14,11 +14,7 @@ impl Directory {
             .duration_since(std::time::UNIX_EPOCH)?
             .as_nanos();
         let serial = NEXT_DIRECTORY.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let root = if cfg!(target_os = "macos") {
-            PathBuf::from("/private/tmp")
-        } else {
-            std::env::temp_dir()
-        };
+        let root = std::env::temp_dir();
         let path = root.join(format!(
             "gconsensus-{}-{stamp}-{serial}",
             std::process::id()

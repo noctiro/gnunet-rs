@@ -232,13 +232,13 @@ async fn actual_tcp_fragmented_service_replies_box_and_original_completion()
                 if let Some(waker) = restored_waker.borrow_mut().take() {
                     waker.wake();
                 }
-                Ok::<_, io::Error>(())
+                Ok::<_, io::Error>(replacement_server)
             }
         )
     })
     .await?;
     results.0?;
-    results.1?;
+    let _replacement_server = results.1?;
     assert_eq!(b.core().phase(), Phase::Established);
     Ok(())
 }

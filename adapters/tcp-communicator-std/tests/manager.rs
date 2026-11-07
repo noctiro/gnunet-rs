@@ -398,13 +398,22 @@ async fn two_retained_real_connects_survive_canceled_wait_then_retire_without_id
     Ok(())
 }
 fn ps_record(rid: u32, peer: &EddsaPrivateKey, value: u64) -> Vec<u8> {
-    let mut b = vec![0; 68];
-    b[..2].copy_from_slice(&68u16.to_be_bytes());
+    let subsystem = gnunet_tcp_communicator_core::services::SUBSYSTEM;
+    let key = gnunet_tcp_communicator_core::session::ReplayKind::Handshake.key();
+    let ss = subsystem.len() + 1;
+    let ks = key.len() + 1;
+    let size = 60 + ss + ks + 8;
+    let mut b = vec![0; size];
+    b[..2].copy_from_slice(&(size as u16).to_be_bytes());
     b[2..4].copy_from_slice(&822u16.to_be_bytes());
     b[4..36].copy_from_slice(peer.public_key().as_bytes());
     b[44..48].copy_from_slice(&rid.to_be_bytes());
+    b[52..54].copy_from_slice(&(ks as u16).to_be_bytes());
     b[54..56].copy_from_slice(&8u16.to_be_bytes());
-    b[60..].copy_from_slice(&value.to_be_bytes());
+    b[56..58].copy_from_slice(&(ss as u16).to_be_bytes());
+    b[60..60 + ss - 1].copy_from_slice(subsystem);
+    b[60 + ss..60 + ss + ks - 1].copy_from_slice(key);
+    b[60 + ss + ks..].copy_from_slice(&value.to_be_bytes());
     b
 }
 fn result(kind: u16, rid: u32, status: i32) -> [u8; 12] {
@@ -543,7 +552,7 @@ async fn same_peer_scan_store_barrier_survives_closed_owner_and_never_regresses_
 /// Actual Unix MQs plus an explicit delayed-backend commit model. This is a
 /// Rust ownership/recovery regression, not normal-C interoperability evidence.
 #[tokio::test(flavor = "current_thread")]
-async fn unknown_commit_cannot_admit_newer_write_before_old_backend_settles() -> Result<()> {
+async fn late_remote_commit_cannot_lower_local_replay_floor_after_mq_replacement() -> Result<()> {
     use gnunet_session_crypto::elligator;
     use gnunet_tcp_communicator_core::initial;
     use std::sync::{Mutex, atomic::AtomicU64};
@@ -551,7 +560,7 @@ async fn unknown_commit_cannot_admit_newer_write_before_old_backend_settles() ->
     let bob = EddsaPrivateKey::from_seed([2; 32]);
     let ex = EcdheSecret::from_eddsa_seed([2; 32]);
     let mut rng = Random(804);
-    let mut storage = [Storage::new(), Storage::new()];
+    let mut storage = [Storage::new(), Storage::new(), Storage::new()];
     let mut slots = storage.iter_mut();
     let (s, mut old_ps, _tr) = services()?;
     let (new_connection, mut new_ps) = UnixStream::pair()?;
@@ -593,7 +602,6 @@ async fn unknown_commit_cannot_admit_newer_write_before_old_backend_settles() ->
     let signal = Arc::new(Mutex::new(None::<Waker>));
     let database = Arc::new(AtomicU64::new(0));
     let admitted_new_write = Arc::new(AtomicUsize::new(0));
-    let outcome_unknown = Arc::new(AtomicUsize::new(0));
     let observed_stage = stage.clone();
     let observed_signal = signal.clone();
     let observed_database = database.clone();
@@ -632,10 +640,6 @@ async fn unknown_commit_cannot_admit_newer_write_before_old_backend_settles() ->
                         }
                         match m.poll_step(cx, time(), &mut rng) {
                             std::task::Poll::Ready(Ok(_)) => std::task::Poll::Ready(Ok(false)),
-                            std::task::Poll::Ready(Err(HostError::Core(Error::OutcomeUnknown))) => {
-                                outcome_unknown.fetch_add(1, Ordering::SeqCst);
-                                std::task::Poll::Ready(Ok(false))
-                            }
                             std::task::Poll::Ready(Err(HostError::Peerstore(error)))
                                 if stage.load(Ordering::SeqCst) == 3 && error.io_retired() =>
                             {
@@ -672,10 +676,8 @@ async fn unknown_commit_cannot_admit_newer_write_before_old_backend_settles() ->
                 {
                     w.wake_by_ref();
                 }
-                if let Ok(query) =
-                    tokio::time::timeout(Duration::from_millis(80), frame(&mut new_ps)).await
                 {
-                    let query = query?;
+                    let query = frame(&mut new_ps).await?;
                     assert_eq!(&query[2..4], &821u16.to_be_bytes());
                     let second = number(&query, 36)?;
                     new_ps
@@ -716,35 +718,49 @@ async fn unknown_commit_cannot_admit_newer_write_before_old_backend_settles() ->
         Ok::<_, Box<dyn std::error::Error>>(())
     })
     .await??;
-    let regressed =
-        admitted_new_write.load(Ordering::SeqCst) != 0 && database.load(Ordering::SeqCst) < 2000;
-    if let Ok(path) = std::env::var("GNUNET_UNKNOWN_COMMIT_RECEIPT") {
-        std::fs::write(
-            path,
-            format!(
-                "{{\"scope\":\"actual Rust Unix MQ ownership with delayed backend commit model; no C interoperability credit\",\"newer_store_admitted_while_old_unconfirmed\":{},\"final_backend_value\":{},\"history_regressed\":{},\"explicit_outcome_unknown\":{},\"quiescent\":{}}}\n",
-                admitted_new_write.load(Ordering::SeqCst) != 0,
-                database.load(Ordering::SeqCst),
-                regressed,
-                outcome_unknown.load(Ordering::SeqCst),
-                m.is_quiescent()
-            ),
-        )?;
-    }
-    assert!(
-        !regressed,
-        "old unconfirmed STORE(1000) overwrote newly admitted STORE(2000) after MQ replacement"
-    );
-    assert_eq!(
-        admitted_new_write.load(Ordering::SeqCst),
-        0,
-        "new same-key scan/store escaped unknown-commit quarantine"
-    );
-    assert!(
-        outcome_unknown.load(Ordering::SeqCst) > 0,
-        "quarantine did not expose the uncertain outcome"
-    );
+    assert_eq!(admitted_new_write.load(Ordering::SeqCst), 1);
+    assert_eq!(database.load(Ordering::SeqCst), 1000);
     assert!(m.is_quiescent());
+    for id in &ids {
+        drop(m.retire(id)?);
+    }
+
+    // A late official REPLACE may lower the remote backend. The same process's
+    // retained floor must still reject a signed stamp between the two commits,
+    // without admitting another STORE or inventing an iterator result.
+    let core = slots
+        .next()
+        .ok_or(Error::Capacity)?
+        .core(&bob, &ex, false, &mut rng)?;
+    let (native, mut remote) = UnixStream::pair()?;
+    let special =
+        elligator::Secret::generate(&mut rng, NonZeroUsize::new(256).ok_or(Error::InvalidInput)?)?;
+    let (bytes, _) = initial::prepare(&alice, bob.public_key(), &special, 1, 1500, &[5; 32])?;
+    remote.write_all(&bytes).await?;
+    let id = m
+        .admit(core, Connection::from_unix(native), b"tcp-127.0.0.1:12", 1)
+        .map_err(|r| r.reason)?;
+    tokio::time::timeout(Duration::from_secs(1), async {
+        tokio::try_join!(
+            async {
+                while !m.is_quiescent() {
+                    m.step(time(), &mut rng).await?;
+                }
+                Ok::<_, Box<dyn std::error::Error>>(())
+            },
+            async {
+                let query = frame(&mut new_ps).await?;
+                assert_eq!(&query[2..4], &821u16.to_be_bytes());
+                let stop = frame(&mut new_ps).await?;
+                assert_eq!(&stop[2..4], &829u16.to_be_bytes());
+                assert_eq!(&stop[4..8], &query[36..40]);
+                Ok::<_, Box<dyn std::error::Error>>(())
+            }
+        )
+    })
+    .await??;
+    assert_eq!(m.core(&id)?.phase(), Phase::Closed);
+    assert!(!m.peerstore_recovery_required());
     Ok(())
 }
 

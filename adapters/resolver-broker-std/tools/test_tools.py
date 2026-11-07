@@ -21,7 +21,7 @@ class Controls(unittest.TestCase):
  def test_source_overlap_rejected(self):
   with self.assertRaises(ValueError):disjoint('/private/tmp/source/out','/private/tmp/source')
  def test_source_bytes_mutation_changes_digest(self):
-  with tempfile.TemporaryDirectory(prefix='broker-guard-',dir='/private/tmp')as d:
+  with tempfile.TemporaryDirectory(prefix='broker-guard-')as d:
    p=pathlib.Path(d)/'a';p.write_bytes(b'a');before=sha(p);p.write_bytes(b'b');self.assertNotEqual(before,sha(p))
  def test_compile_source_in_different_clone_rejected(self):
   with self.assertRaises(ValueError):compile_source({'file':'/private/tmp/old/src/lib/util/resolver_api.c'},'/private/tmp/build','/private/tmp/clean-clone')
@@ -50,12 +50,12 @@ class Controls(unittest.TestCase):
   value={'workspace_root':str(root),'packages':[{'id':name,'name':'duplicate','version':'1','source':None,'manifest_path':str(root/name/'Cargo.toml')}for name in ['a','b']]}
   with self.assertRaisesRegex(ValueError,'duplicate local Cargo'):normalized_metadata(value,root)
  def test_workspace_addition_and_deletion_change_file_set(self):
-  with tempfile.TemporaryDirectory(prefix='broker-workspace-',dir='/private/tmp')as d:
+  with tempfile.TemporaryDirectory(prefix='broker-workspace-')as d:
    root=pathlib.Path(d);(root/'a.rs').write_text('a');before=workspace_files(root);(root/'b.rs').write_text('a');self.assertNotEqual(before,workspace_files(root));(root/'a.rs').unlink();self.assertNotEqual(before,workspace_files(root))
    (root/'empty').mkdir();(root/'linked').symlink_to(root/'empty',target_is_directory=True)
    with self.assertRaisesRegex(ValueError,'directory symlink'):workspace_files(root)
  def test_actual_second_lock_is_required(self):
-  with tempfile.TemporaryDirectory(prefix='broker-locks-',dir='/private/tmp')as d:
+  with tempfile.TemporaryDirectory(prefix='broker-locks-')as d:
    root=pathlib.Path(d)
    for name in ['Cargo.toml','Cargo.lock','rust-toolchain.toml','rustfmt.toml','.cargo/config.toml','tests/embedded/noalloc/Cargo.toml']:
     p=root/name;p.parent.mkdir(parents=True,exist_ok=True);p.write_text('present')

@@ -10,7 +10,7 @@ from daemon_compare import call
 BASE=Path(__file__).resolve().parents[1]
 def actor(binary,service,wrapper,environment,destination):
     destination.mkdir();steps=[]
-    with tempfile.TemporaryDirectory(prefix='gald-',dir='/private/tmp')as owned:
+    with tempfile.TemporaryDirectory(prefix='gald-')as owned:
         owned=Path(owned);home=owned/'home';home.mkdir();endpoint=owned/'s';config=owned/'arm.conf';trace=destination/'actual-daemon-exec-pids'
         config.write_bytes(b'[PATHS]\nGNUNET_HOME = '+os.fsencode(home)+b'\nDEFAULTCONFIG = '+os.fsencode(config)+b'\n[arm]\nUNIXPATH = '+os.fsencode(endpoint)+b'\nBINARY = '+os.fsencode(service)+b'\nPREFIX = '+os.fsencode(wrapper)+b'\nOPTIONS =\nSTART_SYSTEM_SERVICES = NO\nSTART_USER_SERVICES = YES\n[TESTING]\nWEAKRANDOM = YES\n')
         (destination/'config').write_bytes(config.read_bytes());env=environment.copy();env.update(HOME=str(owned/'user'),XDG_CONFIG_HOME=str(owned/'xdg'),XDG_CACHE_HOME=str(owned/'cache'),XDG_DATA_HOME=str(owned/'data'),XDG_RUNTIME_DIR=str(owned/'run'),GNUNET_ARGS='',OWNED_ARM_CLI_EXEC_TRACE=str(trace));finished=False

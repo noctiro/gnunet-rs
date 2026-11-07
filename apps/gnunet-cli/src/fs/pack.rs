@@ -256,8 +256,7 @@ mod tests {
     )]
     fn packs_native_filename_bytes_and_empty_files() -> Result<()> {
         let nonce = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
-        let path =
-            Path::new("/private/tmp").join(format!("gnunet-pack-{}-{nonce}", std::process::id()));
+        let path = std::env::temp_dir().join(format!("gnunet-pack-{}-{nonce}", std::process::id()));
         DirBuilder::new().mode(0o700).create(&path)?;
         let temporary = Temporary(path);
         // APFS rejects invalid UTF-8 at file creation. Keep exact native bytes

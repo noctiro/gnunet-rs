@@ -5,7 +5,7 @@ from common import sha, disjoint
 from paired import frame, decode, reply
 
 async def actor(binary, language, build, out):
-    run = pathlib.Path(tempfile.mkdtemp(prefix='shared-arm-stats-', dir='/private/tmp'))
+    run = pathlib.Path(tempfile.mkdtemp(prefix='shared-arm-stats-'))
     run.chmod(448)
     sock = run / 'r'
     cfg = run / 'c'

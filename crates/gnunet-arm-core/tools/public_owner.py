@@ -30,7 +30,7 @@ def main():
  actor_path=out/'normal-owner'
  if args.actor=='rust':actor_path=observer
  actor_digest=sha(actor_path)
- with tempfile.TemporaryDirectory(prefix='garm-',dir='/private/tmp')as temporary:
+ with tempfile.TemporaryDirectory(prefix='garm-')as temporary:
   endpoint=str(Path(temporary)/'p.sock');listener=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM);listener.bind(endpoint);listener.listen(8);listener.setblocking(False);sel.register(listener,selectors.EVENT_READ,None)
   try:
    child=subprocess.Popen([str(actor_path),endpoint],stdout=subprocess.PIPE,stderr=subprocess.PIPE,env=env,cwd=temporary);deadline=time.monotonic()+8

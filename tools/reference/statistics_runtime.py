@@ -135,7 +135,7 @@ def run_suite():
         report['participants']={key:{'original':str(original[key]),'snapshot':str(path),'sha256':digest(path)} for key,path in actual.items()}
         env={key:value for key,value in os.environ.items() if not key.startswith(('GNUNET_','LISTEN_'))}
         env.update(receipt['runtime_environment'],LC_ALL='C')
-        runtime=Path(tempfile.mkdtemp(prefix='grt-',dir='/private/tmp'));runtime.chmod(0o700)
+        runtime=Path(tempfile.mkdtemp(prefix='grt-'));runtime.chmod(0o700)
         report['owned_runtime']=str(runtime)
         for key,name in [('XDG_CONFIG_HOME','config'),('XDG_DATA_HOME','data'),('XDG_CACHE_HOME','cache'),('XDG_RUNTIME_DIR','runtime')]:
             directory=runtime/name;directory.mkdir(mode=0o700);env[key]=str(directory)

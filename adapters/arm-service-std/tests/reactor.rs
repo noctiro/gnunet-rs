@@ -55,7 +55,7 @@ static NEXT: AtomicU64 = AtomicU64::new(0);
 struct Directory(PathBuf);
 impl Directory {
     fn new() -> io::Result<Self> {
-        let p = PathBuf::from("/private/tmp").join(format!(
+        let p = std::env::temp_dir().join(format!(
             "arm-react-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
@@ -105,8 +105,7 @@ fn fixture() -> Result<PathBuf, Box<dyn StdError>> {
     static BUILT: OnceLock<Result<PathBuf, String>> = OnceLock::new();
     BUILT
         .get_or_init(|| {
-            let p = PathBuf::from("/private/tmp")
-                .join(format!("arm-react-child-{}", std::process::id()));
+            let p = std::env::temp_dir().join(format!("arm-react-child-{}", std::process::id()));
             let source =
                 Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/support/process_fixture.c");
             let out = std::process::Command::new("cc")

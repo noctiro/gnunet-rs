@@ -41,11 +41,7 @@ impl Server {
     fn new() -> Result<Self> {
         let mut nonce = [0; 8];
         getrandom::fill(&mut nonce)?;
-        let root = if cfg!(target_os = "macos") {
-            PathBuf::from("/private/tmp")
-        } else {
-            std::env::temp_dir()
-        };
+        let root = std::env::temp_dir();
         let directory = root.join(format!(
             "gs-pils-{}-{:016x}",
             std::process::id(),

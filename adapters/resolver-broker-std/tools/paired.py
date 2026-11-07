@@ -22,7 +22,7 @@ def reply(id, data=b'', kind=5):
     return struct.pack('!HH', 8 + len(data), kind) + bytes.fromhex(id) + data
 
 async def case(binary, language, mode, env, out, sandbox):
-    run = pathlib.Path(tempfile.mkdtemp(prefix='rbpair-', dir='/private/tmp'))
+    run = pathlib.Path(tempfile.mkdtemp(prefix='rbpair-'))
     run.chmod(448)
     sock = run / 'r'
     cfg = run / 'c'
