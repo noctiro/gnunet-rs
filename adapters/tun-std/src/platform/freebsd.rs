@@ -261,33 +261,6 @@ mod tests {
 
     #[test]
     fn ioctl_layout_matches_native_headers() -> io::Result<()> {
-        // Compile against the running host's headers, independently of Rust's
-        // copied ABI declarations. FreeBSD provides cc in its base system.
-        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-        let output = manifest.join("../../target/native-abi");
-        std::fs::create_dir_all(&output)?;
-        let binary = output.join(format!("freebsd-tun-{}", std::process::id()));
-        let compiler = std::process::Command::new("cc")
-            .args(["-std=gnu11", "-Wall", "-Werror"])
-            .arg(manifest.join("tests/freebsd_tun_abi.c"))
-            .arg("-o")
-            .arg(&binary)
-            .output()?;
-        std::fs::write(binary.with_extension("compiler.log"), &compiler.stderr)?;
-        if !compiler.status.success() {
-            return Err(io::Error::other(format!(
-                "FreeBSD TUN ABI compiler: {}",
-                compiler.status
-            )));
-        }
-        let probe = std::process::Command::new(&binary).output()?;
-        if !probe.status.success() {
-            return Err(io::Error::other(format!(
-                "FreeBSD TUN ABI probe: {}",
-                probe.status
-            )));
-        }
-        let actual = String::from_utf8(probe.stdout).map_err(io::Error::other)?;
         let values = [
             size_of::<libc::ifreq>() as u64,
             size_of::<AliasRequest>() as u64,
@@ -304,8 +277,6 @@ mod tests {
             SIOCSIFADDR,
             SIOCSIFNETMASK,
         ];
-        let expected = values.map(|n| n.to_string()).join(" ") + "\n";
-        assert_eq!(actual, expected);
-        Ok(())
+        crate::native_abi::check("freebsd_tun_abi.c", &values)
     }
 }

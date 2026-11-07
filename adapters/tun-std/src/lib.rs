@@ -4,6 +4,9 @@
 mod admin;
 mod control;
 pub mod helper;
+#[cfg(all(test, target_os = "freebsd"))]
+#[path = "../tests/support/native_abi.rs"]
+mod native_abi;
 mod packet;
 mod platform;
 mod reactor;

@@ -13,11 +13,11 @@ use tokio::time::{Instant, Sleep};
 mod linux;
 #[cfg(target_os = "linux")]
 use linux::Backend;
-#[cfg(target_os = "macos")]
-mod macos;
-#[cfg(target_os = "macos")]
-use macos::Backend;
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(any(target_os = "macos", target_os = "freebsd"))]
+mod bsd;
+#[cfg(any(target_os = "macos", target_os = "freebsd"))]
+use bsd::Backend;
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "freebsd")))]
 mod unsupported {
     use super::*;
     pub(super) struct Backend;
@@ -25,7 +25,7 @@ mod unsupported {
         pub(super) fn new(_: &Ipv6Target, _: Ipv6WatchOptions) -> io::Result<Self> {
             Err(io::Error::new(
                 io::ErrorKind::Unsupported,
-                "IPv6 readiness requires Linux/macOS",
+                "IPv6 readiness requires Linux, macOS or FreeBSD",
             ))
         }
         pub(super) fn begin(&mut self) -> io::Result<()> {
@@ -43,7 +43,7 @@ mod unsupported {
         }
     }
 }
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "freebsd")))]
 use unsupported::Backend;
 /// Immutable exact address/interface identity and original observation deadline.
 #[derive(Clone, Debug)]
@@ -91,7 +91,7 @@ pub enum Ipv6State {
     /// Exact tuple exists without tentative/duplicate/detached flags.
     /// This does not prove link-up, route installation or future availability.
     Ready,
-    /// macOS reports the address detached from its link.
+    /// A BSD kernel reports the address detached from its link.
     Detached,
     /// Complete kernel query reports the address absent from this interface.
     Missing,
@@ -190,7 +190,7 @@ impl Ipv6WatchOptions {
 pub(super) enum Step {
     #[cfg(target_os = "linux")]
     Activity(usize),
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
     Sample(Ipv6State, Option<u32>),
 }
 /// Caller-driven original read-only kernel observer. No background thread, address
@@ -336,7 +336,7 @@ impl Ipv6Watch {
             Poll::Ready(Err(e)) => Poll::Ready(self.complete(Ipv6End::Error(e))),
             #[cfg(target_os = "linux")]
             Poll::Ready(Ok(Step::Activity(bytes))) => Poll::Ready(Ipv6Progress::Activity { bytes }),
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
             Poll::Ready(Ok(Step::Sample(state, native_flags))) => {
                 match self.source() {
                     Ok(true) => {}
@@ -383,7 +383,7 @@ impl Ipv6Watch {
         .await
     }
 }
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 fn malformed() -> io::Error {
     io::Error::new(
         io::ErrorKind::InvalidData,

@@ -30,7 +30,7 @@ its named device and enables `TUN_IFHEAD`. The caller must serialize interface
 creation/destruction across this operation; observed name/index replacement is
 refused. FreeBSD interfaces persist after close, which clears their link and
 address state. This API does not own interface creation/destruction. Native
-provisioning, route and readiness integration remain [open work](../../IMPLEMENTATION_STATUS.md).
+provisioning, route and application integration remain [open work](../../IMPLEMENTATION_STATUS.md).
 
 `close` performs one native close attempt and returns its errno. Drop also
 owns normal FD release. `into_fd` transfers the original descriptor out. Both
@@ -153,8 +153,8 @@ futures preserve the original query/deadline. No background task is spawned.
 
 `Ipv6Progress::Observed` includes its immutable original target, completion time,
 state and exact native flags. States distinguish `Tentative`, `DadFailed`,
-`Ready`, `Detached` (macOS), `Missing` and an explicit actual `PrefixMismatch`. Ready means the exact tuple was present and had no tentative, duplicate or
-macOS detached flag at the native query. It proves neither link-up, route success,
+`Ready`, `Detached` (BSD), `Missing` and an explicit actual `PrefixMismatch`. Ready means the exact tuple was present and had no tentative, duplicate or
+detached flag at the native query. It proves neither link-up, route success,
 remote reachability nor future availability. Monitoring continues after Ready,
 DadFailed and Missing so a later disappearance is observable. Call
 `cancel()` when startup has consumed the readiness sample, or continue until the
@@ -169,15 +169,22 @@ requires a complete successful dump, never a partial query or arbitrary errno. A
 or inconsistent dumps are terminal explicit errors, without automatic replay. Each new periodic read-only query gets a non-recycling sequence. No address or
 route mutation request is constructed.
 
-macOS opens one AF_INET6 datagram query socket and uses the SDK's address-specific
+macOS and FreeBSD share one bounded observation flow. Each opens one AF_INET6
+datagram query socket and uses its platform's address-specific
 `SIOCGIFNETMASK_IN6`, `SIOCGIFAFLAG_IN6`, then `SIOCGIFNETMASK_IN6` again on the
 original name and exact sockaddr_in6 address/scope. Masks must be contiguous and
-stable over this bounded group. DUPLICATED means DadFailed; TENTATIVE/OPTIMISTIC
-means Tentative; DETACHED is explicit. Actual address-specific EADDRNOTAVAIL means
-Missing; other kernel errors retain their errno. The GETNETMASK constant is the
+stable over this bounded group. DUPLICATED means DadFailed; TENTATIVE means
+Tentative (also OPTIMISTIC on macOS); DETACHED is explicit. Actual address-specific
+EADDRNOTAVAIL means Missing; other kernel errors retain their errno.
+
+Darwin uses libc's SDK `in6_ifreq`. Its GETNETMASK constant is the
 SDK `_IOWR('i',37,in6_ifreq)`, derived by replacing only the command byte of the
 pinned libc `_IOWR('i',73,in6_ifreq)` flags constant, since libc omits that netmask
-name. The libc struct size supplies the ABI; no surrogate is used.
+name. FreeBSD has a separate `in6_ifreq` layout with the full aligned native
+union extent and its own command values/flag masks. Its native tests compile
+against the installed headers to check the layout and command values. A separate
+read-only loopback test checks prefix, flags and address absence; it is not TUN
+device qualification.
 
 `Ipv6Progress::Complete` distinguishes the original `Deadline`, `SourceRetired`,
 explicit `Cancelled`, or real `Error`, retaining the most recent genuine sample
@@ -196,13 +203,10 @@ default per-dump limits are64 datagrams and262144 bytes. Callers may choose at
 most256 datagrams/1048576 bytes; exceeding either reports an error. Kernel socket
 buffer requests are65536 RX/4096 TX (native accounting may adjust them). Sampling
 interval is explicit1ms..1s, default50ms. A Linux poll performs at most one
-send/receive plus bounded parsing; a macOS sample uses at most three address
+send/receive plus bounded parsing; a BSD sample uses at most three address
 ioctls. Interface-name/index lookups are read-only and bounded. Positive short
 query writes close the observer; no suffix is resent. Cancel/drop closes only
 that original query socket, with no address removal or network policy changes.
-
-Central compilation and concrete
-kernel qualification remain separate work.
 
 ## read-only administration snapshots and route Get
 
@@ -323,10 +327,6 @@ Primary interface references:
   for network-order AF framing, and
   [kernel-control implementation](https://raw.githubusercontent.com/apple-oss-distributions/xnu/main/bsd/kern/kern_control.c)
   for the original connected controller address.
-
-This platform library does not claim working VPN/EXIT composition, privileged
-provisioning on this machine, GNUnet interoperability, a full node or completion
-of the overall independent implementation.
 
 Additional configuration primaries: local SDK `netinet6/in6_var.h`, `net/route.h`,
 `net/if_dl.h` and the route(4) manual; Linux UAPI in6_ifreq/rtnetlink/netlink
