@@ -3775,6 +3775,7 @@ name = "gnunet-service-startup"
 version = "0.1.0"
 dependencies = [
  "gnunet-config",
+ "gnunet-native",
  "gnunet-service-runtime",
  "libc",
  "nix",

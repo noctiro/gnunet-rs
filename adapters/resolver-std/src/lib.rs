@@ -1198,6 +1198,7 @@ mod accepted_stream_tests {
                 let (stream, peer, _) = accepted.into_parts();
                 assert!(matches!(peer, PeerAddress::Tcp(_)));
                 let native = socket2::SockRef::from(&stream);
+                #[cfg(unix)]
                 assert!(native.nonblocking()?);
                 assert!(
                     native.tcp_nodelay()?,

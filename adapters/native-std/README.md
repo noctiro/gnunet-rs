@@ -60,6 +60,15 @@ NODELAY. Windows uses handle inheritance control, Winsock FIONBIO and TCP_NODELA
 `set_exclusive_address_use` selects Windows SO_EXCLUSIVEADDRUSE before a service
 listener binds. This avoids mapping Unix address-reuse policy onto Windows.
 
+## Windows identities
+
+`identity::process_user` reads the primary-token user through a uniquely owned
+TOKEN_QUERY handle. `identity::account_sid` resolves a native account name through
+LookupAccountNameW. Both return validated, fixed-capacity SID owners; no Unix
+numeric identity, environment fallback or privilege change is introduced. Account
+names and referenced domains have explicit UTF-16 bounds. Native lookup failures
+retain their Win32 error. Process SIDs do not authenticate TCP peers.
+
 ## Verification and constraints
 
 `cargo xtask verify runtime` runs real sockets and shared framing/CLIENT/Resolver

@@ -123,6 +123,16 @@ fn commands(stage: Stage) -> Vec<Vec<&'static str>> {
                 "--all-features",
                 "--locked",
             ],
+            vec![
+                "cargo",
+                "test",
+                "-p",
+                "gnunet-resolver-host",
+                "--test",
+                "tcp",
+                "--all-features",
+                "--locked",
+            ],
         ],
         Stage::Test => vec![
             vec![

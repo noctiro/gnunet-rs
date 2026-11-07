@@ -11,7 +11,7 @@ Run from the repository root using the pinned Rust toolchain.
 | `cargo xtask verify lint` | Dependency/feature boundaries, Clippy and rustdoc |
 | `cargo xtask verify tools` | Python syntax and tool controls |
 | `cargo xtask verify portable` | Core feature profiles and facade allocation tiers |
-| `cargo xtask verify runtime` | Native sockets, clock/framing, CLIENT transport and Resolver TCP IPC |
+| `cargo xtask verify runtime` | Native sockets/identity, clock/framing, CLIENT transport and Resolver TCP client/service IPC |
 | `cargo xtask verify test` | Unix workspace with all features |
 | `cargo xtask verify embedded` | Cortex-M0/M4 compilation and no-allocation closure |
 
@@ -52,7 +52,7 @@ to `main`, version tags and manual dispatch.
 | Linux x86_64 / ARM64 | Native workspace, including shared runtime scenarios |
 | macOS Intel / ARM64 | Native workspace, including shared runtime scenarios |
 | FreeBSD 14.5 / 15.1 x86_64 | Native workspace, portable core and tool controls in an unprivileged VM |
-| Windows x86_64 / ARM64 | Shared native runtime, CLIENT/Resolver TCP IPC, portable core and facade allocation tiers |
+| Windows x86_64 / ARM64 | Shared native runtime/identity, CLIENT/Resolver TCP client and service host, portable core and facade allocation tiers |
 | Cortex-M0 / M4 | Compilation and no-allocation closure |
 
 All four OS families are full native targets; this table records current coverage.

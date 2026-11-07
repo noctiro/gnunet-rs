@@ -7,12 +7,15 @@ use gnunet_client::resolver::FamilyProfile;
 use gnunet_config::{Configuration, Environment, ProcessEnvironment, ProjectData};
 use gnunet_idna::{Backend, NativeProfile, Workspace};
 use gnunet_resolver_service_core::{owner::Resolver, storage::Limits as CoreLimits};
-use gnunet_service_runtime::{Activation, BoundListeners, service_options};
+#[cfg(unix)]
+use gnunet_service_runtime::Activation;
+use gnunet_service_runtime::{BoundListeners, service_options};
 use gnunet_service_runtime::{
     clock::{RuntimeClock, SystemClock},
     credentials::UnixAccess,
     service::ShutdownMode,
 };
+#[cfg(unix)]
 use gnunet_service_startup::{Identity, configured_user, resolve_user};
 use std::{
     error::Error,
@@ -31,6 +34,8 @@ pub fn native_family() -> Result<FamilyProfile, gnunet_types::Error> {
         Ok(FamilyProfile::LINUX)
     } else if cfg!(target_os = "freebsd") {
         Ok(FamilyProfile::FREEBSD)
+    } else if cfg!(windows) {
+        Ok(FamilyProfile::WINDOWS)
     } else {
         Err(gnunet_types::Error::Unsupported)
     }
@@ -59,6 +64,7 @@ pub fn configuration(selected: Option<&Path>) -> Result<Configuration, Box<dyn E
 }
 /// Explicit current-account mismatch; checking does not change process IDs.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg(unix)]
 pub struct ConfiguredIdentityMismatch {
     /// Configured native account's actual UID.
     pub expected_uid: u32,
@@ -67,6 +73,7 @@ pub struct ConfiguredIdentityMismatch {
     /// Actual real/effective IDs at this service construction boundary.
     pub actual: Identity,
 }
+#[cfg(unix)]
 impl std::fmt::Display for ConfiguredIdentityMismatch {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
@@ -76,9 +83,11 @@ impl std::fmt::Display for ConfiguredIdentityMismatch {
         )
     }
 }
+#[cfg(unix)]
 impl Error for ConfiguredIdentityMismatch {}
 /// Require the selected account's actual current real/effective IDs. Generic
 /// async embedding never changes the whole process identity behind its caller.
+#[cfg(unix)]
 pub fn verify_configured_identity(config: &Configuration) -> Result<(), Box<dyn Error>> {
     if let Some(name) = configured_user(config, b"resolver")? {
         let user = resolve_user(&name)?;
@@ -95,6 +104,13 @@ pub fn verify_configured_identity(config: &Configuration) -> Result<(), Box<dyn 
             }));
         }
     }
+    Ok(())
+}
+/// Validate the configured account against the real Windows primary-token SID.
+/// No process identity mutation or thread impersonation is performed.
+#[cfg(windows)]
+pub fn verify_configured_identity(config: &Configuration) -> Result<(), Box<dyn Error>> {
+    gnunet_service_startup::verify_configured_identity(config, b"resolver")?;
     Ok(())
 }
 /// Read this same Resolver section's kernel and Unix-filesystem matching intent.
@@ -117,6 +133,7 @@ pub fn unix_access(config: &Configuration) -> Result<UnixAccess, Box<dyn Error>>
 /// embedding path uses actual native UTC and introduces no daemonization or
 /// process-wide privilege mutation; standard binaries prepare listeners before
 /// USERNAME and call foreground_listening_with_clock with their original source.
+#[cfg(unix)]
 pub async fn foreground(
     config: &Configuration,
     activation: Activation,
@@ -135,6 +152,33 @@ pub async fn foreground(
             match_gid: unix.match_gid,
         })
         .await?;
+    foreground_listening_with_clock(
+        config,
+        bound,
+        files,
+        endpoints,
+        ready,
+        shutdown,
+        observe,
+        Arc::new(SystemClock),
+    )
+    .await
+}
+
+/// Run official Resolver IPC over configured native TCP, using the same bounded
+/// protocol engine, machine inputs, DNSSTUB and cleanup as the listening entry.
+/// The selected process account must already be active; this does not launch a
+/// supervisor, detach, impersonate or accept local-socket activation handles.
+pub async fn foreground_tcp(
+    config: &Configuration,
+    files: MachineFiles,
+    endpoints: &[SocketAddr],
+    ready: impl FnOnce(&BoundListeners) -> io::Result<()>,
+    shutdown: impl Future<Output = io::Result<()>>,
+    observe: impl FnMut(crate::SocketEvent),
+) -> Result<Report, Box<dyn Error>> {
+    verify_configured_identity(config)?;
+    let bound = BoundListeners::bind_tcp(config, b"resolver")?;
     foreground_listening_with_clock(
         config,
         bound,

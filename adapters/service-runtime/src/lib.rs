@@ -16,7 +16,6 @@ pub mod clock;
 /// Unique Unix/TCP streams and explicit dependent lifetime leases.
 pub mod connection;
 /// Shared kernel Unix credential admission policy.
-#[cfg(unix)]
 pub mod credentials;
 /// Persistent secure framing and original immutable FIFO ownership.
 pub mod framing;

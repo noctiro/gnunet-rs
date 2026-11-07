@@ -99,6 +99,16 @@ fn configured_tcp_binding_uses_actual_port_and_retains_exclusive_ownership()
         .await??;
         assert!(matches!(accepted.peer(), PeerAddress::Tcp(_)));
         assert!(accepted.diagnostics().is_empty());
+        let (connection, _, _) = accepted.into_parts();
+        assert!(
+            gnunet_service_runtime::credentials::UnixAccess {
+                match_uid: true,
+                match_gid: false,
+            }
+            .allows(&connection)
+            .is_err(),
+            "a process identity must not authenticate a TCP peer"
+        );
         Ok(())
     })
 }

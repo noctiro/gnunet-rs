@@ -17,6 +17,9 @@ nix = { workspace = true, features = ["user"] }
 uzers.workspace = true
 libc.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+gnunet-native.workspace = true
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "net", "time"] }
 

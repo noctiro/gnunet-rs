@@ -1,5 +1,4 @@
 //! Exact native GNUnet gid/group/uid short-circuit and fallback sequence.
-use gnunet_config::{Configuration, ProcessEnvironment};
 use nix::unistd::{self, Gid, Uid};
 use std::{
     ffi::{CStr, CString, OsStr, OsString},
@@ -146,21 +145,6 @@ impl PrivilegePlan {
     pub fn gid(&self) -> u32 {
         self.gid
     }
-}
-/// Preserve USERNAME's original filename/dollar expansion. Missing means keep
-/// identity; invalid present configuration is an explicit fail-closed error.
-pub fn configured_user(
-    config: &Configuration,
-    section: &[u8],
-) -> Result<Option<OsString>, gnunet_config::Error> {
-    config
-        .get(section, b"USERNAME")
-        .map(|_| {
-            config
-                .get_filename(section, b"USERNAME", &ProcessEnvironment)
-                .map(|p| p.into_os_string())
-        })
-        .transpose()
 }
 /// Resolve opaque account bytes through a maintained safe native wrapper.
 /// This can consult the configured account NSS service; it never changes an

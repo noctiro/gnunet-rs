@@ -24,7 +24,7 @@ getrandom.workspace = true
 
 [dev-dependencies]
 socket2.workspace = true
-tokio = { workspace = true, features = ["test-util"] }
+tokio = { workspace = true, features = ["test-util", "sync"] }
 
 [lints]
 workspace = true

@@ -1,74 +1,78 @@
-# Generic service startup primitives
+# Generic service startup
 
-This std-only workspace adapter implements early inherited FD capture,
-CLOSE_LSOCKS ownership, daemon-status writer and process-local USERNAME primitives. Pinned upstream revision, source behavior, pending full startup work and unsafe
-preconditions are in `DESIGN.md`, `API.rs.txt`, `inventory.json`, and `FINDINGS.md`. Production unsafe boundaries transfer exclusive early-child fd ownership,
-consume early-child environment hints, inspect integer F_GETFD, call the Darwin
-initgroups ABI omitted by nix, and implement the explicitly separated fresh-child
-fork/setsid/stdio boundary described below. Protocol/crypto cores remain unchanged.
+Native process startup boundaries shared by GNUnet service executables. Protocol
+and application state remain outside this package. Configuration selection is
+shared; identity and process mechanisms follow the native OS.
 
-`capture_from_environment` replaces, rather than follows, the existing activation
-capture at the very beginning of a new exec. The service's option selects either
-listener adoption or close-after-configured-bind ownership. The control
-stream is captured in that same call to detect identical raw-fd aliases before
-ownership. On an error after adoption startup must exit without retry or logging
-through a declared foreign stdio descriptor. Before any runtime/thread is created,
-apply the configured user only after privileged listener preparation; any partial
-switch failure must exit. A successful fallback is not a supplementary-group guarantee.
+## Configuration
 
-General async service/library embedding never forks or changes process identity. Only the explicit unsafe fresh-process `daemon::split` can fork; only the explicit
-process-startup privilege API can change the invoking service child's identity. No private wire/config key is introduced. CORE/NSE standard entries compose
-SERVICE options/logging, parent control, prepared listeners, selected user,
-once-only daemon status and their host readiness. Other service entries
-and complete platform/runtime acceptance retain their own implementation scope;
-these two integrations do not declare whole-project startup completion.
+`configured_user(config, section)` reads `USERNAME` through official dollar and
+filename expansion. Missing configuration means retain the selected account;
+invalid present configuration returns its original error. It does not perform
+account lookup or change process identity.
 
-Run pure checks with Cargo 1.99.1 in this directory and an explicit external target:
+## Windows identity
 
-```
-cargo +1.99.1 test --offline --target-dir /your/output/cargo-target
-cargo +1.99.1 clippy --offline --all-targets --target-dir /your/output/cargo-target -- -D warnings
-```
+`verify_configured_identity(config, section)` queries the process primary-token
+user and checks a configured account using native SIDs. It returns the actual SID
+or a configuration, Win32 query or identity-mismatch error. Mismatch retains both
+observed SIDs. It does not map identities to Unix UID/GID numbers, impersonate a
+thread or change the invoking process account. A supervisor must launch under the
+required account before constructing the service.
 
-Fresh native verification needs an existing unchanged normal GNUnet Darwin util
-build receipt whose `build`, runtime library environment and compile commands are
-available, plus the matching official source checkout. Outputs must be new and
-outside the source/candidate trees:
+The native SID owner retains only validated identifier bytes. Token handles close
+through unique ownership; the SID can outlive the query handle without retaining
+privileges. This observation grants no file access, elevation, group membership
+or TCP peer authentication. Local peer credentials and process launching remain
+separate [platform work](../../IMPLEMENTATION_STATUS.md).
 
-```
-python3 -B tools/verify.py --package /path/to/adapters/service-startup \
-  --source /path/to/gnunet --build-receipt /path/to/build-result.json \
-  --output /path/to/new-proof
-```
+## Unix early resources
 
-The test runner creates only its own child-process descriptors/private sockets;
-credential probes apply only the current UID/GID in a newly exec'd child. The full
-original C function extraction has a separately declared account-name fixture
-port. Exact normal configuration refusal remains an independently paired check. Existing normal C libraries are never rebuilt or edited. Test receipts bind named
-Rust execution, source/helper hashes, process observations and binaries.
+Call unsafe `capture_from_environment` as the first fresh-exec operation, before
+opening unrelated descriptors or creating a runtime, threads or logging owners.
+Its explicit inherited mode adopts listeners or retains their close-after-bind
+ownership. Parent control is captured at the same boundary so duplicate raw-FD
+aliases are rejected before ownership transfer. Later adoption failure requires
+startup exit; do not retry capture or log through a declared foreign stdio slot.
 
-`daemon::split` is an explicitly unsafe fresh-single-threaded-exec boundary,
-never an async embedding convenience. After early descriptor capture and flushed
-option/logfile setup, but before account lookup, runtime, threads, children or
-listener path guards, it performs one fork and child setsid. The child
-redirects only stdin/stdout to /dev/null, retaining its captured listener/control
-and selected log descriptors. Newly opened helper/status FDs are lifted above
-stdio before replacement, with close-on-exec status ends. No inherited FD number
-is reopened or searched for later. The original parent drops its captured copies
-and blocks only on the one original status-pipe byte; it does not wait for the
-live daemon to exit. When that parent exits, the kernel reparents the child;
-its new parent owns later reaping. No child-exit/reaping receipt is invented. There is no double-fork intermediate process.
+Original inherited descriptors are neither reopened by number nor reconstructed
+later. Listener borrowing and newly created pathname cleanup follow the
+[shared runtime contract](../service-runtime/README.md).
 
-`ChildReady::ready` is called by the CORE/NSE Host-ready callback. It sends
-`ReadyStatus` byte '.' once; later identity-ready callbacks are no-ops. Errors
-before ready report 'I', normal stop before ready reports 'S', and EOF/read errors
-are always startup failure. Abandon/drop never reports ready. Explicit `finish`
-keeps the original service error and any independent status-write failure. A
-post-ready failure cannot retract the initial readiness fact. The blocking
-OS pipe wait is not represented as cancelable by a socket/native deadline.
+## Unix account transitions
 
-CORE/NSE standard binaries actually consume this boundary. Their selected Logger
-refreshes the child PID and drops inherited callsite/bulk metadata, retaining
-its already owned file. Filename PID expansion remains bound to that original
-selection until another explicit setup; daemonization itself does not reopen it. The same child clock owner is preserved. No new wire/config option or
-external dependency is introduced.
+`resolve_user` constructs a native account plan. `apply_privileges` is an explicit
+fresh-process operation after privileged listener preparation and before unrelated
+async work. It follows the selected initgroups capability, native gid/uid order
+and fallback, retaining the failed stage, errno and observed IDs on refusal.
+Partial transition failure requires process exit. A successful fallback does not
+prove supplementary groups were reset or saved credentials were discarded.
+
+Library embedding checks that the caller already has the selected identity;
+it must not mutate the entire process behind the embedding application's back.
+Native command and original child ownership are described by
+[the process contract](../service-runtime/PROCESS.md).
+
+## Unix detachment and readiness
+
+Unsafe `daemon::split` requires a fresh single-threaded process after early
+capture and flushed option/log selection, before account lookup, runtimes,
+threads, children or path guards. One fork and child setsid detach the process;
+stdin/stdout redirect to `/dev/null`. Captured listener/control and selected log
+owners remain. New private pipe ends are lifted above stdio before replacement.
+This is not an async embedding API.
+
+The original parent drops captured copies and waits for its one status-pipe byte,
+not for the live daemon to exit. The kernel reparents the daemon when that parent
+exits; no later reaping result is invented. The status reports `.` once after host
+readiness, `I` for initialization failure and `S` for stop-before-ready. EOF and
+read errors fail startup. Drop never reports ready; `finish` retains the original
+service error and independent status-write failure. Post-ready failure cannot
+retract the earlier readiness observation.
+
+## Verification
+
+[Native runtime tests](../../tests/README.md) exercise shared TCP services and
+platform identity observations. Unix process tests use owned children and private
+files/sockets. Credential-changing or device profiles require their documented
+native setup; ordinary embedding tests perform neither operation.

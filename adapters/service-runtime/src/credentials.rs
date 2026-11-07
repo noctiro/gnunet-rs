@@ -11,10 +11,25 @@ pub struct UnixAccess {
 }
 impl UnixAccess {
     /// Check this original connection against the current effective service identity.
+    /// Non-Unix hosts refuse a requested UID/GID check; process-token SIDs do
+    /// not authenticate a TCP peer and are never substituted here.
     pub fn allows(self, connection: &Connection) -> io::Result<bool> {
         if !self.match_uid && !self.match_gid {
             return Ok(true);
         }
+        #[cfg(not(unix))]
+        {
+            let _original = connection;
+            Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "Unix peer UID/GID credentials are unavailable on this platform",
+            ))
+        }
+        #[cfg(unix)]
+        self.allows_unix(connection)
+    }
+    #[cfg(unix)]
+    fn allows_unix(self, connection: &Connection) -> io::Result<bool> {
         let (uid, gid) = connection.unix_peer_credentials()?.ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,

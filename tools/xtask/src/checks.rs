@@ -3873,6 +3873,7 @@ const POLICIES: &[Policy] = &[
         directory: "adapters/service-startup",
         core: false,
         dependencies: &[
+            "gnunet-native",
             "gnunet-service-runtime",
             "gnunet-config",
             "nix",

@@ -1,9 +1,9 @@
-# Official Resolver Unix host
+# Official Resolver native host
 
 This workspace adapter executes the GNUnet request4/response5
-service over Unix/TCP streams and the existing UDP DNSSTUB host. It uses the
+service over native TCP, Unix streams where available, and the UDP DNSSTUB host. It uses the
 frozen borrowed Resolver core, complete DNS parser and explicit native IDNA
-backend. Production library code forbids unsafe Rust and C FFI. The foreground
+backend. Library code forbids unsafe Rust and GNUnet C FFI. The foreground
 binary has explicit narrowly scoped activation capture and fresh-process daemon
 separation; neither operation is hidden in the generic async host. The package introduces no protocol fields or official configuration keys.
 
@@ -11,6 +11,20 @@ separation; neither operation is hidden in the generic async host. The package i
 files and an owned loopback endpoint. Its arguments are not production options
 or GNUnet configuration extensions. The fixture is separate from the production app and its arguments. Both packages
 are integrated with workspace dependency policy and the optional SDK feature.
+
+## Platforms and entry points
+
+`startup::foreground_tcp` runs the same bounded service engine on Linux, macOS,
+Windows and FreeBSD. It accepts configured TCP listeners, explicit `MachineFiles`
+and DNS endpoints, a readiness callback and the caller's shutdown future. Windows
+validates configured process identity with native token/account SIDs; Unix uses
+native UID/GID observations. TCP admission always uses address ACLs, never a
+substituted local process identity.
+
+Unix startup additionally supports activation and local sockets. Windows system
+hosts/DNS configuration discovery and standard executable startup remain in
+[implementation status](../../IMPLEMENTATION_STATUS.md). Windows embeddings must
+provide explicit machine inputs and DNS endpoints to this entry point.
 
 ## Ownership and cancellation
 

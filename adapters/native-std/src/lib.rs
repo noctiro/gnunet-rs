@@ -8,6 +8,10 @@
 /// Owned explicit locale snapshots and replaceable comparison contexts.
 pub mod locale;
 
+/// Native Windows process-token and account SID observations.
+#[cfg(windows)]
+pub mod identity;
+
 /// Owned native address results with explicit family/type/protocol/flags.
 #[cfg(unix)]
 pub mod addresses;

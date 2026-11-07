@@ -12,7 +12,7 @@ default = []
 libc.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Networking_WinSock"] }
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Networking_WinSock", "Win32_Security", "Win32_System_Threading"] }
 
 [lints]
 workspace = true
