@@ -1,6 +1,6 @@
 # Native host boundaries
 
-This adapter implements native socket and hostname boundaries. Unix hostname
+This adapter implements native socket, hostname, identity and filesystem boundaries. Unix hostname
 behavior follows
 GNUnet v0.29.1 `src/lib/util/resolver_api.c:1149-1255` and the
 `GNUNET_OS_get_hostname_max_length` macro in `src/include/gnunet_os_lib.h:389-400`,
@@ -68,6 +68,30 @@ LookupAccountNameW. Both return validated, fixed-capacity SID owners; no Unix
 numeric identity, environment fallback or privilege change is introduced. Account
 names and referenced domains have explicit UTF-16 bounds. Native lookup failures
 retain their Win32 error. Process SIDs do not authenticate TCP peers.
+
+## Windows paths and files
+
+`paths::profile_directory` queries the process-token user's profile through
+GetUserProfileDirectoryW with a finite UTF-16 bound. It neither opens that
+directory nor substitutes an environment or registry guess. `open_directory`
+uses native directory-open flags, checks metadata on the owned handle and
+requests traverse access plus optional read/list access.
+
+`identity::file_owner` reads the owner SID from the original opened file or
+directory handle; a subsequent pathname lookup is not used. READ_CONTROL is
+required and errors remain explicit. Ownership is a time-local observation,
+not an authorization decision.
+
+`paths::create_private_file` creates a new noninheritable disk-file handle with
+a protected DACL granting only the process-token user full control. Existing
+names are refused. The caller owns writing, syncing and closing that file.
+`publish_file` selects explicit `Publication::Create` or `Replace`: creation
+refuses an existing destination; replacement uses ReplaceFileW with destination
+ACL/metadata merging and retains merge errors. Both accept native Unicode and
+bounded long paths. A failed replacement can have changed the namespace; callers
+must inspect both names and preserve any surviving prepared file. No automatic
+fallback drops the destination ACL. Publication alone does not guarantee
+parent-directory crash durability.
 
 ## Verification and constraints
 

@@ -206,6 +206,8 @@ struct Load<'observer> {
     stack: Vec<PathBuf>,
     bytes: usize,
     files: usize,
+    #[cfg(windows)]
+    environment: &'observer dyn Environment,
 }
 impl<'observer> Load<'observer> {
     fn observed(observer: Option<crate::diagnostic::BorrowedObserver<'observer>>) -> Self {
@@ -214,6 +216,8 @@ impl<'observer> Load<'observer> {
             stack: Vec::new(),
             bytes: 0,
             files: 0,
+            #[cfg(windows)]
+            environment: &ProcessEnvironment,
         }
     }
 }
@@ -1017,8 +1021,21 @@ impl Configuration {
                     self.note_to(observer,"config.inline.no-source",Level::DEBUG,b"handle_inline",506,b"Refusing to parse inline configurations, not allowed without source filename!\n",&[]);
                     Self::syntax(source,nr+1)
                 })?;
-                let path = if pattern.starts_with(b"/") {
-                    bytes_path(pattern)?
+                let pattern = bytes_path(pattern)?;
+                #[cfg(windows)]
+                let pattern = if !pattern.is_absolute()
+                    && matches!(
+                        pattern.components().next(),
+                        Some(std::path::Component::Prefix(_))
+                    ) {
+                    load.environment
+                        .absolute_path(&pattern)
+                        .map_err(|error| io_error(&pattern, error))?
+                } else {
+                    pattern
+                };
+                let path = if crate::absolute_filename(path_bytes(&pattern)?)? {
+                    pattern
                 } else {
                     let canonical = fs::canonicalize(source).map_err(|e| {
                         self.report_break(
@@ -1032,10 +1049,7 @@ impl Configuration {
                         );
                         io_error(source, e)
                     })?;
-                    canonical
-                        .parent()
-                        .ok_or(Error::InvalidInput)?
-                        .join(bytes_path(pattern)?)
+                    canonical.parent().ok_or(Error::InvalidInput)?.join(pattern)
                 };
                 if let Some(secret) = secret {
                     self.inline_secret(secret, &path, source, nr + 1, load)?;
@@ -1145,7 +1159,12 @@ impl Configuration {
         let hint = path.as_ref().to_path_buf();
         let path = self.expand_filename_observed(path_bytes(&hint)?, environment, observer)?;
         let index = self.files.len();
-        let result = self.parse_inner(&path, &mut Load::observed(observer), None);
+        let mut load = Load::observed(observer);
+        #[cfg(windows)]
+        {
+            load.environment = environment;
+        }
+        let result = self.parse_inner(&path, &mut load, None);
         if let Some(file) = self.files.get_mut(index) {
             file.filename = hint;
         }
@@ -1793,9 +1812,10 @@ impl Configuration {
         }
         Ok(out)
     }
-    /// Atomically publish official serialized text to a sibling file and rename
-    /// it over the existing target. Existing symlinks resolve to their target;
-    /// file permissions are retained. Failure sets the dirty error indication.
+    /// Publish synced official text through a sibling file. Existing symlinks
+    /// resolve to their target; Unix mode or Windows destination ACLs are retained.
+    /// Failure sets the dirty error indication. Windows publication errors retain
+    /// recovery paths and may represent a partially completed native replacement.
     pub fn write(&mut self, path: impl AsRef<Path>) -> Result<(), Error> {
         self.write_observed(path, None)
     }
@@ -1803,8 +1823,7 @@ impl Configuration {
     /// existing native atomic writer. The caller owns/authorizes the exact target
     /// and retains sensitive contents in its own zeroizing buffer. This does not
     /// parse/reload includes or update another live configuration on success.
-    /// Failure has the same dirty/error behavior as `write`; this shared port
-    /// does not expose a separate publication-stage or temporary-cleanup receipt.
+    /// Failure has the same dirty/error and recovery behavior as `write`.
     pub fn write_serialized(
         &mut self,
         path: impl AsRef<Path>,
@@ -1853,6 +1872,15 @@ impl Configuration {
         if let Ok(canonical) = fs::canonicalize(&path) {
             path = canonical;
         }
+        #[cfg(windows)]
+        let publication = match fs::metadata(&path) {
+            Ok(metadata) if metadata.is_file() => gnunet_native::paths::Publication::Replace,
+            Ok(_) => return Err(io_error(&path, std::io::ErrorKind::InvalidInput.into())),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                gnunet_native::paths::Publication::Create
+            }
+            Err(error) => return Err(io_error(&path, error)),
+        };
         static NEXT: AtomicU64 = AtomicU64::new(1);
         let mut name = path.as_os_str().to_os_string();
         name.push(format!(
@@ -1863,14 +1891,20 @@ impl Configuration {
         let temporary = PathBuf::from(name);
         let mut created = false;
         let result = (|| {
-            let mut options = fs::OpenOptions::new();
-            options.write(true).create_new(true);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt;
-                options.mode(0o660);
-            }
-            let mut file = options.open(&temporary).map_err(|error| {
+            #[cfg(not(windows))]
+            let opened = {
+                let mut options = fs::OpenOptions::new();
+                options.write(true).create_new(true);
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::OpenOptionsExt;
+                    options.mode(0o660);
+                }
+                options.open(&temporary)
+            };
+            #[cfg(windows)]
+            let opened = gnunet_native::paths::create_private_file(&temporary);
+            let mut file = opened.map_err(|error| {
                 self.syscall(
                     observer,
                     Some(b"util-disk"),
@@ -1948,6 +1982,7 @@ impl Configuration {
             }
             #[cfg(not(unix))]
             drop(file);
+            #[cfg(not(windows))]
             if let Ok(metadata) = fs::metadata(&path) {
                 let permissions = metadata.permissions();
                 #[cfg(unix)]
@@ -1990,7 +2025,16 @@ impl Configuration {
                 );
                 return Err(Error::Changed);
             }
-            fs::rename(&temporary, &path).map_err(|error| {
+            #[cfg(not(windows))]
+            let published = fs::rename(&temporary, &path);
+            #[cfg(windows)]
+            let published = {
+                // Native replacement can change names even on error. Never
+                // erase the surviving prepared file needed to recover it.
+                created = false;
+                gnunet_native::paths::publish_file(&temporary, &path, publication)
+            };
+            published.map_err(|error| {
                 self.syscall(
                     observer,
                     None,
@@ -2005,7 +2049,18 @@ impl Configuration {
                     &path,
                     &error,
                 );
-                io_error(&path, error)
+                #[cfg(not(windows))]
+                {
+                    io_error(&path, error)
+                }
+                #[cfg(windows)]
+                {
+                    Error::Publication(Box::new(crate::PublicationFailure {
+                        destination: path.clone(),
+                        prepared: temporary.clone(),
+                        error,
+                    }))
+                }
             })
         })();
         if result.is_err() && created {
@@ -2090,7 +2145,21 @@ impl Configuration {
             return false;
         }
         #[cfg(not(unix))]
-        if readable {
+        if readable && let Err(error) = fs::File::open(path) {
+            self.syscall(
+                observer,
+                Some(b"util-disk"),
+                Site {
+                    id: "config.disk.file-access",
+                    file: b"disk.c",
+                    function: b"file_test_internal",
+                    line: 547,
+                },
+                Level::DEBUG,
+                b"open",
+                path,
+                &error,
+            );
             return false;
         }
         true
@@ -2169,7 +2238,25 @@ impl Configuration {
                 return Ok(false);
             }
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        if let Err(error) = gnunet_native::paths::open_directory(path, readable) {
+            self.syscall(
+                observer,
+                Some(b"util-disk"),
+                Site {
+                    id: "config.disk.directory-access",
+                    file: b"disk.c",
+                    function: b"GNUNET_DISK_directory_test",
+                    line: 498,
+                },
+                Level::WARNING,
+                b"CreateFileW",
+                path,
+                &error,
+            );
+            return Ok(false);
+        }
+        #[cfg(not(any(unix, windows)))]
         if readable {
             return Err(Error::Unsupported);
         }
@@ -2752,8 +2839,8 @@ impl Configuration {
         installation: impl FnOnce() -> Result<Installation, Error>,
     ) -> Result<PathBuf, Error> {
         self.checked_string(program)?;
-        if program.starts_with(b"/") {
-            return bytes_path(program);
+        if let Some(path) = crate::explicit_program_path(program, &ProcessEnvironment)? {
+            return Ok(path);
         }
         let path = cache
             .suid

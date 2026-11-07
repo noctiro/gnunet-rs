@@ -98,6 +98,12 @@ product surface. CI must compile and run equivalent service and recovery
 scenarios on each platform. Platform-specific tests supplement that shared
 coverage, and unfinished backends remain explicit open work.
 
+Configuration grammar and service policy stay shared. Platform filename contexts
+own drive/root resolution without mutating global environment state. Native file
+creation owns initial permissions; publication owns destination metadata
+preservation. Failed native replacement preserves recovery paths and its original
+error instead of implying an unchanged destination or deleting uncertain output.
+
 Resolve identity profiles once at the configuration boundary. Local derivation,
 remote HELLO coverage, Messenger layout and TLS/ALPN are separate contracts.
 Verification does not try another profile after failure.

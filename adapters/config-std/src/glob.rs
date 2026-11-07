@@ -1,6 +1,8 @@
 //! Pinned GNUnet DISK_glob semantics, not a POSIX shell glob implementation.
+#[cfg(not(windows))]
+use crate::bytes_path;
 use crate::diagnostic::{Argument as A, BorrowedObserver, Diagnostic, Level, Site};
-use crate::{Configuration, Error, bytes_path, io_error, path_bytes};
+use crate::{Configuration, Error, io_error, path_bytes};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -42,7 +44,11 @@ pub(crate) fn matching_files(
     maximum_scan: usize,
 ) -> Result<Vec<PathBuf>, Error> {
     let bytes = path_bytes(pattern)?;
-    if bytes.iter().any(|b| matches!(b, b'+' | b'[' | b'~')) {
+    #[cfg(windows)]
+    let syntax = path_bytes(Path::new(pattern.file_name().ok_or(Error::InvalidInput)?))?;
+    #[cfg(not(windows))]
+    let syntax = bytes;
+    if syntax.iter().any(|b| matches!(b, b'+' | b'[' | b'~')) {
         cfg.emit_to(
             observer,
             Diagnostic {
@@ -61,11 +67,16 @@ pub(crate) fn matching_files(
         );
         return Err(Error::InvalidInput);
     }
+    #[cfg(not(windows))]
     let slash = bytes
         .iter()
         .rposition(|b| *b == b'/')
         .ok_or(Error::InvalidInput)?;
-    if bytes[..slash].contains(&b'*') {
+    #[cfg(not(windows))]
+    let parent_star = bytes[..slash].contains(&b'*');
+    #[cfg(windows)]
+    let parent_star = path_bytes(pattern.parent().ok_or(Error::InvalidInput)?)?.contains(&b'*');
+    if parent_star {
         cfg.report_break(
             observer,
             Site {
@@ -93,12 +104,23 @@ pub(crate) fn matching_files(
         );
         return Err(Error::InvalidInput);
     }
+    #[cfg(not(windows))]
     let directory = if slash == 0 {
         std::env::current_dir().map_err(|e| io_error(".", e))?
     } else {
         bytes_path(&bytes[..slash])?
     };
+    #[cfg(not(windows))]
     let pattern = &bytes[slash + 1..];
+    #[cfg(windows)]
+    let (directory, pattern) = (
+        pattern
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .ok_or(Error::InvalidInput)?
+            .to_owned(),
+        syntax,
+    );
     cfg.emit_to(
         observer,
         Diagnostic {

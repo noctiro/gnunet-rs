@@ -6,7 +6,6 @@ use gnunet_config::{
 use std::{
     cell::RefCell,
     io::{self, Write},
-    os::unix::ffi::OsStrExt,
     path::Path,
     sync::Arc,
 };
@@ -51,8 +50,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     if args.len() != 4 {
         return Err("mode input option required".into());
     }
-    let mode = args[1].as_bytes();
-    let input = args[2].as_bytes();
+    let mode = args[1].as_encoded_bytes();
+    let input = args[2].as_encoded_bytes();
     let output = RefCell::new(Vec::new());
     let observer = |ev: Diagnostic<'_>| event(ev, &output);
     let mut c = Configuration::default();
@@ -100,9 +99,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         b"clean" => {
             c.enable_diagnostics();
-            if args[3].as_bytes() != b"not-parsed" {
+            if args[3].as_encoded_bytes() != b"not-parsed" {
                 c.parse_observed(Path::new(&args[2]), &ProcessEnvironment, Some(&observer))?;
-                if args[3].as_bytes() == b"unlinked" {
+                if args[3].as_encoded_bytes() == b"unlinked" {
                     std::fs::remove_file(&args[2])?;
                 } else {
                     let mut file = std::fs::OpenOptions::new().append(true).open(&args[2])?;

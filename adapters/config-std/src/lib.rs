@@ -44,6 +44,9 @@ pub enum Error {
         /// Original OS failure.
         error: io::Error,
     },
+    /// Native publication failed after preparation. The destination may have
+    /// changed; any still-named prepared file is retained for recovery.
+    Publication(Box<PublicationFailure>),
     /// A source line does not follow the pinned configuration grammar.
     Syntax {
         /// Source file, if supplied.
@@ -70,12 +73,31 @@ pub enum Error {
     /// A filename iterator's callback stopped the traversal.
     IterationAborted,
 }
+
+/// Recovery information for a failed native file publication. Inspect both
+/// names before retrying: failure does not imply an unchanged destination.
+#[derive(Debug)]
+pub struct PublicationFailure {
+    /// Requested destination after resolving an existing symlink.
+    pub destination: PathBuf,
+    /// Prepared sibling name; retained if the native operation left it present.
+    pub prepared: PathBuf,
+    /// Original native publication failure.
+    pub error: io::Error,
+}
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Io { path, error } => {
                 write!(f, "configuration I/O at {}: {error}", path.display())
             }
+            Self::Publication(failure) => write!(
+                f,
+                "configuration publication to {} failed: {}; inspect destination and prepared file {} before retrying",
+                failure.destination.display(),
+                failure.error,
+                failure.prepared.display()
+            ),
             Self::Syntax { source, line } => write!(
                 f,
                 "configuration syntax at {}:{line}",
@@ -95,7 +117,15 @@ impl fmt::Display for Error {
         }
     }
 }
-impl std::error::Error for Error {}
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io { error, .. } => Some(error),
+            Self::Publication(failure) => Some(&failure.error),
+            _ => None,
+        }
+    }
+}
 
 pub(crate) fn io_error(path: impl Into<PathBuf>, error: io::Error) -> Error {
     Error::Io {
@@ -128,4 +158,42 @@ pub(crate) fn bytes_path(bytes: &[u8]) -> Result<PathBuf, Error> {
             .map_err(|_| Error::Unsupported)?
             .into())
     }
+}
+
+pub(crate) fn absolute_filename(bytes: &[u8]) -> Result<bool, Error> {
+    #[cfg(windows)]
+    {
+        Ok(bytes_path(bytes)?.is_absolute())
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(bytes.starts_with(b"/"))
+    }
+}
+
+pub(crate) fn explicit_program_path(
+    program: &[u8],
+    environment: &impl Environment,
+) -> Result<Option<PathBuf>, Error> {
+    if absolute_filename(program)? {
+        return bytes_path(program).map(Some);
+    }
+    #[cfg(windows)]
+    {
+        let path = bytes_path(program)?;
+        if path.has_root()
+            || matches!(
+                path.components().next(),
+                Some(std::path::Component::Prefix(_))
+            )
+        {
+            return environment
+                .absolute_path(&path)
+                .map(Some)
+                .map_err(|error| io_error(path, error));
+        }
+    }
+    #[cfg(not(windows))]
+    let _context = environment;
+    Ok(None)
 }

@@ -1,7 +1,10 @@
-//! Dollar/PATHS/environment and Unix filename expansion.
+//! Shared dollar expansion with explicit native filename contexts.
 use crate::diagnostic::{Argument as A, Level};
 use crate::{Configuration, Error, bytes_path, path_bytes};
-use std::{io, path::PathBuf};
+use std::{
+    io,
+    path::{Path, PathBuf},
+};
 
 /// Caller-selected process environment. Tests and supervisors can provide an
 /// isolated snapshot without mutating global process environment variables.
@@ -10,6 +13,55 @@ pub trait Environment {
     fn variable(&self, name: &[u8]) -> Option<Vec<u8>>;
     /// Current working directory for relative filenames.
     fn current_dir(&self) -> io::Result<PathBuf>;
+    /// Resolve a native filename without opening it. The default uses only this
+    /// context's current directory. On Windows, a relative path on another drive
+    /// needs an explicit override; it never consults ambient per-drive state.
+    fn absolute_path(&self, path: &Path) -> io::Result<PathBuf> {
+        if path.is_absolute() {
+            return Ok(path.to_owned());
+        }
+        let cwd = self.current_dir()?;
+        #[cfg(windows)]
+        {
+            use std::path::{Component, Prefix};
+            if !cwd.is_absolute() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "snapshot current directory is not absolute",
+                ));
+            }
+            if let Some(Component::Prefix(prefix)) = path.components().next() {
+                let Prefix::Disk(drive) = prefix.kind() else {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "invalid relative Windows prefix",
+                    ));
+                };
+                let same_drive = matches!(cwd.components().next(), Some(Component::Prefix(p)) if matches!(p.kind(), Prefix::Disk(d) | Prefix::VerbatimDisk(d) if d.eq_ignore_ascii_case(&drive)));
+                if !same_drive {
+                    return Err(io::Error::new(
+                        io::ErrorKind::NotFound,
+                        "snapshot has no current directory for the requested drive",
+                    ));
+                }
+                let tail = path
+                    .strip_prefix(prefix.as_os_str())
+                    .map_err(io::Error::other)?;
+                return Ok(cwd.join(tail));
+            }
+        }
+        Ok(cwd.join(path))
+    }
+    /// Explicit home directory. The default reads HOME from this context only.
+    /// A process provider can query its native profile when HOME is unavailable.
+    fn home_dir(&self) -> io::Result<Option<PathBuf>> {
+        self.variable(b"HOME")
+            .map(|value| {
+                bytes_path(&value)
+                    .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+            })
+            .transpose()
+    }
 }
 
 /// Read-only access to the host's current environment and working directory.
@@ -28,7 +80,25 @@ impl Environment for ProcessEnvironment {
     fn current_dir(&self) -> io::Result<PathBuf> {
         std::env::current_dir()
     }
+    fn absolute_path(&self, path: &Path) -> io::Result<PathBuf> {
+        // std implements GetFullPathNameW on Windows, including per-drive cwd.
+        // Empty official filenames denote the current directory, not an error.
+        if path.as_os_str().is_empty() {
+            return self.current_dir();
+        }
+        std::path::absolute(path)
+    }
+    #[cfg(windows)]
+    fn home_dir(&self) -> io::Result<Option<PathBuf>> {
+        if let Some(home) = std::env::var_os("HOME").filter(|v| !v.is_empty()) {
+            return Ok(Some(home.into()));
+        }
+        gnunet_native::paths::profile_directory().map(Some)
+    }
 }
+
+#[cfg(windows)]
+mod windows;
 
 struct Expansion<'a, 'observer, E> {
     observer: Option<crate::diagnostic::BorrowedObserver<'observer>>,
@@ -275,28 +345,26 @@ impl Configuration {
         if input.len() > self.limits.max_expanded_bytes {
             return Err(Error::Capacity);
         }
+        #[cfg(windows)]
+        {
+            windows::filename(self, input, environment, observer)
+        }
+        #[cfg(not(windows))]
+        self.expand_unix_filename(input, environment, observer)
+    }
+    #[cfg(not(windows))]
+    fn expand_unix_filename(
+        &self,
+        input: &[u8],
+        environment: &impl Environment,
+        observer: Option<crate::diagnostic::BorrowedObserver<'_>>,
+    ) -> Result<PathBuf, Error> {
         if input.starts_with(b"/") {
             return bytes_path(input);
         }
         let (mut base, relative) = if input.starts_with(b"~") {
             let Some(home) = environment.variable(b"HOME") else {
-                self.emit_to(
-                    observer,
-                    crate::diagnostic::Diagnostic {
-                        level: Level::WARNING,
-                        component: Some(b"util-strings"),
-                        site: crate::diagnostic::Site {
-                            id: "config.filename.home-missing",
-                            file: b"strings.c",
-                            function: b"GNUNET_STRINGS_filename_expand",
-                            line: 550,
-                        },
-                        domain: Some(b"gnunet"),
-                        template: b"Failed to expand `$HOME': environment variable `HOME' not set",
-                        arguments: &[],
-                    },
-                );
-                return Err(Error::Missing);
+                return Err(self.missing_home(observer));
             };
             let suffix = &input[1..];
             (home, suffix.strip_prefix(b"/").unwrap_or(suffix))
@@ -340,6 +408,25 @@ impl Configuration {
             return Err(Error::Capacity);
         }
         bytes_path(&base)
+    }
+    fn missing_home(&self, observer: Option<crate::diagnostic::BorrowedObserver<'_>>) -> Error {
+        self.emit_to(
+            observer,
+            crate::diagnostic::Diagnostic {
+                level: Level::WARNING,
+                component: Some(b"util-strings"),
+                site: crate::diagnostic::Site {
+                    id: "config.filename.home-missing",
+                    file: b"strings.c",
+                    function: b"GNUNET_STRINGS_filename_expand",
+                    line: 550,
+                },
+                domain: Some(b"gnunet"),
+                template: b"Failed to expand `$HOME': environment variable `HOME' not set",
+                arguments: &[],
+            },
+        );
+        Error::Missing
     }
     /// Resolve a setting as an official filename through dollar then filename
     /// expansion. Non-UTF-8 values are preserved on Unix.

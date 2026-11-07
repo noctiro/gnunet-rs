@@ -1,17 +1,17 @@
-# Official host configuration
+# Host configuration
 
 `gnunet-config` implements GNUnet v0.29.1 host configuration APIs and the
 `gnunet-config-diff` command in safe Rust. The ordinary `gnunet-config` binary
-is composed in `gnunet-program-host`, which already depends on this crate. Unix account
-lookups use `uzers`; real-UID permission checks and descriptor opening use
-safe `nix` APIs. This crate forbids unsafe code. It does not recognize private node JSON or migration formats.
+is composed in `gnunet-program-host`. This crate forbids unsafe code; OS calls
+that require unsafe code belong to `gnunet-native`.
+
+## Configuration API
 
 ```rust
 use gnunet_config::{Configuration, Error};
 let mut configuration = Configuration::default();
-configuration.deserialize(b"[statistics]\nUNIXPATH = /tmp/statistics.sock\n", None)?;
-assert_eq!(configuration.get_path("STATISTICS", "UNIXPATH")?,
-           std::path::PathBuf::from("/tmp/statistics.sock"));
+configuration.deserialize(b"[statistics]\nPORT = 2087\n", None)?;
+assert_eq!(configuration.get(b"STATISTICS", b"PORT"), Some(b"2087".as_slice()));
 # Ok::<(), Error>(())
 ```
 
@@ -33,11 +33,22 @@ an explicit typed or filename accessor is used. Empty values exist; setting
 floating point, size/time, YES/NO, choice and Crockford byte settings. Filename
 lists preserve the pinned escaping/tokenization rules.
 
+## Filename contexts and includes
+
 `get_path` uses the process's read-only environment. `get_filename`,
 `expand_dollar`, `expand_filename` and `parse_with_environment` can use a supplied
 `Environment` for isolated deployments/tests. Dollar expansion checks PATHS
 before environment variables, preserves undefined references, supports braced
 defaults, and detects recursive definitions without changing global environment.
+
+Unix filenames preserve native bytes. Windows paths retain drive, UNC and
+verbatim namespaces; PATH discovery handles quoted entries and `.exe` anchors.
+`Environment::absolute_path` resolves relative names using the supplied context.
+Its default refuses another drive's relative path without an explicit drive
+context. `ProcessEnvironment` uses native current-drive resolution and queries
+the primary-token user's profile directory when HOME is absent. No lookup
+changes the process environment or current directory. Configuration text uses
+UTF-8 on Windows; unrepresentable native names fail instead of being replaced.
 
 `@INLINE@` resolves relative to the canonical source target. `@INLINE-MATCHING@`
 uses GNUnet's own limited wildcard matcher and sorted precedence, not shell glob
@@ -45,16 +56,31 @@ rules. `@INLINE-SECRET@ section file` imports only that section's final entries,
 retains every source definition when diagnostics are enabled, prohibits nested
 directives, and records inaccessible secret files without inventing values.
 
+## Diagnostics and publication
+
 Enable diagnostics before loading to retain ordered `Definition` and `FileSource`
 records. Diagnostic serialization includes installation paths, definitions,
-include ancestry and native secret-file account/mode details. `clean_file`
+include ancestry and native secret-file ownership details (Unix account/mode or
+Windows owner SID/attributes). `clean_file`
 conditionally removes redundant physical assignment lines,
 preserving effective values, comments, includes, permissions and other bytes. It refuses source changes. `serialize` and `write` use official INI text;
-writes publish a fully synced sibling file via rename and follow existing
-symlink targets. `duplicate`, `diff`, section removal and dirty-state operations
+writes prepare a fully synced sibling file and follow existing symlink targets.
+Unix publication retains destination mode bits and uses rename. Windows creates
+the sibling with a protected DACL granting only the process-token user full
+control. Existing files use native replacement with destination ACL preservation;
+new files use a move that refuses a raced-in destination. No ACL-error fallback
+is used. Windows publication failure returns `Error::Publication` with the
+original error, destination and prepared-file names. The destination may have
+changed; inspect both names before retrying. Any surviving prepared file is
+retained. Other preparation failures clean up the sibling. This is a file-content
+publication contract, not a parent-directory crash-durability guarantee.
+
+`duplicate`, `diff`, section removal and dirty-state operations
 follow the pinned reference behavior. Selected-section and filename iterators,
 abortable filename callbacks, cleanup notifications, parse-and-run callbacks,
 and first-use binary-path caches are available as explicit APIs.
+
+## Command integration
 
 `ConfigSettings` and `run_tool` expose configuration-tool operations with
 bounded stdout/stderr buffers. The binaries support queries, typed filename
@@ -72,17 +98,13 @@ requests return an error. `-E` reproduces the pinned C preprocessor-defined
 test, including the normal profile's defined macro with value zero. It does
 not assert that experimental features are enabled.
 
+## Limits and reference behavior
+
 `Limits` explicitly bounds input bytes, total bytes, file provenance, include
 ancestry, section/key counts, definition history, values, glob inspection and
 expansion. A capacity error is not success or a truncated configuration. Like
 the C parser, accepted earlier assignments remain applied if a later line fails. Applications needing transactional loading can parse a separate configuration
 and publish it only after success.
 
-See [UPSTREAM.md](UPSTREAM.md) for source quirks, reproducible reference commands
-and remaining host integration. A normal, unmodified C shared-library caller
-executes all 43 configuration public functions and compares 172 trace rows,
-files, 24 configuration-command cases and three diff-command cases with
-Rust on the tested macOS profile. Permission-denial cases are skipped, without
-credit, when run as root. The earlier 44-row extracted component oracle remains
-a separate fast check. These results cover this configuration component; the
-complete GNUnet utility library remains pending.
+See [UPSTREAM.md](UPSTREAM.md) for source quirks and reference commands, and
+[testing](../../tests/README.md) for native and official C comparison groups.

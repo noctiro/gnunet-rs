@@ -184,6 +184,10 @@ fn accessible(path: &Path, read: bool, execute: bool) -> bool {
 fn accessible(path: &Path, read: bool, execute: bool) -> bool {
     let _ = execute;
     if read {
+        #[cfg(windows)]
+        if path.is_dir() {
+            return gnunet_native::paths::open_directory(path, true).is_ok();
+        }
         fs::File::open(path).is_ok()
     } else {
         path.exists()
@@ -314,7 +318,12 @@ impl Installation {
                 .and_then(|n| environment.variable(n))
         });
         let found = if let Some(value) = override_value {
-            Some((bytes_path(&value)?, InstallationOrigin::Environment))
+            let location = bytes_path(&value)?;
+            #[cfg(windows)]
+            let location = environment
+                .absolute_path(&location)
+                .map_err(|error| crate::io_error(&location, error))?;
+            Some((location, InstallationOrigin::Environment))
         } else {
             #[cfg(target_os = "linux")]
             let mapped = mapped_library(project);
@@ -427,6 +436,7 @@ fn mapped_library(project: &ProjectData) -> Option<PathBuf> {
     }
     None
 }
+#[cfg(not(windows))]
 fn path_anchor(project: &ProjectData, environment: &impl Environment) -> Option<PathBuf> {
     let binary = project.binary_name.as_deref()?;
     let paths = environment.variable(b"PATH")?;
@@ -443,6 +453,39 @@ fn path_anchor(project: &ProjectData, environment: &impl Environment) -> Option<
     }
     None
 }
+#[cfg(windows)]
+fn path_anchor(project: &ProjectData, environment: &impl Environment) -> Option<PathBuf> {
+    let binary = bytes_path(project.binary_name.as_deref()?).ok()?;
+    let paths = bytes_path(&environment.variable(b"PATH")?).ok()?;
+    for directory in std::env::split_paths(paths.as_os_str()) {
+        let directory = if directory.is_absolute() {
+            directory
+        } else {
+            let Ok(directory) = environment.absolute_path(&directory) else {
+                continue;
+            };
+            directory
+        };
+        let candidate = directory.join(&binary);
+        let candidate = if candidate.extension().is_none() {
+            candidate.with_extension("exe")
+        } else {
+            candidate
+        };
+        if fs::metadata(&candidate).is_ok_and(|m| m.is_file())
+            && accessible(&candidate, false, true)
+        {
+            return Some(directory);
+        }
+    }
+    None
+}
+#[cfg(windows)]
+#[path = "project/windows.rs"]
+mod windows;
+#[cfg(windows)]
+use windows::shape;
+#[cfg(not(windows))]
 fn shape(project: &ProjectData, location: &Path, kind: PathKind) -> Result<Option<PathBuf>, Error> {
     let mut root = path_bytes(location)?.to_vec();
     while root.len() > 1 && root.ends_with(b"/") {
@@ -581,8 +624,8 @@ impl ProjectData {
         if program.contains(&0) {
             return Err(Error::InvalidInput);
         }
-        if program.starts_with(b"/") {
-            return bytes_path(program);
+        if let Some(path) = crate::explicit_program_path(program, environment)? {
+            return Ok(path);
         }
         self.validate()?;
         if cache.libexec.is_none() {

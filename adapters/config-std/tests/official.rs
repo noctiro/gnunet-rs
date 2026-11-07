@@ -121,11 +121,10 @@ fn project_bootstrap_dup_diff_and_first_use_helpers_preserve_source_contract() -
             b"DATADIR"
         ]
     );
-    assert!(
-        cfg.get(b"PATHS", b"LIBEXECDIR")
-            .ok_or(Error::Missing)?
-            .ends_with(b"/lib//gnunet/libexec/")
-    );
+    let libexec = cfg.get(b"PATHS", b"LIBEXECDIR").ok_or(Error::Missing)?;
+    assert!(Path::new(std::str::from_utf8(libexec)?).ends_with("lib/gnunet/libexec"));
+    #[cfg(unix)]
+    assert!(libexec.ends_with(b"/lib//gnunet/libexec/"));
     assert_eq!(cfg.serialize()?, b"[PATHS]\n\n");
     cfg.set_value(b"PATHS", b"DATADIR", None)?;
     assert!(!cfg.have_value(b"PATHS", b"DATADIR"));
@@ -143,26 +142,31 @@ fn project_bootstrap_dup_diff_and_first_use_helpers_preserve_source_contract() -
         cfg.suid_binary_path_with(b"helper", &mut cache)?,
         Path::new("/raw/$NOEXPANSION/helper")
     );
+    let absolute = dir.0.join("absolute");
     assert_eq!(
-        cfg.suid_binary_path_with(b"/absolute", &mut cache)?,
-        Path::new("/absolute")
+        cfg.suid_binary_path_with(absolute.as_os_str().as_encoded_bytes(), &mut cache)?,
+        absolute
     );
     let mut fallback = BinaryPathCache::new();
     cfg.set_value(b"PATHS", b"SUID_BINARY_PATH", Some(b""))?;
+    let helper = cfg.suid_binary_path_with(b"helper", &mut fallback)?;
+    assert!(helper.ends_with("lib/gnunet/libexec/helper"));
+    #[cfg(unix)]
     assert!(
-        cfg.suid_binary_path_with(b"helper", &mut fallback)?
+        helper
             .as_os_str()
             .as_encoded_bytes()
             .ends_with(b"/lib//gnunet/libexec/helper")
     );
-    assert_eq!(
-        installation
-            .path(PathKind::Prefix)
-            .ok_or(Error::Missing)?
-            .as_os_str()
-            .as_encoded_bytes()
-            .last(),
-        Some(&b'/')
+    let prefix = installation
+        .path(PathKind::Prefix)
+        .ok_or(Error::Missing)?
+        .as_os_str()
+        .as_encoded_bytes();
+    assert!(
+        prefix
+            .last()
+            .is_some_and(|b| std::path::is_separator(char::from(*b)))
     );
     Ok(())
 }

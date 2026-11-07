@@ -1,4 +1,4 @@
-//! Windows identity observations. No impersonation, privilege or ACL mutation.
+//! Windows identity observations and private file security descriptors.
 use std::{
     ffi::OsStr,
     fmt, io,
@@ -94,6 +94,94 @@ fn invalid(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
 
+pub(crate) struct SecurityDescriptor(pub(crate) windows_sys::Win32::Security::PSECURITY_DESCRIPTOR);
+impl Drop for SecurityDescriptor {
+    #[expect(
+        unsafe_code,
+        reason = "Successful native security queries/conversion transfer one LocalAlloc descriptor; this nonclone owner releases it once after its borrows end"
+    )]
+    fn drop(&mut self) {
+        // SAFETY: this original successful native allocation has one owner.
+        let _released = unsafe { windows_sys::Win32::Foundation::LocalFree(self.0) };
+    }
+}
+
+#[expect(
+    unsafe_code,
+    reason = "ConvertStringSecurityDescriptorToSecurityDescriptorW copies bounded generated SDDL containing only a validated native SID into one LocalFree-owned descriptor"
+)]
+pub(crate) fn private_file_descriptor() -> io::Result<SecurityDescriptor> {
+    use windows_sys::Win32::Security::Authorization::{
+        ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+    };
+    let sid = process_user()?;
+    let text: Vec<u16> = format!("O:{sid}D:P(A;;FA;;;{sid})")
+        .encode_utf16()
+        .chain(Some(0))
+        .collect();
+    let mut descriptor = ptr::null_mut();
+    // SAFETY: generated SDDL is NUL terminated; output is one native allocation.
+    if unsafe {
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            text.as_ptr(),
+            SDDL_REVISION_1,
+            &mut descriptor,
+            ptr::null_mut(),
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    if descriptor.is_null() {
+        return Err(invalid("private file descriptor is missing"));
+    }
+    Ok(SecurityDescriptor(descriptor))
+}
+
+/// Query the owner SID of this original opened file/directory handle. READ_CONTROL
+/// access is required; its error is retained. No path is reopened and no ACL is
+/// changed. This time-local ownership observation is not an access grant.
+#[expect(
+    unsafe_code,
+    reason = "GetSecurityInfo borrows a live File handle and returns one guarded native security descriptor; its valid owner SID is copied before release"
+)]
+pub fn file_owner(file: &std::fs::File) -> io::Result<Sid> {
+    use windows_sys::Win32::Security::{
+        Authorization::{GetSecurityInfo, SE_FILE_OBJECT},
+        OWNER_SECURITY_INFORMATION,
+    };
+    let mut owner = ptr::null_mut();
+    let mut descriptor = ptr::null_mut();
+    // SAFETY: exact output slots; requesting only owner data leaves other slots null.
+    let code = unsafe {
+        GetSecurityInfo(
+            file.as_raw_handle(),
+            SE_FILE_OBJECT,
+            OWNER_SECURITY_INFORMATION,
+            &mut owner,
+            ptr::null_mut(),
+            ptr::null_mut(),
+            ptr::null_mut(),
+            &mut descriptor,
+        )
+    };
+    if code != 0 {
+        return Err(io::Error::from_raw_os_error(code as i32));
+    }
+    if descriptor.is_null() {
+        return Err(invalid("file owner query returned no security descriptor"));
+    }
+    let _descriptor = SecurityDescriptor(descriptor);
+    // SAFETY: a non-null owner returned by GetSecurityInfo is a live SID within
+    // its guarded allocation. Validate before interpreting its native length.
+    if owner.is_null() || unsafe { IsValidSid(owner) } == 0 {
+        return Err(invalid("file security descriptor has no valid owner SID"));
+    }
+    // SAFETY: the native SID has just been validated and remains guarded.
+    let length = unsafe { GetLengthSid(owner) } as usize;
+    Sid::copy_native(owner, length)
+}
+
 #[repr(C)]
 struct TokenBuffer {
     user: TOKEN_USER,
@@ -101,21 +189,29 @@ struct TokenBuffer {
     sid: [u32; SECURITY_MAX_SID_SIZE as usize / size_of::<u32>()],
 }
 
-/// Observe the current process's primary-token user, not a thread impersonation
-/// identity. One TOKEN_QUERY handle is owned and closed exactly once. No group,
-/// file access, elevation or peer authentication is inferred from this SID.
 #[expect(
     unsafe_code,
-    reason = "OpenProcessToken transfers one successful handle into OwnedHandle; GetTokenInformation writes exact aligned initialized TOKEN_USER/SID storage"
+    reason = "OpenProcessToken transfers one successful native handle into exactly one OwnedHandle"
 )]
-pub fn process_user() -> io::Result<Sid> {
+pub(crate) fn primary_token() -> io::Result<OwnedHandle> {
     let mut raw = ptr::null_mut();
     // SAFETY: GetCurrentProcess is a borrowed pseudo-handle; raw is output only.
     if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut raw) } == 0 {
         return Err(io::Error::last_os_error());
     }
     // SAFETY: successful OpenProcessToken transferred a uniquely owned handle.
-    let token = unsafe { OwnedHandle::from_raw_handle(raw) };
+    Ok(unsafe { OwnedHandle::from_raw_handle(raw) })
+}
+
+/// Observe the current process's primary-token user, not a thread impersonation
+/// identity. One TOKEN_QUERY handle is owned and closed exactly once. No group,
+/// file access, elevation or peer authentication is inferred from this SID.
+#[expect(
+    unsafe_code,
+    reason = "GetTokenInformation writes exact aligned initialized TOKEN_USER/SID storage using a uniquely owned query token"
+)]
+pub fn process_user() -> io::Result<Sid> {
+    let token = primary_token()?;
     // SAFETY: TOKEN_USER contains only native scalar/pointer storage; zero is valid.
     let mut output: TokenBuffer = unsafe { zeroed() };
     let mut written = 0;

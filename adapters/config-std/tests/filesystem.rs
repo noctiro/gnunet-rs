@@ -272,16 +272,25 @@ fn atomic_write_follows_existing_symlink_and_preserves_permissions()
 }
 
 struct Env;
+#[cfg(windows)]
+const HOME: &[u8] = b"C:/home/me";
+#[cfg(not(windows))]
+const HOME: &[u8] = b"/home/me";
 impl Environment for Env {
     fn variable(&self, name: &[u8]) -> Option<Vec<u8>> {
         if name == b"HOME" {
-            Some(b"/home/me".to_vec())
+            Some(HOME.to_vec())
         } else {
             None
         }
     }
     fn current_dir(&self) -> io::Result<PathBuf> {
-        Ok(Path::new("/working").into())
+        Ok(Path::new(if cfg!(windows) {
+            "C:/working"
+        } else {
+            "/working"
+        })
+        .into())
     }
 }
 #[test]
@@ -291,19 +300,26 @@ fn filenames_expand_with_explicit_environment_and_bounded_recursion() -> Result<
     cfg.set_value(b"s", b"socket", Some(b"$ROOT/statistics.sock"))?;
     assert_eq!(
         cfg.get_filename(b"s", b"socket", &Env)?,
-        PathBuf::from("/home/me/project/statistics.sock")
+        PathBuf::from(std::str::from_utf8(HOME).map_err(|_| Error::InvalidInput)?)
+            .join("project/statistics.sock")
     );
     assert_eq!(
         cfg.expand_filename(b"relative", &Env)?,
-        PathBuf::from("/working/relative")
+        Env.current_dir()
+            .map_err(|error| Error::Io {
+                path: "<fixture cwd>".into(),
+                error
+            })?
+            .join("relative")
     );
     assert_eq!(
         cfg.expand_filename(b"~other/file", &Env)?,
-        PathBuf::from("/home/me/other/file")
+        PathBuf::from(std::str::from_utf8(HOME).map_err(|_| Error::InvalidInput)?)
+            .join("other/file")
     );
     assert_eq!(
         cfg.expand_dollar(b"${UNDEFINED:-$ROOT}/x", &Env)?,
-        b"/home/me/project/x"
+        [HOME, b"/project/x"].concat()
     );
     let cfg = Configuration::new(Limits {
         max_expansion_depth: 2,

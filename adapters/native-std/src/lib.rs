@@ -12,6 +12,10 @@ pub mod locale;
 #[cfg(windows)]
 pub mod identity;
 
+/// Native Windows profile paths, directory access and private file publication.
+#[cfg(windows)]
+pub mod paths;
+
 /// Owned native address results with explicit family/type/protocol/flags.
 #[cfg(unix)]
 pub mod addresses;
