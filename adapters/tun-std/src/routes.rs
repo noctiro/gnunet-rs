@@ -495,24 +495,30 @@ fn receive(fd: &OwnedFd, bytes: &mut [u8]) -> io::Result<usize> {
     }
     Ok(n as usize)
 }
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn invalid() -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, "malformed original route ACK")
 }
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn range<const N: usize>(b: &[u8], at: usize) -> io::Result<[u8; N]> {
     b.get(at..at + N)
         .ok_or_else(invalid)?
         .try_into()
         .map_err(|_| invalid())
 }
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn word(b: &[u8], at: usize) -> io::Result<u32> {
     Ok(u32::from_ne_bytes(range(b, at)?))
 }
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn short(b: &[u8], at: usize) -> io::Result<u16> {
     Ok(u16::from_ne_bytes(range(b, at)?))
 }
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn put32(b: &mut [u8], at: usize, n: u32) {
     b[at..at + 4].copy_from_slice(&n.to_ne_bytes())
 }
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn put16(b: &mut [u8], at: usize, n: u16) {
     b[at..at + 2].copy_from_slice(&n.to_ne_bytes())
 }

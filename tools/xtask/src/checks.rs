@@ -3630,6 +3630,7 @@ const POLICIES: &[Policy] = &[
             "gnunet-service-runtime",
             "gnunet-nat-burst-host",
             "gnunet-transport-host",
+            "gnunet-native",
             "libc",
         ],
     },

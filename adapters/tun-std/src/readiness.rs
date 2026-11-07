@@ -190,6 +190,7 @@ impl Ipv6WatchOptions {
 pub(super) enum Step {
     #[cfg(target_os = "linux")]
     Activity(usize),
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     Sample(Ipv6State, Option<u32>),
 }
 /// Caller-driven original read-only kernel observer. No background thread, address
@@ -335,6 +336,7 @@ impl Ipv6Watch {
             Poll::Ready(Err(e)) => Poll::Ready(self.complete(Ipv6End::Error(e))),
             #[cfg(target_os = "linux")]
             Poll::Ready(Ok(Step::Activity(bytes))) => Poll::Ready(Ipv6Progress::Activity { bytes }),
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             Poll::Ready(Ok(Step::Sample(state, native_flags))) => {
                 match self.source() {
                     Ok(true) => {}
@@ -381,6 +383,7 @@ impl Ipv6Watch {
         .await
     }
 }
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn malformed() -> io::Error {
     io::Error::new(
         io::ErrorKind::InvalidData,

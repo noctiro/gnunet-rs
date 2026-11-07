@@ -11,7 +11,6 @@ import json
 import os
 from pathlib import Path
 import runpy
-import re
 import subprocess
 import tempfile
 
@@ -127,6 +126,20 @@ def run(argv, folder, name, env=None):
                            "stdout": name + ".stdout.txt", "stderr": name + ".stderr.txt"}
 
 
+def test_executable(output):
+    artifacts = [json.loads(line) for line in output.splitlines()]
+    candidates = [Path(row["executable"]) for row in artifacts
+                  if row.get("reason") == "compiler-artifact"
+                  and Path(row["manifest_path"]).resolve() == (ROOT / "adapters/statistics-store/Cargo.toml").resolve()
+                  and row.get("target", {}).get("kind") == ["test"]
+                  and row["target"].get("name") == "filesystem"
+                  and row.get("profile", {}).get("test") is True
+                  and row.get("executable")]
+    if len(candidates) != 1:
+        raise ValueError("actual unique Rust test executable was not identified")
+    return candidates[0].resolve(strict=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", required=True, type=Path)
@@ -179,7 +192,11 @@ def main():
         if args.output is not None:
             rust_snapshot = folder / "rust-snapshot.bin"
             environment = dict(os.environ, GNUNET_STATISTICS_SNAPSHOT=str(rust_snapshot))
-            output, command = run(["cargo", "test", "-p", "gnunet-statistics-store", "--test", "filesystem", "--locked", TEST, "--", "--exact"], folder, "rust-save", environment)
+            built, command = run(["cargo", "test", "-p", "gnunet-statistics-store", "--test", "filesystem",
+                                  "--locked", "--no-run", "--message-format=json"], folder, "rust-build", environment)
+            report["commands"].append(command)
+            rust_binary = test_executable(built)
+            output, command = run([str(rust_binary), TEST, "--exact"], folder, "rust-save", environment)
             report["commands"].append(command)
             if b"running 1 test" not in output or f"test {TEST} ... ok".encode() not in output or b"1 passed; 0 failed" not in output:
                 raise ValueError("actual unique Rust snapshot test did not execute")
@@ -199,12 +216,6 @@ def main():
             report["comparisons"].extend({"name": "c-inject-" + "-".join(key), "value": value, "persistent": persistent} for key, (value, persistent) in sorted(rows.items()))
             if rust_snapshot.read_bytes() != data:
                 raise ValueError("actual Rust input changed during C inject")
-            executed = re.search(r"Running tests/filesystem.rs \(([^)]+)\)", (folder / "rust-save.stderr.txt").read_text())
-            if executed is None:
-                raise ValueError("actual Rust test executable was not identified")
-            rust_binary = Path(executed[1])
-            if not rust_binary.is_absolute():
-                rust_binary = ROOT / rust_binary
             report["rust_test_binary"] = {"path": str(rust_binary), "sha256": digest(rust_binary.read_bytes())}
         report["executed_checks"] = len(report["comparisons"])
         report["c_binary_sha256"] = digest(binary.read_bytes())

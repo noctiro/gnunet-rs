@@ -10,15 +10,9 @@ static NEXT_DIRECTORY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU
 struct Directory(PathBuf);
 impl Directory {
     fn new() -> Result<Self, Failure> {
-        let stamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?
-            .as_nanos();
         let serial = NEXT_DIRECTORY.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let root = std::env::temp_dir();
-        let path = root.join(format!(
-            "gconsensus-{}-{stamp}-{serial}",
-            std::process::id()
-        ));
+        let path = root.join(format!("gconsensus-{}-{serial}", std::process::id()));
         std::fs::create_dir(&path)?;
         Ok(Self(path))
     }

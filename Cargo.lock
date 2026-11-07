@@ -4337,6 +4337,7 @@ dependencies = [
  "getrandom 0.4.3",
  "gnunet-crypto",
  "gnunet-nat-burst-host",
+ "gnunet-native",
  "gnunet-pils",
  "gnunet-pils-host",
  "gnunet-service-runtime",

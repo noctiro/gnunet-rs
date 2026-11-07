@@ -76,6 +76,9 @@ pub(super) async fn open(
             if inherited.is_some() {
                 return Err("fresh mode refuses a transferred TUN descriptor".into());
             }
+            if settings.packet_information && !cfg!(target_os = "linux") {
+                return Err("LINUX_TUN_PI requires Linux TUN".into());
+            }
             #[cfg(target_os = "linux")]
             {
                 if settings.unit.is_some() {
@@ -89,9 +92,6 @@ pub(super) async fn open(
             }
             #[cfg(target_os = "macos")]
             {
-                if settings.packet_information {
-                    return Err("LINUX_TUN_PI is not an utun option".into());
-                }
                 OwnedTun::open_utun(settings.unit, limits)?
             }
             #[cfg(not(any(target_os = "linux", target_os = "macos")))]

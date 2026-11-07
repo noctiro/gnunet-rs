@@ -1,12 +1,23 @@
-//! Narrow POSIX adapters for ordinary initialized Darwin libc / glibc hosts.
-//! The owned regex locale contract is bound to native-contracts/sources.json.
-//! Unknown libc and Apple's loader-only VARIANT_DYLD are outside this profile;
-//! these APIs do not claim to validate a caller's arbitrary replacement libc.
+//! POSIX regex, calendar and process primitives for macOS, FreeBSD and GNU/Linux.
+#[cfg(not(target_os = "freebsd"))]
+use libc::strptime;
 use std::{
     ffi::{CStr, CString},
     io,
     mem::MaybeUninit,
 };
+#[cfg(target_os = "freebsd")]
+#[expect(
+    unsafe_code,
+    reason = "FreeBSD time.h declares strptime with this ABI; pinned libc omits its Rust declaration"
+)]
+unsafe extern "C" {
+    fn strptime(
+        input: *const libc::c_char,
+        format: *const libc::c_char,
+        time: *mut libc::tm,
+    ) -> *mut libc::c_char;
+}
 fn cstring(bytes: &[u8]) -> io::Result<CString> {
     CString::new(&bytes[..bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len())])
         .map_err(io::Error::other)
@@ -19,11 +30,12 @@ impl RegexLocale {
     fn capture() -> io::Result<Self> {
         if !cfg!(any(
             target_os = "macos",
+            target_os = "freebsd",
             all(target_os = "linux", target_env = "gnu")
         )) {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
-                "owned native regex locale requires ordinary Darwin libc or glibc profile",
+                "owned native regex locale requires Darwin, FreeBSD libc or glibc",
             ));
         }
         #[expect(
@@ -304,11 +316,11 @@ impl Calendar {
         date
     }
 }
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "freebsd"))]
 fn errno_ptr() -> *mut libc::c_int {
     #[expect(
         unsafe_code,
-        reason = "Darwin provides a live thread-local errno pointer"
+        reason = "Darwin and FreeBSD provide a live thread-local errno pointer"
     )]
     // SAFETY: __error has no input and returns this thread's errno address.
     unsafe {
@@ -410,7 +422,7 @@ pub(crate) fn absolute_calendar(input: &[u8]) -> io::Result<u64> {
             reason = "Valid C input/format and uniquely borrowed tm; partial fields intentionally survive failed formats as in source"
         )]
         // SAFETY: pointers remain live; strptime mutates only this initialized tm.
-        let result = unsafe { libc::strptime(input.as_ptr(), pattern.as_ptr(), &mut calendar) };
+        let result = unsafe { strptime(input.as_ptr(), pattern.as_ptr(), &mut calendar) };
         if !result.is_null() && result.addr() == input.as_ptr().addr() + end {
             complete = true;
             break;

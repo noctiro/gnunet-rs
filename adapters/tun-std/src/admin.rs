@@ -1,10 +1,8 @@
 //! Actual read-only per-interface observations, never restore/route ownership.
 use crate::{Epoch, Info, OwnedTun, platform};
-use std::{
-    io,
-    net::Ipv4Addr,
-    os::fd::{AsRawFd, OwnedFd},
-};
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use std::os::fd::{AsRawFd, OwnedFd};
+use std::{io, net::Ipv4Addr};
 use tokio::time::Instant;
 /// Address-specific native IPv4 observation; zero is never invented for absence.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -287,7 +285,7 @@ pub(crate) fn snapshot(
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
-        let _start = started_at;
+        let _inputs = (epoch, info, until, started_at);
         Err(AdminFailure::Kernel(io::ErrorKind::Unsupported.into()))
     }
 }
