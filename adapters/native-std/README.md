@@ -84,7 +84,8 @@ not an authorization decision.
 
 `paths::create_private_file` creates a new noninheritable disk-file handle with
 a protected DACL granting only the process-token user full control. Existing
-names are refused. The caller owns writing, syncing and closing that file.
+names and alternate data streams are refused; streams cannot have independent
+private permissions. The caller owns writing, syncing and closing that file.
 `publish_file` selects explicit `Publication::Create` or `Replace`: creation
 refuses an existing destination; replacement uses ReplaceFileW with destination
 ACL/metadata merging and retains merge errors. Both accept native Unicode and

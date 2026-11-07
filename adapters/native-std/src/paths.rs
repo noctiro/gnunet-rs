@@ -145,11 +145,19 @@ fn wide_path(path: &Path) -> io::Result<Vec<u16>> {
 /// Create one new noninheritable disk file with a protected DACL granting only
 /// the current primary-token user full control. Existing names are refused by
 /// CREATE_NEW; no data is written and no existing ACL or token privilege changes.
+/// Alternate data streams are refused: they share their base file's security.
+pub fn create_private_file(path: &Path) -> io::Result<File> {
+    create_new_file(path, &private_file_descriptor()?)
+}
+
 #[expect(
     unsafe_code,
     reason = "CreateFileW borrows live bounded UTF-16 and SECURITY_ATTRIBUTES; a successful unique handle transfers into File and its actual disk type is checked"
 )]
-pub fn create_private_file(path: &Path) -> io::Result<File> {
+fn create_new_file(
+    path: &Path,
+    descriptor: &crate::identity::SecurityDescriptor,
+) -> io::Result<File> {
     use windows_sys::Win32::{
         Foundation::{GENERIC_READ, GENERIC_WRITE, INVALID_HANDLE_VALUE},
         Security::SECURITY_ATTRIBUTES,
@@ -165,7 +173,10 @@ pub fn create_private_file(path: &Path) -> io::Result<File> {
         ));
     }
     let name = wide_path(path)?;
-    let descriptor = private_file_descriptor()?;
+    if path.components().any(|component| matches!(component,
+        std::path::Component::Normal(name) if name.encode_wide().any(|unit| unit == u16::from(b':')))) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "alternate data streams cannot have independent private permissions"));
+    }
     let attributes = SECURITY_ATTRIBUTES {
         nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
         lpSecurityDescriptor: descriptor.0,
@@ -458,23 +469,18 @@ mod tests {
 
     #[expect(
         unsafe_code,
-        reason = "Generated bounded SDDL owns a guarded descriptor; SetSecurityInfo copies its protected DACL onto this original privately owned test file only"
+        reason = "Generated bounded SDDL owns one descriptor through creation of a new private test file with a deliberately restricted initial DACL"
     )]
-    fn restrict_execution(file: &File) -> io::Result<()> {
+    fn create_nonexecutable_file(path: &Path) -> io::Result<File> {
         use crate::identity::{SecurityDescriptor, process_user};
-        use windows_sys::Win32::Security::{
-            Authorization::{
-                ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
-                SE_FILE_OBJECT, SetSecurityInfo,
-            },
-            DACL_SECURITY_INFORMATION, GetSecurityDescriptorDacl,
-            PROTECTED_DACL_SECURITY_INFORMATION,
+        use windows_sys::Win32::Security::Authorization::{
+            ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
         };
         use windows_sys::Win32::Storage::FileSystem::{FILE_ALL_ACCESS, FILE_EXECUTE};
+        let user = process_user()?;
         let text: Vec<_> = format!(
-            "D:P(A;;0x{:x};;;{})",
-            FILE_ALL_ACCESS & !FILE_EXECUTE,
-            process_user()?
+            "O:{user}D:P(A;;0x{:x};;;{user})",
+            FILE_ALL_ACCESS & !FILE_EXECUTE
         )
         .encode_utf16()
         .chain(Some(0))
@@ -493,37 +499,7 @@ mod tests {
             return Err(io::Error::last_os_error());
         }
         let descriptor = SecurityDescriptor(raw);
-        let mut acl = ptr::null_mut();
-        let mut present = 0;
-        let mut defaulted = 0;
-        // SAFETY: the retained native descriptor owns this DACL view.
-        if unsafe {
-            GetSecurityDescriptorDacl(descriptor.0, &mut present, &mut acl, &mut defaulted)
-        } == 0
-        {
-            return Err(io::Error::last_os_error());
-        }
-        if present == 0 || acl.is_null() {
-            return Err(io::ErrorKind::InvalidData.into());
-        }
-        // SAFETY: test owns WRITE_DAC on this exact file handle; no native
-        // descriptor pointer is retained after the synchronous security update.
-        let code = unsafe {
-            SetSecurityInfo(
-                file.as_raw_handle(),
-                SE_FILE_OBJECT,
-                DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
-                ptr::null_mut(),
-                ptr::null_mut(),
-                acl,
-                ptr::null_mut(),
-            )
-        };
-        if code == 0 {
-            Ok(())
-        } else {
-            Err(io::Error::from_raw_os_error(code as i32))
-        }
+        create_new_file(path, &descriptor)
     }
 
     #[test]
@@ -559,19 +535,9 @@ mod tests {
         private.write_all(b"replacement")?;
         private.sync_all()?;
         drop(private);
-        let mut original = create_private_file(&destination)?;
+        let mut original = create_nonexecutable_file(&destination)?;
         original.write_all(b"original")?;
         original.sync_all()?;
-        {
-            // Data handles request read/write only. The test's ACL setup owns
-            // a separate WRITE_DAC handle on this private fixture.
-            let security = File::options()
-                .access_mode(windows_sys::Win32::Storage::FileSystem::WRITE_DAC)
-                .open(&destination)?;
-            restrict_execution(&security).map_err(|error| {
-                io::Error::other(format!("protect test destination DACL: {error}"))
-            })?;
-        }
         let expected = windows_sys::Win32::Storage::FileSystem::FILE_ALL_ACCESS
             & !windows_sys::Win32::Storage::FileSystem::FILE_EXECUTE;
         assert_eq!(private_access(&original)?, (expected, true));
@@ -608,6 +574,12 @@ mod tests {
     )]
     fn new_publication_refuses_existing_names_and_keeps_prepared_data() -> io::Result<()> {
         let directory = Directory::new()?;
+        let stream = directory.0.join("private.conf:secret");
+        assert_eq!(
+            create_private_file(&stream).err().map(|e| e.kind()),
+            Some(io::ErrorKind::InvalidInput)
+        );
+        assert!(!directory.0.join("private.conf").exists());
         let prepared = directory.0.join("prepared.conf");
         let destination = directory.0.join("destination.conf");
         let mut file = create_private_file(&prepared)?;
