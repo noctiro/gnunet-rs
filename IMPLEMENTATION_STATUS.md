@@ -16,7 +16,7 @@ reference does not refresh older runs.
 
 | Area | Open work |
 | --- | --- |
-| Platform parity | Complete native services on Linux, macOS, Windows and FreeBSD. Windows still needs standard service executable composition, local IPC, process supervision, peer credentials, drive/UNC path expansion, native DNS configuration discovery, storage and device backends beyond shared TCP, CLIENT and Resolver service-host support. FreeBSD TUN still needs interface provisioning, IPv6 readiness, route transactions, application integration and real-device acceptance. Enable equivalent complete-workspace and service/recovery acceptance in CI. |
+| Platform parity | Complete native services on Linux, macOS, Windows and FreeBSD. Windows still needs standard command/logging and service executable composition, local IPC, process supervision, peer credentials, native DNS configuration discovery, storage and device backends beyond shared TCP, CLIENT and Resolver service-host support. FreeBSD TUN still needs interface provisioning, IPv6 readiness, route transactions, application integration and real-device acceptance. Enable equivalent complete-workspace and service/recovery acceptance in CI. |
 | SECRETSHARING | General FAIR production across the canonical 1023-bit share domain and full multiparty 780→783. The canonical integer response can exceed the 128-byte field. |
 | SET/CONSENSUS | Remaining result modes, typed/empty cases, grading/final results, participant failure and recovery. |
 | Identity/recovery | Physical-source replacement, restart and remaining remote-peer recovery across communicators, CADET, Conversation and Messenger. |

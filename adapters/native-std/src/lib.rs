@@ -2,7 +2,8 @@
 //!
 //! Hostname and socket boundaries use native Unix or Windows APIs. Address and
 //! interface snapshots retain their documented platform availability. Locale
-//! C-byte contexts are portable; unsupported locale ABIs fail explicitly.
+//! readers use owned POSIX or Windows UCRT backends and shared C-byte contexts.
+//! Unsupported native locale ABIs fail explicitly.
 //! This crate never calls libgnunet.
 
 /// Owned explicit locale snapshots and replaceable comparison contexts.

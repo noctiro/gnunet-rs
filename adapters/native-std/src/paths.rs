@@ -1,14 +1,17 @@
 //! Native Unicode paths, directory handles and ACL-preserving file publication.
 use crate::identity::{primary_token, private_file_descriptor};
-use std::os::windows::{ffi::OsStrExt, io::FromRawHandle};
 use std::{
     ffi::OsString,
+    fs::File,
     io,
-    os::windows::{ffi::OsStringExt, io::AsRawHandle},
-    path::PathBuf,
+    os::windows::{
+        ffi::{OsStrExt, OsStringExt},
+        fs::OpenOptionsExt,
+        io::{AsRawHandle, FromRawHandle},
+    },
+    path::{Path, PathBuf},
     ptr,
 };
-use std::{fs::File, os::windows::fs::OpenOptionsExt, path::Path};
 use windows_sys::Win32::{
     Foundation::ERROR_INSUFFICIENT_BUFFER, UI::Shell::GetUserProfileDirectoryW,
 };
@@ -356,6 +359,94 @@ mod tests {
         Ok((control, text))
     }
 
+    #[expect(
+        unsafe_code,
+        reason = "A guarded native security descriptor owns a validated single-ACE ACL; its extent is checked before the native SID is compared to the retained process SID"
+    )]
+    fn private_access(file: &File) -> io::Result<(u32, bool)> {
+        use crate::identity::{SecurityDescriptor, process_user};
+        use windows_sys::Win32::Security::{
+            ACCESS_ALLOWED_ACE, ACL_SIZE_INFORMATION, AclSizeInformation,
+            Authorization::{GetSecurityInfo, SE_FILE_OBJECT},
+            DACL_SECURITY_INFORMATION, EqualSid, GetAce, GetAclInformation, GetLengthSid,
+            IsValidAcl, IsValidSid,
+        };
+        let mut descriptor = ptr::null_mut();
+        let mut acl = ptr::null_mut();
+        // SAFETY: exact output slots; file owns the queried native handle.
+        let code = unsafe {
+            GetSecurityInfo(
+                file.as_raw_handle(),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION,
+                ptr::null_mut(),
+                ptr::null_mut(),
+                &mut acl,
+                ptr::null_mut(),
+                &mut descriptor,
+            )
+        };
+        if code != 0 {
+            return Err(io::Error::from_raw_os_error(code as i32));
+        }
+        let _descriptor = SecurityDescriptor(descriptor);
+        // SAFETY: non-null ACL output is backed by the still-owned descriptor.
+        if acl.is_null() || unsafe { IsValidAcl(acl) } == 0 {
+            return Err(io::ErrorKind::InvalidData.into());
+        }
+        let mut info = ACL_SIZE_INFORMATION::default();
+        // SAFETY: exact initialized scalar output and validated live ACL.
+        if unsafe {
+            GetAclInformation(
+                acl,
+                (&mut info as *mut ACL_SIZE_INFORMATION).cast(),
+                std::mem::size_of_val(&info) as u32,
+                AclSizeInformation,
+            )
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        if info.AceCount != 1 {
+            return Err(io::Error::other(
+                "private DACL must contain exactly one ACE",
+            ));
+        }
+        let mut raw = ptr::null_mut();
+        // SAFETY: the validated ACL has one ACE; index0 and output are valid.
+        if unsafe { GetAce(acl, 0, &mut raw) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if raw.is_null() {
+            return Err(io::ErrorKind::InvalidData.into());
+        }
+        // SAFETY: GetAce returns an aligned ACE_HEADER in this valid ACL.
+        let header = unsafe { &*raw.cast::<windows_sys::Win32::Security::ACE_HEADER>() };
+        if header.AceType != 0
+            || header.AceFlags != 0
+            || usize::from(header.AceSize) < std::mem::size_of::<ACCESS_ALLOWED_ACE>()
+        {
+            return Err(io::ErrorKind::InvalidData.into());
+        }
+        // SAFETY: the checked ordinary access-allowed ACE has this native layout.
+        let ace = unsafe { &*raw.cast::<ACCESS_ALLOWED_ACE>() };
+        let sid = (&ace.SidStart as *const u32).cast_mut().cast();
+        // SAFETY: the native valid ACL contains a complete SID in this ACE.
+        if unsafe { IsValidSid(sid) } == 0 {
+            return Err(io::ErrorKind::InvalidData.into());
+        }
+        // SAFETY: SID validity was checked while its descriptor remains owned.
+        let length = unsafe { GetLengthSid(sid) } as usize;
+        if length + std::mem::offset_of!(ACCESS_ALLOWED_ACE, SidStart) > usize::from(header.AceSize)
+        {
+            return Err(io::ErrorKind::InvalidData.into());
+        }
+        let user = process_user()?;
+        // SAFETY: both SIDs are validated, aligned and live through comparison.
+        let same = unsafe { EqualSid(sid, user.as_bytes().as_ptr().cast_mut().cast()) } != 0;
+        Ok((ace.Mask, same))
+    }
+
     #[test]
     #[expect(
         clippy::panic_in_result_fn,
@@ -379,7 +470,13 @@ mod tests {
         let (control, security) = security_snapshot(&private)?;
         assert_ne!(control & SE_DACL_PROTECTED, 0);
         assert_eq!(security.matches('(').count(), 1);
-        assert!(security.contains(&format!("(A;;FA;;;{})", crate::identity::process_user()?)));
+        assert_eq!(
+            private_access(&private)?,
+            (
+                windows_sys::Win32::Storage::FileSystem::FILE_ALL_ACCESS,
+                true
+            )
+        );
         private.write_all(b"replacement")?;
         private.sync_all()?;
         drop(private);

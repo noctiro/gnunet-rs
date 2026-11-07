@@ -93,6 +93,30 @@ must inspect both names and preserve any surviving prepared file. No automatic
 fallback drops the destination ACL. Publication alone does not guarantee
 parent-directory crash durability.
 
+## Locale readers
+
+`locale` shares comparison selection, bounded C-string views and typed conversion
+results. POSIX and Windows backends own their native handles separately.
+`LocaleSnapshot` is immutable and shared through `Arc`; only its last owner frees
+the allocation. Named snapshots never install a locale. Native conversion reports
+consumption and range failure independently, including signed zero and overflow.
+
+Windows uses UCRT `_create_locale`, `_get_current_locale`, `_free_locale` and
+explicit-locale comparison/conversion functions. Configuration floats use a
+private C locale and validate the remaining whitespace; formatting uses native
+bounded `%f`. Neither operation changes the thread or process locale, including
+failure and late TLS destruction. CRT errno is preserved and is kept distinct
+from Win32 error numbers. See Microsoft's [locale creation](https://learn.microsoft.com/en-us/cpp/c-runtime-library/reference/create-locale-wcreate-locale)
+and [ownership](https://learn.microsoft.com/en-us/cpp/c-runtime-library/reference/free-locale)
+contracts.
+
+The POSIX current-thread capability retains the pinned source's mixed-locale
+failure effect through a TLS owner and detaches it before freeing it. Its unsafe
+acquisition contract requires external native-locale mutation/lifetime exclusion.
+The same exclusion protects Windows current-thread observations, which expose no
+raw locale pointer or installation authority. Native tests exercise thread-exit
+ownership and the distinct late-destructor contracts.
+
 ## Verification and constraints
 
 `cargo xtask verify runtime` runs real sockets and shared framing/CLIENT/Resolver

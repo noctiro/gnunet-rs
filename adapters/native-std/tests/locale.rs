@@ -122,8 +122,7 @@ fn current_thread_failure_keeps_owned_locale_and_snapshot_outlives_thread_exit()
     clippy::panic_in_result_fn,
     reason = "A late destructor cannot install an owner into destroyed TLS or leave a freed locale selected"
 )]
-fn float_failure_during_late_tls_destructor_returns_boundary_error_without_fake_success()
--> std::io::Result<()> {
+fn float_failure_during_late_tls_destructor_obeys_platform_ownership() -> std::io::Result<()> {
     use std::sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -167,6 +166,49 @@ fn float_failure_during_late_tls_destructor_returns_boundary_error_without_fake_
     worker
         .join()
         .map_err(|_| std::io::Error::other("destructor worker panicked"))??;
+    #[cfg(not(windows))]
     assert_eq!(observed.load(Ordering::SeqCst), 1);
+    // UCRT uses explicit-locale reads without installing a TLS-owned pointer,
+    // so conversion remains valid even during an unrelated late destructor.
+    #[cfg(windows)]
+    assert_eq!(observed.load(Ordering::SeqCst), 2);
+    Ok(())
+}
+
+#[cfg(windows)]
+#[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "Assert real UCRT comma/C conversions, native formatting and original snapshot independence"
+)]
+fn explicit_ucrt_locales_and_configuration_formatting_keep_independent_state() -> std::io::Result<()>
+{
+    let comma = LocaleSnapshot::named(b"de-DE")?;
+    assert_eq!(comma.scan_float(b"1,25")?.value, 1.25);
+    assert_eq!(comma.scan_float(b"1.25")?.consumed, 1);
+    #[expect(
+        unsafe_code,
+        reason = "This test never mutates global locale or exposes native pointers; other tests use independent locale readers"
+    )]
+    // SAFETY: no global locale mutation and no external native locale owner.
+    let thread = unsafe { gnunet_native::locale::ThreadLocale::acquire()? };
+    let before = thread.snapshot()?;
+    assert_eq!(thread.format_configuration_float(1.25)?, b"1.250000");
+    assert_eq!(thread.format_configuration_float(-0.0)?, b"-0.000000");
+    let value = thread.configuration_float(b"0x1.8p2 \t")?;
+    assert!(value.matched && !value.range_error);
+    assert_eq!(value.value, 6.0);
+    assert!(!thread.configuration_float(b"1.5 trailing")?.matched);
+    assert!(thread.configuration_float(b"1e10000")?.range_error);
+    let after = thread.snapshot()?;
+    for text in [b"1.25".as_slice(), b"1,25"] {
+        let a = before.scan_float(text)?;
+        let b = after.scan_float(text)?;
+        assert_eq!(
+            (a.value.to_bits(), a.consumed),
+            (b.value.to_bits(), b.consumed)
+        );
+    }
+    assert_eq!(comma.scan_float(b"1,25")?.value, 1.25);
     Ok(())
 }

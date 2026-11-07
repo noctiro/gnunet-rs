@@ -162,6 +162,27 @@ C serialization's sizing pass skips an inaccessible empty section while its
 writing pass does not, allowing an allocation overrun. Rust consistently skips
 that section. These undefined-memory cases are not copied into safe Rust.
 
+## Native platform mapping
+
+The pinned C observations above describe their Unix host profile. Windows keeps
+the same configuration grammar, values and cache ownership with native drive,
+UNC and UTF-16 filesystem paths. Matching includes validate wildcard syntax in
+the final component; literal parent directories may contain `+`, `[` or `~`
+(including short Windows profile names). Unix retains the source's whole-pattern
+check. Windows file publication uses protected initial permissions and preserves
+an existing destination's ACL; failed publication retains recovery information
+as described in the [configuration API](README.md#diagnostics-and-publication).
+Native Windows tests establish those host mappings independently; the Unix C
+comparison does not certify Windows filesystem or permission behavior.
+
+Windows numeric-C conversion uses owned UCRT locale objects and defined native
+conversion with trailing-whitespace validation. It leaves thread/global locale
+unchanged on success and failure. The POSIX current-thread capability retains
+the pinned source's failure effect under its explicit native ownership contract;
+that implementation detail is not imposed on the Windows backend.
+
+## Reference limitations
+
 Project metadata, environment/default selection, PATHS construction, native
 account diagnostics and configuration-tool operations are implemented and
 covered by the normal reference profile. The following remain explicit gaps:
