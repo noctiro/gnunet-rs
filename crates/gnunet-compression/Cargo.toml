@@ -1,0 +1,14 @@
+[package]
+name = "gnunet-compression"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+[features]
+default = []
+alloc = ["dep:miniz_oxide", "miniz_oxide/with-alloc"]
+[dependencies]
+gnunet-types.workspace = true
+miniz_oxide = { workspace = true, optional = true }
+[lints]
+workspace = true

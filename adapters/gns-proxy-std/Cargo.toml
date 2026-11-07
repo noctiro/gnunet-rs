@@ -1,0 +1,36 @@
+[package]
+name = "gnunet-gns-proxy-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+[dependencies]
+gnunet-types.workspace = true
+gnunet-config.workspace = true
+gnunet-client-host.workspace = true
+gnunet-gns-host.workspace = true
+gnunet-gns-client-host.workspace = true
+gnunet-identity-client-host.workspace = true
+gnunet-gnsrecord.workspace = true
+gnunet-idna.workspace = true
+gnunet-resolver-broker.workspace = true
+gnunet-service-runtime.workspace = true
+gnunet-native.workspace = true
+gnunet-vpn-client-host.workspace = true
+gnunet-vpn.workspace = true
+socket2 = { workspace = true, features = ["all"] }
+tokio = { workspace = true, features = ["rt", "net", "time", "io-util", "sync"] }
+hyper = { workspace = true, features = ["client", "server", "http1"] }
+hyper-util = { workspace = true, features = ["tokio"] }
+tokio-rustls.workspace = true
+rustls.workspace = true
+rcgen = { workspace = true, features = ["aws_lc_rs", "x509-parser", "zeroize"] }
+webpki.workspace = true
+x509-parser.workspace = true
+aws-lc-rs.workspace = true
+webpki-roots.workspace = true
+time.workspace = true
+yasna.workspace = true
+zeroize = { workspace = true, features = ["alloc"] }
+[lints]
+workspace = true

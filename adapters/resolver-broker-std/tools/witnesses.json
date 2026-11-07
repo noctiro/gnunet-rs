@@ -1,0 +1,1292 @@
+{
+  "scope": "Reviewed exact Rust witness names per declared profile; counts do not confer feature/owner completeness. Unknown added/removed/renamed tests require explicit inventory review. Profiles are never auto-downgraded.",
+  "schema": 1,
+  "profiles": {
+    "clock-source": {
+      "broker": {
+        "files": {
+          "adapters/resolver-broker-std/tests/client_rounds.rs": [
+            "combined_endpoints_use_unix_on_even_rounds_tcp_on_odd_and_fallback_after_real_unix_failure",
+            "unreachable_valid_resolver_expires_the_original_five_second_client_lookup"
+          ],
+          "adapters/resolver-broker-std/tests/numeric_client.rs": [
+            "numeric_address_hold_precedes_real_socket_and_only_own_null_continues",
+            "numeric_client_starts_real_socket_then_finishes_own_callback_stack_before_connection_notice"
+          ],
+          "adapters/resolver-broker-std/tests/port_failures.rs": [
+            "actual_native_refusal_remains_socket_retry",
+            "arm_time_error_preserves_original_mq_without_connect_retry",
+            "arm_timer_capacity_preserves_original_mq_without_connect_retry",
+            "endpoint_time_error_retains_exact_cause_and_never_replays_socket",
+            "endpoint_timer_capacity_retains_exact_cause_and_never_replays_socket",
+            "statistics_time_error_preserves_get_epoch_without_connect_retry",
+            "statistics_timer_capacity_preserves_get_epoch_without_connect_retry"
+          ],
+          "adapters/resolver-broker-std/tests/shared.rs": [
+            "callback_return_lease_blocks_next_effect_but_allows_cancellation_then_safe_pool_reuse",
+            "callback_stack_survives_source_clock_backwards_before_other_due_timeout",
+            "client_tcp_success_retains_dns_drain_until_actual_end_and_ignores_later_addresses",
+            "client_zero_timer_registration_remains_ready_after_source_clock_rollback",
+            "cloned_contexts_share_one_fifo_mq_and_end_advances_original_tail",
+            "driver_drop_reports_owner_loss_and_preserves_no_fake_dns_terminal",
+            "existing_mq_admission_owns_frame_before_immediate_cancel_or_another_drive",
+            "expired_then_canceled_unsent_envelopes_retain_exact_mq_ownership_with_bounded_credits",
+            "local_fast_callbacks_are_deferred_shared_cancellable_and_reverse_requires_current_config",
+            "logical_clock_revision_wakes_unbounded_drive_and_timeout_keeps_original_deadline",
+            "maximum_65535_frame_reaches_shared_mq_and_rejected_names_preserve_admission",
+            "selected_configuration_changes_only_next_mq_while_old_unix_identity_remains_live",
+            "stale_foreign_capacity_and_clock_failure_drop_do_not_alias_callback_authority",
+            "tcp_resolver_own_numeric_lookup_uses_shared_core_without_self_deadlock",
+            "transmitted_cancel_drains_original_end_without_private_connection_or_callback"
+          ],
+          "adapters/resolver-broker-std/tests/subscriptions.rs": [
+            "actual_driver_and_two_provider_timers_all_wake_across_both_poll_orders",
+            "broker_requires_its_own_subscription_before_returning_any_owner",
+            "canceled_drive_future_preserves_original_driver_subscription_and_new_wait_replaces_only_its_waker",
+            "dropping_driver_drops_its_stored_waker_while_retained_context_and_timer_keep_same_source",
+            "provider_timer_poll_source_error_releases_only_original_waiter_even_if_future_is_retained",
+            "timer_capacity_fails_atomically_then_drop_and_completion_each_return_only_their_credit"
+          ],
+          "adapters/resolver-broker-std/tests/two_services.rs": [
+            "arm_and_statistics_share_fifo_and_keep_dns_subscription_after_arm_test_success"
+          ]
+        },
+        "required_names": [
+          "actual_driver_and_two_provider_timers_all_wake_across_both_poll_orders",
+          "actual_native_refusal_remains_socket_retry",
+          "arm_and_statistics_share_fifo_and_keep_dns_subscription_after_arm_test_success",
+          "arm_time_error_preserves_original_mq_without_connect_retry",
+          "arm_timer_capacity_preserves_original_mq_without_connect_retry",
+          "broker_requires_its_own_subscription_before_returning_any_owner",
+          "callback_return_lease_blocks_next_effect_but_allows_cancellation_then_safe_pool_reuse",
+          "callback_stack_survives_source_clock_backwards_before_other_due_timeout",
+          "canceled_drive_future_preserves_original_driver_subscription_and_new_wait_replaces_only_its_waker",
+          "client_tcp_success_retains_dns_drain_until_actual_end_and_ignores_later_addresses",
+          "client_zero_timer_registration_remains_ready_after_source_clock_rollback",
+          "cloned_contexts_share_one_fifo_mq_and_end_advances_original_tail",
+          "combined_endpoints_use_unix_on_even_rounds_tcp_on_odd_and_fallback_after_real_unix_failure",
+          "driver_drop_reports_owner_loss_and_preserves_no_fake_dns_terminal",
+          "dropping_driver_drops_its_stored_waker_while_retained_context_and_timer_keep_same_source",
+          "endpoint_time_error_retains_exact_cause_and_never_replays_socket",
+          "endpoint_timer_capacity_retains_exact_cause_and_never_replays_socket",
+          "existing_mq_admission_owns_frame_before_immediate_cancel_or_another_drive",
+          "expired_then_canceled_unsent_envelopes_retain_exact_mq_ownership_with_bounded_credits",
+          "local_fast_callbacks_are_deferred_shared_cancellable_and_reverse_requires_current_config",
+          "logical_clock_revision_wakes_unbounded_drive_and_timeout_keeps_original_deadline",
+          "maximum_65535_frame_reaches_shared_mq_and_rejected_names_preserve_admission",
+          "numeric_address_hold_precedes_real_socket_and_only_own_null_continues",
+          "numeric_client_starts_real_socket_then_finishes_own_callback_stack_before_connection_notice",
+          "provider_timer_poll_source_error_releases_only_original_waiter_even_if_future_is_retained",
+          "selected_configuration_changes_only_next_mq_while_old_unix_identity_remains_live",
+          "stale_foreign_capacity_and_clock_failure_drop_do_not_alias_callback_authority",
+          "statistics_time_error_preserves_get_epoch_without_connect_retry",
+          "statistics_timer_capacity_preserves_get_epoch_without_connect_retry",
+          "tcp_resolver_own_numeric_lookup_uses_shared_core_without_self_deadlock",
+          "timer_capacity_fails_atomically_then_drop_and_completion_each_return_only_their_credit",
+          "transmitted_cancel_drains_original_end_without_private_connection_or_callback",
+          "unreachable_valid_resolver_expires_the_original_five_second_client_lookup"
+        ],
+        "reviewed_count": 33
+      },
+      "pure_core": {
+        "files": {
+          "crates/gnunet-client/src/lib.rs": [],
+          "crates/gnunet-client/src/resolver.rs": [],
+          "crates/gnunet-client/src/resolver_handle.rs": [
+            "admission_configuration_updates_preserve_original_retry_and_live_request",
+            "exhausted_slot_generation_is_retired_instead_of_wrapping",
+            "exponential_backoff_caps_at_fifteen_minutes_and_idle_close_resets_it",
+            "order_and_epoch_exhaustion_reject_before_committing",
+            "wire_counter_wraps_but_never_collides_with_a_live_local_or_remote_slot"
+          ],
+          "crates/gnunet-client/src/statistics.rs": [
+            "independent_get_and_value_bytes",
+            "malformed_strings_and_eof_are_not_completion",
+            "one_original_get_requires_end_and_enforces_its_limit"
+          ],
+          "crates/gnunet-client/src/statistics_handle.rs": [
+            "all_public_requests_accept_65535_and_reject_65536_without_admission",
+            "epoch_and_transmit_exhaustion_refuse_before_frame_or_queue_changes",
+            "exponential_retry_caps_at_fifteen_minutes_and_only_end_resets_it",
+            "generation_exhaustion_retires_slots_without_aliasing"
+          ],
+          "crates/gnunet-client/tests/resolver.rs": [
+            "admission_output_capacity_and_completion_reservations_are_atomic",
+            "all_sent_cancels_close_after_one_ms_and_retire_only_owned_epoch",
+            "codec_rejects_wrong_types_truncation_family_and_name_without_partial_writes",
+            "disconnect_requires_live_remote_cancellation_but_does_not_cancel_local_tasks",
+            "end_and_timeout_reverse_fallback_allow_cancel_before_terminal",
+            "fifo_submission_cancel_drain_and_next_head_do_not_invent_cancel_frames",
+            "forever_and_finite_overflow_saturate_without_expiring_at_max_clock",
+            "forward_response_family_is_from_payload_length_as_in_c_not_query_filter",
+            "local_ready_fifo_uses_registration_order_after_clock_rollback",
+            "local_ready_registration_survives_rollback_and_retains_enqueue_fifo",
+            "local_tasks_are_ready_even_at_never_but_remote_never_is_not_due",
+            "malformed_identified_payload_ends_only_that_request_and_reconnects_next",
+            "maximum_65535_frame_is_legal_but_65536_is_rejected_atomically",
+            "normal_c_daemon_wire_trace_has_native_family_and_opaque_id",
+            "numeric_and_loopback_events_match_normal_c_order_and_can_cancel_between_values",
+            "positive_remote_delay_keeps_original_deadline_across_rollback",
+            "queue_timeouts_are_per_admission_and_receive_at_deadline_cannot_deliver_value",
+            "received_reverse_name_survives_reconnect_and_suppresses_timeout_fallback",
+            "reconnect_reuses_id_and_original_deadline_and_rejects_stale_epoch",
+            "reverse_nonzero_direction_and_embedded_c_string_nul_are_retained",
+            "unavailable_mq_configuration_retries_without_consuming_epoch_or_deadline",
+            "unknown_id_reconnects_but_preserves_live_operation_and_same_wire_id",
+            "zero_deadline_fastpaths_and_numeric_reverse_config_asymmetry_are_real",
+            "zero_remote_timeout_stays_ready_without_replacing_original_deadline"
+          ],
+          "crates/gnunet-client/tests/broker_boundaries.rs": [
+            "sole_canceled_head_reconnect_schedules_original_retry_before_next_admission",
+            "source_callback_stack_does_not_wait_for_time_to_recover_or_interleave_timeout",
+            "synchronous_mq_admission_precedes_unrelated_due_scheduler_work"
+          ]
+        },
+        "required_names": [
+          "admission_configuration_updates_preserve_original_retry_and_live_request",
+          "admission_output_capacity_and_completion_reservations_are_atomic",
+          "all_public_requests_accept_65535_and_reject_65536_without_admission",
+          "all_sent_cancels_close_after_one_ms_and_retire_only_owned_epoch",
+          "codec_rejects_wrong_types_truncation_family_and_name_without_partial_writes",
+          "disconnect_requires_live_remote_cancellation_but_does_not_cancel_local_tasks",
+          "end_and_timeout_reverse_fallback_allow_cancel_before_terminal",
+          "epoch_and_transmit_exhaustion_refuse_before_frame_or_queue_changes",
+          "exhausted_slot_generation_is_retired_instead_of_wrapping",
+          "exponential_backoff_caps_at_fifteen_minutes_and_idle_close_resets_it",
+          "exponential_retry_caps_at_fifteen_minutes_and_only_end_resets_it",
+          "fifo_submission_cancel_drain_and_next_head_do_not_invent_cancel_frames",
+          "forever_and_finite_overflow_saturate_without_expiring_at_max_clock",
+          "forward_response_family_is_from_payload_length_as_in_c_not_query_filter",
+          "generation_exhaustion_retires_slots_without_aliasing",
+          "independent_get_and_value_bytes",
+          "local_ready_fifo_uses_registration_order_after_clock_rollback",
+          "local_ready_registration_survives_rollback_and_retains_enqueue_fifo",
+          "local_tasks_are_ready_even_at_never_but_remote_never_is_not_due",
+          "malformed_identified_payload_ends_only_that_request_and_reconnects_next",
+          "malformed_strings_and_eof_are_not_completion",
+          "maximum_65535_frame_is_legal_but_65536_is_rejected_atomically",
+          "normal_c_daemon_wire_trace_has_native_family_and_opaque_id",
+          "numeric_and_loopback_events_match_normal_c_order_and_can_cancel_between_values",
+          "one_original_get_requires_end_and_enforces_its_limit",
+          "order_and_epoch_exhaustion_reject_before_committing",
+          "positive_remote_delay_keeps_original_deadline_across_rollback",
+          "queue_timeouts_are_per_admission_and_receive_at_deadline_cannot_deliver_value",
+          "received_reverse_name_survives_reconnect_and_suppresses_timeout_fallback",
+          "reconnect_reuses_id_and_original_deadline_and_rejects_stale_epoch",
+          "reverse_nonzero_direction_and_embedded_c_string_nul_are_retained",
+          "sole_canceled_head_reconnect_schedules_original_retry_before_next_admission",
+          "source_callback_stack_does_not_wait_for_time_to_recover_or_interleave_timeout",
+          "synchronous_mq_admission_precedes_unrelated_due_scheduler_work",
+          "unavailable_mq_configuration_retries_without_consuming_epoch_or_deadline",
+          "unknown_id_reconnects_but_preserves_live_operation_and_same_wire_id",
+          "wire_counter_wraps_but_never_collides_with_a_live_local_or_remote_slot",
+          "zero_deadline_fastpaths_and_numeric_reverse_config_asymmetry_are_real",
+          "zero_remote_timeout_stays_ready_without_replacing_original_deadline"
+        ],
+        "reviewed_count": 39
+      },
+      "ipc": {
+        "files": {
+          "adapters/ipc-unix/src/accepted.rs": [
+            "injected_fatal_initialization_closes_only_actual_accepted_owner",
+            "injected_wrong_kind_actual_nonfatal_setter_error_returns_original_usable_stream"
+          ],
+          "adapters/ipc-unix/src/acl.rs": [
+            "official_masks_ports_denial_and_zero_terminator"
+          ],
+          "adapters/ipc-unix/src/client_transport.rs": [
+            "expanded_unix_validation_precedes_tcp_and_raw_empty_is_a_relative_path"
+          ],
+          "adapters/ipc-unix/src/clock.rs": [],
+          "adapters/ipc-unix/src/handle.rs": [],
+          "adapters/ipc-unix/src/lib.rs": [
+            "dropping_a_partially_read_operation_retires_the_socket",
+            "expired_connect_submits_no_connection",
+            "fragmented_official_reply_and_original_deadline",
+            "interrupted_partial_stream_keeps_original_frame_and_send_cursor",
+            "malformed_reply_and_callback_refusal_retire_the_socket",
+            "partial_reply_timeout_retires_connection",
+            "preflight_capacity_and_expiry_submit_no_bytes_and_preserve_connection",
+            "repeated_interruptions_do_not_extend_the_original_io_deadline",
+            "synchronously_ready_end_cannot_complete_after_callback_crosses_deadline"
+          ],
+          "adapters/ipc-unix/src/live_configuration.rs": [],
+          "adapters/ipc-unix/src/network.rs": [],
+          "adapters/ipc-unix/src/presence.rs": [],
+          "adapters/ipc-unix/src/resolution.rs": [],
+          "adapters/ipc-unix/src/resolver.rs": [],
+          "adapters/ipc-unix/src/server.rs": [
+            "accepted_tcp_is_canonical_before_statistics_core_admission",
+            "cancelling_the_server_future_releases_watches_and_partial_sessions",
+            "connection_limit_and_idle_deadline_release_real_ids",
+            "finite_emfile_observation_pauses_accept_until_original_live_client_physically_closes",
+            "malformed_oversized_and_partial_eof_close_only_their_session",
+            "official_soft_shutdown_finishes_writer_and_does_not_wait_for_monitors",
+            "output_and_core_notification_overflow_have_real_close_outcomes",
+            "overflowing_one_watch_queue_does_not_consume_another_clients_effects",
+            "real_rust_client_and_literal_peer_get_watch_and_barrier",
+            "real_watch_client_keeps_id_one_after_cancelling_zero"
+          ],
+          "adapters/ipc-unix/src/stream.rs": [],
+          "adapters/ipc-unix/src/transport.rs": [],
+          "adapters/ipc-unix/src/watch.rs": [
+            "cancelled_notifications_never_extend_the_original_next_deadline",
+            "cancelled_partial_receive_closes_the_actual_socket",
+            "fragmented_notifications_keep_original_ids_after_cancellation",
+            "unknown_wid_retires_connection_and_expired_preflight_preserves_it",
+            "unpolled_watch_and_rejected_preflight_submit_nothing_and_keep_wid_zero"
+          ],
+          "adapters/ipc-unix/tests/client_transport.rs": [
+            "configured_tcp_uses_identical_official_frames_and_retains_partial_cursors",
+            "initial_tcp_refusal_preserves_virtual_mq_and_the_first_immutable_setter",
+            "invalid_configuration_is_lazy_observable_and_never_creates_mq_or_unknown_setters"
+          ],
+          "adapters/ipc-unix/tests/handle.rs": [
+            "cancellation_inside_callback_drains_old_end_before_next_query",
+            "cancelling_a_drive_future_preserves_partial_header_and_original_get",
+            "expired_destroy_never_submits_a_late_connect_and_delivers_failure_report",
+            "initial_socket_retry_retains_virtual_mq_and_immutable_first_setter",
+            "iterator_abort_completes_on_end_but_suppresses_disconnect_continuation",
+            "lazy_noop_and_coalescing_across_get_match_independent_wire_order",
+            "processing_confirmation_retires_socket_and_callback_admission",
+            "restart_remaps_cancelled_watch_holes_to_stable_logical_owners"
+          ],
+          "adapters/ipc-unix/tests/handle_authority.rs": [
+            "closed_driver_dispatches_original_failure_once_then_revokes_all_callbacks"
+          ],
+          "adapters/ipc-unix/tests/resolver.rs": [
+            "callback_reconfiguration_preserves_old_mq_then_uses_new_endpoint_after_idle_close",
+            "configured_mq_failure_times_out_without_blocking_numeric_fast_requests",
+            "dropping_drive_after_real_short_writes_preserves_immutable_tx_cursor",
+            "dropping_owner_closes_its_socket_and_does_not_dispatch_a_completion",
+            "dropping_pending_drive_preserves_partial_response_header_and_body",
+            "initial_socket_retries_keep_original_virtual_epoch_and_request",
+            "invalid_configuration_fastpaths_are_lazy_async_and_cancel_between_callbacks",
+            "invalid_to_valid_connect_restores_future_admission_without_losing_local_task",
+            "late_timed_out_id_reconnects_next_query_with_its_original_id",
+            "oversized_response_is_explicit_capacity_loss_and_never_successful_empty_result",
+            "tcp_reverse_uses_raw_ip_and_name_callback_cancel_suppresses_end",
+            "unix_fifo_sent_cancel_drains_without_an_extra_cancel_frame"
+          ],
+          "adapters/ipc-unix/tests/tcp_server.rs": [
+            "denied_tcp_peer_and_tolerant_unknown_frame_have_explicit_separate_outcomes",
+            "unix_and_tcp_share_one_core_and_acl_rejection_does_not_consume_an_id"
+          ],
+          "adapters/ipc-unix/tests/transport.rs": [
+            "public_configured_tcp_attempt_reuses_native_stream_without_resolver_dependency",
+            "public_unix_attempt_is_lazy_and_canceled_wait_retains_original_io"
+          ]
+        },
+        "required_names": [
+          "accepted_tcp_is_canonical_before_statistics_core_admission",
+          "callback_reconfiguration_preserves_old_mq_then_uses_new_endpoint_after_idle_close",
+          "cancellation_inside_callback_drains_old_end_before_next_query",
+          "cancelled_notifications_never_extend_the_original_next_deadline",
+          "cancelled_partial_receive_closes_the_actual_socket",
+          "cancelling_a_drive_future_preserves_partial_header_and_original_get",
+          "cancelling_the_server_future_releases_watches_and_partial_sessions",
+          "closed_driver_dispatches_original_failure_once_then_revokes_all_callbacks",
+          "configured_mq_failure_times_out_without_blocking_numeric_fast_requests",
+          "configured_tcp_uses_identical_official_frames_and_retains_partial_cursors",
+          "connection_limit_and_idle_deadline_release_real_ids",
+          "denied_tcp_peer_and_tolerant_unknown_frame_have_explicit_separate_outcomes",
+          "dropping_a_partially_read_operation_retires_the_socket",
+          "dropping_drive_after_real_short_writes_preserves_immutable_tx_cursor",
+          "dropping_owner_closes_its_socket_and_does_not_dispatch_a_completion",
+          "dropping_pending_drive_preserves_partial_response_header_and_body",
+          "expanded_unix_validation_precedes_tcp_and_raw_empty_is_a_relative_path",
+          "expired_connect_submits_no_connection",
+          "expired_destroy_never_submits_a_late_connect_and_delivers_failure_report",
+          "finite_emfile_observation_pauses_accept_until_original_live_client_physically_closes",
+          "fragmented_notifications_keep_original_ids_after_cancellation",
+          "fragmented_official_reply_and_original_deadline",
+          "initial_socket_retries_keep_original_virtual_epoch_and_request",
+          "initial_socket_retry_retains_virtual_mq_and_immutable_first_setter",
+          "initial_tcp_refusal_preserves_virtual_mq_and_the_first_immutable_setter",
+          "injected_fatal_initialization_closes_only_actual_accepted_owner",
+          "injected_wrong_kind_actual_nonfatal_setter_error_returns_original_usable_stream",
+          "interrupted_partial_stream_keeps_original_frame_and_send_cursor",
+          "invalid_configuration_fastpaths_are_lazy_async_and_cancel_between_callbacks",
+          "invalid_configuration_is_lazy_observable_and_never_creates_mq_or_unknown_setters",
+          "invalid_to_valid_connect_restores_future_admission_without_losing_local_task",
+          "iterator_abort_completes_on_end_but_suppresses_disconnect_continuation",
+          "late_timed_out_id_reconnects_next_query_with_its_original_id",
+          "lazy_noop_and_coalescing_across_get_match_independent_wire_order",
+          "malformed_oversized_and_partial_eof_close_only_their_session",
+          "malformed_reply_and_callback_refusal_retire_the_socket",
+          "official_masks_ports_denial_and_zero_terminator",
+          "official_soft_shutdown_finishes_writer_and_does_not_wait_for_monitors",
+          "output_and_core_notification_overflow_have_real_close_outcomes",
+          "overflowing_one_watch_queue_does_not_consume_another_clients_effects",
+          "oversized_response_is_explicit_capacity_loss_and_never_successful_empty_result",
+          "partial_reply_timeout_retires_connection",
+          "preflight_capacity_and_expiry_submit_no_bytes_and_preserve_connection",
+          "processing_confirmation_retires_socket_and_callback_admission",
+          "public_configured_tcp_attempt_reuses_native_stream_without_resolver_dependency",
+          "public_unix_attempt_is_lazy_and_canceled_wait_retains_original_io",
+          "real_rust_client_and_literal_peer_get_watch_and_barrier",
+          "real_watch_client_keeps_id_one_after_cancelling_zero",
+          "repeated_interruptions_do_not_extend_the_original_io_deadline",
+          "restart_remaps_cancelled_watch_holes_to_stable_logical_owners",
+          "synchronously_ready_end_cannot_complete_after_callback_crosses_deadline",
+          "tcp_reverse_uses_raw_ip_and_name_callback_cancel_suppresses_end",
+          "unix_and_tcp_share_one_core_and_acl_rejection_does_not_consume_an_id",
+          "unix_fifo_sent_cancel_drains_without_an_extra_cancel_frame",
+          "unknown_wid_retires_connection_and_expired_preflight_preserves_it",
+          "unpolled_watch_and_rejected_preflight_submit_nothing_and_keep_wid_zero"
+        ],
+        "reviewed_count": 56
+      },
+      "arm_endpoint": {
+        "files": {
+          "adapters/arm-std/src/control.rs": [],
+          "adapters/arm-std/src/lib.rs": [],
+          "adapters/arm-std/src/mq.rs": [
+            "finite_large_native_sleep_never_changes_the_original_logical_deadline"
+          ],
+          "adapters/arm-std/src/endpoint.rs": [],
+          "adapters/arm-std/src/monitor_host.rs": [],
+          "adapters/arm-std/src/launch.rs": [],
+          "adapters/arm-std/tests/loopback.rs": [
+            "bad_registered_frame_retires_one_epoch_without_replaying_operations",
+            "canceled_and_disconnected_stop_waiters_reclaim_all_slots_without_callback_or_null_call",
+            "canceled_drive_under_real_socket_backpressure_keeps_every_original_byte_once",
+            "foreign_owner_scope_cannot_cancel_an_original_operation_even_before_socket_io",
+            "fragmented_unix_all_remote_requests_cancellation_and_list_borrow",
+            "invalid_initial_configuration_reports_each_original_unavailable_once",
+            "malformed_list_rows_indices_nuls_prefix_and_result_retire_exact_original_mq",
+            "maximum_name_and_capacity_rejection_are_atomic_and_stale_generation_cannot_cancel_reused_slot",
+            "monitor_canceled_partial_rx_recovers_exact_callback_then_stop_closes_original_stream",
+            "physical_eof_distinguishes_stopping_waiter_from_pending_stop",
+            "tcp_monitor_raw_status_reconnect_and_stop_inside_callback",
+            "two_stop_waiters_keep_each_original_operation_through_replacement_and_real_eof",
+            "unavailable_socket_retries_inside_original_mq_and_preserves_queued_list",
+            "valid_wire_reply_over_declared_host_rx_capacity_retires_mq_without_partial_callback",
+            "wrong_kind_unknown_ids_and_unregistered_frames_preserve_live_original_operation"
+          ],
+          "adapters/arm-std/tests/live_configuration.rs": [
+            "actual_monitor_cfg_update_then_eof_reports_one_unavailable_and_restore_does_not_retry",
+            "current_logical_mq_retries_new_unix_path_but_keeps_its_original_tcp_and_queued_id",
+            "live_configuration_update_during_partial_tx_keeps_original_stream_and_every_frame_once",
+            "live_update_does_not_retarget_or_wake_an_original_polled_connection_attempt"
+          ],
+          "adapters/arm-std/tests/logical_clock.rs": [
+            "logical_monitor_reconnect_keeps_original_deadline_across_rollback_and_revision_wakes_pending_drive",
+            "logical_startup_deadline_reports_original_starting_while_real_child_keeps_signal_pipe_open"
+          ],
+          "adapters/arm-std/tests/physical_clock.rs": [
+            "disconnected_client_releases_subscription_and_closed_drive_does_not_sample_again",
+            "native_failure_waits_for_post_failure_clock_sample_without_reconnecting_or_rebasing",
+            "physical_client_retry_forward_revision_keeps_mq_and_original_subscription",
+            "physical_client_retry_rollback_keeps_original_absolute_target_and_can_resume",
+            "stopped_monitor_releases_subscription_before_the_host_value_is_dropped"
+          ]
+        },
+        "required_names": [
+          "actual_monitor_cfg_update_then_eof_reports_one_unavailable_and_restore_does_not_retry",
+          "bad_registered_frame_retires_one_epoch_without_replaying_operations",
+          "canceled_and_disconnected_stop_waiters_reclaim_all_slots_without_callback_or_null_call",
+          "canceled_drive_under_real_socket_backpressure_keeps_every_original_byte_once",
+          "current_logical_mq_retries_new_unix_path_but_keeps_its_original_tcp_and_queued_id",
+          "disconnected_client_releases_subscription_and_closed_drive_does_not_sample_again",
+          "finite_large_native_sleep_never_changes_the_original_logical_deadline",
+          "foreign_owner_scope_cannot_cancel_an_original_operation_even_before_socket_io",
+          "fragmented_unix_all_remote_requests_cancellation_and_list_borrow",
+          "invalid_initial_configuration_reports_each_original_unavailable_once",
+          "live_configuration_update_during_partial_tx_keeps_original_stream_and_every_frame_once",
+          "live_update_does_not_retarget_or_wake_an_original_polled_connection_attempt",
+          "logical_monitor_reconnect_keeps_original_deadline_across_rollback_and_revision_wakes_pending_drive",
+          "logical_startup_deadline_reports_original_starting_while_real_child_keeps_signal_pipe_open",
+          "malformed_list_rows_indices_nuls_prefix_and_result_retire_exact_original_mq",
+          "maximum_name_and_capacity_rejection_are_atomic_and_stale_generation_cannot_cancel_reused_slot",
+          "monitor_canceled_partial_rx_recovers_exact_callback_then_stop_closes_original_stream",
+          "native_failure_waits_for_post_failure_clock_sample_without_reconnecting_or_rebasing",
+          "physical_client_retry_forward_revision_keeps_mq_and_original_subscription",
+          "physical_client_retry_rollback_keeps_original_absolute_target_and_can_resume",
+          "physical_eof_distinguishes_stopping_waiter_from_pending_stop",
+          "stopped_monitor_releases_subscription_before_the_host_value_is_dropped",
+          "tcp_monitor_raw_status_reconnect_and_stop_inside_callback",
+          "two_stop_waiters_keep_each_original_operation_through_replacement_and_real_eof",
+          "unavailable_socket_retries_inside_original_mq_and_preserves_queued_list",
+          "valid_wire_reply_over_declared_host_rx_capacity_retires_mq_without_partial_callback",
+          "wrong_kind_unknown_ids_and_unregistered_frames_preserve_live_original_operation"
+        ],
+        "reviewed_count": 27
+      },
+      "arm_core": {
+        "files": {
+          "crates/gnunet-arm-core/src/client.rs": [],
+          "crates/gnunet-arm-core/src/lib.rs": [],
+          "crates/gnunet-arm-core/src/monitor.rs": [],
+          "crates/gnunet-arm-core/src/transport.rs": [],
+          "crates/gnunet-arm-core/src/wire.rs": [],
+          "crates/gnunet-arm-core/tests/client.rs": [
+            "arm_stop_waits_eof_then_failures_before_connection_notice_and_persistent_backoff",
+            "cancel_arm_stop_tombstone_and_explicit_disconnect_are_safe_without_false_callbacks",
+            "canceled_or_disconnected_inflight_spawn_keeps_original_resource_until_actual_report",
+            "immediate_start_notifications_keep_ready_fifo_across_logical_clock_rollback",
+            "initial_and_retry_mq_failure_and_unknown_frames_are_observable_without_fake_success",
+            "local_arm_start_stored_result_original60s_signal_cleanup_and_repeated_up_notice",
+            "saturated_startup_deadline_keeps_forever_and_original_signal_authority",
+            "startup_capacity_defers_only_new_spawn_without_blocking_original_signal_cleanup_or_connect",
+            "successful_list_borrows_validated_rows_and_wrong_registered_reply_retires_silently",
+            "test_confirmation_remote_results_cancel_envelope_and_no_remote_deadline"
+          ],
+          "crates/gnunet-arm-core/tests/monitor.rs": [
+            "actual_initial_and_retry_creation_failures_are_distinct_and_never_fabricate_timers",
+            "already_ready_zero_delay_reconnect_survives_clock_rollback_but_forever_does_not",
+            "malformed_registered_status_reconnects_but_legal_unregistered_directions_are_ignored",
+            "repeated_mq_loss_reaches_fifteen_minute_cap_without_notification_reset",
+            "saturated_reconnect_delay_remains_forever_without_minting_a_new_mq",
+            "stop_revokes_pending_frame_connect_attempt_and_every_later_notification",
+            "subscribe_is_monitor_not_test_and_unknown_notifications_do_not_reset_backoff"
+          ],
+          "crates/gnunet-arm-core/tests/ownership.rs": [
+            "canceled_callback_slot_reuse_does_not_cancel_envelope_or_consume_ids_on_capacity_error",
+            "exact_maximum_request_uses_one_aggregate_vec_and_oversize_admission_is_atomic",
+            "failure_callback_can_cancel_later_pending_operation_before_its_callback",
+            "foreign_owner_epoch_and_old_connection_results_cannot_change_new_operations",
+            "leased_frame_stays_immutable_through_aggregate_compaction_and_old_write_cannot_release_it",
+            "pipe_ready_and_pipe_creation_failure_report_stored_result_without_waiting_or_fake_timeout",
+            "two_arm_stop_waiters_keep_original_callback_ownership_instead_of_c_mismatched_closure"
+          ],
+          "crates/gnunet-arm-core/tests/wire.rs": [
+            "aggregate_abi_is_explicit_and_does_not_follow_rust_pointer_width",
+            "all_request_assignments_have_exact_packed_layout_and_c_string_rules",
+            "list_accepts_middle_string_shared_pool_unused_bytes_and_zero_count",
+            "list_encoder_is_packed_canonical_and_preflights_all_rows",
+            "list_literal_28_byte_rows_offset_pool_and_unsigned_public_exit",
+            "malformed_registered_frames_are_refused_before_exposing_list_rows",
+            "result_and_status_retain_unknown_values_reserved_and_nonutf8",
+            "service_request_total65535_legal65536_and_short_buffer_atomic"
+          ]
+        },
+        "required_names": [
+          "actual_initial_and_retry_creation_failures_are_distinct_and_never_fabricate_timers",
+          "aggregate_abi_is_explicit_and_does_not_follow_rust_pointer_width",
+          "all_request_assignments_have_exact_packed_layout_and_c_string_rules",
+          "already_ready_zero_delay_reconnect_survives_clock_rollback_but_forever_does_not",
+          "arm_stop_waits_eof_then_failures_before_connection_notice_and_persistent_backoff",
+          "cancel_arm_stop_tombstone_and_explicit_disconnect_are_safe_without_false_callbacks",
+          "canceled_callback_slot_reuse_does_not_cancel_envelope_or_consume_ids_on_capacity_error",
+          "canceled_or_disconnected_inflight_spawn_keeps_original_resource_until_actual_report",
+          "exact_maximum_request_uses_one_aggregate_vec_and_oversize_admission_is_atomic",
+          "failure_callback_can_cancel_later_pending_operation_before_its_callback",
+          "foreign_owner_epoch_and_old_connection_results_cannot_change_new_operations",
+          "immediate_start_notifications_keep_ready_fifo_across_logical_clock_rollback",
+          "initial_and_retry_mq_failure_and_unknown_frames_are_observable_without_fake_success",
+          "leased_frame_stays_immutable_through_aggregate_compaction_and_old_write_cannot_release_it",
+          "list_accepts_middle_string_shared_pool_unused_bytes_and_zero_count",
+          "list_encoder_is_packed_canonical_and_preflights_all_rows",
+          "list_literal_28_byte_rows_offset_pool_and_unsigned_public_exit",
+          "local_arm_start_stored_result_original60s_signal_cleanup_and_repeated_up_notice",
+          "malformed_registered_frames_are_refused_before_exposing_list_rows",
+          "malformed_registered_status_reconnects_but_legal_unregistered_directions_are_ignored",
+          "pipe_ready_and_pipe_creation_failure_report_stored_result_without_waiting_or_fake_timeout",
+          "repeated_mq_loss_reaches_fifteen_minute_cap_without_notification_reset",
+          "result_and_status_retain_unknown_values_reserved_and_nonutf8",
+          "saturated_reconnect_delay_remains_forever_without_minting_a_new_mq",
+          "saturated_startup_deadline_keeps_forever_and_original_signal_authority",
+          "service_request_total65535_legal65536_and_short_buffer_atomic",
+          "startup_capacity_defers_only_new_spawn_without_blocking_original_signal_cleanup_or_connect",
+          "stop_revokes_pending_frame_connect_attempt_and_every_later_notification",
+          "subscribe_is_monitor_not_test_and_unknown_notifications_do_not_reset_backoff",
+          "successful_list_borrows_validated_rows_and_wrong_registered_reply_retires_silently",
+          "test_confirmation_remote_results_cancel_envelope_and_no_remote_deadline",
+          "two_arm_stop_waiters_keep_original_callback_ownership_instead_of_c_mismatched_closure"
+        ],
+        "reviewed_count": 32
+      }
+    },
+    "native-retry": {
+      "broker": {
+        "files": {
+          "adapters/resolver-broker-std/tests/client_rounds.rs": [
+            "combined_endpoints_use_unix_on_even_rounds_tcp_on_odd_and_fallback_after_real_unix_failure",
+            "unreachable_valid_resolver_expires_the_original_five_second_client_lookup"
+          ],
+          "adapters/resolver-broker-std/tests/numeric_client.rs": [
+            "numeric_address_hold_precedes_real_socket_and_only_own_null_continues",
+            "numeric_client_starts_real_socket_then_finishes_own_callback_stack_before_connection_notice"
+          ],
+          "adapters/resolver-broker-std/tests/port_failures.rs": [
+            "actual_native_refusal_remains_socket_retry",
+            "arm_time_error_preserves_original_mq_without_connect_retry",
+            "arm_timer_capacity_preserves_original_mq_without_connect_retry",
+            "endpoint_time_error_retains_exact_cause_and_never_replays_socket",
+            "endpoint_timer_capacity_retains_exact_cause_and_never_replays_socket",
+            "statistics_time_error_preserves_get_epoch_without_connect_retry",
+            "statistics_timer_capacity_preserves_get_epoch_without_connect_retry"
+          ],
+          "adapters/resolver-broker-std/tests/retry_clock.rs": [
+            "broker_initial_ready_at_max_runs_once_but_saturated_delayed_retry_remains_never",
+            "broker_native_retry_deadline_samples_source_after_the_actual_socket_failure",
+            "broker_post_error_sample_failure_retries_only_registration_and_preserves_original_frame",
+            "canceled_statistics_drive_retains_original_retry_and_destroy_returns_only_its_waiter_credit",
+            "statistics_native_retry_forward_revision_preserves_get_epoch_and_original_bytes",
+            "statistics_native_retry_rollback_keeps_original_logical_target_and_can_resume",
+            "statistics_retry_registration_capacity_preserves_original_error_until_only_registration_can_resume",
+            "statistics_retry_registration_time_error_preserves_original_error_and_releases_refused_waiter"
+          ],
+          "adapters/resolver-broker-std/tests/shared.rs": [
+            "callback_return_lease_blocks_next_effect_but_allows_cancellation_then_safe_pool_reuse",
+            "callback_stack_survives_source_clock_backwards_before_other_due_timeout",
+            "client_tcp_success_retains_dns_drain_until_actual_end_and_ignores_later_addresses",
+            "client_zero_timer_registration_remains_ready_after_source_clock_rollback",
+            "cloned_contexts_share_one_fifo_mq_and_end_advances_original_tail",
+            "driver_drop_reports_owner_loss_and_preserves_no_fake_dns_terminal",
+            "existing_mq_admission_owns_frame_before_immediate_cancel_or_another_drive",
+            "expired_then_canceled_unsent_envelopes_retain_exact_mq_ownership_with_bounded_credits",
+            "local_fast_callbacks_are_deferred_shared_cancellable_and_reverse_requires_current_config",
+            "logical_clock_revision_wakes_unbounded_drive_and_timeout_keeps_original_deadline",
+            "maximum_65535_frame_reaches_shared_mq_and_rejected_names_preserve_admission",
+            "selected_configuration_changes_only_next_mq_while_old_unix_identity_remains_live",
+            "stale_foreign_capacity_and_clock_failure_drop_do_not_alias_callback_authority",
+            "tcp_resolver_own_numeric_lookup_uses_shared_core_without_self_deadlock",
+            "transmitted_cancel_drains_original_end_without_private_connection_or_callback"
+          ],
+          "adapters/resolver-broker-std/tests/subscriptions.rs": [
+            "actual_driver_and_two_provider_timers_all_wake_across_both_poll_orders",
+            "broker_requires_its_own_subscription_before_returning_any_owner",
+            "canceled_drive_future_preserves_original_driver_subscription_and_new_wait_replaces_only_its_waker",
+            "dropping_driver_drops_its_stored_waker_while_retained_context_and_timer_keep_same_source",
+            "provider_timer_poll_source_error_releases_only_original_waiter_even_if_future_is_retained",
+            "timer_capacity_fails_atomically_then_drop_and_completion_each_return_only_their_credit"
+          ],
+          "adapters/resolver-broker-std/tests/two_services.rs": [
+            "arm_and_statistics_share_fifo_and_keep_dns_subscription_after_arm_test_success"
+          ]
+        },
+        "required_names": [
+          "actual_driver_and_two_provider_timers_all_wake_across_both_poll_orders",
+          "actual_native_refusal_remains_socket_retry",
+          "arm_and_statistics_share_fifo_and_keep_dns_subscription_after_arm_test_success",
+          "arm_time_error_preserves_original_mq_without_connect_retry",
+          "arm_timer_capacity_preserves_original_mq_without_connect_retry",
+          "broker_initial_ready_at_max_runs_once_but_saturated_delayed_retry_remains_never",
+          "broker_native_retry_deadline_samples_source_after_the_actual_socket_failure",
+          "broker_post_error_sample_failure_retries_only_registration_and_preserves_original_frame",
+          "broker_requires_its_own_subscription_before_returning_any_owner",
+          "callback_return_lease_blocks_next_effect_but_allows_cancellation_then_safe_pool_reuse",
+          "callback_stack_survives_source_clock_backwards_before_other_due_timeout",
+          "canceled_drive_future_preserves_original_driver_subscription_and_new_wait_replaces_only_its_waker",
+          "canceled_statistics_drive_retains_original_retry_and_destroy_returns_only_its_waiter_credit",
+          "client_tcp_success_retains_dns_drain_until_actual_end_and_ignores_later_addresses",
+          "client_zero_timer_registration_remains_ready_after_source_clock_rollback",
+          "cloned_contexts_share_one_fifo_mq_and_end_advances_original_tail",
+          "combined_endpoints_use_unix_on_even_rounds_tcp_on_odd_and_fallback_after_real_unix_failure",
+          "driver_drop_reports_owner_loss_and_preserves_no_fake_dns_terminal",
+          "dropping_driver_drops_its_stored_waker_while_retained_context_and_timer_keep_same_source",
+          "endpoint_time_error_retains_exact_cause_and_never_replays_socket",
+          "endpoint_timer_capacity_retains_exact_cause_and_never_replays_socket",
+          "existing_mq_admission_owns_frame_before_immediate_cancel_or_another_drive",
+          "expired_then_canceled_unsent_envelopes_retain_exact_mq_ownership_with_bounded_credits",
+          "local_fast_callbacks_are_deferred_shared_cancellable_and_reverse_requires_current_config",
+          "logical_clock_revision_wakes_unbounded_drive_and_timeout_keeps_original_deadline",
+          "maximum_65535_frame_reaches_shared_mq_and_rejected_names_preserve_admission",
+          "numeric_address_hold_precedes_real_socket_and_only_own_null_continues",
+          "numeric_client_starts_real_socket_then_finishes_own_callback_stack_before_connection_notice",
+          "provider_timer_poll_source_error_releases_only_original_waiter_even_if_future_is_retained",
+          "selected_configuration_changes_only_next_mq_while_old_unix_identity_remains_live",
+          "stale_foreign_capacity_and_clock_failure_drop_do_not_alias_callback_authority",
+          "statistics_native_retry_forward_revision_preserves_get_epoch_and_original_bytes",
+          "statistics_native_retry_rollback_keeps_original_logical_target_and_can_resume",
+          "statistics_retry_registration_capacity_preserves_original_error_until_only_registration_can_resume",
+          "statistics_retry_registration_time_error_preserves_original_error_and_releases_refused_waiter",
+          "statistics_time_error_preserves_get_epoch_without_connect_retry",
+          "statistics_timer_capacity_preserves_get_epoch_without_connect_retry",
+          "tcp_resolver_own_numeric_lookup_uses_shared_core_without_self_deadlock",
+          "timer_capacity_fails_atomically_then_drop_and_completion_each_return_only_their_credit",
+          "transmitted_cancel_drains_original_end_without_private_connection_or_callback",
+          "unreachable_valid_resolver_expires_the_original_five_second_client_lookup"
+        ],
+        "reviewed_count": 41
+      },
+      "pure_core": {
+        "files": {
+          "crates/gnunet-client/src/lib.rs": [],
+          "crates/gnunet-client/src/resolver.rs": [],
+          "crates/gnunet-client/src/resolver_handle.rs": [
+            "admission_configuration_updates_preserve_original_retry_and_live_request",
+            "exhausted_slot_generation_is_retired_instead_of_wrapping",
+            "exponential_backoff_caps_at_fifteen_minutes_and_idle_close_resets_it",
+            "order_and_epoch_exhaustion_reject_before_committing",
+            "wire_counter_wraps_but_never_collides_with_a_live_local_or_remote_slot"
+          ],
+          "crates/gnunet-client/src/statistics.rs": [
+            "independent_get_and_value_bytes",
+            "malformed_strings_and_eof_are_not_completion",
+            "one_original_get_requires_end_and_enforces_its_limit"
+          ],
+          "crates/gnunet-client/src/statistics_handle.rs": [
+            "all_public_requests_accept_65535_and_reject_65536_without_admission",
+            "epoch_and_transmit_exhaustion_refuse_before_frame_or_queue_changes",
+            "exponential_retry_caps_at_fifteen_minutes_and_only_end_resets_it",
+            "generation_exhaustion_retires_slots_without_aliasing"
+          ],
+          "crates/gnunet-client/tests/resolver.rs": [
+            "admission_output_capacity_and_completion_reservations_are_atomic",
+            "all_sent_cancels_close_after_one_ms_and_retire_only_owned_epoch",
+            "codec_rejects_wrong_types_truncation_family_and_name_without_partial_writes",
+            "disconnect_requires_live_remote_cancellation_but_does_not_cancel_local_tasks",
+            "end_and_timeout_reverse_fallback_allow_cancel_before_terminal",
+            "fifo_submission_cancel_drain_and_next_head_do_not_invent_cancel_frames",
+            "forever_and_finite_overflow_saturate_without_expiring_at_max_clock",
+            "forward_response_family_is_from_payload_length_as_in_c_not_query_filter",
+            "local_ready_fifo_uses_registration_order_after_clock_rollback",
+            "local_ready_registration_survives_rollback_and_retains_enqueue_fifo",
+            "local_tasks_are_ready_even_at_never_but_remote_never_is_not_due",
+            "malformed_identified_payload_ends_only_that_request_and_reconnects_next",
+            "maximum_65535_frame_is_legal_but_65536_is_rejected_atomically",
+            "normal_c_daemon_wire_trace_has_native_family_and_opaque_id",
+            "numeric_and_loopback_events_match_normal_c_order_and_can_cancel_between_values",
+            "positive_remote_delay_keeps_original_deadline_across_rollback",
+            "queue_timeouts_are_per_admission_and_receive_at_deadline_cannot_deliver_value",
+            "received_reverse_name_survives_reconnect_and_suppresses_timeout_fallback",
+            "reconnect_reuses_id_and_original_deadline_and_rejects_stale_epoch",
+            "reverse_nonzero_direction_and_embedded_c_string_nul_are_retained",
+            "unavailable_mq_configuration_retries_without_consuming_epoch_or_deadline",
+            "unknown_id_reconnects_but_preserves_live_operation_and_same_wire_id",
+            "zero_deadline_fastpaths_and_numeric_reverse_config_asymmetry_are_real",
+            "zero_remote_timeout_stays_ready_without_replacing_original_deadline"
+          ],
+          "crates/gnunet-client/tests/broker_boundaries.rs": [
+            "sole_canceled_head_reconnect_schedules_original_retry_before_next_admission",
+            "source_callback_stack_does_not_wait_for_time_to_recover_or_interleave_timeout",
+            "synchronous_mq_admission_precedes_unrelated_due_scheduler_work"
+          ]
+        },
+        "required_names": [
+          "admission_configuration_updates_preserve_original_retry_and_live_request",
+          "admission_output_capacity_and_completion_reservations_are_atomic",
+          "all_public_requests_accept_65535_and_reject_65536_without_admission",
+          "all_sent_cancels_close_after_one_ms_and_retire_only_owned_epoch",
+          "codec_rejects_wrong_types_truncation_family_and_name_without_partial_writes",
+          "disconnect_requires_live_remote_cancellation_but_does_not_cancel_local_tasks",
+          "end_and_timeout_reverse_fallback_allow_cancel_before_terminal",
+          "epoch_and_transmit_exhaustion_refuse_before_frame_or_queue_changes",
+          "exhausted_slot_generation_is_retired_instead_of_wrapping",
+          "exponential_backoff_caps_at_fifteen_minutes_and_idle_close_resets_it",
+          "exponential_retry_caps_at_fifteen_minutes_and_only_end_resets_it",
+          "fifo_submission_cancel_drain_and_next_head_do_not_invent_cancel_frames",
+          "forever_and_finite_overflow_saturate_without_expiring_at_max_clock",
+          "forward_response_family_is_from_payload_length_as_in_c_not_query_filter",
+          "generation_exhaustion_retires_slots_without_aliasing",
+          "independent_get_and_value_bytes",
+          "local_ready_fifo_uses_registration_order_after_clock_rollback",
+          "local_ready_registration_survives_rollback_and_retains_enqueue_fifo",
+          "local_tasks_are_ready_even_at_never_but_remote_never_is_not_due",
+          "malformed_identified_payload_ends_only_that_request_and_reconnects_next",
+          "malformed_strings_and_eof_are_not_completion",
+          "maximum_65535_frame_is_legal_but_65536_is_rejected_atomically",
+          "normal_c_daemon_wire_trace_has_native_family_and_opaque_id",
+          "numeric_and_loopback_events_match_normal_c_order_and_can_cancel_between_values",
+          "one_original_get_requires_end_and_enforces_its_limit",
+          "order_and_epoch_exhaustion_reject_before_committing",
+          "positive_remote_delay_keeps_original_deadline_across_rollback",
+          "queue_timeouts_are_per_admission_and_receive_at_deadline_cannot_deliver_value",
+          "received_reverse_name_survives_reconnect_and_suppresses_timeout_fallback",
+          "reconnect_reuses_id_and_original_deadline_and_rejects_stale_epoch",
+          "reverse_nonzero_direction_and_embedded_c_string_nul_are_retained",
+          "sole_canceled_head_reconnect_schedules_original_retry_before_next_admission",
+          "source_callback_stack_does_not_wait_for_time_to_recover_or_interleave_timeout",
+          "synchronous_mq_admission_precedes_unrelated_due_scheduler_work",
+          "unavailable_mq_configuration_retries_without_consuming_epoch_or_deadline",
+          "unknown_id_reconnects_but_preserves_live_operation_and_same_wire_id",
+          "wire_counter_wraps_but_never_collides_with_a_live_local_or_remote_slot",
+          "zero_deadline_fastpaths_and_numeric_reverse_config_asymmetry_are_real",
+          "zero_remote_timeout_stays_ready_without_replacing_original_deadline"
+        ],
+        "reviewed_count": 39
+      },
+      "ipc": {
+        "files": {
+          "adapters/ipc-unix/src/accepted.rs": [
+            "injected_fatal_initialization_closes_only_actual_accepted_owner",
+            "injected_wrong_kind_actual_nonfatal_setter_error_returns_original_usable_stream"
+          ],
+          "adapters/ipc-unix/src/acl.rs": [
+            "official_masks_ports_denial_and_zero_terminator"
+          ],
+          "adapters/ipc-unix/src/client_transport.rs": [
+            "expanded_unix_validation_precedes_tcp_and_raw_empty_is_a_relative_path"
+          ],
+          "adapters/ipc-unix/src/clock.rs": [],
+          "adapters/ipc-unix/src/handle.rs": [],
+          "adapters/ipc-unix/src/lib.rs": [
+            "dropping_a_partially_read_operation_retires_the_socket",
+            "expired_connect_submits_no_connection",
+            "fragmented_official_reply_and_original_deadline",
+            "interrupted_partial_stream_keeps_original_frame_and_send_cursor",
+            "malformed_reply_and_callback_refusal_retire_the_socket",
+            "partial_reply_timeout_retires_connection",
+            "preflight_capacity_and_expiry_submit_no_bytes_and_preserve_connection",
+            "repeated_interruptions_do_not_extend_the_original_io_deadline",
+            "synchronously_ready_end_cannot_complete_after_callback_crosses_deadline"
+          ],
+          "adapters/ipc-unix/src/live_configuration.rs": [],
+          "adapters/ipc-unix/src/network.rs": [],
+          "adapters/ipc-unix/src/presence.rs": [],
+          "adapters/ipc-unix/src/resolution.rs": [],
+          "adapters/ipc-unix/src/resolver.rs": [],
+          "adapters/ipc-unix/src/server.rs": [
+            "accepted_tcp_is_canonical_before_statistics_core_admission",
+            "cancelling_the_server_future_releases_watches_and_partial_sessions",
+            "connection_limit_and_idle_deadline_release_real_ids",
+            "finite_emfile_observation_pauses_accept_until_original_live_client_physically_closes",
+            "malformed_oversized_and_partial_eof_close_only_their_session",
+            "official_soft_shutdown_finishes_writer_and_does_not_wait_for_monitors",
+            "output_and_core_notification_overflow_have_real_close_outcomes",
+            "overflowing_one_watch_queue_does_not_consume_another_clients_effects",
+            "real_rust_client_and_literal_peer_get_watch_and_barrier",
+            "real_watch_client_keeps_id_one_after_cancelling_zero"
+          ],
+          "adapters/ipc-unix/src/stream.rs": [],
+          "adapters/ipc-unix/src/transport.rs": [],
+          "adapters/ipc-unix/src/watch.rs": [
+            "cancelled_notifications_never_extend_the_original_next_deadline",
+            "cancelled_partial_receive_closes_the_actual_socket",
+            "fragmented_notifications_keep_original_ids_after_cancellation",
+            "unknown_wid_retires_connection_and_expired_preflight_preserves_it",
+            "unpolled_watch_and_rejected_preflight_submit_nothing_and_keep_wid_zero"
+          ],
+          "adapters/ipc-unix/tests/client_transport.rs": [
+            "configured_tcp_uses_identical_official_frames_and_retains_partial_cursors",
+            "initial_tcp_refusal_preserves_virtual_mq_and_the_first_immutable_setter",
+            "invalid_configuration_is_lazy_observable_and_never_creates_mq_or_unknown_setters"
+          ],
+          "adapters/ipc-unix/tests/handle.rs": [
+            "cancellation_inside_callback_drains_old_end_before_next_query",
+            "cancelling_a_drive_future_preserves_partial_header_and_original_get",
+            "expired_destroy_never_submits_a_late_connect_and_delivers_failure_report",
+            "initial_socket_retry_retains_virtual_mq_and_immutable_first_setter",
+            "iterator_abort_completes_on_end_but_suppresses_disconnect_continuation",
+            "lazy_noop_and_coalescing_across_get_match_independent_wire_order",
+            "processing_confirmation_retires_socket_and_callback_admission",
+            "restart_remaps_cancelled_watch_holes_to_stable_logical_owners"
+          ],
+          "adapters/ipc-unix/tests/handle_authority.rs": [
+            "closed_driver_dispatches_original_failure_once_then_revokes_all_callbacks"
+          ],
+          "adapters/ipc-unix/tests/resolver.rs": [
+            "callback_reconfiguration_preserves_old_mq_then_uses_new_endpoint_after_idle_close",
+            "configured_mq_failure_times_out_without_blocking_numeric_fast_requests",
+            "dropping_drive_after_real_short_writes_preserves_immutable_tx_cursor",
+            "dropping_owner_closes_its_socket_and_does_not_dispatch_a_completion",
+            "dropping_pending_drive_preserves_partial_response_header_and_body",
+            "initial_socket_retries_keep_original_virtual_epoch_and_request",
+            "invalid_configuration_fastpaths_are_lazy_async_and_cancel_between_callbacks",
+            "invalid_to_valid_connect_restores_future_admission_without_losing_local_task",
+            "late_timed_out_id_reconnects_next_query_with_its_original_id",
+            "oversized_response_is_explicit_capacity_loss_and_never_successful_empty_result",
+            "tcp_reverse_uses_raw_ip_and_name_callback_cancel_suppresses_end",
+            "unix_fifo_sent_cancel_drains_without_an_extra_cancel_frame"
+          ],
+          "adapters/ipc-unix/tests/tcp_server.rs": [
+            "denied_tcp_peer_and_tolerant_unknown_frame_have_explicit_separate_outcomes",
+            "unix_and_tcp_share_one_core_and_acl_rejection_does_not_consume_an_id"
+          ],
+          "adapters/ipc-unix/tests/transport.rs": [
+            "public_configured_tcp_attempt_reuses_native_stream_without_resolver_dependency",
+            "public_unix_attempt_is_lazy_and_canceled_wait_retains_original_io"
+          ]
+        },
+        "required_names": [
+          "accepted_tcp_is_canonical_before_statistics_core_admission",
+          "callback_reconfiguration_preserves_old_mq_then_uses_new_endpoint_after_idle_close",
+          "cancellation_inside_callback_drains_old_end_before_next_query",
+          "cancelled_notifications_never_extend_the_original_next_deadline",
+          "cancelled_partial_receive_closes_the_actual_socket",
+          "cancelling_a_drive_future_preserves_partial_header_and_original_get",
+          "cancelling_the_server_future_releases_watches_and_partial_sessions",
+          "closed_driver_dispatches_original_failure_once_then_revokes_all_callbacks",
+          "configured_mq_failure_times_out_without_blocking_numeric_fast_requests",
+          "configured_tcp_uses_identical_official_frames_and_retains_partial_cursors",
+          "connection_limit_and_idle_deadline_release_real_ids",
+          "denied_tcp_peer_and_tolerant_unknown_frame_have_explicit_separate_outcomes",
+          "dropping_a_partially_read_operation_retires_the_socket",
+          "dropping_drive_after_real_short_writes_preserves_immutable_tx_cursor",
+          "dropping_owner_closes_its_socket_and_does_not_dispatch_a_completion",
+          "dropping_pending_drive_preserves_partial_response_header_and_body",
+          "expanded_unix_validation_precedes_tcp_and_raw_empty_is_a_relative_path",
+          "expired_connect_submits_no_connection",
+          "expired_destroy_never_submits_a_late_connect_and_delivers_failure_report",
+          "finite_emfile_observation_pauses_accept_until_original_live_client_physically_closes",
+          "fragmented_notifications_keep_original_ids_after_cancellation",
+          "fragmented_official_reply_and_original_deadline",
+          "initial_socket_retries_keep_original_virtual_epoch_and_request",
+          "initial_socket_retry_retains_virtual_mq_and_immutable_first_setter",
+          "initial_tcp_refusal_preserves_virtual_mq_and_the_first_immutable_setter",
+          "injected_fatal_initialization_closes_only_actual_accepted_owner",
+          "injected_wrong_kind_actual_nonfatal_setter_error_returns_original_usable_stream",
+          "interrupted_partial_stream_keeps_original_frame_and_send_cursor",
+          "invalid_configuration_fastpaths_are_lazy_async_and_cancel_between_callbacks",
+          "invalid_configuration_is_lazy_observable_and_never_creates_mq_or_unknown_setters",
+          "invalid_to_valid_connect_restores_future_admission_without_losing_local_task",
+          "iterator_abort_completes_on_end_but_suppresses_disconnect_continuation",
+          "late_timed_out_id_reconnects_next_query_with_its_original_id",
+          "lazy_noop_and_coalescing_across_get_match_independent_wire_order",
+          "malformed_oversized_and_partial_eof_close_only_their_session",
+          "malformed_reply_and_callback_refusal_retire_the_socket",
+          "official_masks_ports_denial_and_zero_terminator",
+          "official_soft_shutdown_finishes_writer_and_does_not_wait_for_monitors",
+          "output_and_core_notification_overflow_have_real_close_outcomes",
+          "overflowing_one_watch_queue_does_not_consume_another_clients_effects",
+          "oversized_response_is_explicit_capacity_loss_and_never_successful_empty_result",
+          "partial_reply_timeout_retires_connection",
+          "preflight_capacity_and_expiry_submit_no_bytes_and_preserve_connection",
+          "processing_confirmation_retires_socket_and_callback_admission",
+          "public_configured_tcp_attempt_reuses_native_stream_without_resolver_dependency",
+          "public_unix_attempt_is_lazy_and_canceled_wait_retains_original_io",
+          "real_rust_client_and_literal_peer_get_watch_and_barrier",
+          "real_watch_client_keeps_id_one_after_cancelling_zero",
+          "repeated_interruptions_do_not_extend_the_original_io_deadline",
+          "restart_remaps_cancelled_watch_holes_to_stable_logical_owners",
+          "synchronously_ready_end_cannot_complete_after_callback_crosses_deadline",
+          "tcp_reverse_uses_raw_ip_and_name_callback_cancel_suppresses_end",
+          "unix_and_tcp_share_one_core_and_acl_rejection_does_not_consume_an_id",
+          "unix_fifo_sent_cancel_drains_without_an_extra_cancel_frame",
+          "unknown_wid_retires_connection_and_expired_preflight_preserves_it",
+          "unpolled_watch_and_rejected_preflight_submit_nothing_and_keep_wid_zero"
+        ],
+        "reviewed_count": 56
+      },
+      "arm_endpoint": {
+        "files": {
+          "adapters/arm-std/src/control.rs": [],
+          "adapters/arm-std/src/lib.rs": [],
+          "adapters/arm-std/src/mq.rs": [
+            "finite_large_native_sleep_never_changes_the_original_logical_deadline"
+          ],
+          "adapters/arm-std/src/endpoint.rs": [],
+          "adapters/arm-std/src/monitor_host.rs": [],
+          "adapters/arm-std/src/launch.rs": [],
+          "adapters/arm-std/tests/loopback.rs": [
+            "bad_registered_frame_retires_one_epoch_without_replaying_operations",
+            "canceled_and_disconnected_stop_waiters_reclaim_all_slots_without_callback_or_null_call",
+            "canceled_drive_under_real_socket_backpressure_keeps_every_original_byte_once",
+            "foreign_owner_scope_cannot_cancel_an_original_operation_even_before_socket_io",
+            "fragmented_unix_all_remote_requests_cancellation_and_list_borrow",
+            "invalid_initial_configuration_reports_each_original_unavailable_once",
+            "malformed_list_rows_indices_nuls_prefix_and_result_retire_exact_original_mq",
+            "maximum_name_and_capacity_rejection_are_atomic_and_stale_generation_cannot_cancel_reused_slot",
+            "monitor_canceled_partial_rx_recovers_exact_callback_then_stop_closes_original_stream",
+            "physical_eof_distinguishes_stopping_waiter_from_pending_stop",
+            "tcp_monitor_raw_status_reconnect_and_stop_inside_callback",
+            "two_stop_waiters_keep_each_original_operation_through_replacement_and_real_eof",
+            "unavailable_socket_retries_inside_original_mq_and_preserves_queued_list",
+            "valid_wire_reply_over_declared_host_rx_capacity_retires_mq_without_partial_callback",
+            "wrong_kind_unknown_ids_and_unregistered_frames_preserve_live_original_operation"
+          ],
+          "adapters/arm-std/tests/live_configuration.rs": [
+            "actual_monitor_cfg_update_then_eof_reports_one_unavailable_and_restore_does_not_retry",
+            "current_logical_mq_retries_new_unix_path_but_keeps_its_original_tcp_and_queued_id",
+            "live_configuration_update_during_partial_tx_keeps_original_stream_and_every_frame_once",
+            "live_update_does_not_retarget_or_wake_an_original_polled_connection_attempt"
+          ],
+          "adapters/arm-std/tests/logical_clock.rs": [
+            "logical_monitor_reconnect_keeps_original_deadline_across_rollback_and_revision_wakes_pending_drive",
+            "logical_startup_deadline_reports_original_starting_while_real_child_keeps_signal_pipe_open"
+          ],
+          "adapters/arm-std/tests/physical_clock.rs": [
+            "disconnected_client_releases_subscription_and_closed_drive_does_not_sample_again",
+            "native_failure_waits_for_post_failure_clock_sample_without_reconnecting_or_rebasing",
+            "physical_client_retry_forward_revision_keeps_mq_and_original_subscription",
+            "physical_client_retry_rollback_keeps_original_absolute_target_and_can_resume",
+            "stopped_monitor_releases_subscription_before_the_host_value_is_dropped"
+          ]
+        },
+        "required_names": [
+          "actual_monitor_cfg_update_then_eof_reports_one_unavailable_and_restore_does_not_retry",
+          "bad_registered_frame_retires_one_epoch_without_replaying_operations",
+          "canceled_and_disconnected_stop_waiters_reclaim_all_slots_without_callback_or_null_call",
+          "canceled_drive_under_real_socket_backpressure_keeps_every_original_byte_once",
+          "current_logical_mq_retries_new_unix_path_but_keeps_its_original_tcp_and_queued_id",
+          "disconnected_client_releases_subscription_and_closed_drive_does_not_sample_again",
+          "finite_large_native_sleep_never_changes_the_original_logical_deadline",
+          "foreign_owner_scope_cannot_cancel_an_original_operation_even_before_socket_io",
+          "fragmented_unix_all_remote_requests_cancellation_and_list_borrow",
+          "invalid_initial_configuration_reports_each_original_unavailable_once",
+          "live_configuration_update_during_partial_tx_keeps_original_stream_and_every_frame_once",
+          "live_update_does_not_retarget_or_wake_an_original_polled_connection_attempt",
+          "logical_monitor_reconnect_keeps_original_deadline_across_rollback_and_revision_wakes_pending_drive",
+          "logical_startup_deadline_reports_original_starting_while_real_child_keeps_signal_pipe_open",
+          "malformed_list_rows_indices_nuls_prefix_and_result_retire_exact_original_mq",
+          "maximum_name_and_capacity_rejection_are_atomic_and_stale_generation_cannot_cancel_reused_slot",
+          "monitor_canceled_partial_rx_recovers_exact_callback_then_stop_closes_original_stream",
+          "native_failure_waits_for_post_failure_clock_sample_without_reconnecting_or_rebasing",
+          "physical_client_retry_forward_revision_keeps_mq_and_original_subscription",
+          "physical_client_retry_rollback_keeps_original_absolute_target_and_can_resume",
+          "physical_eof_distinguishes_stopping_waiter_from_pending_stop",
+          "stopped_monitor_releases_subscription_before_the_host_value_is_dropped",
+          "tcp_monitor_raw_status_reconnect_and_stop_inside_callback",
+          "two_stop_waiters_keep_each_original_operation_through_replacement_and_real_eof",
+          "unavailable_socket_retries_inside_original_mq_and_preserves_queued_list",
+          "valid_wire_reply_over_declared_host_rx_capacity_retires_mq_without_partial_callback",
+          "wrong_kind_unknown_ids_and_unregistered_frames_preserve_live_original_operation"
+        ],
+        "reviewed_count": 27
+      },
+      "arm_core": {
+        "files": {
+          "crates/gnunet-arm-core/src/client.rs": [],
+          "crates/gnunet-arm-core/src/lib.rs": [],
+          "crates/gnunet-arm-core/src/monitor.rs": [],
+          "crates/gnunet-arm-core/src/transport.rs": [],
+          "crates/gnunet-arm-core/src/wire.rs": [],
+          "crates/gnunet-arm-core/tests/client.rs": [
+            "arm_stop_waits_eof_then_failures_before_connection_notice_and_persistent_backoff",
+            "cancel_arm_stop_tombstone_and_explicit_disconnect_are_safe_without_false_callbacks",
+            "canceled_or_disconnected_inflight_spawn_keeps_original_resource_until_actual_report",
+            "immediate_start_notifications_keep_ready_fifo_across_logical_clock_rollback",
+            "initial_and_retry_mq_failure_and_unknown_frames_are_observable_without_fake_success",
+            "local_arm_start_stored_result_original60s_signal_cleanup_and_repeated_up_notice",
+            "saturated_startup_deadline_keeps_forever_and_original_signal_authority",
+            "startup_capacity_defers_only_new_spawn_without_blocking_original_signal_cleanup_or_connect",
+            "successful_list_borrows_validated_rows_and_wrong_registered_reply_retires_silently",
+            "test_confirmation_remote_results_cancel_envelope_and_no_remote_deadline"
+          ],
+          "crates/gnunet-arm-core/tests/monitor.rs": [
+            "actual_initial_and_retry_creation_failures_are_distinct_and_never_fabricate_timers",
+            "already_ready_zero_delay_reconnect_survives_clock_rollback_but_forever_does_not",
+            "malformed_registered_status_reconnects_but_legal_unregistered_directions_are_ignored",
+            "repeated_mq_loss_reaches_fifteen_minute_cap_without_notification_reset",
+            "saturated_reconnect_delay_remains_forever_without_minting_a_new_mq",
+            "stop_revokes_pending_frame_connect_attempt_and_every_later_notification",
+            "subscribe_is_monitor_not_test_and_unknown_notifications_do_not_reset_backoff"
+          ],
+          "crates/gnunet-arm-core/tests/ownership.rs": [
+            "canceled_callback_slot_reuse_does_not_cancel_envelope_or_consume_ids_on_capacity_error",
+            "exact_maximum_request_uses_one_aggregate_vec_and_oversize_admission_is_atomic",
+            "failure_callback_can_cancel_later_pending_operation_before_its_callback",
+            "foreign_owner_epoch_and_old_connection_results_cannot_change_new_operations",
+            "leased_frame_stays_immutable_through_aggregate_compaction_and_old_write_cannot_release_it",
+            "pipe_ready_and_pipe_creation_failure_report_stored_result_without_waiting_or_fake_timeout",
+            "two_arm_stop_waiters_keep_original_callback_ownership_instead_of_c_mismatched_closure"
+          ],
+          "crates/gnunet-arm-core/tests/wire.rs": [
+            "aggregate_abi_is_explicit_and_does_not_follow_rust_pointer_width",
+            "all_request_assignments_have_exact_packed_layout_and_c_string_rules",
+            "list_accepts_middle_string_shared_pool_unused_bytes_and_zero_count",
+            "list_encoder_is_packed_canonical_and_preflights_all_rows",
+            "list_literal_28_byte_rows_offset_pool_and_unsigned_public_exit",
+            "malformed_registered_frames_are_refused_before_exposing_list_rows",
+            "result_and_status_retain_unknown_values_reserved_and_nonutf8",
+            "service_request_total65535_legal65536_and_short_buffer_atomic"
+          ]
+        },
+        "required_names": [
+          "actual_initial_and_retry_creation_failures_are_distinct_and_never_fabricate_timers",
+          "aggregate_abi_is_explicit_and_does_not_follow_rust_pointer_width",
+          "all_request_assignments_have_exact_packed_layout_and_c_string_rules",
+          "already_ready_zero_delay_reconnect_survives_clock_rollback_but_forever_does_not",
+          "arm_stop_waits_eof_then_failures_before_connection_notice_and_persistent_backoff",
+          "cancel_arm_stop_tombstone_and_explicit_disconnect_are_safe_without_false_callbacks",
+          "canceled_callback_slot_reuse_does_not_cancel_envelope_or_consume_ids_on_capacity_error",
+          "canceled_or_disconnected_inflight_spawn_keeps_original_resource_until_actual_report",
+          "exact_maximum_request_uses_one_aggregate_vec_and_oversize_admission_is_atomic",
+          "failure_callback_can_cancel_later_pending_operation_before_its_callback",
+          "foreign_owner_epoch_and_old_connection_results_cannot_change_new_operations",
+          "immediate_start_notifications_keep_ready_fifo_across_logical_clock_rollback",
+          "initial_and_retry_mq_failure_and_unknown_frames_are_observable_without_fake_success",
+          "leased_frame_stays_immutable_through_aggregate_compaction_and_old_write_cannot_release_it",
+          "list_accepts_middle_string_shared_pool_unused_bytes_and_zero_count",
+          "list_encoder_is_packed_canonical_and_preflights_all_rows",
+          "list_literal_28_byte_rows_offset_pool_and_unsigned_public_exit",
+          "local_arm_start_stored_result_original60s_signal_cleanup_and_repeated_up_notice",
+          "malformed_registered_frames_are_refused_before_exposing_list_rows",
+          "malformed_registered_status_reconnects_but_legal_unregistered_directions_are_ignored",
+          "pipe_ready_and_pipe_creation_failure_report_stored_result_without_waiting_or_fake_timeout",
+          "repeated_mq_loss_reaches_fifteen_minute_cap_without_notification_reset",
+          "result_and_status_retain_unknown_values_reserved_and_nonutf8",
+          "saturated_reconnect_delay_remains_forever_without_minting_a_new_mq",
+          "saturated_startup_deadline_keeps_forever_and_original_signal_authority",
+          "service_request_total65535_legal65536_and_short_buffer_atomic",
+          "startup_capacity_defers_only_new_spawn_without_blocking_original_signal_cleanup_or_connect",
+          "stop_revokes_pending_frame_connect_attempt_and_every_later_notification",
+          "subscribe_is_monitor_not_test_and_unknown_notifications_do_not_reset_backoff",
+          "successful_list_borrows_validated_rows_and_wrong_registered_reply_retires_silently",
+          "test_confirmation_remote_results_cancel_envelope_and_no_remote_deadline",
+          "two_arm_stop_waiters_keep_original_callback_ownership_instead_of_c_mismatched_closure"
+        ],
+        "reviewed_count": 32
+      }
+    }
+  },
+  "all_test_targets": {
+    "adapters/resolver-broker-std": {
+      "adapters/resolver-broker-std/tests/client_rounds.rs": [
+        "combined_endpoints_use_unix_on_even_rounds_tcp_on_odd_and_fallback_after_real_unix_failure",
+        "unreachable_valid_resolver_expires_the_original_five_second_client_lookup"
+      ],
+      "adapters/resolver-broker-std/tests/numeric_client.rs": [
+        "numeric_address_hold_precedes_real_socket_and_only_own_null_continues",
+        "numeric_client_starts_real_socket_then_finishes_own_callback_stack_before_connection_notice"
+      ],
+      "adapters/resolver-broker-std/tests/port_failures.rs": [
+        "actual_native_refusal_remains_socket_retry",
+        "arm_time_error_preserves_original_mq_without_connect_retry",
+        "arm_timer_capacity_preserves_original_mq_without_connect_retry",
+        "endpoint_time_error_retains_exact_cause_and_never_replays_socket",
+        "endpoint_timer_capacity_retains_exact_cause_and_never_replays_socket",
+        "statistics_time_error_preserves_get_epoch_without_connect_retry",
+        "statistics_timer_capacity_preserves_get_epoch_without_connect_retry"
+      ],
+      "adapters/resolver-broker-std/tests/retry_clock.rs": [
+        "broker_initial_ready_at_max_runs_once_but_saturated_delayed_retry_remains_never",
+        "broker_native_retry_deadline_samples_source_after_the_actual_socket_failure",
+        "broker_post_error_sample_failure_retries_only_registration_and_preserves_original_frame",
+        "canceled_statistics_drive_retains_original_retry_and_destroy_returns_only_its_waiter_credit",
+        "statistics_native_retry_forward_revision_preserves_get_epoch_and_original_bytes",
+        "statistics_native_retry_rollback_keeps_original_logical_target_and_can_resume",
+        "statistics_retry_registration_capacity_preserves_original_error_until_only_registration_can_resume",
+        "statistics_retry_registration_time_error_preserves_original_error_and_releases_refused_waiter"
+      ],
+      "adapters/resolver-broker-std/tests/shared.rs": [
+        "callback_return_lease_blocks_next_effect_but_allows_cancellation_then_safe_pool_reuse",
+        "callback_stack_survives_source_clock_backwards_before_other_due_timeout",
+        "client_tcp_success_retains_dns_drain_until_actual_end_and_ignores_later_addresses",
+        "client_zero_timer_registration_remains_ready_after_source_clock_rollback",
+        "cloned_contexts_share_one_fifo_mq_and_end_advances_original_tail",
+        "driver_drop_reports_owner_loss_and_preserves_no_fake_dns_terminal",
+        "existing_mq_admission_owns_frame_before_immediate_cancel_or_another_drive",
+        "expired_then_canceled_unsent_envelopes_retain_exact_mq_ownership_with_bounded_credits",
+        "local_fast_callbacks_are_deferred_shared_cancellable_and_reverse_requires_current_config",
+        "logical_clock_revision_wakes_unbounded_drive_and_timeout_keeps_original_deadline",
+        "maximum_65535_frame_reaches_shared_mq_and_rejected_names_preserve_admission",
+        "selected_configuration_changes_only_next_mq_while_old_unix_identity_remains_live",
+        "stale_foreign_capacity_and_clock_failure_drop_do_not_alias_callback_authority",
+        "tcp_resolver_own_numeric_lookup_uses_shared_core_without_self_deadlock",
+        "transmitted_cancel_drains_original_end_without_private_connection_or_callback"
+      ],
+      "adapters/resolver-broker-std/tests/subscriptions.rs": [
+        "actual_driver_and_two_provider_timers_all_wake_across_both_poll_orders",
+        "broker_requires_its_own_subscription_before_returning_any_owner",
+        "canceled_drive_future_preserves_original_driver_subscription_and_new_wait_replaces_only_its_waker",
+        "dropping_driver_drops_its_stored_waker_while_retained_context_and_timer_keep_same_source",
+        "provider_timer_poll_source_error_releases_only_original_waiter_even_if_future_is_retained",
+        "timer_capacity_fails_atomically_then_drop_and_completion_each_return_only_their_credit"
+      ],
+      "adapters/resolver-broker-std/tests/two_services.rs": [
+        "arm_and_statistics_share_fifo_and_keep_dns_subscription_after_arm_test_success"
+      ]
+    },
+    "adapters/ipc-unix": {
+      "adapters/ipc-unix/tests/client_transport.rs": [
+        "configured_tcp_uses_identical_official_frames_and_retains_partial_cursors",
+        "initial_tcp_refusal_preserves_virtual_mq_and_the_first_immutable_setter",
+        "invalid_configuration_is_lazy_observable_and_never_creates_mq_or_unknown_setters"
+      ],
+      "adapters/ipc-unix/tests/handle.rs": [
+        "cancellation_inside_callback_drains_old_end_before_next_query",
+        "cancelling_a_drive_future_preserves_partial_header_and_original_get",
+        "expired_destroy_never_submits_a_late_connect_and_delivers_failure_report",
+        "initial_socket_retry_retains_virtual_mq_and_immutable_first_setter",
+        "iterator_abort_completes_on_end_but_suppresses_disconnect_continuation",
+        "lazy_noop_and_coalescing_across_get_match_independent_wire_order",
+        "processing_confirmation_retires_socket_and_callback_admission",
+        "restart_remaps_cancelled_watch_holes_to_stable_logical_owners"
+      ],
+      "adapters/ipc-unix/tests/handle_authority.rs": [
+        "closed_driver_dispatches_original_failure_once_then_revokes_all_callbacks"
+      ],
+      "adapters/ipc-unix/tests/resolver.rs": [
+        "callback_reconfiguration_preserves_old_mq_then_uses_new_endpoint_after_idle_close",
+        "configured_mq_failure_times_out_without_blocking_numeric_fast_requests",
+        "dropping_drive_after_real_short_writes_preserves_immutable_tx_cursor",
+        "dropping_owner_closes_its_socket_and_does_not_dispatch_a_completion",
+        "dropping_pending_drive_preserves_partial_response_header_and_body",
+        "initial_socket_retries_keep_original_virtual_epoch_and_request",
+        "invalid_configuration_fastpaths_are_lazy_async_and_cancel_between_callbacks",
+        "invalid_to_valid_connect_restores_future_admission_without_losing_local_task",
+        "late_timed_out_id_reconnects_next_query_with_its_original_id",
+        "oversized_response_is_explicit_capacity_loss_and_never_successful_empty_result",
+        "tcp_reverse_uses_raw_ip_and_name_callback_cancel_suppresses_end",
+        "unix_fifo_sent_cancel_drains_without_an_extra_cancel_frame"
+      ],
+      "adapters/ipc-unix/tests/tcp_server.rs": [
+        "denied_tcp_peer_and_tolerant_unknown_frame_have_explicit_separate_outcomes",
+        "unix_and_tcp_share_one_core_and_acl_rejection_does_not_consume_an_id"
+      ],
+      "adapters/ipc-unix/tests/transport.rs": [
+        "public_configured_tcp_attempt_reuses_native_stream_without_resolver_dependency",
+        "public_unix_attempt_is_lazy_and_canceled_wait_retains_original_io"
+      ]
+    },
+    "adapters/arm-std": {
+      "adapters/arm-std/tests/live_configuration.rs": [
+        "actual_monitor_cfg_update_then_eof_reports_one_unavailable_and_restore_does_not_retry",
+        "current_logical_mq_retries_new_unix_path_but_keeps_its_original_tcp_and_queued_id",
+        "live_configuration_update_during_partial_tx_keeps_original_stream_and_every_frame_once",
+        "live_update_does_not_retarget_or_wake_an_original_polled_connection_attempt"
+      ],
+      "adapters/arm-std/tests/local_start.rs": [
+        "actual_fixture_readiness_eof_is_starting_and_child_is_reaped",
+        "actual_sixty_second_signal_deadline_keeps_starting_without_readiness",
+        "canceled_unperformed_local_setup_creates_no_child_and_missing_helper_is_real_setup_failure",
+        "cancellation_and_disconnect_close_original_signal_without_killing_child",
+        "child_registry_credit_does_not_block_first_signal_cleanup_and_resumes_after_consuming_wait",
+        "dropping_host_retains_original_live_child_wait_authority_in_caller_registry",
+        "live_configuration_is_sampled_when_local_setup_begins_and_never_replays_created_child",
+        "missing_binary_nonexecutable_and_late_exec_failure_are_distinct",
+        "one_signal_credit_defers_second_start_and_callback_reentry_until_cleanup",
+        "quiet_connected_mq_and_unbounded_drive_wake_on_owned_child_exit_to_release_registry_credit",
+        "registry_echild_retires_original_pid_once_without_fabricating_wait_success"
+      ],
+      "adapters/arm-std/tests/logical_clock.rs": [
+        "logical_monitor_reconnect_keeps_original_deadline_across_rollback_and_revision_wakes_pending_drive",
+        "logical_startup_deadline_reports_original_starting_while_real_child_keeps_signal_pipe_open"
+      ],
+      "adapters/arm-std/tests/loopback.rs": [
+        "bad_registered_frame_retires_one_epoch_without_replaying_operations",
+        "canceled_and_disconnected_stop_waiters_reclaim_all_slots_without_callback_or_null_call",
+        "canceled_drive_under_real_socket_backpressure_keeps_every_original_byte_once",
+        "foreign_owner_scope_cannot_cancel_an_original_operation_even_before_socket_io",
+        "fragmented_unix_all_remote_requests_cancellation_and_list_borrow",
+        "invalid_initial_configuration_reports_each_original_unavailable_once",
+        "malformed_list_rows_indices_nuls_prefix_and_result_retire_exact_original_mq",
+        "maximum_name_and_capacity_rejection_are_atomic_and_stale_generation_cannot_cancel_reused_slot",
+        "monitor_canceled_partial_rx_recovers_exact_callback_then_stop_closes_original_stream",
+        "physical_eof_distinguishes_stopping_waiter_from_pending_stop",
+        "tcp_monitor_raw_status_reconnect_and_stop_inside_callback",
+        "two_stop_waiters_keep_each_original_operation_through_replacement_and_real_eof",
+        "unavailable_socket_retries_inside_original_mq_and_preserves_queued_list",
+        "valid_wire_reply_over_declared_host_rx_capacity_retires_mq_without_partial_callback",
+        "wrong_kind_unknown_ids_and_unregistered_frames_preserve_live_original_operation"
+      ],
+      "adapters/arm-std/tests/physical_clock.rs": [
+        "disconnected_client_releases_subscription_and_closed_drive_does_not_sample_again",
+        "native_failure_waits_for_post_failure_clock_sample_without_reconnecting_or_rebasing",
+        "physical_client_retry_forward_revision_keeps_mq_and_original_subscription",
+        "physical_client_retry_rollback_keeps_original_absolute_target_and_can_resume",
+        "stopped_monitor_releases_subscription_before_the_host_value_is_dropped"
+      ],
+      "adapters/arm-std/tests/process.rs": [
+        "actual_filename_is_independent_of_raw_argv0_and_environment_cwd_are_preserved",
+        "capacity_completed_credit_and_foreign_or_retired_child_tokens_never_signal",
+        "directory_filename_is_admitted_before_the_actual_exec_refuses_it",
+        "exact_one_control_byte_and_broken_pipe_fallback_have_real_distinct_effects",
+        "explicit_stdin_mapping_wins_without_mutating_the_parent_stdio",
+        "full_nonblocking_control_pipe_really_falls_back_to_original_pid_kill",
+        "full_pipe_kill_zero_retains_the_actual_writer_for_a_later_successful_signal",
+        "nonexecutable_is_refused_but_late_missing_interpreter_is_real_admitted_exit_one",
+        "original_multiple_listener_queues_survive_actual_helper_exec_and_parent_flags",
+        "overlapping_explicit_descriptor_targets_cannot_clobber_the_other_source"
+      ]
+    },
+    "crates/gnunet-client": {
+      "crates/gnunet-client/tests/broker_boundaries.rs": [
+        "sole_canceled_head_reconnect_schedules_original_retry_before_next_admission",
+        "source_callback_stack_does_not_wait_for_time_to_recover_or_interleave_timeout",
+        "synchronous_mq_admission_precedes_unrelated_due_scheduler_work"
+      ],
+      "crates/gnunet-client/tests/handle.rs": [
+        "a_later_barrier_never_acknowledges_mutations_from_a_lost_epoch",
+        "deferred_destroy_requires_fully_written_barrier_and_exact_confirmation",
+        "destroy_immediate_and_expired_confirm_never_fabricate_processing_success",
+        "invalid_service_configuration_never_creates_a_virtual_mq",
+        "iterator_abort_retains_end_callback_but_not_disconnect_callback",
+        "lazy_create_zero_update_and_pending_setter_coalescing",
+        "live_watches_reserve_reconnect_action_capacity_and_refusals_are_atomic",
+        "malformed_or_premature_terminal_retires_only_original_epoch",
+        "partial_zero_and_full_send_boundaries_match_mq_nontransmitted_length",
+        "queued_and_current_cancel_keep_original_stream_tombstones",
+        "reconnect_compacts_wire_ids_without_reassigning_cancelled_logical_ids",
+        "terminal_reservation_and_old_generations_prevent_callback_loss",
+        "unregistered_message_preserves_current_get_but_registered_bad_end_fails",
+        "updates_wrapping_zero_coalescence_and_latest_persistence_are_not_noops",
+        "watch_cancelled_registration_still_consumes_wid_on_existing_connection"
+      ],
+      "crates/gnunet-client/tests/handle_c_queue.rs": [
+        "original_c_pending_queue_coalescing_matches_rust"
+      ],
+      "crates/gnunet-client/tests/handle_closure.rs": [
+        "exhausted_wire_ids_refuse_before_state_changes_and_reset_only_on_new_connection",
+        "full_logical_watch_refusal_consumes_no_slot_generation_or_queued_copy",
+        "small_name_refusals_preserve_original_ids_fifo_value_and_persistence",
+        "stale_epoch_and_transmit_completions_cannot_change_new_original_queue"
+      ],
+      "crates/gnunet-client/tests/handler_policy.rs": [
+        "all_unregistered_directions_ignore_opaque_body_without_losing_get",
+        "early_confirmation_cannot_certify_partially_written_update_and_barrier",
+        "logical_watch_queued_behind_get_has_no_callback_until_wire_registration"
+      ],
+      "crates/gnunet-client/tests/resolver.rs": [
+        "admission_output_capacity_and_completion_reservations_are_atomic",
+        "all_sent_cancels_close_after_one_ms_and_retire_only_owned_epoch",
+        "codec_rejects_wrong_types_truncation_family_and_name_without_partial_writes",
+        "disconnect_requires_live_remote_cancellation_but_does_not_cancel_local_tasks",
+        "end_and_timeout_reverse_fallback_allow_cancel_before_terminal",
+        "fifo_submission_cancel_drain_and_next_head_do_not_invent_cancel_frames",
+        "forever_and_finite_overflow_saturate_without_expiring_at_max_clock",
+        "forward_response_family_is_from_payload_length_as_in_c_not_query_filter",
+        "local_ready_fifo_uses_registration_order_after_clock_rollback",
+        "local_ready_registration_survives_rollback_and_retains_enqueue_fifo",
+        "local_tasks_are_ready_even_at_never_but_remote_never_is_not_due",
+        "malformed_identified_payload_ends_only_that_request_and_reconnects_next",
+        "maximum_65535_frame_is_legal_but_65536_is_rejected_atomically",
+        "normal_c_daemon_wire_trace_has_native_family_and_opaque_id",
+        "numeric_and_loopback_events_match_normal_c_order_and_can_cancel_between_values",
+        "positive_remote_delay_keeps_original_deadline_across_rollback",
+        "queue_timeouts_are_per_admission_and_receive_at_deadline_cannot_deliver_value",
+        "received_reverse_name_survives_reconnect_and_suppresses_timeout_fallback",
+        "reconnect_reuses_id_and_original_deadline_and_rejects_stale_epoch",
+        "reverse_nonzero_direction_and_embedded_c_string_nul_are_retained",
+        "unavailable_mq_configuration_retries_without_consuming_epoch_or_deadline",
+        "unknown_id_reconnects_but_preserves_live_operation_and_same_wire_id",
+        "zero_deadline_fastpaths_and_numeric_reverse_config_asymmetry_are_real",
+        "zero_remote_timeout_stays_ready_without_replacing_original_deadline"
+      ],
+      "crates/gnunet-client/tests/statistics_watch.rs": [
+        "cancellation_does_not_reassign_a_wire_id_to_a_new_selector",
+        "service_flags_reserved_and_exact_size_are_preserved"
+      ]
+    },
+    "crates/gnunet-arm-core": {
+      "crates/gnunet-arm-core/tests/client.rs": [
+        "arm_stop_waits_eof_then_failures_before_connection_notice_and_persistent_backoff",
+        "cancel_arm_stop_tombstone_and_explicit_disconnect_are_safe_without_false_callbacks",
+        "canceled_or_disconnected_inflight_spawn_keeps_original_resource_until_actual_report",
+        "immediate_start_notifications_keep_ready_fifo_across_logical_clock_rollback",
+        "initial_and_retry_mq_failure_and_unknown_frames_are_observable_without_fake_success",
+        "local_arm_start_stored_result_original60s_signal_cleanup_and_repeated_up_notice",
+        "saturated_startup_deadline_keeps_forever_and_original_signal_authority",
+        "startup_capacity_defers_only_new_spawn_without_blocking_original_signal_cleanup_or_connect",
+        "successful_list_borrows_validated_rows_and_wrong_registered_reply_retires_silently",
+        "test_confirmation_remote_results_cancel_envelope_and_no_remote_deadline"
+      ],
+      "crates/gnunet-arm-core/tests/monitor.rs": [
+        "actual_initial_and_retry_creation_failures_are_distinct_and_never_fabricate_timers",
+        "already_ready_zero_delay_reconnect_survives_clock_rollback_but_forever_does_not",
+        "malformed_registered_status_reconnects_but_legal_unregistered_directions_are_ignored",
+        "repeated_mq_loss_reaches_fifteen_minute_cap_without_notification_reset",
+        "saturated_reconnect_delay_remains_forever_without_minting_a_new_mq",
+        "stop_revokes_pending_frame_connect_attempt_and_every_later_notification",
+        "subscribe_is_monitor_not_test_and_unknown_notifications_do_not_reset_backoff"
+      ],
+      "crates/gnunet-arm-core/tests/ownership.rs": [
+        "canceled_callback_slot_reuse_does_not_cancel_envelope_or_consume_ids_on_capacity_error",
+        "exact_maximum_request_uses_one_aggregate_vec_and_oversize_admission_is_atomic",
+        "failure_callback_can_cancel_later_pending_operation_before_its_callback",
+        "foreign_owner_epoch_and_old_connection_results_cannot_change_new_operations",
+        "leased_frame_stays_immutable_through_aggregate_compaction_and_old_write_cannot_release_it",
+        "pipe_ready_and_pipe_creation_failure_report_stored_result_without_waiting_or_fake_timeout",
+        "two_arm_stop_waiters_keep_original_callback_ownership_instead_of_c_mismatched_closure"
+      ],
+      "crates/gnunet-arm-core/tests/wire.rs": [
+        "aggregate_abi_is_explicit_and_does_not_follow_rust_pointer_width",
+        "all_request_assignments_have_exact_packed_layout_and_c_string_rules",
+        "list_accepts_middle_string_shared_pool_unused_bytes_and_zero_count",
+        "list_encoder_is_packed_canonical_and_preflights_all_rows",
+        "list_literal_28_byte_rows_offset_pool_and_unsigned_public_exit",
+        "malformed_registered_frames_are_refused_before_exposing_list_rows",
+        "result_and_status_retain_unknown_values_reserved_and_nonutf8",
+        "service_request_total65535_legal65536_and_short_buffer_atomic"
+      ]
+    }
+  },
+  "external_component_scope": {
+    "adapters/arm-std/tests/local_start.rs": "Existing full process/native-launch acceptance tool owns the non-clock long child matrix; do not claim it ran in this broker proof. The actual logical 60s-with-open-child clock case is included in arm_endpoint.",
+    "crates/gnunet-client other integration files": "Existing protocol owners; the broker proof runs --lib and exact resolver/broker_boundaries integrations. File/method additions still fail source inventory until reviewed."
+  }
+}

@@ -1,0 +1,25 @@
+[package]
+name = "gnunet-service-statistics"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = []
+
+[lints]
+workspace = true
+
+[dependencies]
+gnunet = { path = "../../crates/gnunet", default-features = false, features = ["official-ipc", "official-config", "statistics-store"] }
+tokio = { workspace = true, features = ["rt", "net", "time", "signal"] }
+gnunet-service-runtime.workspace = true
+nix.workspace = true
+
+gnunet-program-host = { workspace = true, features = ["service-runtime"] }
+gnunet-service-startup.workspace = true
+
+[dev-dependencies]
+# Existing isolated activation example uses libc; production startup does not.
+libc.workspace = true

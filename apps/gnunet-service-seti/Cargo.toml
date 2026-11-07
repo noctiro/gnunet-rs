@@ -1,0 +1,24 @@
+[package]
+name = "gnunet-service-seti"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+getrandom.workspace = true
+gnunet-cadet-host.workspace = true
+gnunet-client-host.workspace = true
+gnunet-config.workspace = true
+gnunet-program-host = { workspace = true, features = ["runtime", "service-runtime"] }
+gnunet-crypto.workspace = true
+gnunet-resolver-broker.workspace = true
+gnunet-service-runtime.workspace = true
+gnunet-service-startup.workspace = true
+gnunet-seti.workspace = true
+gnunet-seti-host.workspace = true
+gnunet-types.workspace = true
+tokio = { workspace = true, features = ["rt", "signal"] }
+
+[lints]
+workspace = true

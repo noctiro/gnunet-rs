@@ -1,0 +1,20 @@
+[package]
+name = "gnunet-zonemaster"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+[features]
+default = []
+alloc = ["zeroize/alloc"]
+[dependencies]
+gnunet-crypto.workspace = true
+gnunet-gnscrypto.workspace = true
+gnunet-gnsrecord.workspace = true
+gnunet-gnsrecord-text.workspace = true
+gnunet-identity.workspace = true
+gnunet-namestore.workspace = true
+gnunet-types.workspace = true
+zeroize.workspace = true
+[lints]
+workspace = true

@@ -1,0 +1,52 @@
+[package]
+name = "gnunet-fs-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+auto-share = ["network", "tokio/sync", "dep:time"]
+default = []
+extraction = ["dep:unicode-normalization", "dep:gnunet-extractor-host"]
+service = ["dep:gnunet-client-host", "dep:gnunet-service-runtime", "dep:gnunet-wire", "dep:tokio", "tokio/io-util", "tokio/fs"]
+network = ["service", "extraction", "dep:gnunet-datastore-host", "dep:zeroize"]
+server = ["network", "gnunet-fs/alloc", "gnunet-datastore-host/server", "dep:gnunet-datastore", "dep:gnunet-config", "dep:gnunet-pils", "dep:gnunet-pils-host", "dep:gnunet-cadet-host", "dep:gnunet-core-client-host", "dep:gnunet-dht-client-host", "tokio/sync"]
+
+[dependencies]
+gnunet-extractor-host = { workspace = true, optional = true }
+unicode-normalization = { workspace = true, optional = true }
+time = { workspace = true, optional = true, features = ["std"] }
+gnunet-core-client-host = { workspace = true, optional = true }
+gnunet-dht-client-host = { workspace = true, optional = true }
+gnunet-cadet-host = { workspace = true, optional = true }
+gnunet-config = { workspace = true, optional = true }
+gnunet-datastore = { workspace = true, optional = true }
+gnunet-pils = { workspace = true, optional = true }
+gnunet-pils-host = { workspace = true, optional = true, features = ["client"] }
+gnunet-fs.workspace = true
+gnunet-fs-codec = { workspace = true, features = ["alloc"] }
+gnunet-types.workspace = true
+gnunet-crypto.workspace = true
+gnunet-datastore-host = { workspace = true, optional = true }
+zeroize = { workspace = true, optional = true }
+nix = { workspace = true, features = ["dir", "user"] }
+gnunet-client-host = { workspace = true, optional = true }
+gnunet-service-runtime = { workspace = true, optional = true }
+gnunet-wire = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true, features = ["rt", "net", "time"] }
+
+[dev-dependencies]
+gnunet-config.workspace = true
+tokio = { workspace = true, features = ["rt", "net", "time", "io-util", "sync", "macros"] }
+
+[lints]
+workspace = true
+
+[[example]]
+name = "cadet_route"
+required-features = ["server"]
+
+[[example]]
+name = "cadet_fetch"
+required-features = ["server"]

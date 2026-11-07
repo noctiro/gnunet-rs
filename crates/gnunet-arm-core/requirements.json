@@ -1,0 +1,943 @@
+{
+  "schema": 1,
+  "scope": "Source-derived ARM closure, including all8 public APIs,6 testing APIs,8 wire IDs, daemon/monitor/control/CLI/native host scope; no fixed target count and no verified promotion",
+  "feature_count": 86,
+  "features": [
+    {
+      "id": "arm.client.creation",
+      "requirement": "Actual MQ creation failure emits Error and initial handle failure; construction is explicit pure state, TEST queues only after real MQ admission.",
+      "upstream_source": "src/service/arm/arm_api.c:518..599",
+      "implementation": [
+        "client::Client::new / connection_admitted / connection_unavailable"
+      ],
+      "pure_tests": [
+        "initial_and_retry_mq_failure_and_unknown_frames_are_observable_without_fake_success"
+      ],
+      "status": "pure_implemented_host_or_normal_api_evidence_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.client.test-confirmation",
+      "requirement": "Only exact TEST confirms up once; duplicate confirmation silent; successful TEST does not reset retry.",
+      "upstream_source": "src/service/arm/arm_api.c:465..486",
+      "implementation": [
+        "client::Client::receive"
+      ],
+      "pure_tests": [
+        "test_confirmation_remote_results_cancel_envelope_and_no_remote_deadline",
+        "arm_stop_waits_eof_then_failures_before_connection_notice_and_persistent_backoff"
+      ],
+      "status": "pure_implemented_host_or_normal_api_evidence_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.client.remote.start",
+      "requirement": "Non-arm START always sends named official command; stdio is ignored for remote child service.",
+      "upstream_source": "src/service/arm/arm_api.c:918..939",
+      "implementation": [
+        "client::Client::request_service_start"
+      ],
+      "pure_tests": [
+        "test_confirmation_remote_results_cancel_envelope_and_no_remote_deadline"
+      ],
+      "status": "pure_implemented_host_or_normal_api_evidence_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.client.remote.stop",
+      "requirement": "Normal service STOP response is peer result; no forced local process state or result translation.",
+      "upstream_source": "src/service/arm/arm_api.c:1032..1060",
+      "implementation": [
+        "client::Client::request_service_stop"
+      ],
+      "pure_tests": [
+        "test_confirmation_remote_results_cancel_envelope_and_no_remote_deadline"
+      ],
+      "status": "pure_implemented_host_or_normal_api_evidence_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.client.remote.list",
+      "requirement": "LIST response validates all rows before borrowed callback, without a fabricated empty list on failure.",
+      "upstream_source": "src/service/arm/arm_api.c:349..462,1068..1095",
+      "implementation": [
+        "client::Client::request_service_list / receive"
+      ],
+      "pure_tests": [
+        "successful_list_borrows_validated_rows_and_wrong_registered_reply_retires_silently"
+      ],
+      "status": "pure_implemented_host_or_normal_api_evidence_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.client.ids",
+      "requirement": "Remote IDs start1, exclude0, persist across MQs; separate original scoped operation generation. Finite Rust exhaustion refuses instead of reusing wrapped IDs.",
+      "upstream_source": "src/service/arm/arm_api.c:242..258,814..854,1068..1095",
+      "implementation": [
+        "client::Client::request_service_list / request_service_start / request_service_stop"
+      ],
+      "pure_tests": [
+        "canceled_callback_slot_reuse_does_not_cancel_envelope_or_consume_ids_on_capacity_error",
+        "foreign_owner_epoch_and_old_connection_results_cannot_change_new_operations"
+      ],
+      "status": "pure_implemented_host_or_normal_api_evidence_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.client.no-remote-deadline",
+      "requirement": "Remote operations have no library deadline; CLI timeout must remain external; do not invent timeout callbacks or retry/replay.",
+      "upstream_source": "src/service/arm/arm_api.c:40..99,814..854",
+      "implementation": [
+        "client::Client::tick / next_wakeup"
+      ],
+      "pure_tests": [
+        "test_confirmation_remote_results_cancel_envelope_and_no_remote_deadline"
+      ],
+      "status": "pure_implemented_host_or_normal_api_evidence_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.client.cancel",
+      "requirement": "Cancel only suppresses callback; already queued frame still executes and its bytes survive original callback-slot reuse.",
+      "upstream_source": "src/service/arm/arm_api.c:777..810",
+      "implementation": [
+        "client::Client::operation_cancel"
+      ],
+      "pure_tests": [
+        "test_confirmation_remote_results_cancel_envelope_and_no_remote_deadline",
+        "canceled_callback_slot_reuse_does_not_cancel_envelope_or_consume_ids_on_capacity_error"
+      ],
+      "status": "pure_implemented_host_or_normal_api_evidence_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.client.unknown-id",
+      "requirement": "Unknown request ID ignored; result/list callbacks matched by wire ID without invented direction authentication.",
+      "upstream_source": "src/service/arm/arm_api.c:261..310,398..425",
+      "implementation": [
+        "client::Client::receive"
+      ],
+      "pure_tests": [
+        "test_confirmation_remote_results_cancel_envelope_and_no_remote_deadline"
+      ],
+      "status": "pure_implemented_host_or_normal_api_evidence_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.client.response-kind",
+      "requirement": "C silently cancels operation if its matching result/list callback pointer is absent for the registered response kind.",
+      "upstream_source": "src/service/arm/arm_api.c:261..310,398..462",
+      "implementation": [
+        "client::Client::receive"
+      ],
+      "pure_tests": [
+        "successful_list_borrows_validated_rows_and_wrong_registered_reply_retires_silently"
+      ],
+      "status": "pure_implemented_host_or_normal_api_evidence_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.client.mq-error-order",
+      "requirement": "ARM-stop waiter completes first, remaining pending operations fail insertion-order with undefined payload omitted, then connectionNO.",
+      "upstream_source": "src/service/arm/arm_api.c:198..238,491..510",
+      "implementation": [
+        "client::Client::connection_lost / next_event"
+      ],
+      "pure_tests": [
+        "arm_stop_waits_eof_then_failures_before_connection_notice_and_persistent_backoff",
+        "failure_callback_can_cancel_later_pending_operation_before_its_callback"
+      ],
+      "status": "pure_implemented_host_or_normal_api_evidence_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.client.no-replay",
+      "requirement": "MQ loss retires queued/inflight frame authority and old operation IDs; later MQ sends only new TEST and new admissions.",
+      "upstream_source": "src/service/arm/arm_api.c:198..238",
+      "implementation": [
+        "client::Client::connection_lost"
+      ],
+      "pure_tests": [
+        "foreign_owner_epoch_and_old_connection_results_cannot_change_new_operations"
+      ],
+      "status": "pure_implemented_host_or_normal_api_evidence_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.client.retry",
+      "requirement": "Retry uses previous0 then2ms/4ms doubling to15min, independently of GNUNET_CLIENT socket retry, never reset by successful TEST.",
+      "upstream_source": "src/service/arm/arm_api.c:198..238,518..569",
+      "implementation": [
+        "client::Client::take_effect / next_wakeup"
+      ],
+      "pure_tests": [
+        "arm_stop_waits_eof_then_failures_before_connection_notice_and_persistent_backoff"
+      ],
+      "status": "pure_implemented_host_or_normal_api_evidence_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.client.retry-config-failure",
+      "requirement": "Retry-time MQ creation failure reports Error and does not add an invented retry task; actual pending earlier retry remains explicit.",
+      "upstream_source": "src/service/arm/arm_api.c:518..569",
+      "implementation": [
+        "client::Client::connection_unavailable"
+      ],
+      "pure_tests": [
+        "initial_and_retry_mq_failure_and_unknown_frames_are_observable_without_fake_success"
+      ],
+      "status": "pure_implemented_host_or_normal_api_evidence_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.client.stop-arm",
+      "requirement": "Case-insensitive arm STOPPING is moved to separate waiter; only later MQ error gives Stopped; it is not waitpid proof.",
+      "upstream_source": "src/service/arm/arm_api.c:261..310,491..510,1032..1060",
+      "implementation": [
+        "client::Client::receive / connection_lost"
+      ],
+      "pure_tests": [
+        "arm_stop_waits_eof_then_failures_before_connection_notice_and_persistent_backoff"
+      ],
+      "status": "pure_implemented_host_or_normal_api_evidence_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.client.stop-arm-cancel",
+      "requirement": "Retain canceled waiter without callback; do not reproduce C NULL-callback undefined behavior on EOF.",
+      "upstream_source": "src/service/arm/arm_api.c:777..810,491..510",
+      "implementation": [
+        "client::Client::operation_cancel / connection_lost"
+      ],
+      "pure_tests": [
+        "cancel_arm_stop_tombstone_and_explicit_disconnect_are_safe_without_false_callbacks"
+      ],
+      "status": "pure_implemented_host_or_normal_api_evidence_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.client.two-stop-waiters",
+      "requirement": "Preserve original logical ownership when replacing separate stop waiter; do not reproduce source mismatched callback/closure.",
+      "upstream_source": "src/service/arm/arm_api.c:287..308",
+      "implementation": [
+        "client::Client::receive"
+      ],
+      "pure_tests": [
+        "two_arm_stop_waiters_keep_original_callback_ownership_instead_of_c_mismatched_closure"
+      ],
+      "status": "pure_implemented_host_or_normal_api_evidence_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.client.start-arm-already-up",
+      "requirement": "Confirmed-up local ARM start schedules async AlreadyStarted, then repeats connectionYES if still up after result callback.",
+      "upstream_source": "src/service/arm/arm_api.c:860..885,941..962",
+      "implementation": [
+        "client::Client::request_service_start / tick / next_event"
+      ],
+      "pure_tests": [
+        "local_arm_start_stored_result_original60s_signal_cleanup_and_repeated_up_notice"
+      ],
+      "status": "pure_implemented_host_or_normal_api_evidence_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.client.start-arm-report",
+      "requirement": "Unconfirmed ARM start is an explicit real-host effect; only actual command report can choose Starting/NotKnown/StartFailed.",
+      "upstream_source": "src/service/arm/arm_api.c:653..769,965..1019",
+      "implementation": [
+        "client::Client::take_effect / startup_report",
+        "client::Client::take_effect_with_startup_capacity (bounded Rust host resource port, no business-result synthesis)"
+      ],
+      "pure_tests": [
+        "canceled_or_disconnected_inflight_spawn_keeps_original_resource_until_actual_report",
+        "startup_capacity_defers_only_new_spawn_without_blocking_original_signal_cleanup_or_connect"
+      ],
+      "status": "pure_implemented_host_or_normal_api_evidence_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.client.start-signal-deadline",
+      "requirement": "Actual pipe read waits at most original60s; readiness/EOF/expiration notify unchanged stored startup result, not fake Timeout/readiness.",
+      "upstream_source": "src/service/arm/arm_api.c:887..910,980..1019",
+      "implementation": [
+        "client::Client::startup_report / startup_signal_ready / tick"
+      ],
+      "pure_tests": [
+        "local_arm_start_stored_result_original60s_signal_cleanup_and_repeated_up_notice",
+        "pipe_ready_and_pipe_creation_failure_report_stored_result_without_waiting_or_fake_timeout",
+        "startup_capacity_defers_only_new_spawn_without_blocking_original_signal_cleanup_or_connect"
+      ],
+      "status": "pure_implemented_host_or_normal_api_evidence_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.client.start-signal-cancel",
+      "requirement": "Cancel closes original signal endpoint and suppresses callback, never claims child termination; pending actual report preserves original resource generation.",
+      "upstream_source": "src/service/arm/arm_api.c:777..810,887..910",
+      "implementation": [
+        "client::Client::operation_cancel / startup_report / startup_signal_closed"
+      ],
+      "pure_tests": [
+        "canceled_or_disconnected_inflight_spawn_keeps_original_resource_until_actual_report"
+      ],
+      "status": "pure_implemented_host_or_normal_api_evidence_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.client.disconnect",
+      "requirement": "Explicit disconnect fails pending ordinary callbacks, cancels logical MQ/retry, reclaims separate stop waiter safely; no later input accepted.",
+      "upstream_source": "src/service/arm/arm_api.c:602..641",
+      "implementation": [
+        "client::Client::disconnect / next_event / is_closed"
+      ],
+      "pure_tests": [
+        "cancel_arm_stop_tombstone_and_explicit_disconnect_are_safe_without_false_callbacks"
+      ],
+      "status": "pure_implemented_host_or_normal_api_evidence_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.ownership.aggregate-tx",
+      "requirement": "Caller-owned bounded aggregate frame bytes, atomic admission, immutable leased frame through compaction, old MQ/frame/operation cannot release replacement.",
+      "upstream_source": "arm_api.c:814..854 plus explicit Rust storage policy",
+      "implementation": [
+        "client::Client",
+        "transport::Frames"
+      ],
+      "pure_tests": [
+        "exact_maximum_request_uses_one_aggregate_vec_and_oversize_admission_is_atomic",
+        "leased_frame_stays_immutable_through_aggregate_compaction_and_old_write_cannot_release_it",
+        "foreign_owner_epoch_and_old_connection_results_cannot_change_new_operations"
+      ],
+      "status": "pure_implemented_host_or_normal_api_evidence_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.monitor.subscribe",
+      "requirement": "Separate MQ queues MONITOR, not TEST; successful subscription status0/name arm is no initial service snapshot.",
+      "upstream_source": "src/service/arm/arm_monitor_api.c:185..224",
+      "implementation": [
+        "monitor::Monitor::new / connection_admitted"
+      ],
+      "pure_tests": [
+        "subscribe_is_monitor_not_test_and_unknown_notifications_do_not_reset_backoff"
+      ],
+      "status": "pure_implemented_host_or_normal_api_evidence_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.monitor.status",
+      "requirement": "Require at least final-NUL name, C-prefix raw bytes and unknown status numeric codes retained.",
+      "upstream_source": "src/service/arm/arm_monitor_api.c:135..179",
+      "implementation": [
+        "monitor::Monitor::receive"
+      ],
+      "pure_tests": [
+        "subscribe_is_monitor_not_test_and_unknown_notifications_do_not_reset_backoff"
+      ],
+      "status": "pure_implemented_host_or_normal_api_evidence_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.monitor.registry",
+      "requirement": "Only STATUS is registered; malformed registered input loses MQ, legal other-direction messages ignored.",
+      "upstream_source": "src/service/arm/arm_monitor_api.c:185..204",
+      "implementation": [
+        "monitor::Monitor::receive"
+      ],
+      "pure_tests": [
+        "malformed_registered_status_reconnects_but_legal_unregistered_directions_are_ignored"
+      ],
+      "status": "pure_implemented_host_or_normal_api_evidence_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.monitor.retry",
+      "requirement": "MQ error retry current0,2ms,4ms\u202615min; status never resets retry; unused INIT_TIMEOUT5s never schedules fake deadline.",
+      "upstream_source": "src/service/arm/arm_monitor_api.c:34,112..130",
+      "implementation": [
+        "monitor::Monitor::connection_lost / take_connect"
+      ],
+      "pure_tests": [
+        "repeated_mq_loss_reaches_fifteen_minute_cap_without_notification_reset"
+      ],
+      "status": "pure_implemented_host_or_normal_api_evidence_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.monitor.creation-failure",
+      "requirement": "Actual failed MQ creation reports serviceNULL/statusSTOPPED; initial fails handle, retry failure adds no new retry.",
+      "upstream_source": "src/service/arm/arm_monitor_api.c:185..224,236..252",
+      "implementation": [
+        "monitor::Monitor::connection_unavailable"
+      ],
+      "pure_tests": [
+        "actual_initial_and_retry_creation_failures_are_distinct_and_never_fabricate_timers"
+      ],
+      "status": "pure_implemented_host_or_normal_api_evidence_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.monitor.stop",
+      "requirement": "Stop retires MQ/task and every old epoch/TX/notification; returned MQ identity is real host close obligation.",
+      "upstream_source": "src/service/arm/arm_monitor_api.c:260..274",
+      "implementation": [
+        "monitor::Monitor::stop"
+      ],
+      "pure_tests": [
+        "stop_revokes_pending_frame_connect_attempt_and_every_later_notification"
+      ],
+      "status": "pure_implemented_host_or_normal_api_evidence_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.wire.abi",
+      "requirement": "Actual C aggregate ABI determines RESULT24/LISTprefix24 for native align8; explicit align4 support20/20 has only synthetic proof, no target-pointer inference.",
+      "upstream_source": "src/service/arm/arm.h:41..163",
+      "implementation": [
+        "wire::ArmAbi"
+      ],
+      "pure_tests": [
+        "aggregate_abi_is_explicit_and_does_not_follow_rust_pointer_width"
+      ],
+      "status": "pure_implemented_host_or_normal_api_evidence_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.wire.requests",
+      "requirement": "START8/STOP9 base16+CString,LIST12exact16,MONITOR14/TEST15exact4; reserved preserved and final/interior-NUL rules.",
+      "upstream_source": "src/service/arm/arm.h:41..163",
+      "implementation": [
+        "wire::Request"
+      ],
+      "pure_tests": [
+        "all_request_assignments_have_exact_packed_layout_and_c_string_rules"
+      ],
+      "status": "pure_implemented_host_or_normal_api_evidence_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.wire.max",
+      "requirement": "Total65535 valid;65536 or short output rejects before any byte/state mutation.",
+      "upstream_source": "src/service/arm/arm_api.c:814..854",
+      "implementation": [
+        "wire::Request::encoded_len / encode"
+      ],
+      "pure_tests": [
+        "service_request_total65535_legal65536_and_short_buffer_atomic"
+      ],
+      "status": "pure_implemented_host_or_normal_api_evidence_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.wire.result",
+      "requirement": "RESULT10 fixed actual sizeof including uninterpreted tail padding, unknown code and nonzero reserved accepted.",
+      "upstream_source": "src/service/arm/arm_api.c:518..539",
+      "implementation": [
+        "wire::ResultReply"
+      ],
+      "pure_tests": [
+        "result_and_status_retain_unknown_values_reserved_and_nonutf8"
+      ],
+      "status": "pure_implemented_host_or_normal_api_evidence_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.wire.status",
+      "requirement": "STATUS11 prefix8+CString, monitor enum distinct from list state enum, unknown/nonUTF8 preserved.",
+      "upstream_source": "src/service/arm/arm_monitor_api.c:135..179",
+      "implementation": [
+        "wire::Status"
+      ],
+      "pure_tests": [
+        "result_and_status_retain_unknown_values_reserved_and_nonutf8"
+      ],
+      "status": "pure_implemented_host_or_normal_api_evidence_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.wire.list",
+      "requirement": "LIST_RESULT13 uses actual prefix sizeof,countBE16,28byte rows and pool; ntohs exit promotes65535.",
+      "upstream_source": "src/service/arm/arm_api.c:349..462",
+      "implementation": [
+        "wire::List / ServiceInfo"
+      ],
+      "pure_tests": [
+        "list_literal_28_byte_rows_offset_pool_and_unsigned_public_exit"
+      ],
+      "status": "pure_implemented_host_or_normal_api_evidence_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.wire.pool-check",
+      "requirement": "All count\u00d728 and both string offsets validated before callback; overlapping/midstring offsets and unused trailing bytes accepted.",
+      "upstream_source": "src/service/arm/arm_api.c:315..393",
+      "implementation": [
+        "wire::List::decode"
+      ],
+      "pure_tests": [
+        "list_accepts_middle_string_shared_pool_unused_bytes_and_zero_count",
+        "malformed_registered_frames_are_refused_before_exposing_list_rows"
+      ],
+      "status": "pure_implemented_host_or_normal_api_evidence_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.wire.list-encode",
+      "requirement": "Canonical server list sequential string pool, exact UTC64 fields, zero calloc alignment/padding; all preflight before writes.",
+      "upstream_source": "src/service/arm/gnunet-service-arm.c:1320..1431",
+      "implementation": [
+        "wire::encode_list"
+      ],
+      "pure_tests": [
+        "list_encoder_is_packed_canonical_and_preflights_all_rows"
+      ],
+      "status": "pure_implemented_host_or_normal_api_evidence_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.service.defaults",
+      "requirement": "Official PORT2087/HOSTNAMElocalhost/BINARY/UNIXPATH/user runtime/loopback ACL/UID/GID and global prefix/options defaults.",
+      "upstream_source": "src/service/arm/arm.conf.in:1..60",
+      "implementation": [],
+      "pure_tests": [],
+      "status": "host_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.service.manual-lifetime",
+      "requirement": "Generic MANUAL_SHUTDOWN|CLOSE_LSOCKS; all control/monitor clients marked monitor; ARM owns defer-until-child-death.",
+      "upstream_source": "src/service/arm/gnunet-service-arm.c:2024..2054,2208..2249",
+      "implementation": [],
+      "pure_tests": [],
+      "status": "host_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.service.classification",
+      "requirement": "Discover all non-arm sections with BINARY, case-insensitive unique service names and RUN_PER_USER filtering.",
+      "upstream_source": "src/service/arm/gnunet-service-arm.c:1899..1970",
+      "implementation": [],
+      "pure_tests": [],
+      "status": "host_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.service.global-selection",
+      "requirement": "Both global user/system switches absent enables both; one absent is disabled when other explicit; invalid/bothdisabled errors.",
+      "upstream_source": "src/service/arm/gnunet-service-arm.c:2148..2190",
+      "implementation": [],
+      "pure_tests": [],
+      "status": "host_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.service.config-fallback",
+      "requirement": "Per-service CONFIG then PATHS/DEFAULTCONFIG retained only on successful stat; missing config does not remove service.",
+      "upstream_source": "src/service/arm/gnunet-service-arm.c:1945..1970",
+      "implementation": [],
+      "pure_tests": [],
+      "status": "host_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.service.immediate-demand",
+      "requirement": "Initial backoff1ms/restartFOREVER, IMMEDIATE_START force, NOARMBIND only immediate branch, else START_ON_DEMAND gates bind.",
+      "upstream_source": "src/service/arm/gnunet-service-arm.c:1971..2018",
+      "implementation": [],
+      "pure_tests": [],
+      "status": "host_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.service.addresses",
+      "requirement": "Native V6 probe/error categories, DISABLEV6,PORT0/65535,BINDTO DNS,UNIXPATH/shortening/abstract and address order.",
+      "upstream_source": "src/service/arm/gnunet-service-arm.c:350..659",
+      "implementation": [],
+      "pure_tests": [],
+      "status": "host_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.service.listener-bind",
+      "requirement": "Actual SO_REUSEADDR/V6ONLY/unixprecheck/bind/perms/listen backlog5; retain original ownership on partial errors.",
+      "upstream_source": "src/service/arm/gnunet-service-arm.c:1001..1114",
+      "implementation": [],
+      "pure_tests": [],
+      "status": "host_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.service.demand-trigger",
+      "requirement": "Readable listener does not accept connection; spawn receives every original descriptor and pauses all demand watchers.",
+      "upstream_source": "src/service/arm/gnunet-service-arm.c:742..773,968..988",
+      "implementation": [],
+      "pure_tests": [],
+      "status": "host_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.service.stdio-pipe",
+      "requirement": "Child inherits out/err, optional PIPECONTROL; descriptor/control ownership must match actual normal process ABI.",
+      "upstream_source": "src/service/arm/gnunet-service-arm.c:742..773,1977..1986",
+      "implementation": [],
+      "pure_tests": [],
+      "status": "host_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.service.command-prefix",
+      "requirement": "Per-service PREFIX or GLOBAL_PREFIX, dollar expansion and native libexec path resolution.",
+      "upstream_source": "src/service/arm/gnunet-service-arm.c:775..899",
+      "implementation": [],
+      "pure_tests": [],
+      "status": "host_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.service.command-options",
+      "requirement": "GLOBAL_POSTFIX all{} substitutions then per-service OPTIONS then dollar expansion, DEBUG, optional-c config.",
+      "upstream_source": "src/service/arm/gnunet-service-arm.c:785..899",
+      "implementation": [],
+      "pure_tests": [],
+      "status": "host_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.service.simple-service",
+      "requirement": "TYPE SIMPLE receives no GNUnet-specific args; GNUNET uses libexec/-c/-LDEBUG; malformed choices follow source behavior.",
+      "upstream_source": "src/service/arm/gnunet-service-arm.c:832..899",
+      "implementation": [],
+      "pure_tests": [],
+      "status": "host_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.service.spawn-success",
+      "requirement": "Only successful actual run command records UTC start, broadcastsStarting and repliesStarting; no readiness claim.",
+      "upstream_source": "src/service/arm/gnunet-service-arm.c:900..923",
+      "implementation": [],
+      "pure_tests": [],
+      "status": "host_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.service.spawn-failure",
+      "requirement": "Actual failure destroys process object, repliesStartFailed, no fake watcher rearm/result success.",
+      "upstream_source": "src/service/arm/gnunet-service-arm.c:924..943",
+      "implementation": [],
+      "pure_tests": [],
+      "status": "host_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.service.start",
+      "requirement": "START first rejectsshutdown/unknown, setsforce_start before proc check, AlreadyStarted if procpresent else actualspawn.",
+      "upstream_source": "src/service/arm/gnunet-service-arm.c:1160..1200",
+      "implementation": [],
+      "pure_tests": [],
+      "status": "host_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.service.stop-arm",
+      "requirement": "Case-insensitive arm stop broadcastsStopping,repliesStopping,persistsclient then schedulesmanualshutdown.",
+      "upstream_source": "src/service/arm/gnunet-service-arm.c:1240..1264",
+      "implementation": [],
+      "pure_tests": [],
+      "status": "host_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.service.stop-other",
+      "requirement": "Unknown/shutdown/alreadykilling/alreadystopped results; clearforce before shutdown check, broadcastStopping/TERM and waitactualreap.",
+      "upstream_source": "src/service/arm/gnunet-service-arm.c:1265..1318",
+      "implementation": [],
+      "pure_tests": [],
+      "status": "host_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.service.stop-eof",
+      "requirement": "Client EOF clears only original killing_client so no stale reply; process lifecycle continues and can restart on demand.",
+      "upstream_source": "src/service/arm/gnunet-service-arm.c:2044..2054",
+      "implementation": [],
+      "pure_tests": [],
+      "status": "host_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.service.list-status",
+      "requirement": "Proc/killing/globalshutdown and prior start/exit determine stopped/started/failed/finished/stopping, times and exit.",
+      "upstream_source": "src/service/arm/gnunet-service-arm.c:1350..1431",
+      "implementation": [],
+      "pure_tests": [],
+      "status": "host_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.service.monitor-register",
+      "requirement": "MONITOR adds subscriber and unicasts status0/namearm, no snapshot of already-running services.",
+      "upstream_source": "src/service/arm/gnunet-service-arm.c:2065..2086",
+      "implementation": [],
+      "pure_tests": [],
+      "status": "host_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.service.notification-limit",
+      "requirement": "1024 optional notification queue may drop updates; broadcast and unicast behavior must remain distinct.",
+      "upstream_source": "src/service/arm/gnunet-service-arm.c:51..56,701..737",
+      "implementation": [],
+      "pure_tests": [],
+      "status": "host_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.service.child-signal",
+      "requirement": "SIGCHLD writes original self-pipe preserving errno, scheduler consumes, waitsnonblocking every actual process; ignore running/stopped/unknown.",
+      "upstream_source": "src/service/arm/gnunet-service-arm.c:1650..1758,1872..1890",
+      "implementation": [],
+      "pure_tests": [],
+      "status": "host_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.service.child-result",
+      "requirement": "On actual exit/signalled destroyproc,broadcastStopped, complete original killing request, then classify exit/restart or free in shutdown.",
+      "upstream_source": "src/service/arm/gnunet-service-arm.c:1759..1799",
+      "implementation": [],
+      "pure_tests": [],
+      "status": "host_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.service.normal-exit",
+      "requirement": "Normal exit0 setsrestart0 and rearms demand watchers; no invented immediate force-start restart task.",
+      "upstream_source": "src/service/arm/gnunet-service-arm.c:1798..1814",
+      "implementation": [],
+      "pure_tests": [],
+      "status": "host_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.service.abnormal-backoff",
+      "requirement": "Source cooldown uses durationfromrestart_at rather thanlast_started_at, shiftbyminutes/>31zero; nextdeadlineusesreduceddelay then doubles future cap.",
+      "upstream_source": "src/service/arm/gnunet-service-arm.c:1815..1847",
+      "implementation": [],
+      "pure_tests": [],
+      "status": "host_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.service.restart",
+      "requirement": "Due force-start spawns, demand-only rearms watchers, earliest future deadline idle schedules; runningproc ignored.",
+      "upstream_source": "src/service/arm/gnunet-service-arm.c:1570..1638",
+      "implementation": [],
+      "pure_tests": [],
+      "status": "host_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.service.shutdown",
+      "requirement": "Cancelrestart/closechildlisteners/TERMchildren/freealreadydown; defer finalgenericshutdownuntilallactualchildrenreaped; no invented KILLdeadline.",
+      "upstream_source": "src/service/arm/gnunet-service-arm.c:1455..1559,1848..1864",
+      "implementation": [],
+      "pure_tests": [],
+      "status": "host_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.service.diagnostics",
+      "requirement": "HAVE_WAIT4 optional resource log/path/errors/wait4; GLIBC mallopt constructor separate native profile; neither can be faked by portable core.",
+      "upstream_source": "src/service/arm/gnunet-service-arm.c:1667..1735,2105..2125,2271..2288",
+      "implementation": [],
+      "pure_tests": [],
+      "status": "host_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.service.local-arm-command",
+      "requirement": "Public local ARM startup uses BINARY/PREFIX/OPTIONS/CONFIG, native libexec, stdinherit, signal endpoint and WEAKRANDOM/HOSTFILE daemonize rule.",
+      "upstream_source": "src/service/arm/arm_api.c:653..769",
+      "implementation": [],
+      "pure_tests": [],
+      "status": "host_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.cli.end",
+      "requirement": "Official CLI --end (-e) option, documented result/phase/output/ownership behavior; no destructive operation executed in candidate.",
+      "upstream_source": "src/cli/arm/gnunet-arm.c:151..1104",
+      "implementation": [],
+      "pure_tests": [],
+      "status": "host_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.cli.init",
+      "requirement": "Official CLI --init (-i) option, documented result/phase/output/ownership behavior; no destructive operation executed in candidate.",
+      "upstream_source": "src/cli/arm/gnunet-arm.c:151..1104",
+      "implementation": [],
+      "pure_tests": [],
+      "status": "host_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.cli.kill",
+      "requirement": "Official CLI --kill (-k) option, documented result/phase/output/ownership behavior; no destructive operation executed in candidate.",
+      "upstream_source": "src/cli/arm/gnunet-arm.c:151..1104",
+      "implementation": [],
+      "pure_tests": [],
+      "status": "host_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.cli.all",
+      "requirement": "Official CLI --all (-a) option, documented result/phase/output/ownership behavior; no destructive operation executed in candidate.",
+      "upstream_source": "src/cli/arm/gnunet-arm.c:151..1104",
+      "implementation": [],
+      "pure_tests": [],
+      "status": "host_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.cli.start",
+      "requirement": "Official CLI --start (-s) option, documented result/phase/output/ownership behavior; no destructive operation executed in candidate.",
+      "upstream_source": "src/cli/arm/gnunet-arm.c:151..1104",
+      "implementation": [],
+      "pure_tests": [],
+      "status": "host_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.cli.restart",
+      "requirement": "Official CLI --restart (-r) option, documented result/phase/output/ownership behavior; no destructive operation executed in candidate.",
+      "upstream_source": "src/cli/arm/gnunet-arm.c:151..1104",
+      "implementation": [],
+      "pure_tests": [],
+      "status": "host_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.cli.delete",
+      "requirement": "Official CLI --delete (-d) option, documented result/phase/output/ownership behavior; no destructive operation executed in candidate.",
+      "upstream_source": "src/cli/arm/gnunet-arm.c:151..1104",
+      "implementation": [],
+      "pure_tests": [],
+      "status": "host_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.cli.monitor",
+      "requirement": "Official CLI --monitor (-m) option, documented result/phase/output/ownership behavior; no destructive operation executed in candidate.",
+      "upstream_source": "src/cli/arm/gnunet-arm.c:151..1104",
+      "implementation": [],
+      "pure_tests": [],
+      "status": "host_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.cli.quiet",
+      "requirement": "Official CLI --quiet (-q) option, documented result/phase/output/ownership behavior; no destructive operation executed in candidate.",
+      "upstream_source": "src/cli/arm/gnunet-arm.c:151..1104",
+      "implementation": [],
+      "pure_tests": [],
+      "status": "host_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.cli.timeout",
+      "requirement": "Official CLI --timeout (-T) option, documented result/phase/output/ownership behavior; no destructive operation executed in candidate.",
+      "upstream_source": "src/cli/arm/gnunet-arm.c:151..1104",
+      "implementation": [],
+      "pure_tests": [],
+      "status": "host_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.cli.info",
+      "requirement": "Official CLI --info (-I) option, documented result/phase/output/ownership behavior; no destructive operation executed in candidate.",
+      "upstream_source": "src/cli/arm/gnunet-arm.c:151..1104",
+      "implementation": [],
+      "pure_tests": [],
+      "status": "host_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.cli.no-stdout",
+      "requirement": "Official CLI --no-stdout (-O) option, documented result/phase/output/ownership behavior; no destructive operation executed in candidate.",
+      "upstream_source": "src/cli/arm/gnunet-arm.c:151..1104",
+      "implementation": [],
+      "pure_tests": [],
+      "status": "host_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.cli.no-stderr",
+      "requirement": "Official CLI --no-stderr (-E) option, documented result/phase/output/ownership behavior; no destructive operation executed in candidate.",
+      "upstream_source": "src/cli/arm/gnunet-arm.c:151..1104",
+      "implementation": [],
+      "pure_tests": [],
+      "status": "host_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.testing.GNUNET_TESTING_ARM_cmd_start_peer",
+      "requirement": "struct GNUNET_TESTING_Command (const char *, const char *, const char *); testing interpreter/testbed/config/process ownership is separate complete testing-library scope.",
+      "upstream_source": "src/include/gnunet_testing_arm_lib.h:15",
+      "implementation": [],
+      "pure_tests": [],
+      "status": "host_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.testing.GNUNET_TESTING_cmd_stop_peer",
+      "requirement": "struct GNUNET_TESTING_Command (const char *, const char *); testing interpreter/testbed/config/process ownership is separate complete testing-library scope.",
+      "upstream_source": "src/include/gnunet_testing_arm_lib.h:29",
+      "implementation": [],
+      "pure_tests": [],
+      "status": "host_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.testing.GNUNET_TESTING_ARM_get_trait_arm_handle",
+      "requirement": "enum GNUNET_GenericReturnValue (const struct GNUNET_TESTING_Command *, struct GNUNET_ARM_Handle **); testing interpreter/testbed/config/process ownership is separate complete testing-library scope.",
+      "upstream_source": "src/include/gnunet_testing_arm_lib.h:46",
+      "implementation": [],
+      "pure_tests": [],
+      "status": "host_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.testing.GNUNET_TESTING_ARM_make_trait_arm_handle",
+      "requirement": "struct GNUNET_TESTING_Trait (struct GNUNET_ARM_Handle *); testing interpreter/testbed/config/process ownership is separate complete testing-library scope.",
+      "upstream_source": "src/include/gnunet_testing_arm_lib.h:46",
+      "implementation": [],
+      "pure_tests": [],
+      "status": "host_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.testing.GNUNET_TESTING_ARM_get_trait_config",
+      "requirement": "enum GNUNET_GenericReturnValue (const struct GNUNET_TESTING_Command *, const struct GNUNET_CONFIGURATION_Handle **); testing interpreter/testbed/config/process ownership is separate complete testing-library scope.",
+      "upstream_source": "src/include/gnunet_testing_arm_lib.h:46",
+      "implementation": [],
+      "pure_tests": [],
+      "status": "host_pending",
+      "verification": null
+    },
+    {
+      "id": "arm.testing.GNUNET_TESTING_ARM_make_trait_config",
+      "requirement": "struct GNUNET_TESTING_Trait (const struct GNUNET_CONFIGURATION_Handle *); testing interpreter/testbed/config/process ownership is separate complete testing-library scope.",
+      "upstream_source": "src/include/gnunet_testing_arm_lib.h:46",
+      "implementation": [],
+      "pure_tests": [],
+      "status": "host_pending",
+      "verification": null
+    }
+  ],
+  "verification": null,
+  "history": "No feature count substituted for complete requirements. Wrong20/18 inferred-layout source is separately rejected; current ABI proof explicitly native align8."
+}

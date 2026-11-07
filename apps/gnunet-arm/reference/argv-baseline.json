@@ -1,0 +1,93 @@
+[
+  {
+    "args": [
+      "--help"
+    ],
+    "exit": 0,
+    "stdout": "gnunet-arm\nControl services and the Automated Restart Manager (ARM)\nArguments mandatory for long options are also mandatory for short options.\n  -a, --all                  also show stopped services (used with -I)\n  -c, --config=FILENAME      use configuration file FILENAME\n  -d, --delete               delete config file and directory on exit\n  -E, --no-stderr            don't let gnunet-service-arm inherit standard\n                               error\n  -e, --end                  stop all GNUnet services\n  -h, --help                 print this help\n  -I, --info                 list currently running services\n  -i, --init=SERVICE         start a particular service\n  -k, --kill=SERVICE         stop a particular service\n  -L, --log=LOGLEVEL         configure logging to use LOGLEVEL\n  -l, --logfile=FILENAME     configure logging to write logs to FILENAME\n  -m, --monitor              monitor ARM activities\n  -O, --no-stdout            don't let gnunet-service-arm inherit standard\n                               output\n  -q, --quiet                don't print status messages\n  -r, --restart              stop and start all GNUnet default services\n  -s, --start                start all GNUnet default services\n  -T, --timeout=DELAY        exit with error status if operation does not\n                               finish after DELAY\n  -v, --version              print the version number\n\nReport bugs to gnunet-developers@gnu.org.\nHome page: http://www.gnu.org/s/gnunet/\nGeneral help using GNU software: http://www.gnu.org/gethelp/\n",
+    "stderr": ""
+  },
+  {
+    "args": [
+      "--version"
+    ],
+    "exit": 0,
+    "stdout": "gnunet-arm v0.29.1\n",
+    "stderr": ""
+  },
+  {
+    "args": [
+      "--unknown"
+    ],
+    "exit": 255,
+    "stdout": "",
+    "stderr": "gnunet-arm: unrecognized option `--unknown'\nUse --help to get a list of options.\n"
+  },
+  {
+    "args": [
+      "-z"
+    ],
+    "exit": 255,
+    "stdout": "",
+    "stderr": "gnunet-arm: invalid option -- z\nUse --help to get a list of options.\n"
+  },
+  {
+    "args": [
+      "-i"
+    ],
+    "exit": 255,
+    "stdout": "",
+    "stderr": "gnunet-arm: option requires an argument -- i\nUse --help to get a list of options.\n"
+  },
+  {
+    "args": [
+      "--init"
+    ],
+    "exit": 255,
+    "stdout": "",
+    "stderr": "gnunet-arm: option `--init' requires an argument\nUse --help to get a list of options.\n"
+  },
+  {
+    "args": [
+      "--quiet=x"
+    ],
+    "exit": 255,
+    "stdout": "",
+    "stderr": "gnunet-arm: option `--quiet' does not allow an argument\nUse --help to get a list of options.\n"
+  },
+  {
+    "args": [
+      "--n"
+    ],
+    "exit": 255,
+    "stdout": "",
+    "stderr": "gnunet-arm: option `--n' is ambiguous\nUse --help to get a list of options.\n"
+  },
+  {
+    "args": [
+      "--help",
+      "-s"
+    ],
+    "exit": 255,
+    "stdout": "gnunet-arm\nControl services and the Automated Restart Manager (ARM)\nArguments mandatory for long options are also mandatory for short options.\n  -a, --all                  also show stopped services (used with -I)\n  -c, --config=FILENAME      use configuration file FILENAME\n  -d, --delete               delete config file and directory on exit\n  -E, --no-stderr            don't let gnunet-service-arm inherit standard\n                               error\n  -e, --end                  stop all GNUnet services\n  -h, --help                 print this help\n  -I, --info                 list currently running services\n  -i, --init=SERVICE         start a particular service\n  -k, --kill=SERVICE         stop a particular service\n  -L, --log=LOGLEVEL         configure logging to use LOGLEVEL\n  -l, --logfile=FILENAME     configure logging to write logs to FILENAME\n  -m, --monitor              monitor ARM activities\n  -O, --no-stdout            don't let gnunet-service-arm inherit standard\n                               output\n  -q, --quiet                don't print status messages\n  -r, --restart              stop and start all GNUnet default services\n  -s, --start                start all GNUnet default services\n  -T, --timeout=DELAY        exit with error status if operation does not\n                               finish after DELAY\n  -v, --version              print the version number\n\nReport bugs to gnunet-developers@gnu.org.\nHome page: http://www.gnu.org/s/gnunet/\nGeneral help using GNU software: http://www.gnu.org/gethelp/\n",
+    "stderr": "Option `help' can't be used with other options.\n"
+  },
+  {
+    "args": [
+      "-s",
+      "--help"
+    ],
+    "exit": 255,
+    "stdout": "gnunet-arm\nControl services and the Automated Restart Manager (ARM)\nArguments mandatory for long options are also mandatory for short options.\n  -a, --all                  also show stopped services (used with -I)\n  -c, --config=FILENAME      use configuration file FILENAME\n  -d, --delete               delete config file and directory on exit\n  -E, --no-stderr            don't let gnunet-service-arm inherit standard\n                               error\n  -e, --end                  stop all GNUnet services\n  -h, --help                 print this help\n  -I, --info                 list currently running services\n  -i, --init=SERVICE         start a particular service\n  -k, --kill=SERVICE         stop a particular service\n  -L, --log=LOGLEVEL         configure logging to use LOGLEVEL\n  -l, --logfile=FILENAME     configure logging to write logs to FILENAME\n  -m, --monitor              monitor ARM activities\n  -O, --no-stdout            don't let gnunet-service-arm inherit standard\n                               output\n  -q, --quiet                don't print status messages\n  -r, --restart              stop and start all GNUnet default services\n  -s, --start                start all GNUnet default services\n  -T, --timeout=DELAY        exit with error status if operation does not\n                               finish after DELAY\n  -v, --version              print the version number\n\nReport bugs to gnunet-developers@gnu.org.\nHome page: http://www.gnu.org/s/gnunet/\nGeneral help using GNU software: http://www.gnu.org/gethelp/\n",
+    "stderr": "Option `help' can't be used with other options.\n"
+  },
+  {
+    "args": [
+      "--timeout",
+      "bad"
+    ],
+    "exit": 255,
+    "stdout": "",
+    "stderr": "You must pass relative time to the `timeout' option.\n"
+  }
+]

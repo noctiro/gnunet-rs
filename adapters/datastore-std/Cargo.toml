@@ -1,0 +1,30 @@
+[package]
+name = "gnunet-datastore-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = []
+server = ["dep:gnunet-datastore", "dep:gnunet-crypto", "dep:gnunet-wire", "dep:getrandom", "dep:nix", "tokio/sync"]
+
+[dependencies]
+gnunet-client.workspace = true
+gnunet-client-host.workspace = true
+gnunet-service-runtime.workspace = true
+gnunet-types.workspace = true
+gnunet-datastore = { workspace = true, optional = true }
+gnunet-crypto = { workspace = true, optional = true }
+gnunet-wire = { workspace = true, optional = true }
+getrandom = { workspace = true, optional = true }
+nix = { workspace = true, optional = true }
+tokio = { workspace = true, features = ["net", "time", "rt"] }
+
+[dev-dependencies]
+gnunet-config.workspace = true
+gnunet-wire.workspace = true
+tokio = { workspace = true, features = ["io-util"] }
+
+[lints]
+workspace = true

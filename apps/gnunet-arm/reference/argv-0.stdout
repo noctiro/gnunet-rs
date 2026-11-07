@@ -1,0 +1,28 @@
+gnunet-arm
+Control services and the Automated Restart Manager (ARM)
+Arguments mandatory for long options are also mandatory for short options.
+  -a, --all                  also show stopped services (used with -I)
+  -c, --config=FILENAME      use configuration file FILENAME
+  -d, --delete               delete config file and directory on exit
+  -E, --no-stderr            don't let gnunet-service-arm inherit standard
+                               error
+  -e, --end                  stop all GNUnet services
+  -h, --help                 print this help
+  -I, --info                 list currently running services
+  -i, --init=SERVICE         start a particular service
+  -k, --kill=SERVICE         stop a particular service
+  -L, --log=LOGLEVEL         configure logging to use LOGLEVEL
+  -l, --logfile=FILENAME     configure logging to write logs to FILENAME
+  -m, --monitor              monitor ARM activities
+  -O, --no-stdout            don't let gnunet-service-arm inherit standard
+                               output
+  -q, --quiet                don't print status messages
+  -r, --restart              stop and start all GNUnet default services
+  -s, --start                start all GNUnet default services
+  -T, --timeout=DELAY        exit with error status if operation does not
+                               finish after DELAY
+  -v, --version              print the version number
+
+Report bugs to gnunet-developers@gnu.org.
+Home page: http://www.gnu.org/s/gnunet/
+General help using GNU software: http://www.gnu.org/gethelp/

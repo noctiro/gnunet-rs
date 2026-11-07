@@ -1,0 +1,35 @@
+// Frozen interface intent v1; implementation details may add diagnostics only.
+pub enum InheritedMode { AdoptListeners, CloseAfterConfiguredBind }
+pub enum InheritedResources {
+    Listeners(gnunet_service_runtime::Activation),
+    CloseAfterBind(RebindHold),
+}
+pub struct CapturedStartup {
+    pub inherited: InheritedResources,
+    pub parent_control: Option<ParentControl>,
+}
+// Exactly once, early exec-child main; validates whole set before adoption.
+pub unsafe fn capture_from_environment(mode: InheritedMode) -> std::io::Result<CapturedStartup>;
+pub struct RebindHold { /* private unique OwnedFd set */ }
+impl RebindHold {
+    pub fn len(&self) -> usize;
+    pub fn complete_after_bind(self, bound: &gnunet_service_runtime::BoundListeners) -> ReleaseReport;
+    pub fn abort(self) -> ReleaseReport;
+}
+pub enum ReleasePhase { OwnListenersBound, Aborted }
+pub struct ReleaseReport { pub owned_descriptors_released: usize, pub phase: ReleasePhase }
+pub struct ParentControl { /* private File */ }
+impl ParentControl { pub fn try_read_signal(&mut self) -> std::io::Result<Option<i8>>; }
+pub enum ReadyStatus { AcceptRegistered, InitializationFailed, ServerNotStarted }
+pub struct ReadyWriter { /* private File */ }
+impl ReadyWriter {
+    pub fn from_owned(fd: std::os::fd::OwnedFd) -> Self;
+    pub fn signal(self, status: ReadyStatus) -> std::io::Result<()>;
+}
+pub struct PrivilegePlan { /* original raw username + uid/gid */ }
+pub fn resolve_user(name: &std::ffi::OsStr) -> Result<PrivilegePlan, PrivilegeError>;
+pub enum GroupsProfile { WithInitgroups, WithoutInitgroups }
+pub fn apply_privileges(plan: Option<&PrivilegePlan>, profile: GroupsProfile) -> Result<PrivilegeReport, PrivilegeError>;
+// Report is actual primary/fallback route + identity snapshots + groups_initialized.
+// Configuration helper preserves get_filename expansion using caller Environment.
+pub fn configured_user(config: &gnunet_config::Configuration, section: &[u8]) -> Result<Option<std::ffi::OsString>, gnunet_config::Error>;

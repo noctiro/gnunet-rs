@@ -1,0 +1,13 @@
+[package]
+name = "gnunet-qr-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+gnunet-types.workspace = true
+libc.workspace = true
+
+[lints]
+workspace = true

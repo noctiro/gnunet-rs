@@ -1,0 +1,65 @@
+name: Repository Rust environment
+description: Install the repository toolchain and cache downloaded Cargo inputs
+inputs:
+  host:
+    description: Expected native Rust host triple (fail if the runner architecture changes)
+    default: ''
+  targets:
+    description: Additional Rust targets, separated by commas
+    default: ''
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      with:
+        python-version: '3.14'
+    - name: Read the repository toolchain
+      id: toolchain
+      shell: bash
+      env:
+        EXPECTED_RUST_HOST: ${{ inputs.host }}
+      run: |
+        python - <<'PY'
+        import os, tomllib
+        with open('rust-toolchain.toml', 'rb') as source:
+            toolchain = tomllib.load(source)['toolchain']
+        with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+            host = os.environ['EXPECTED_RUST_HOST']
+            channel = toolchain['channel'] + ('-' + host if host else '')
+            print('channel=' + channel, file=output)
+            print('components=' + ','.join(toolchain.get('components', [])), file=output)
+        PY
+    - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+      with:
+        toolchain: ${{ steps.toolchain.outputs.channel }}
+        components: ${{ steps.toolchain.outputs.components }}
+        targets: ${{ inputs.targets }}
+    - name: Select the toolchain for all child commands
+      shell: bash
+      env:
+        REPOSITORY_RUST_TOOLCHAIN: ${{ steps.toolchain.outputs.channel }}
+      run: printf 'RUSTUP_TOOLCHAIN=%s\n' "$REPOSITORY_RUST_TOOLCHAIN" >> "$GITHUB_ENV"
+    - name: Verify the native Rust host
+      if: inputs.host != ''
+      shell: bash
+      env:
+        EXPECTED_RUST_HOST: ${{ inputs.host }}
+      run: |
+        python - <<'PY'
+        import os, subprocess
+        version = subprocess.check_output(['rustc', '-vV'], text=True)
+        actual = next(line.removeprefix('host: ') for line in version.splitlines() if line.startswith('host: '))
+        expected = os.environ['EXPECTED_RUST_HOST']
+        if actual != expected:
+            raise SystemExit(f'expected native host {expected}, got {actual}')
+        print(version)
+        PY
+    - name: Cache downloaded dependencies
+      uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+      with:
+        path: |
+          ~/.cargo/registry/index
+          ~/.cargo/registry/cache
+          ~/.cargo/git/db
+        key: cargo-inputs-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock', 'tests/embedded/noalloc/Cargo.lock') }}
+        restore-keys: cargo-inputs-v1-${{ runner.os }}-${{ runner.arch }}-

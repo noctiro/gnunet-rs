@@ -1,0 +1,1531 @@
+{
+  "schema": 1,
+  "owner": "hello",
+  "reviewed_requirements_sha256": "f8f00775597b215f5e6ed0dfe2c1167c02da802626f990a0b4ea0a134cbdbf70",
+  "review_basis_sha256": "e2303c0d4b2403709314400649ad66ed8e0562501cce1120cec30312a171f7e8",
+  "review_decision": "Preserve required HELLO contracts and safe Rust decompositions. Fresh source-bound C/Rust evidence is required.",
+  "accepted_safe_decompositions": [
+    {
+      "area": "Ownership/ABI/callbacks",
+      "adjudication": "Accepted safe Rust operation decomposition required. C heap/list/envelope/strings become caller-owned storage and immutable borrowed iterators; peer is an explicit copied public value. No C ABI, malloc/free or reentrant pointer mutation equivalence is claimed.",
+      "witnesses": [
+        "deterministic-exact-contract-trace",
+        "normal-exact-contract-trace"
+      ]
+    },
+    {
+      "area": "Validation authority",
+      "adjudication": "C verified operations map to parse+verify_at(profile,UTC), never to bare Rust parse. DHT C noverify YES internally validates, and its equivalent Rust case still verifies. VerifiedHello is not forgeable through public fields and does not itself authorize network dialing.",
+      "witnesses": [
+        "deterministic-bad-signature-noverify-block",
+        "deterministic-bad-signature-noverify-dht",
+        "deterministic-bad-signature-noverify-message",
+        "deterministic-expired-noverify-block",
+        "deterministic-expired-noverify-dht",
+        "deterministic-expired-noverify-message",
+        "normal-bad-signature-noverify-block",
+        "normal-bad-signature-noverify-dht",
+        "normal-bad-signature-noverify-message",
+        "normal-expired-noverify-block",
+        "normal-expired-noverify-dht",
+        "normal-expired-noverify-message"
+      ]
+    },
+    {
+      "area": "Clock/defaults",
+      "adjudication": "Rust representation preserves zero and accepts explicit UTC. C zero/default convenience is reproduced through default_expiration(now); real generated C bytes for all four serializers are compared. Formatting does not re-sign expired or changed metadata.",
+      "witnesses": [
+        "deterministic-explicit-time-default-block",
+        "deterministic-explicit-time-default-dht",
+        "deterministic-explicit-time-default-message",
+        "deterministic-explicit-time-default-url",
+        "normal-explicit-time-default-block",
+        "normal-explicit-time-default-dht",
+        "normal-explicit-time-default-message",
+        "normal-explicit-time-default-url"
+      ]
+    },
+    {
+      "area": "Safe malformed/refusal behavior",
+      "adjudication": "Rust finite exact slices, typed errors, transactional output refusal and caller ceilings are deliberate. C truncated-percent UAF, decimal conversion undefined behavior, invalid pointers, oversized narrowing and hidden literal NUL are not compatibility obligations. Safe negative tests cover corresponding Rust refusal; undefined C inputs were not executed.",
+      "witnesses": [
+        "deterministic-typed-short-dht-4",
+        "deterministic-typed-short-dht-7",
+        "deterministic-typed-short-dht-79",
+        "deterministic-typed-short-dht-8",
+        "deterministic-typed-short-message-111",
+        "deterministic-typed-short-message-4",
+        "deterministic-typed-short-message-7",
+        "deterministic-typed-short-message-8",
+        "normal-duplicate-query",
+        "normal-empty-query",
+        "normal-typed-short-dht-4",
+        "normal-typed-short-dht-7",
+        "normal-typed-short-dht-79",
+        "normal-typed-short-dht-8",
+        "normal-typed-short-message-111",
+        "normal-typed-short-message-4",
+        "normal-typed-short-message-7",
+        "normal-typed-short-message-8"
+      ]
+    },
+    {
+      "area": "C error documentation inconsistency",
+      "adjudication": "dht_msg_to_block documents expired NO+block and invalid NULL output, while current code rejects expiry through nested parser and may leave freed out pointers. Rust matches usable success/failure semantics and avoids exposing dangling output parameters. Actual expired/wrong-peer/signature failures are observed.",
+      "witnesses": [
+        "deterministic-bad-signature-dht",
+        "deterministic-dht-wrong-peer-False",
+        "deterministic-dht-wrong-peer-True",
+        "deterministic-expired-dht",
+        "normal-bad-signature-dht",
+        "normal-dht-wrong-peer-False",
+        "normal-dht-wrong-peer-True",
+        "normal-expired-dht"
+      ]
+    },
+    {
+      "area": "Wire codec strict helper",
+      "adjudication": "The separately documented low-level wire UnverifiedHello decoder enforces advertised metadata and retains order; the official HELLO API correspondence uses gnunet_hello::Hello, which canonicalizes and ignores count/reserved as C. encode_signed_payload is the low-level helper used by this foundation. This distinction does not remove any required official operation.",
+      "witnesses": [
+        "deterministic-dht-ignored-reserved-count",
+        "deterministic-message-ignored-reserved-count",
+        "deterministic-unsorted",
+        "normal-dht-ignored-reserved-count",
+        "normal-message-ignored-reserved-count",
+        "normal-unsorted"
+      ]
+    },
+    {
+      "area": "Conditional build scope",
+      "adjudication": "Both normal and actual HELLO_DETERMINISTIC_PID_DERIVATION=1 libraries/configurations/macros are independently bound and exercised. The conditional HELLO hash/representation branch is covered. PILS deterministic identity derivation, communicators, service state and peer routing belong to other owners and are not prerequisites for this synchronous HELLO foundation claim.",
+      "witnesses": [
+        "deterministic-changed-address",
+        "deterministic-fresh-bytes-hash",
+        "deterministic-percent-space-preserves-binding",
+        "deterministic-space-url-loses-signature-binding",
+        "normal-changed-address",
+        "normal-fresh-bytes-hash",
+        "normal-space-url"
+      ]
+    }
+  ],
+  "criteria": [
+    {
+      "id": "api-surface.callback.TypedefDecl.GNUNET_HELLO_UriCallback",
+      "obligation": "Exact peer/URI callback contract plus safe borrowed iterator decomposition and positive/rejected lifetime controls.",
+      "adjudication": "No remaining concrete implementation or test obligation found in the declared safe Rust HELLO scope.",
+      "c_rust_checks": [
+        "deterministic-exact-contract-trace",
+        "normal-exact-contract-trace"
+      ],
+      "rust_tests": [
+        "crates/gnunet-hello/src/lib.rs - (line 13) - compile fail",
+        "crates/gnunet-hello/src/lib.rs - (line 26)",
+        "crates/gnunet-hello/src/lib.rs - (line 42) - compile fail",
+        "crates/gnunet-hello/src/lib.rs - (line 56)",
+        "crates/gnunet-hello/src/lib.rs - (line 74) - compile fail",
+        "crates/gnunet-hello/src/lib.rs - (line 87)",
+        "exact_callback_relations_size_and_default_time_contracts"
+      ],
+      "rust_equivalence": [
+        {
+          "items": [
+            "gnunet_hello::Addresses",
+            "gnunet_hello::Address",
+            "gnunet_hello::Hello::peer"
+          ],
+          "source_files": [
+            "crates/gnunet-hello/src/lib.rs",
+            "crates/gnunet-hello/src/address.rs"
+          ],
+          "reason": "Borrowed immutable iteration replaces C callback/closure. Builder has no peer, parser has copied peer; URI bytes exclude terminator. Both real C profiles are compared to exact Rust peer/URI/order traces, including parser NULL-callback peer return. Borrowed compile-fail and positive controls verify Rust storage lifetimes. Surface equivalence requires explicit source/API review; an exercised function count cannot prove it."
+        }
+      ]
+    },
+    {
+      "id": "api-surface.macro.gnunet_hello_uri_lib.h.GNUNET_HELLO_ADDRESS_EXPIRATION",
+      "obligation": "Exact numeric two-day relative constant and explicit saturating UTC composition; all four actual C defaults match Rust bytes.",
+      "adjudication": "No remaining concrete implementation or test obligation found in the declared safe Rust HELLO scope.",
+      "c_rust_checks": [
+        "deterministic-exact-contract-trace",
+        "deterministic-explicit-time-default-block",
+        "deterministic-explicit-time-default-dht",
+        "deterministic-explicit-time-default-message",
+        "deterministic-explicit-time-default-url",
+        "normal-exact-contract-trace",
+        "normal-explicit-time-default-block",
+        "normal-explicit-time-default-dht",
+        "normal-explicit-time-default-message",
+        "normal-explicit-time-default-url"
+      ],
+      "rust_tests": [
+        "default_signature_does_not_bind_addresses_and_conditional_profile_does",
+        "empty_sets_and_expiration_helper_match_c_persistence_semantics",
+        "exact_callback_relations_size_and_default_time_contracts",
+        "nonempty_expiration_helper_and_typed_short_frames"
+      ],
+      "rust_equivalence": [
+        {
+          "items": [
+            "gnunet_hello::ADDRESS_EXPIRATION",
+            "gnunet_hello::default_expiration"
+          ],
+          "source_files": [
+            "crates/gnunet-hello/src/lib.rs",
+            "crates/gnunet-hello/src/address.rs"
+          ],
+          "reason": "C relative 2 days =172800000000us; Rust constant is explicit RelativeTime and saturating absolute addition. Live C traces emit the numeric 172800000000us lifetime. Each C default block/message/DHT/URL expiration is constrained to the real before/after+duration window and feeds explicit-time Rust serialization with byte equality. Surface equivalence requires explicit source/API review; an exercised function count cannot prove it."
+        }
+      ]
+    },
+    {
+      "id": "api-surface.type.RecordDecl.GNUNET_HELLO_Builder",
+      "obligation": "Opaque C owned allocation maps to bounded caller-owned mutable set; no ABI layout/free-pointer claim. Set, capacity, copy, iteration and borrow reuse are tested.",
+      "adjudication": "No remaining concrete implementation or test obligation found in the declared safe Rust HELLO scope.",
+      "c_rust_checks": [
+        "deterministic-exact-contract-trace",
+        "deterministic-exact-relations-trace",
+        "normal-exact-contract-trace",
+        "normal-exact-relations-trace"
+      ],
+      "rust_tests": [
+        "builder_set_order_removal_subset_and_failed_add_are_transactional",
+        "complete_output_preflight_and_exact_message_width_boundary",
+        "copied_builder_and_peer_outlive_parser_and_its_input",
+        "crates/gnunet-hello/src/lib.rs - (line 13) - compile fail",
+        "crates/gnunet-hello/src/lib.rs - (line 26)",
+        "crates/gnunet-hello/src/lib.rs - (line 42) - compile fail",
+        "crates/gnunet-hello/src/lib.rs - (line 56)",
+        "crates/gnunet-hello/src/lib.rs - (line 74) - compile fail",
+        "crates/gnunet-hello/src/lib.rs - (line 87)",
+        "exact_callback_relations_size_and_default_time_contracts",
+        "oversized_raw_blocks_remain_distinct_from_bounded_wire_frames",
+        "storage_byte_limits_are_independent_of_count_and_duplicate_budget"
+      ],
+      "rust_equivalence": [
+        {
+          "items": [
+            "gnunet_hello::HelloBuilder"
+          ],
+          "source_files": [
+            "crates/gnunet-hello/src/lib.rs",
+            "crates/gnunet-hello/src/address.rs"
+          ],
+          "reason": "No ABI layout equivalence is claimed. Mutable set construction and immutable borrowed views carry ownership; no heap free needed; capacity is explicit. Surface equivalence requires explicit source/API review; an exercised function count cannot prove it. Runtime byte/count refusal tests are independent; builders and live Address values retain their caller-storage borrows, with checked positive reuse after scope end."
+        }
+      ]
+    },
+    {
+      "id": "api-surface.type.RecordDecl.GNUNET_HELLO_Parser",
+      "obligation": "Opaque C verified/unchecked contexts map to Hello structural value plus private VerifiedHello authority type; input copies and scratch borrows, safe output/capacity and explicit profile/time checks are tested.",
+      "adjudication": "No remaining concrete implementation or test obligation found in the declared safe Rust HELLO scope.",
+      "c_rust_checks": [
+        "deterministic-bad-signature-block",
+        "deterministic-bad-signature-dht",
+        "deterministic-bad-signature-message",
+        "deterministic-bad-signature-noverify-block",
+        "deterministic-bad-signature-noverify-dht",
+        "deterministic-bad-signature-noverify-message",
+        "deterministic-exact-contract-trace",
+        "deterministic-expired-block",
+        "deterministic-expired-dht",
+        "deterministic-expired-message",
+        "deterministic-expired-noverify-block",
+        "deterministic-expired-noverify-dht",
+        "deterministic-expired-noverify-message",
+        "deterministic-expired-url",
+        "deterministic-positive-block",
+        "normal-bad-signature-block",
+        "normal-bad-signature-dht",
+        "normal-bad-signature-message",
+        "normal-bad-signature-noverify-block",
+        "normal-bad-signature-noverify-dht",
+        "normal-bad-signature-noverify-message",
+        "normal-exact-contract-trace",
+        "normal-expired-block",
+        "normal-expired-dht",
+        "normal-expired-message",
+        "normal-expired-noverify-block",
+        "normal-expired-noverify-dht",
+        "normal-expired-noverify-message",
+        "normal-expired-url",
+        "normal-positive-block"
+      ],
+      "rust_tests": [
+        "binary_short_duplicate_and_resource_limits_fail_without_publication",
+        "c_normal_parser_ignores_counts_and_sorts_before_verification",
+        "conditional_c_fixtures_and_emit_rust",
+        "copied_builder_and_peer_outlive_parser_and_its_input",
+        "crates/gnunet-hello/src/lib.rs - (line 13) - compile fail",
+        "crates/gnunet-hello/src/lib.rs - (line 26)",
+        "crates/gnunet-hello/src/lib.rs - (line 42) - compile fail",
+        "crates/gnunet-hello/src/lib.rs - (line 56)",
+        "crates/gnunet-hello/src/lib.rs - (line 74) - compile fail",
+        "crates/gnunet-hello/src/lib.rs - (line 87)",
+        "default_signature_does_not_bind_addresses_and_conditional_profile_does",
+        "empty_sets_and_expiration_helper_match_c_persistence_semantics",
+        "nonempty_expiration_helper_and_typed_short_frames",
+        "normal_c_fixtures_and_emit_rust"
+      ],
+      "rust_equivalence": [
+        {
+          "items": [
+            "gnunet_hello::Hello",
+            "gnunet_hello::VerifiedHello"
+          ],
+          "source_files": [
+            "crates/gnunet-hello/src/lib.rs",
+            "crates/gnunet-hello/src/address.rs"
+          ],
+          "reason": "Rust explicitly splits unverified structure from profile/UTC verification; copied metadata with borrowed canonical scratch cannot authorize a contact by mere parsing. Surface equivalence requires explicit source/API review; an exercised function count cannot prove it. Input bytes and public metadata are copied; the returned address lifetime is tied only to scratch. VerifiedHello fields are private, and positive signing checks remain valid after private-key drop."
+        }
+      ]
+    },
+    {
+      "id": "api.GNUNET_HELLO_address_to_prefix",
+      "obligation": "First-hyphen extraction, empty prefix, missing-hyphen None; borrowed slice replaces C allocation.",
+      "adjudication": "No remaining concrete implementation or test obligation found in the declared safe Rust HELLO scope.",
+      "c_rust_checks": [
+        "deterministic-exact-contract-trace",
+        "deterministic-exact-relations-trace",
+        "normal-exact-contract-trace",
+        "normal-exact-relations-trace"
+      ],
+      "rust_tests": [
+        "builder_set_order_removal_subset_and_failed_add_are_transactional",
+        "exact_callback_relations_size_and_default_time_contracts"
+      ],
+      "rust_equivalence": [
+        {
+          "items": [
+            "gnunet_hello::address_to_prefix"
+          ],
+          "source_files": [
+            "crates/gnunet-hello/src/lib.rs",
+            "crates/gnunet-hello/src/address.rs"
+          ],
+          "reason": "C allocates substring before first hyphen; Rust returns a borrow of effective C-string bytes, not the URI scheme. Leading hyphen yields empty; no hyphen yields None. C NULL maps None; Rust respects first embedded NUL for this C-string helper."
+        }
+      ]
+    },
+    {
+      "id": "api.GNUNET_HELLO_build_url",
+      "obligation": "Explicit absolute-expiry builder URL equals parser URL; opaque width/space escaping; capacity is a safe Rust Result contract.",
+      "adjudication": "No remaining concrete implementation or test obligation found in the declared safe Rust HELLO scope.",
+      "c_rust_checks": [
+        "deterministic-C-opens-Rust-url",
+        "deterministic-fresh-bytes-url",
+        "deterministic-space-url-loses-signature-binding",
+        "normal-C-opens-Rust-url",
+        "normal-fresh-bytes-url",
+        "normal-odd-url",
+        "normal-space-url"
+      ],
+      "rust_tests": [
+        "c_url_width_encoding_keeps_opaque_binary_addresses",
+        "complete_output_preflight_and_exact_message_width_boundary",
+        "conditional_c_fixtures_and_emit_rust",
+        "normal_c_fixtures_and_emit_rust",
+        "oversized_raw_blocks_remain_distinct_from_bounded_wire_frames",
+        "six_byte_c_encoding_and_signature_tail_bits",
+        "storage_byte_limits_are_independent_of_count_and_duplicate_budget",
+        "textual_c_quirks_and_malformed_boundaries_are_explicit"
+      ],
+      "rust_equivalence": [
+        {
+          "items": [
+            "gnunet_hello::HelloBuilder::with_signature",
+            "gnunet_hello::Hello::write_url"
+          ],
+          "source_files": [
+            "crates/gnunet-hello/src/lib.rs",
+            "crates/gnunet-hello/src/url.rs",
+            "crates/gnunet-hello/src/address.rs"
+          ],
+          "reason": "C takes builder plus peer/signature/absolute expiry and returns allocated NUL-terminated char*. Rust copies public metadata, borrows builder addresses and writes ASCII into caller output without the terminator. No signature verification in either serializer; Rust capacity/encoding errors preserve output. C allocation failure/invalid encoding does not have the same safe Result contract."
+        }
+      ]
+    },
+    {
+      "id": "api.GNUNET_HELLO_builder_add_address",
+      "obligation": "Descending set insertion, exact duplicate outcome, invalid scheme/NUL refusal, independent count/byte bounds.",
+      "adjudication": "No remaining concrete implementation or test obligation found in the declared safe Rust HELLO scope.",
+      "c_rust_checks": [
+        "deterministic-duplicate",
+        "deterministic-exact-contract-trace",
+        "deterministic-unsorted",
+        "normal-duplicate",
+        "normal-duplicate-query",
+        "normal-exact-contract-trace",
+        "normal-unsorted"
+      ],
+      "rust_tests": [
+        "builder_set_order_removal_subset_and_failed_add_are_transactional",
+        "complete_output_preflight_and_exact_message_width_boundary",
+        "conditional_c_fixtures_and_emit_rust",
+        "normal_c_fixtures_and_emit_rust",
+        "oversized_raw_blocks_remain_distinct_from_bounded_wire_frames",
+        "storage_byte_limits_are_independent_of_count_and_duplicate_budget"
+      ],
+      "rust_equivalence": [
+        {
+          "items": [
+            "gnunet_hello::HelloBuilder::add_address"
+          ],
+          "source_files": [
+            "crates/gnunet-hello/src/lib.rs",
+            "crates/gnunet-hello/src/address.rs"
+          ],
+          "reason": "C copies a C string into heap set; Rust copies NUL-free URI into caller storage. Both retain descending strcmp order and exact duplicate identity. C OK/NO/SYSERR maps Added/AlreadyPresent/Err. Resource refusal is explicit; embedded NUL is a byte-slice error rather than a hidden suffix."
+        }
+      ]
+    },
+    {
+      "id": "api.GNUNET_HELLO_builder_address_list_cmp",
+      "obligation": "Asymmetric a subset b versus b subset a, self and empty subsets observed in both C profiles and Rust.",
+      "adjudication": "No remaining concrete implementation or test obligation found in the declared safe Rust HELLO scope.",
+      "c_rust_checks": [
+        "deterministic-exact-contract-trace",
+        "deterministic-exact-relations-trace",
+        "normal-exact-contract-trace",
+        "normal-exact-relations-trace"
+      ],
+      "rust_tests": [
+        "builder_set_order_removal_subset_and_failed_add_are_transactional",
+        "exact_callback_relations_size_and_default_time_contracts"
+      ],
+      "rust_equivalence": [
+        {
+          "items": [
+            "gnunet_hello::HelloBuilder::is_subset_of"
+          ],
+          "source_files": [
+            "crates/gnunet-hello/src/lib.rs",
+            "crates/gnunet-hello/src/address.rs"
+          ],
+          "reason": "C name is misleading: every address in first builder must be present in second; not symmetric equality. Rust explicitly names subset semantics. C YES/NO maps bool, including empty set subset. No signature/profile involved."
+        }
+      ]
+    },
+    {
+      "id": "api.GNUNET_HELLO_builder_del_address",
+      "obligation": "Missing/existing/repeated deletion outcomes and surviving size/order use identical C/Rust fixtures.",
+      "adjudication": "No remaining concrete implementation or test obligation found in the declared safe Rust HELLO scope.",
+      "c_rust_checks": [
+        "deterministic-exact-contract-trace",
+        "normal-exact-contract-trace"
+      ],
+      "rust_tests": [
+        "builder_set_order_removal_subset_and_failed_add_are_transactional",
+        "exact_callback_relations_size_and_default_time_contracts"
+      ],
+      "rust_equivalence": [
+        {
+          "items": [
+            "gnunet_hello::HelloBuilder::remove_address"
+          ],
+          "source_files": [
+            "crates/gnunet-hello/src/lib.rs",
+            "crates/gnunet-hello/src/address.rs"
+          ],
+          "reason": "C frees matched entry; Rust compacts caller buffer and preserves surviving order. C OK/NO maps Ok(true)/Ok(false); Rust rejects embedded NUL input safely. The normal C and actual Rust contract now delete the same b://y entry twice, with missing/existing/missing outcomes and surviving byte size compared."
+        }
+      ]
+    },
+    {
+      "id": "api.GNUNET_HELLO_builder_free",
+      "obligation": "C frees its list after actual use; Rust owns no heap and releases its mutable storage borrow at last use/scope. Compile-fail and positive counterparts establish reuse without claiming erasure.",
+      "adjudication": "No remaining concrete implementation or test obligation found in the declared safe Rust HELLO scope.",
+      "c_rust_checks": [
+        "deterministic-exact-contract-trace",
+        "normal-exact-contract-trace"
+      ],
+      "rust_tests": [
+        "copied_builder_and_peer_outlive_parser_and_its_input",
+        "crates/gnunet-hello/src/lib.rs - (line 13) - compile fail",
+        "crates/gnunet-hello/src/lib.rs - (line 26)",
+        "crates/gnunet-hello/src/lib.rs - (line 42) - compile fail",
+        "crates/gnunet-hello/src/lib.rs - (line 56)",
+        "crates/gnunet-hello/src/lib.rs - (line 74) - compile fail",
+        "crates/gnunet-hello/src/lib.rs - (line 87)"
+      ],
+      "rust_equivalence": [
+        {
+          "items": [
+            "gnunet_hello::HelloBuilder"
+          ],
+          "source_files": [
+            "crates/gnunet-hello/src/lib.rs",
+            "crates/gnunet-hello/src/address.rs"
+          ],
+          "reason": "C owns/free heap list. Rust builder owns no heap; storage remains caller-owned and can be reused when all borrows end. No explicit public free or zeroization is required for public URI bytes; no claim that dropping a Copy Hello erases caller storage. Scope/last-use release is the mapping, not a C-style public free or storage erasure; the positive and rejected borrow examples establish that distinction."
+        }
+      ]
+    },
+    {
+      "id": "api.GNUNET_HELLO_builder_from_parser",
+      "obligation": "Copied canonical addresses plus optional copied peer; independently owned destination remains valid after original parser/input/scratch lifetime ends.",
+      "adjudication": "No remaining concrete implementation or test obligation found in the declared safe Rust HELLO scope.",
+      "c_rust_checks": [
+        "deterministic-exact-contract-trace",
+        "normal-exact-contract-trace"
+      ],
+      "rust_tests": [
+        "copied_builder_and_peer_outlive_parser_and_its_input",
+        "exact_callback_relations_size_and_default_time_contracts"
+      ],
+      "rust_equivalence": [
+        {
+          "items": [
+            "gnunet_hello::Hello::to_builder",
+            "gnunet_hello::Hello::peer"
+          ],
+          "source_files": [
+            "crates/gnunet-hello/src/lib.rs",
+            "crates/gnunet-hello/src/address.rs"
+          ],
+          "reason": "C duplicates addresses and optionally writes pid out; Rust copies into independent supplied storage, with peer available separately by value. Original parsed value remains valid. Rust may return Capacity; scratch can be partially written on failure but no builder is published. Caller explicitly chooses whether to retain the copied peer. Independent destination storage plus copied peer/signature/expiry survives original input/parser/scratch destruction in a positive test."
+        }
+      ]
+    },
+    {
+      "id": "api.GNUNET_HELLO_builder_hash_addresses",
+      "obligation": "Both actual C macro profiles are observed: SHA512(empty) versus SHA512(sorted NUL addresses), compared to Rust hash/purpose/signature bytes.",
+      "adjudication": "No remaining concrete implementation or test obligation found in the declared safe Rust HELLO scope.",
+      "c_rust_checks": [
+        "deterministic-changed-address",
+        "deterministic-fresh-bytes-hash",
+        "deterministic-fresh-bytes-region",
+        "deterministic-fresh-bytes-signature",
+        "normal-changed-address",
+        "normal-fresh-bytes-hash",
+        "normal-fresh-bytes-region",
+        "normal-fresh-bytes-signature"
+      ],
+      "rust_tests": [
+        "conditional_c_fixtures_and_emit_rust",
+        "default_signature_does_not_bind_addresses_and_conditional_profile_does",
+        "empty_sets_and_expiration_helper_match_c_persistence_semantics",
+        "nonempty_expiration_helper_and_typed_short_frames",
+        "normal_c_fixtures_and_emit_rust"
+      ],
+      "rust_equivalence": [
+        {
+          "items": [
+            "gnunet_hello::HelloBuilder::address_hash"
+          ],
+          "source_files": [
+            "crates/gnunet-hello/src/lib.rs",
+            "crates/gnunet-hello/src/address.rs"
+          ],
+          "reason": "C build macro chooses hash(empty) or hash(full descending NUL list). Rust requires explicit profile and returns public 64-byte value. No guessed profile or fallback after authentication failure. Hash is not itself an authenticated contact."
+        }
+      ]
+    },
+    {
+      "id": "api.GNUNET_HELLO_builder_iterate",
+      "obligation": "Every exact URI/order and NULL builder peer are traced. Rust has borrowed iterator items and no peer in its builder; it does not emulate a C NULL callback dereference.",
+      "adjudication": "No remaining concrete implementation or test obligation found in the declared safe Rust HELLO scope.",
+      "c_rust_checks": [
+        "deterministic-exact-contract-trace",
+        "normal-exact-contract-trace"
+      ],
+      "rust_tests": [
+        "crates/gnunet-hello/src/lib.rs - (line 13) - compile fail",
+        "crates/gnunet-hello/src/lib.rs - (line 26)",
+        "crates/gnunet-hello/src/lib.rs - (line 42) - compile fail",
+        "crates/gnunet-hello/src/lib.rs - (line 56)",
+        "crates/gnunet-hello/src/lib.rs - (line 74) - compile fail",
+        "crates/gnunet-hello/src/lib.rs - (line 87)",
+        "exact_callback_relations_size_and_default_time_contracts"
+      ],
+      "rust_equivalence": [
+        {
+          "items": [
+            "gnunet_hello::HelloBuilder::addresses"
+          ],
+          "source_files": [
+            "crates/gnunet-hello/src/lib.rs",
+            "crates/gnunet-hello/src/address.rs"
+          ],
+          "reason": "C callback sees pid=NULL and NUL-terminated URI; Rust yields borrowed Address bytes excluding terminator and has no peer identity in a builder. Immutable iteration prevents mutation/dangling pointers. C header says callback may be NULL but implementation dereferences it; do not execute that UB or claim its safe emulation."
+        }
+      ]
+    },
+    {
+      "id": "api.GNUNET_HELLO_builder_new",
+      "obligation": "Empty set starts with count0 and raw length104, no hidden process state; caller limits/storage remain explicit.",
+      "adjudication": "No remaining concrete implementation or test obligation found in the declared safe Rust HELLO scope.",
+      "c_rust_checks": [
+        "deterministic-exact-contract-trace",
+        "normal-empty-url",
+        "normal-exact-contract-trace"
+      ],
+      "rust_tests": [
+        "builder_set_order_removal_subset_and_failed_add_are_transactional",
+        "complete_output_preflight_and_exact_message_width_boundary",
+        "crates/gnunet-hello/src/lib.rs - (line 13) - compile fail",
+        "crates/gnunet-hello/src/lib.rs - (line 26)",
+        "crates/gnunet-hello/src/lib.rs - (line 42) - compile fail",
+        "crates/gnunet-hello/src/lib.rs - (line 56)",
+        "crates/gnunet-hello/src/lib.rs - (line 74) - compile fail",
+        "crates/gnunet-hello/src/lib.rs - (line 87)",
+        "exact_callback_relations_size_and_default_time_contracts",
+        "oversized_raw_blocks_remain_distinct_from_bounded_wire_frames",
+        "storage_byte_limits_are_independent_of_count_and_duplicate_budget"
+      ],
+      "rust_equivalence": [
+        {
+          "items": [
+            "gnunet_hello::HelloBuilder::new"
+          ],
+          "source_files": [
+            "crates/gnunet-hello/src/lib.rs",
+            "crates/gnunet-hello/src/address.rs"
+          ],
+          "reason": "C allocates empty opaque heap set. Rust starts empty in caller-owned mutable slice with explicit input/work ceilings. C allocator abort behavior is replaced by explicit bounded operations; constructor itself borrows storage."
+        }
+      ]
+    },
+    {
+      "id": "api.GNUNET_HELLO_builder_to_block",
+      "obligation": "Builder explicit/default expiry raw bytes match C; safe all-zero public metadata represents C nullable inputs. No verification/signing is implied by formatting.",
+      "adjudication": "No remaining concrete implementation or test obligation found in the declared safe Rust HELLO scope.",
+      "c_rust_checks": [
+        "deterministic-C-opens-Rust-block",
+        "deterministic-explicit-time-default-block",
+        "deterministic-fresh-bytes-block",
+        "normal-C-opens-Rust-block",
+        "normal-explicit-time-default-block",
+        "normal-fresh-bytes-block"
+      ],
+      "rust_tests": [
+        "complete_output_preflight_and_exact_message_width_boundary",
+        "conditional_c_fixtures_and_emit_rust",
+        "exact_callback_relations_size_and_default_time_contracts",
+        "normal_c_fixtures_and_emit_rust",
+        "oversized_raw_blocks_remain_distinct_from_bounded_wire_frames",
+        "storage_byte_limits_are_independent_of_count_and_duplicate_budget"
+      ],
+      "rust_equivalence": [
+        {
+          "items": [
+            "gnunet_hello::HelloBuilder::with_signature",
+            "gnunet_hello::Hello::encode_block"
+          ],
+          "source_files": [
+            "crates/gnunet-hello/src/lib.rs",
+            "crates/gnunet-hello/src/address.rs"
+          ],
+          "reason": "C optional peer/signature become zeros when NULL. Rust represents those via explicit all-zero public values. Caller buffer replaces unchecked C out pointer. C expiry zero substitutes now+2days. Rust representation preserves zero; caller composes default_expiration(now) explicitly to reproduce that convenience."
+        }
+      ]
+    },
+    {
+      "id": "api.GNUNET_HELLO_builder_to_dht_hello_msg",
+      "obligation": "Peer omitted, signature/expiry/address bytes retained; default and explicit serializer bytes cross-checked; Rust safely refuses frame width/count/capacity overflow.",
+      "adjudication": "No remaining concrete implementation or test obligation found in the declared safe Rust HELLO scope.",
+      "c_rust_checks": [
+        "deterministic-C-opens-Rust-dht",
+        "deterministic-explicit-time-default-dht",
+        "deterministic-fresh-bytes-dht",
+        "normal-C-opens-Rust-dht",
+        "normal-explicit-time-default-dht",
+        "normal-fresh-bytes-dht"
+      ],
+      "rust_tests": [
+        "complete_output_preflight_and_exact_message_width_boundary",
+        "conditional_c_fixtures_and_emit_rust",
+        "exact_callback_relations_size_and_default_time_contracts",
+        "normal_c_fixtures_and_emit_rust",
+        "oversized_raw_blocks_remain_distinct_from_bounded_wire_frames",
+        "storage_byte_limits_are_independent_of_count_and_duplicate_budget"
+      ],
+      "rust_equivalence": [
+        {
+          "items": [
+            "gnunet_hello::HelloBuilder::with_signature",
+            "gnunet_hello::Hello::encode_dht_message"
+          ],
+          "source_files": [
+            "crates/gnunet-hello/src/lib.rs",
+            "crates/gnunet-hello/src/address.rs"
+          ],
+          "reason": "C allocates DHT message and omits peer; Rust writes the same complete bytes into caller storage. Count/size checked before writes. C helper roundtrip asserts block equality; fresh actual Rust DHT bytes and builder-default DHT bytes are each compared to the real C library output."
+        }
+      ]
+    },
+    {
+      "id": "api.GNUNET_HELLO_builder_to_env",
+      "obligation": "Official complete HELLO_URI bytes, zero reserved and real canonical count; C MQ allocation is represented by caller-owned frame storage; queueing is outside this synchronous foundation.",
+      "adjudication": "No remaining concrete implementation or test obligation found in the declared safe Rust HELLO scope.",
+      "c_rust_checks": [
+        "deterministic-C-opens-Rust-message",
+        "deterministic-explicit-time-default-message",
+        "deterministic-fresh-bytes-message",
+        "normal-C-opens-Rust-message",
+        "normal-explicit-time-default-message",
+        "normal-fresh-bytes-message"
+      ],
+      "rust_tests": [
+        "complete_output_preflight_and_exact_message_width_boundary",
+        "conditional_c_fixtures_and_emit_rust",
+        "exact_callback_relations_size_and_default_time_contracts",
+        "normal_c_fixtures_and_emit_rust",
+        "oversized_raw_blocks_remain_distinct_from_bounded_wire_frames",
+        "storage_byte_limits_are_independent_of_count_and_duplicate_budget"
+      ],
+      "rust_equivalence": [
+        {
+          "items": [
+            "gnunet_hello::HelloBuilder::with_signature",
+            "gnunet_hello::Hello::encode_message"
+          ],
+          "source_files": [
+            "crates/gnunet-hello/src/lib.rs",
+            "crates/gnunet-hello/src/address.rs"
+          ],
+          "reason": "C allocates MQ envelope containing HELLO_URI. Rust emits complete official frame; host MQ ownership/enqueue is outside this noalloc foundation. No private envelope. Rust capacity error changes no output; C zero-expiry default must be explicit-time composition."
+        }
+      ]
+    },
+    {
+      "id": "api.GNUNET_HELLO_builder_to_url",
+      "obligation": "Actual C implicit default UTC is captured in a before/after+two-day window, then identical bytes are generated from explicit Rust UTC; supplied signature is deliberately not re-signed.",
+      "adjudication": "No remaining concrete implementation or test obligation found in the declared safe Rust HELLO scope.",
+      "c_rust_checks": [
+        "deterministic-explicit-time-default-url",
+        "normal-explicit-time-default-url"
+      ],
+      "rust_tests": [
+        "default_signature_does_not_bind_addresses_and_conditional_profile_does",
+        "empty_sets_and_expiration_helper_match_c_persistence_semantics",
+        "exact_callback_relations_size_and_default_time_contracts",
+        "nonempty_expiration_helper_and_typed_short_frames"
+      ],
+      "rust_equivalence": [
+        {
+          "items": [
+            "gnunet_hello::default_expiration",
+            "gnunet_hello::HelloBuilder::with_signature",
+            "gnunet_hello::Hello::write_url"
+          ],
+          "source_files": [
+            "crates/gnunet-hello/src/lib.rs",
+            "crates/gnunet-hello/src/address.rs",
+            "crates/gnunet-hello/src/url.rs"
+          ],
+          "reason": "C reads wall time to obtain default absolute expiry then formats supplied signature; Rust caller supplies UTC and composes the same operation. Formatting does not sign or verify; supplied signature can become inconsistent with a newly chosen expiry in C too."
+        }
+      ]
+    },
+    {
+      "id": "api.GNUNET_HELLO_builder_to_url2",
+      "obligation": "C parameter is actual absolute time despite a comment about relative validity. Explicit-expiry C aliases yield identical URLs; Rust uses with_signature/write_url.",
+      "adjudication": "No remaining concrete implementation or test obligation found in the declared safe Rust HELLO scope.",
+      "c_rust_checks": [
+        "deterministic-C-opens-Rust-url",
+        "deterministic-fresh-bytes-url",
+        "normal-C-opens-Rust-url",
+        "normal-fresh-bytes-url",
+        "normal-odd-url"
+      ],
+      "rust_tests": [
+        "c_url_width_encoding_keeps_opaque_binary_addresses",
+        "complete_output_preflight_and_exact_message_width_boundary",
+        "conditional_c_fixtures_and_emit_rust",
+        "normal_c_fixtures_and_emit_rust",
+        "oversized_raw_blocks_remain_distinct_from_bounded_wire_frames",
+        "six_byte_c_encoding_and_signature_tail_bits",
+        "storage_byte_limits_are_independent_of_count_and_duplicate_budget",
+        "textual_c_quirks_and_malformed_boundaries_are_explicit"
+      ],
+      "rust_equivalence": [
+        {
+          "items": [
+            "gnunet_hello::HelloBuilder::with_signature",
+            "gnunet_hello::Hello::write_url"
+          ],
+          "source_files": [
+            "crates/gnunet-hello/src/lib.rs",
+            "crates/gnunet-hello/src/address.rs",
+            "crates/gnunet-hello/src/url.rs"
+          ],
+          "reason": "Despite C comment referring to relative validity, actual signature accepts GNUNET_TIME_Absolute; units remain absolute microseconds. Same safe output/encoding contract as build_url, with no hidden clock."
+        }
+      ]
+    },
+    {
+      "id": "api.GNUNET_HELLO_dht_msg_to_block",
+      "obligation": "Correct external peer reconstructs identical canonical block; wrong peer, signature and expiry fail, including the C hidden verification on noverify YES. Source review records C documentation/output-pointer mismatch on error; Rust does not expose dangling out pointers.",
+      "adjudication": "No remaining concrete implementation or test obligation found in the declared safe Rust HELLO scope.",
+      "c_rust_checks": [
+        "deterministic-C-opens-Rust-dht",
+        "deterministic-bad-signature-dht",
+        "deterministic-bad-signature-noverify-dht",
+        "deterministic-dht-wrong-peer-False",
+        "deterministic-dht-wrong-peer-True",
+        "deterministic-expired-dht",
+        "deterministic-expired-noverify-dht",
+        "deterministic-positive-dht",
+        "normal-C-opens-Rust-dht",
+        "normal-bad-signature-dht",
+        "normal-bad-signature-noverify-dht",
+        "normal-dht-wrong-peer-False",
+        "normal-dht-wrong-peer-True",
+        "normal-expired-dht",
+        "normal-expired-noverify-dht",
+        "normal-positive-dht"
+      ],
+      "rust_tests": [
+        "binary_short_duplicate_and_resource_limits_fail_without_publication",
+        "c_normal_parser_ignores_counts_and_sorts_before_verification",
+        "conditional_c_fixtures_and_emit_rust",
+        "default_signature_does_not_bind_addresses_and_conditional_profile_does",
+        "empty_sets_and_expiration_helper_match_c_persistence_semantics",
+        "nonempty_expiration_helper_and_typed_short_frames",
+        "normal_c_fixtures_and_emit_rust"
+      ],
+      "rust_equivalence": [
+        {
+          "items": [
+            "gnunet_hello::Hello::parse_message",
+            "gnunet_hello::Hello::verify_at",
+            "gnunet_hello::Hello::encode_block"
+          ],
+          "source_files": [
+            "crates/gnunet-hello/src/lib.rs"
+          ],
+          "reason": "C reconstructs peer from supplied identity and validates; Rust must include explicit verify_at to map this verified C operation. C documents NO+expired block but nested verified parser actually returns SYSERR on expiry. Rust Err(Timeout) distinguishes that failure and structural parse remains separately available."
+        }
+      ]
+    },
+    {
+      "id": "api.GNUNET_HELLO_get_builder_to_block_size",
+      "obligation": "Exact public builder size is compared for empty/copied/deleted sets and checked for bounded and >u16 raw blocks.",
+      "adjudication": "No remaining concrete implementation or test obligation found in the declared safe Rust HELLO scope.",
+      "c_rust_checks": [
+        "deterministic-exact-contract-trace",
+        "normal-exact-contract-trace"
+      ],
+      "rust_tests": [
+        "complete_output_preflight_and_exact_message_width_boundary",
+        "exact_callback_relations_size_and_default_time_contracts",
+        "oversized_raw_blocks_remain_distinct_from_bounded_wire_frames",
+        "storage_byte_limits_are_independent_of_count_and_duplicate_budget"
+      ],
+      "rust_equivalence": [
+        {
+          "items": [
+            "gnunet_hello::HelloBuilder::block_len"
+          ],
+          "source_files": [
+            "crates/gnunet-hello/src/lib.rs",
+            "crates/gnunet-hello/src/address.rs"
+          ],
+          "reason": "C returns header104 + URI terminators including empty set; Rust returns checked Result<usize>. No wire-u16 restriction for raw block; overflow is an error rather than C assertion. The exact public builder method is tested for empty, copied, deleted, byte-limited and >u16 raw-block cases; the empty/copied/deleted sizes match live C traces."
+        }
+      ]
+    },
+    {
+      "id": "api.GNUNET_HELLO_get_expiration_time_from_msg",
+      "obligation": "Unverified expiration helper preserves encoded nonempty timestamps; empty HELLO_URI=>zero, empty DHT=>encoded; typed short/unsupported frames use safe errors.",
+      "adjudication": "No remaining concrete implementation or test obligation found in the declared safe Rust HELLO scope.",
+      "c_rust_checks": [
+        "deterministic-positive-dht",
+        "deterministic-positive-message",
+        "normal-positive-dht",
+        "normal-positive-message"
+      ],
+      "rust_tests": [
+        "binary_short_duplicate_and_resource_limits_fail_without_publication",
+        "c_normal_parser_ignores_counts_and_sorts_before_verification",
+        "default_signature_does_not_bind_addresses_and_conditional_profile_does",
+        "empty_sets_and_expiration_helper_match_c_persistence_semantics",
+        "nonempty_expiration_helper_and_typed_short_frames"
+      ],
+      "rust_equivalence": [
+        {
+          "items": [
+            "gnunet_hello::message_expiration"
+          ],
+          "source_files": [
+            "crates/gnunet-hello/src/lib.rs"
+          ],
+          "reason": "C unverified helper returns absolute timestamp; empty HELLO_URI returns zero, empty DHT retains encoded expiry. Rust safely validates exact frame first. Malformed C cases return zero/break; Rust returns typed Err. This is never a signature/peer admission operation."
+        }
+      ]
+    },
+    {
+      "id": "api.GNUNET_HELLO_parser_free",
+      "obligation": "C parser heap/list is freed after helper use; Rust borrowed scratch becomes reusable after all value/address uses, while copied public key or independently copied builder can survive.",
+      "adjudication": "No remaining concrete implementation or test obligation found in the declared safe Rust HELLO scope.",
+      "c_rust_checks": [
+        "deterministic-exact-contract-trace",
+        "normal-exact-contract-trace"
+      ],
+      "rust_tests": [
+        "copied_builder_and_peer_outlive_parser_and_its_input",
+        "crates/gnunet-hello/src/lib.rs - (line 13) - compile fail",
+        "crates/gnunet-hello/src/lib.rs - (line 26)",
+        "crates/gnunet-hello/src/lib.rs - (line 42) - compile fail",
+        "crates/gnunet-hello/src/lib.rs - (line 56)",
+        "crates/gnunet-hello/src/lib.rs - (line 74) - compile fail",
+        "crates/gnunet-hello/src/lib.rs - (line 87)"
+      ],
+      "rust_equivalence": [
+        {
+          "items": [
+            "gnunet_hello::Hello"
+          ],
+          "source_files": [
+            "crates/gnunet-hello/src/lib.rs"
+          ],
+          "reason": "C frees owned address list; Rust parsed public metadata is copied and its canonical addresses borrow caller scratch. No parser heap allocation exists. Storage becomes reusable after all Hello/Address borrows end; public keys may intentionally outlive parser as copies. Scope/last-use release is the mapping, not a C-style public free or storage erasure; the positive and rejected borrow examples establish that distinction."
+        }
+      ]
+    },
+    {
+      "id": "api.GNUNET_HELLO_parser_from_block",
+      "obligation": "Thin C verified wrapper is exercised directly. Rust full equivalence is structural canonicalization plus explicit profile/time verification, with duplicate/authentication/expiry refusal.",
+      "adjudication": "No remaining concrete implementation or test obligation found in the declared safe Rust HELLO scope.",
+      "c_rust_checks": [
+        "deterministic-changed-expiry",
+        "deterministic-changed-peer",
+        "deterministic-changed-signature",
+        "deterministic-duplicate",
+        "deterministic-expired-block",
+        "deterministic-positive-block",
+        "deterministic-unsorted",
+        "normal-changed-expiry",
+        "normal-changed-peer",
+        "normal-changed-signature",
+        "normal-duplicate",
+        "normal-duplicate-query",
+        "normal-expired-block",
+        "normal-positive-block",
+        "normal-unsorted"
+      ],
+      "rust_tests": [
+        "binary_short_duplicate_and_resource_limits_fail_without_publication",
+        "c_normal_parser_ignores_counts_and_sorts_before_verification",
+        "conditional_c_fixtures_and_emit_rust",
+        "crates/gnunet-hello/src/lib.rs - (line 13) - compile fail",
+        "crates/gnunet-hello/src/lib.rs - (line 26)",
+        "crates/gnunet-hello/src/lib.rs - (line 42) - compile fail",
+        "crates/gnunet-hello/src/lib.rs - (line 56)",
+        "crates/gnunet-hello/src/lib.rs - (line 74) - compile fail",
+        "crates/gnunet-hello/src/lib.rs - (line 87)",
+        "default_signature_does_not_bind_addresses_and_conditional_profile_does",
+        "empty_sets_and_expiration_helper_match_c_persistence_semantics",
+        "nonempty_expiration_helper_and_typed_short_frames",
+        "normal_c_fixtures_and_emit_rust"
+      ],
+      "rust_equivalence": [
+        {
+          "items": [
+            "gnunet_hello::Hello::parse_block",
+            "gnunet_hello::Hello::verify_at"
+          ],
+          "source_files": [
+            "crates/gnunet-hello/src/lib.rs"
+          ],
+          "reason": "C returns verified heap parser or NULL. Bare Rust parse is intentionally unverified; full mapping requires verifier and returns typed VerifiedHello. Duplicates/malformed URIs fail, unsorted lists canonicalize before signature hash. Signature checked before expiry; Rust expiry error is Timeout."
+        }
+      ]
+    },
+    {
+      "id": "api.GNUNET_HELLO_parser_from_block_",
+      "obligation": "C YES skips both signature and expiry; other values select verification. Both real profiles exercise valid/bad-signature/expired data under NO and YES; Rust structural values never become VerifiedHello implicitly.",
+      "adjudication": "No remaining concrete implementation or test obligation found in the declared safe Rust HELLO scope.",
+      "c_rust_checks": [
+        "deterministic-bad-signature-block",
+        "deterministic-bad-signature-noverify-block",
+        "deterministic-expired-block",
+        "deterministic-expired-noverify-block",
+        "deterministic-valid-noverify-block",
+        "normal-bad-signature-block",
+        "normal-bad-signature-noverify-block",
+        "normal-expired-block",
+        "normal-expired-noverify-block",
+        "normal-valid-noverify-block"
+      ],
+      "rust_tests": [
+        "conditional_c_fixtures_and_emit_rust",
+        "crates/gnunet-hello/src/lib.rs - (line 13) - compile fail",
+        "crates/gnunet-hello/src/lib.rs - (line 26)",
+        "crates/gnunet-hello/src/lib.rs - (line 42) - compile fail",
+        "crates/gnunet-hello/src/lib.rs - (line 56)",
+        "crates/gnunet-hello/src/lib.rs - (line 74) - compile fail",
+        "crates/gnunet-hello/src/lib.rs - (line 87)",
+        "default_signature_does_not_bind_addresses_and_conditional_profile_does",
+        "empty_sets_and_expiration_helper_match_c_persistence_semantics",
+        "nonempty_expiration_helper_and_typed_short_frames",
+        "normal_c_fixtures_and_emit_rust"
+      ],
+      "rust_equivalence": [
+        {
+          "items": [
+            "gnunet_hello::Hello::parse_block",
+            "gnunet_hello::Hello::verify_at"
+          ],
+          "source_files": [
+            "crates/gnunet-hello/src/lib.rs"
+          ],
+          "reason": "C YES skips both signature and expiry checks. Rust structural Hello is the explicit unverified equivalent; other C int values require verification. Both real profiles now exercise valid, invalid-signature and expired raw/HELLO/DHT inputs with C noverify NO/YES. Rust verification is explicit per case; URL has no C noverify parameter."
+        }
+      ]
+    },
+    {
+      "id": "api.GNUNET_HELLO_parser_from_msg",
+      "obligation": "Direct C wrapper HELLO call plus source-reviewed delegation to parser_from_msg_(NO); real HELLO/DHT frames, external peer, ignored metadata, true typed minima, authentication and expiry are compared.",
+      "adjudication": "No remaining concrete implementation or test obligation found in the declared safe Rust HELLO scope.",
+      "c_rust_checks": [
+        "deterministic-dht-ignored-reserved-count",
+        "deterministic-dht-wrong-peer-False",
+        "deterministic-dht-wrong-peer-True",
+        "deterministic-expired-dht",
+        "deterministic-expired-message",
+        "deterministic-message-ignored-reserved-count",
+        "deterministic-positive-dht",
+        "deterministic-positive-message",
+        "deterministic-typed-short-dht-4",
+        "deterministic-typed-short-dht-7",
+        "deterministic-typed-short-dht-79",
+        "deterministic-typed-short-dht-8",
+        "deterministic-typed-short-message-111",
+        "deterministic-typed-short-message-4",
+        "deterministic-typed-short-message-7",
+        "deterministic-typed-short-message-8",
+        "normal-dht-ignored-reserved-count",
+        "normal-dht-wrong-peer-False",
+        "normal-dht-wrong-peer-True",
+        "normal-expired-dht",
+        "normal-expired-message",
+        "normal-message-ignored-reserved-count",
+        "normal-positive-dht",
+        "normal-positive-message",
+        "normal-typed-short-dht-4",
+        "normal-typed-short-dht-7",
+        "normal-typed-short-dht-79",
+        "normal-typed-short-dht-8",
+        "normal-typed-short-message-111",
+        "normal-typed-short-message-4",
+        "normal-typed-short-message-7",
+        "normal-typed-short-message-8"
+      ],
+      "rust_tests": [
+        "binary_short_duplicate_and_resource_limits_fail_without_publication",
+        "c_normal_parser_ignores_counts_and_sorts_before_verification",
+        "conditional_c_fixtures_and_emit_rust",
+        "default_signature_does_not_bind_addresses_and_conditional_profile_does",
+        "empty_sets_and_expiration_helper_match_c_persistence_semantics",
+        "nonempty_expiration_helper_and_typed_short_frames",
+        "normal_c_fixtures_and_emit_rust"
+      ],
+      "rust_equivalence": [
+        {
+          "items": [
+            "gnunet_hello::Hello::parse_message",
+            "gnunet_hello::Hello::verify_at"
+          ],
+          "source_files": [
+            "crates/gnunet-hello/src/lib.rs"
+          ],
+          "reason": "HELLO_URI embeds peer; DHT requires external peer. Complete bounded slice replaces a C pointer sized only by its header. Reserved/count ignored as C; exact trailing-length validation is safely stricter. Authenticated meaning depends on explicit profile coverage."
+        }
+      ]
+    },
+    {
+      "id": "api.GNUNET_HELLO_parser_from_msg_",
+      "obligation": "HELLO YES maps to structural Rust; DHT YES still verifies via dht_msg_to_block, so equivalent Rust pipeline includes verify_at for both flags. Each input row records C flag and actual Rust verifier choice separately.",
+      "adjudication": "No remaining concrete implementation or test obligation found in the declared safe Rust HELLO scope.",
+      "c_rust_checks": [
+        "deterministic-bad-signature-noverify-dht",
+        "deterministic-bad-signature-noverify-message",
+        "deterministic-expired-noverify-dht",
+        "deterministic-expired-noverify-message",
+        "deterministic-typed-short-dht-4",
+        "deterministic-typed-short-dht-7",
+        "deterministic-typed-short-dht-79",
+        "deterministic-typed-short-dht-8",
+        "deterministic-typed-short-message-111",
+        "deterministic-typed-short-message-4",
+        "deterministic-typed-short-message-7",
+        "deterministic-typed-short-message-8",
+        "deterministic-valid-noverify-dht",
+        "deterministic-valid-noverify-message",
+        "normal-bad-signature-noverify-dht",
+        "normal-bad-signature-noverify-message",
+        "normal-expired-noverify-dht",
+        "normal-expired-noverify-message",
+        "normal-typed-short-dht-4",
+        "normal-typed-short-dht-7",
+        "normal-typed-short-dht-79",
+        "normal-typed-short-dht-8",
+        "normal-typed-short-message-111",
+        "normal-typed-short-message-4",
+        "normal-typed-short-message-7",
+        "normal-typed-short-message-8",
+        "normal-valid-noverify-dht",
+        "normal-valid-noverify-message"
+      ],
+      "rust_tests": [
+        "binary_short_duplicate_and_resource_limits_fail_without_publication",
+        "c_normal_parser_ignores_counts_and_sorts_before_verification",
+        "conditional_c_fixtures_and_emit_rust",
+        "default_signature_does_not_bind_addresses_and_conditional_profile_does",
+        "empty_sets_and_expiration_helper_match_c_persistence_semantics",
+        "nonempty_expiration_helper_and_typed_short_frames",
+        "normal_c_fixtures_and_emit_rust"
+      ],
+      "rust_equivalence": [
+        {
+          "items": [
+            "gnunet_hello::Hello::parse_message",
+            "gnunet_hello::Hello::verify_at"
+          ],
+          "source_files": [
+            "crates/gnunet-hello/src/lib.rs"
+          ],
+          "reason": "C DHT noverify still calls dht_msg_to_block which verifies. Rust bare structural parse is a separate capability and must not be labeled a literal equivalent of that C verified path. Safe decomposed mapping can reproduce actual C outcomes; the intentional structural API extension/delta needs explicit review and paired variance cases."
+        }
+      ]
+    },
+    {
+      "id": "api.GNUNET_HELLO_parser_from_url",
+      "obligation": "Verified C parser maps to parse_url+verify_at. Signature/profile/expiry, case/aliases/tail bits, real percent quirks, empty/duplicate query refusal and width groups have direct and Rust-safe-negative coverage.",
+      "adjudication": "No remaining concrete implementation or test obligation found in the declared safe Rust HELLO scope.",
+      "c_rust_checks": [
+        "deterministic-expired-url",
+        "deterministic-percent-space-preserves-binding",
+        "deterministic-positive-url",
+        "deterministic-space-url-loses-signature-binding",
+        "normal-base32-aliases",
+        "normal-base32-lowercase",
+        "normal-base32-unused-tailbits",
+        "normal-duplicate-query",
+        "normal-empty-query",
+        "normal-empty-scheme",
+        "normal-empty-url",
+        "normal-empty-value",
+        "normal-expired-url",
+        "normal-invalid-hex-literal",
+        "normal-nul-truncates",
+        "normal-odd-url",
+        "normal-partial-hex",
+        "normal-percent-plus",
+        "normal-percent-space",
+        "normal-positive-url",
+        "normal-signature-unused-tailbits",
+        "normal-space-url"
+      ],
+      "rust_tests": [
+        "c_url_width_encoding_keeps_opaque_binary_addresses",
+        "conditional_c_fixtures_and_emit_rust",
+        "default_signature_does_not_bind_addresses_and_conditional_profile_does",
+        "empty_sets_and_expiration_helper_match_c_persistence_semantics",
+        "nonempty_expiration_helper_and_typed_short_frames",
+        "normal_c_fixtures_and_emit_rust",
+        "six_byte_c_encoding_and_signature_tail_bits",
+        "textual_c_quirks_and_malformed_boundaries_are_explicit"
+      ],
+      "rust_equivalence": [
+        {
+          "items": [
+            "gnunet_hello::Hello::parse_url",
+            "gnunet_hello::Hello::verify_at"
+          ],
+          "source_files": [
+            "crates/gnunet-hello/src/lib.rs",
+            "crates/gnunet-hello/src/url.rs"
+          ],
+          "reason": "C URL parser returns only verified current parser; Rust separates structure, canonicalization, authentication and explicit UTC. C bytes/case/aliases/tail bits/plus/percent quirks largely preserved. Truncated-percent UAF, decimal overflow/uninitialized empty number and hidden literal NUL are safely rejected."
+        }
+      ]
+    },
+    {
+      "id": "api.GNUNET_HELLO_parser_get_id",
+      "obligation": "Exact C parser identity is copied as Rust public EddsaPublicKey, with no borrowed pointer or implicit authentication; survives parser/input scope.",
+      "adjudication": "No remaining concrete implementation or test obligation found in the declared safe Rust HELLO scope.",
+      "c_rust_checks": [
+        "deterministic-exact-contract-trace",
+        "deterministic-fresh-bytes-block",
+        "normal-exact-contract-trace",
+        "normal-fresh-bytes-block"
+      ],
+      "rust_tests": [
+        "copied_builder_and_peer_outlive_parser_and_its_input",
+        "exact_callback_relations_size_and_default_time_contracts"
+      ],
+      "rust_equivalence": [
+        {
+          "items": [
+            "gnunet_hello::Hello::peer"
+          ],
+          "source_files": [
+            "crates/gnunet-hello/src/lib.rs"
+          ],
+          "reason": "C returns pointer borrowed from parser; Rust returns copied public EdDSA bytes. Neither raw identity object is an admitted network capability. Copies intentionally survive parser drop; verification is separate."
+        }
+      ]
+    },
+    {
+      "id": "api.GNUNET_HELLO_parser_iterate",
+      "obligation": "Exact URI bytes/order and every copied parser peer match C callbacks; parser_iterate(NULL,NULL) returns the same identity, represented by Hello::peer.",
+      "adjudication": "No remaining concrete implementation or test obligation found in the declared safe Rust HELLO scope.",
+      "c_rust_checks": [
+        "deterministic-exact-contract-trace",
+        "normal-exact-contract-trace"
+      ],
+      "rust_tests": [
+        "crates/gnunet-hello/src/lib.rs - (line 13) - compile fail",
+        "crates/gnunet-hello/src/lib.rs - (line 26)",
+        "crates/gnunet-hello/src/lib.rs - (line 42) - compile fail",
+        "crates/gnunet-hello/src/lib.rs - (line 56)",
+        "crates/gnunet-hello/src/lib.rs - (line 74) - compile fail",
+        "crates/gnunet-hello/src/lib.rs - (line 87)",
+        "exact_callback_relations_size_and_default_time_contracts"
+      ],
+      "rust_equivalence": [
+        {
+          "items": [
+            "gnunet_hello::Hello::addresses",
+            "gnunet_hello::Hello::peer"
+          ],
+          "source_files": [
+            "crates/gnunet-hello/src/lib.rs"
+          ],
+          "reason": "C callback receives same peer plus each URI and returns peer even when callback=NULL; Rust yields borrowed URIs with peer available by value. Immutable borrowed items prevent dangling/reentrant mutation. The new live trace records every exact peer and URI in order and also the identity returned by parser_iterate(NULL,NULL); Rust yields the same sequence paired with copied Hello::peer."
+        }
+      ]
+    },
+    {
+      "id": "api.GNUNET_HELLO_parser_to_block",
+      "obligation": "C NULL size query and short-buffer required length/refusal match Rust length+Capacity; exact-fit bytes and untouched output tail are compared; canonical output does not confer authority.",
+      "adjudication": "No remaining concrete implementation or test obligation found in the declared safe Rust HELLO scope.",
+      "c_rust_checks": [
+        "deterministic-C-opens-Rust-block",
+        "deterministic-exact-contract-trace",
+        "deterministic-fresh-bytes-block",
+        "normal-C-opens-Rust-block",
+        "normal-exact-contract-trace",
+        "normal-fresh-bytes-block"
+      ],
+      "rust_tests": [
+        "complete_output_preflight_and_exact_message_width_boundary",
+        "conditional_c_fixtures_and_emit_rust",
+        "exact_callback_relations_size_and_default_time_contracts",
+        "normal_c_fixtures_and_emit_rust",
+        "oversized_raw_blocks_remain_distinct_from_bounded_wire_frames",
+        "storage_byte_limits_are_independent_of_count_and_duplicate_budget"
+      ],
+      "rust_equivalence": [
+        {
+          "items": [
+            "gnunet_hello::Hello::block_len",
+            "gnunet_hello::Hello::encode_block"
+          ],
+          "source_files": [
+            "crates/gnunet-hello/src/lib.rs"
+          ],
+          "reason": "C query with block=NULL/short buffer reports required size; Rust length query is explicit and short output returns Capacity without modification. Only canonical structural bytes are serialized; serializer does not upgrade validity."
+        }
+      ]
+    },
+    {
+      "id": "api.GNUNET_HELLO_parser_to_dht_hello_msg",
+      "obligation": "Actual C parser-generated peer-omitting DHT bytes match Rust and are opened by C; frame overflow is safely refused in Rust.",
+      "adjudication": "No remaining concrete implementation or test obligation found in the declared safe Rust HELLO scope.",
+      "c_rust_checks": [
+        "deterministic-C-opens-Rust-dht",
+        "deterministic-fresh-bytes-dht",
+        "normal-C-opens-Rust-dht",
+        "normal-fresh-bytes-dht"
+      ],
+      "rust_tests": [
+        "complete_output_preflight_and_exact_message_width_boundary",
+        "conditional_c_fixtures_and_emit_rust",
+        "normal_c_fixtures_and_emit_rust",
+        "oversized_raw_blocks_remain_distinct_from_bounded_wire_frames",
+        "storage_byte_limits_are_independent_of_count_and_duplicate_budget"
+      ],
+      "rust_equivalence": [
+        {
+          "items": [
+            "gnunet_hello::Hello::dht_message_len",
+            "gnunet_hello::Hello::encode_dht_message"
+          ],
+          "source_files": [
+            "crates/gnunet-hello/src/lib.rs"
+          ],
+          "reason": "C allocation replaced by bounded caller output, same signature/expiry/address region and omitted peer. Wire total/count fit u16; raw block may be larger."
+        }
+      ]
+    },
+    {
+      "id": "api.GNUNET_HELLO_parser_to_env",
+      "obligation": "Actual C parser MQ envelope frame bytes match Rust and are reopened by C; canonical count/reserved normalization and short-output refusal are covered.",
+      "adjudication": "No remaining concrete implementation or test obligation found in the declared safe Rust HELLO scope.",
+      "c_rust_checks": [
+        "deterministic-C-opens-Rust-message",
+        "deterministic-fresh-bytes-message",
+        "deterministic-message-ignored-reserved-count",
+        "normal-C-opens-Rust-message",
+        "normal-fresh-bytes-message",
+        "normal-message-ignored-reserved-count"
+      ],
+      "rust_tests": [
+        "binary_short_duplicate_and_resource_limits_fail_without_publication",
+        "c_normal_parser_ignores_counts_and_sorts_before_verification",
+        "complete_output_preflight_and_exact_message_width_boundary",
+        "conditional_c_fixtures_and_emit_rust",
+        "nonempty_expiration_helper_and_typed_short_frames",
+        "normal_c_fixtures_and_emit_rust",
+        "oversized_raw_blocks_remain_distinct_from_bounded_wire_frames",
+        "storage_byte_limits_are_independent_of_count_and_duplicate_budget"
+      ],
+      "rust_equivalence": [
+        {
+          "items": [
+            "gnunet_hello::Hello::message_len",
+            "gnunet_hello::Hello::encode_message"
+          ],
+          "source_files": [
+            "crates/gnunet-hello/src/lib.rs"
+          ],
+          "reason": "C MQ envelope allocation becomes caller-owned complete HELLO_URI bytes. Host queueing/lifetime is a separate layer. Serializer canonicalizes count/reserved but never authenticates or extends expiry."
+        }
+      ]
+    },
+    {
+      "id": "api.GNUNET_HELLO_parser_to_url",
+      "obligation": "Canonical uppercase Crockford and actual C percent width/space behavior match bytes; conditional space/plus loss and percent-space recovery are both observed. Returned Rust str borrows caller output.",
+      "adjudication": "No remaining concrete implementation or test obligation found in the declared safe Rust HELLO scope.",
+      "c_rust_checks": [
+        "deterministic-C-opens-Rust-url",
+        "deterministic-fresh-bytes-url",
+        "deterministic-percent-space-preserves-binding",
+        "deterministic-space-url-loses-signature-binding",
+        "normal-C-opens-Rust-url",
+        "normal-fresh-bytes-url",
+        "normal-odd-url",
+        "normal-space-url"
+      ],
+      "rust_tests": [
+        "c_url_width_encoding_keeps_opaque_binary_addresses",
+        "complete_output_preflight_and_exact_message_width_boundary",
+        "conditional_c_fixtures_and_emit_rust",
+        "normal_c_fixtures_and_emit_rust",
+        "oversized_raw_blocks_remain_distinct_from_bounded_wire_frames",
+        "six_byte_c_encoding_and_signature_tail_bits",
+        "storage_byte_limits_are_independent_of_count_and_duplicate_budget",
+        "textual_c_quirks_and_malformed_boundaries_are_explicit"
+      ],
+      "rust_equivalence": [
+        {
+          "items": [
+            "gnunet_hello::Hello::url_len",
+            "gnunet_hello::Hello::write_url"
+          ],
+          "source_files": [
+            "crates/gnunet-hello/src/lib.rs",
+            "crates/gnunet-hello/src/url.rs"
+          ],
+          "reason": "C owns allocated URL, Rust returns borrow of caller ASCII output. Canonical uppercase Crockford and actual C encoding-width behavior. Normal space formats plus; parse keeps plus literal. Under conditional profile this roundtrip can invalidate address-bound signature; live cases already observe both results."
+        }
+      ]
+    },
+    {
+      "id": "hello-api",
+      "obligation": "Documented synchronous Rust API exposes all thirty official operations and four public surfaces through explicit bounded ownership, profile/time verification and typed errors. There is no async cancellation handle in the C HELLO API; ending iteration or borrowed scope has no pending external operation.",
+      "adjudication": "Ready for owner-level evidence assembly after current requirement/source binding.",
+      "c_rust_checks": [
+        "deterministic-exact-contract-trace",
+        "deterministic-exact-relations-trace",
+        "deterministic-explicit-time-default-block",
+        "deterministic-explicit-time-default-dht",
+        "deterministic-explicit-time-default-message",
+        "deterministic-explicit-time-default-url",
+        "deterministic-fresh-bytes-hash",
+        "normal-exact-contract-trace",
+        "normal-exact-relations-trace",
+        "normal-explicit-time-default-block",
+        "normal-explicit-time-default-dht",
+        "normal-explicit-time-default-message",
+        "normal-explicit-time-default-url",
+        "normal-fresh-bytes-hash"
+      ],
+      "rust_tests": [
+        "builder_set_order_removal_subset_and_failed_add_are_transactional",
+        "complete_output_preflight_and_exact_message_width_boundary",
+        "copied_builder_and_peer_outlive_parser_and_its_input",
+        "crates/gnunet-hello/src/lib.rs - (line 13) - compile fail",
+        "crates/gnunet-hello/src/lib.rs - (line 26)",
+        "crates/gnunet-hello/src/lib.rs - (line 42) - compile fail",
+        "crates/gnunet-hello/src/lib.rs - (line 56)",
+        "crates/gnunet-hello/src/lib.rs - (line 74) - compile fail",
+        "crates/gnunet-hello/src/lib.rs - (line 87)",
+        "exact_callback_relations_size_and_default_time_contracts",
+        "oversized_raw_blocks_remain_distinct_from_bounded_wire_frames",
+        "storage_byte_limits_are_independent_of_count_and_duplicate_budget"
+      ],
+      "rust_equivalence": []
+    },
+    {
+      "id": "hello-behavior",
+      "obligation": "Purpose7, peer/signature/expiration/address handling, all three binary representations and URL, sorting/set semantics, actual C profile coverage, verification order, expiry, reserved/count behavior, output refusal and explicit authority/lifetime are covered by the listed comparisons plus source review.",
+      "adjudication": "Ready for owner-level evidence assembly after current requirement/source binding.",
+      "c_rust_checks": [
+        "deterministic-C-opens-Rust-block",
+        "deterministic-C-opens-Rust-dht",
+        "deterministic-C-opens-Rust-message",
+        "deterministic-C-opens-Rust-url",
+        "deterministic-bad-signature-block",
+        "deterministic-bad-signature-dht",
+        "deterministic-bad-signature-message",
+        "deterministic-bad-signature-noverify-block",
+        "deterministic-bad-signature-noverify-dht",
+        "deterministic-bad-signature-noverify-message",
+        "deterministic-changed-address",
+        "deterministic-changed-expiry",
+        "deterministic-changed-peer",
+        "deterministic-changed-signature",
+        "deterministic-dht-ignored-reserved-count",
+        "deterministic-dht-wrong-peer-False",
+        "deterministic-dht-wrong-peer-True",
+        "deterministic-duplicate",
+        "deterministic-exact-contract-trace",
+        "deterministic-exact-relations-trace",
+        "deterministic-expired-block",
+        "deterministic-expired-dht",
+        "deterministic-expired-message",
+        "deterministic-expired-noverify-block",
+        "deterministic-expired-noverify-dht",
+        "deterministic-expired-noverify-message",
+        "deterministic-expired-url",
+        "deterministic-explicit-time-default-block",
+        "deterministic-explicit-time-default-dht",
+        "deterministic-explicit-time-default-message",
+        "deterministic-explicit-time-default-url",
+        "deterministic-fresh-bytes-block",
+        "deterministic-fresh-bytes-dht",
+        "deterministic-fresh-bytes-hash",
+        "deterministic-fresh-bytes-message",
+        "deterministic-fresh-bytes-region",
+        "deterministic-fresh-bytes-signature",
+        "deterministic-fresh-bytes-url",
+        "deterministic-message-ignored-reserved-count",
+        "deterministic-percent-space-preserves-binding",
+        "deterministic-space-url-loses-signature-binding",
+        "deterministic-typed-short-dht-4",
+        "deterministic-typed-short-dht-7",
+        "deterministic-typed-short-dht-79",
+        "deterministic-typed-short-dht-8",
+        "deterministic-typed-short-message-111",
+        "deterministic-typed-short-message-4",
+        "deterministic-typed-short-message-7",
+        "deterministic-typed-short-message-8",
+        "deterministic-unsorted",
+        "deterministic-valid-noverify-block",
+        "deterministic-valid-noverify-dht",
+        "deterministic-valid-noverify-message",
+        "normal-C-opens-Rust-block",
+        "normal-C-opens-Rust-dht",
+        "normal-C-opens-Rust-message",
+        "normal-C-opens-Rust-url",
+        "normal-bad-signature-block",
+        "normal-bad-signature-dht",
+        "normal-bad-signature-message",
+        "normal-bad-signature-noverify-block",
+        "normal-bad-signature-noverify-dht",
+        "normal-bad-signature-noverify-message",
+        "normal-base32-aliases",
+        "normal-base32-lowercase",
+        "normal-base32-unused-tailbits",
+        "normal-changed-address",
+        "normal-changed-expiry",
+        "normal-changed-peer",
+        "normal-changed-signature",
+        "normal-dht-ignored-reserved-count",
+        "normal-dht-wrong-peer-False",
+        "normal-dht-wrong-peer-True",
+        "normal-duplicate",
+        "normal-duplicate-query",
+        "normal-empty-query",
+        "normal-empty-scheme",
+        "normal-empty-url",
+        "normal-empty-value",
+        "normal-exact-contract-trace",
+        "normal-exact-relations-trace",
+        "normal-expired-block",
+        "normal-expired-dht",
+        "normal-expired-message",
+        "normal-expired-noverify-block",
+        "normal-expired-noverify-dht",
+        "normal-expired-noverify-message",
+        "normal-expired-url",
+        "normal-explicit-time-default-block",
+        "normal-explicit-time-default-dht",
+        "normal-explicit-time-default-message",
+        "normal-explicit-time-default-url",
+        "normal-fresh-bytes-block",
+        "normal-fresh-bytes-dht",
+        "normal-fresh-bytes-hash",
+        "normal-fresh-bytes-message",
+        "normal-fresh-bytes-region",
+        "normal-fresh-bytes-signature",
+        "normal-fresh-bytes-url",
+        "normal-invalid-hex-literal",
+        "normal-leading-plus",
+        "normal-message-ignored-reserved-count",
+        "normal-nul-truncates",
+        "normal-odd-url",
+        "normal-partial-hex",
+        "normal-percent-plus",
+        "normal-percent-space",
+        "normal-plus",
+        "normal-signature-unused-tailbits",
+        "normal-space-url",
+        "normal-trailing-amp",
+        "normal-typed-short-dht-4",
+        "normal-typed-short-dht-7",
+        "normal-typed-short-dht-79",
+        "normal-typed-short-dht-8",
+        "normal-typed-short-message-111",
+        "normal-typed-short-message-4",
+        "normal-typed-short-message-7",
+        "normal-typed-short-message-8",
+        "normal-unsorted",
+        "normal-valid-noverify-block",
+        "normal-valid-noverify-dht",
+        "normal-valid-noverify-message"
+      ],
+      "rust_tests": [
+        "builder_set_order_removal_subset_and_failed_add_are_transactional",
+        "c_url_width_encoding_keeps_opaque_binary_addresses",
+        "binary_short_duplicate_and_resource_limits_fail_without_publication",
+        "empty_sets_and_expiration_helper_match_c_persistence_semantics",
+        "nonempty_expiration_helper_and_typed_short_frames",
+        "complete_output_preflight_and_exact_message_width_boundary",
+        "storage_byte_limits_are_independent_of_count_and_duplicate_budget",
+        "six_byte_c_encoding_and_signature_tail_bits",
+        "copied_builder_and_peer_outlive_parser_and_its_input",
+        "oversized_raw_blocks_remain_distinct_from_bounded_wire_frames",
+        "textual_c_quirks_and_malformed_boundaries_are_explicit",
+        "default_signature_does_not_bind_addresses_and_conditional_profile_does",
+        "c_normal_parser_ignores_counts_and_sorts_before_verification",
+        "conditional_c_fixtures_and_emit_rust",
+        "exact_callback_relations_size_and_default_time_contracts",
+        "normal_c_fixtures_and_emit_rust",
+        "crates/gnunet-hello/src/lib.rs - (line 56)",
+        "crates/gnunet-hello/src/lib.rs - (line 26)",
+        "crates/gnunet-hello/src/lib.rs - (line 87)",
+        "crates/gnunet-hello/src/lib.rs - (line 74) - compile fail",
+        "crates/gnunet-hello/src/lib.rs - (line 42) - compile fail",
+        "crates/gnunet-hello/src/lib.rs - (line 13) - compile fail"
+      ],
+      "rust_equivalence": []
+    }
+  ]
+}

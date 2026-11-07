@@ -1,0 +1,20 @@
+[package]
+name = "gnunet-noalloc-check"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99.1"
+license = "MPL-2.0"
+publish = false
+
+[workspace]
+
+[features]
+default = []
+
+[dependencies]
+gnunet = { path = "../../../crates/gnunet", default-features = false, features = ["transport-quic", "transport-dv-crypto", "unix-communicator", "dns-interception", "hostlist", "testbed", "pt", "fs-codec", "setu", "exit", "regex", "regex-service", "identity", "namecache", "namestore", "datacache", "reclaim", "messenger", "messenger-state", "did", "revocation", "topology", "nat", "reclaim-credentials", "json", "gnsrecord-text", "rest"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+warnings = "deny"
+

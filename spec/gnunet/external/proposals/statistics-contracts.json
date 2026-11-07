@@ -1,0 +1,2041 @@
+{
+  "kind": "proposed-STATISTICS-external-semantic-contracts-and-necessary-case-groups",
+  "state": "candidate-source-only-not-canonical",
+  "base_source_map": {
+    "path": "/private/tmp/gnunet-STATISTICS-configured-commands-reference-integration-20261102-9qwhjgum/source-inputs.json",
+    "sha256": "9d472a05b9b1e7cda1b421c2cb66c1d3aa9aead17dd1bed58c779b05f8238726"
+  },
+  "checkpoint": "e7ec521d9807405414a14eb2acbdc6a8cb343e9132fd294765c5ec1e7715d780",
+  "official_revision": "346358e26d4dcc2dc4f51bef5d52dca29c7d8165",
+  "release": "v0.29.1",
+  "scope": "active Meson ordinary STATISTICS service/client/public header,168–175 IPC,public SET database and actual Rust normal producers/consumers; not C helper/ABI parity",
+  "contract_groups": [
+    {
+      "id": "STAT.EXT.wire",
+      "title": "Exact168–175 fields, framing and names",
+      "requirement_kind": "default-required",
+      "boundary": "official IPC bytes",
+      "contract": [
+        "Header is4B: size BE16 includes header, then type BE16. Official message IDs168–175 are retained; no private envelope or requestID is added.",
+        "SET168: flags BE32 at4,value BE64 at8,two NUL strings at16; GET169/WATCH172: two NUL strings at4; VALUE170: rawUID BE32 at4,value BE64 at8,two NUL strings at16.",
+        "END171,DISCONNECT174,CONFIRM175 are exact4B. WATCH_VALUE173 is exact24B: flags BE32@4,wid BE32@8,reserved BE32@12,value BE64@16. Producer reserved is0.",
+        "Names are opaque case-sensitive byte strings, not forced UTF8. Exactly two terminators consume the names region; caller interior NUL or wire missing/extra/trailing name data is not a new selector. Header size is16-bit; configured resource refusal is separate from format."
+      ],
+      "official_refs": [
+        {
+          "path": "src/include/gnunet_common.h",
+          "sha256": "03bc808f9b183fda2ece71d1e0c5453af127d7f9be59ba80d28df68e46ca6861",
+          "start_line": 320,
+          "end_line": 335
+        },
+        {
+          "path": "src/include/gnunet_protocols.h",
+          "sha256": "9a86ea10c53da11d68c255fa732d24f9d8695a6405396b965893384d3c952392",
+          "start_line": 697,
+          "end_line": 738
+        },
+        {
+          "path": "src/service/statistics/statistics.h",
+          "sha256": "38ad15e5b61387f1f91f57592b888331fa018f14575ac60a1233cec5163422ee",
+          "start_line": 31,
+          "end_line": 146
+        },
+        {
+          "path": "src/service/statistics/gnunet-service-statistics.c",
+          "sha256": "e3f4d0e0445a892dc715d903018f2a5b62596e4d4431c1c519cc6cb0dcc7767f",
+          "start_line": 388,
+          "end_line": 405
+        },
+        {
+          "path": "src/service/statistics/gnunet-service-statistics.c",
+          "sha256": "e3f4d0e0445a892dc715d903018f2a5b62596e4d4431c1c519cc6cb0dcc7767f",
+          "start_line": 562,
+          "end_line": 579
+        }
+      ],
+      "rust_entry_refs": [
+        {
+          "path": "crates/gnunet-statistics/src/protocol.rs",
+          "sha256": "ab592d849d5a7352b0c44524ad61a3101692de82911d99141f8e112a68361664",
+          "anchor": "pub fn decode(",
+          "lines": [
+            25
+          ]
+        },
+        {
+          "path": "crates/gnunet-client/src/statistics.rs",
+          "sha256": "b9b34b0b9837fcbd8c6ff35b130a9f1e9ec566f45b5923b4743d602a722261a8",
+          "anchor": "pub fn encode_get(",
+          "lines": [
+            45
+          ]
+        },
+        {
+          "path": "crates/gnunet-client/src/statistics.rs",
+          "sha256": "b9b34b0b9837fcbd8c6ff35b130a9f1e9ec566f45b5923b4743d602a722261a8",
+          "anchor": "pub fn decode(",
+          "lines": [
+            112,
+            208
+          ]
+        },
+        {
+          "path": "crates/gnunet-statistics/src/protocol.rs",
+          "sha256": "ab592d849d5a7352b0c44524ad61a3101692de82911d99141f8e112a68361664",
+          "anchor": "pub fn encode(self",
+          "lines": [
+            91,
+            129
+          ]
+        },
+        {
+          "path": "adapters/ipc-unix/src/server.rs",
+          "sha256": "2ce620f486563f077d57f8380043cc74a1c89a92ef211c168b34dec7bbf4973e",
+          "anchor": "fn dispatch(",
+          "lines": [
+            572
+          ]
+        }
+      ],
+      "necessary_case_group": {
+        "id": "STAT.CASE.wire",
+        "stimulus": "Exchange independently observed request/response frames through actual client/service boundaries.",
+        "expected_observations": [
+          "Observe exact type/length/endian/offsets and original opaque names; no synthetic terminator, UTF8 rewrite or private fields.",
+          "Verify exact fixed-size terminal frames and retained raw flags/UID/WID/reserved fields before interpreting them."
+        ],
+        "variants": [
+          "all168–175 schemas",
+          "empty/ASCII/nonUTF8/case-distinct names",
+          "header/fixed-payload/name boundary and malformed complete frame"
+        ],
+        "profiles": [
+          "wire-bilateral",
+          "native-field-view",
+          "capacity-profile"
+        ],
+        "behavior_status": "unverified"
+      },
+      "code_status": "source-entries-present-only",
+      "behavior_verified": false
+    },
+    {
+      "id": "STAT.EXT.set",
+      "title": "Global SET arithmetic, persistence replacement and UID",
+      "requirement_kind": "default-required",
+      "boundary": "live service state visible through GET/WATCH",
+      "contract": [
+        "Absolute SET stores unsigned64 value; relative SET interprets value bits as signed64 delta. Existing negative subtraction clamps at0; positive overflow stores modulo2^64 (C diagnoses but continues).",
+        "A new nonpositive relative row is0/unset. Existing unset row becomes set on first SET. Unknown SET bits do not change known-bit behavior.",
+        "Persistence is replaced on every actual SET using flags&2, including an unchanged numeric value. VALUE high-bit31 marks persistence; low31-bit UID stays stable for that row during the live service session. Do not require stable UID across restart or wrapping UID allocator behavior.",
+        "Native update(0) is a separate complete no-op: no admitted mutation/connection or persistence change. Raw relative-zero SET may replace persistence and establish an unset row."
+      ],
+      "official_refs": [
+        {
+          "path": "src/service/statistics/statistics.h",
+          "sha256": "38ad15e5b61387f1f91f57592b888331fa018f14575ac60a1233cec5163422ee",
+          "start_line": 44,
+          "end_line": 105
+        },
+        {
+          "path": "src/service/statistics/gnunet-service-statistics.c",
+          "sha256": "e3f4d0e0445a892dc715d903018f2a5b62596e4d4431c1c519cc6cb0dcc7767f",
+          "start_line": 325,
+          "end_line": 345
+        },
+        {
+          "path": "src/service/statistics/gnunet-service-statistics.c",
+          "sha256": "e3f4d0e0445a892dc715d903018f2a5b62596e4d4431c1c519cc6cb0dcc7767f",
+          "start_line": 589,
+          "end_line": 693
+        },
+        {
+          "path": "src/include/gnunet_statistics_service.h",
+          "sha256": "a5a1dcf63bdb909d7cababe47aeda2c9442ee1464d4d497323f9b049935f65ec",
+          "start_line": 189,
+          "end_line": 221
+        }
+      ],
+      "rust_entry_refs": [
+        {
+          "path": "crates/gnunet-statistics/src/service.rs",
+          "sha256": "b2d0fbd3cc80d974d100fffcf226f3d664dcaac6826597f377933967ed586486",
+          "anchor": "fn set_inner(",
+          "lines": [
+            527
+          ]
+        },
+        {
+          "path": "crates/gnunet-client/src/statistics.rs",
+          "sha256": "b9b34b0b9837fcbd8c6ff35b130a9f1e9ec566f45b5923b4743d602a722261a8",
+          "anchor": "pub const fn uid(",
+          "lines": [
+            92
+          ]
+        },
+        {
+          "path": "crates/gnunet-client/src/statistics.rs",
+          "sha256": "b9b34b0b9837fcbd8c6ff35b130a9f1e9ec566f45b5923b4743d602a722261a8",
+          "anchor": "pub const fn persistent(",
+          "lines": [
+            97,
+            230
+          ]
+        },
+        {
+          "path": "crates/gnunet-client/src/statistics_handle.rs",
+          "sha256": "c26b6222b589063700b0e9dbc36dbd9e5d4680b62ab3ae25ee8a9162ffbeff49",
+          "anchor": "pub fn update(",
+          "lines": [
+            628
+          ]
+        },
+        {
+          "path": "apps/gnunet-cli/src/statistics_watch/finite.rs",
+          "sha256": "f5900a265b449980eda6bc3dc451f6e4af12c1088121699fa8cdd13f86237aee",
+          "anchor": "noop = admission == SetterAdmission::Noop",
+          "lines": [
+            175
+          ]
+        }
+      ],
+      "necessary_case_group": {
+        "id": "STAT.CASE.set",
+        "stimulus": "Create counters, update through both implementations and inspect resulting GET, raw UID and relevant WATCH outputs.",
+        "expected_observations": [
+          "Observed value, low UID and current persistence flag agree after every admitted update.",
+          "Relative-zero native no-op emits its distinct CLI terminal and cannot be counted as a processing-confirmed mutation."
+        ],
+        "variants": [
+          "absolute0/u64MAX",
+          "positive/negative delta and clamp/wrap boundary",
+          "first nonpositive-relative/unset transition",
+          "same-value persistence toggle and unknown flags",
+          "native zero no-op contrasted with actual raw zero SET"
+        ],
+        "profiles": [
+          "wire-bilateral",
+          "native-field-view"
+        ],
+        "behavior_status": "unverified"
+      },
+      "code_status": "source-entries-present-only",
+      "behavior_verified": false
+    },
+    {
+      "id": "STAT.EXT.get",
+      "title": "GET selectors, VALUE identity and actual END",
+      "requirement_kind": "default-required",
+      "boundary": "one ordered GET response stream",
+      "contract": [
+        "Empty subsystem and name independently mean wildcard for GET; nonempty names match exact bytes. SET/WATCH empty names are literal.",
+        "GET yields every matching row, including zero/unset watch-created rows, then exactly one header-only END even for zero matches.",
+        "GET has no wire requestID. Only that original request successful END completes it; EOF, timeout, local cancellation or source loss do not become success. UIDs identify rows within a session, not authentication.",
+        "Consumers preserve exact selector bytes and numeric values. CLI display is lossy UTF8 plus exact byte arrays; count is actual wholly emitted rows, not an assumed number or old10000 cap. Listing order is not added as a new cross-implementation requirement."
+      ],
+      "official_refs": [
+        {
+          "path": "src/service/statistics/gnunet-service-statistics.c",
+          "sha256": "e3f4d0e0445a892dc715d903018f2a5b62596e4d4431c1c519cc6cb0dcc7767f",
+          "start_line": 388,
+          "end_line": 454
+        },
+        {
+          "path": "src/service/statistics/statistics.h",
+          "sha256": "38ad15e5b61387f1f91f57592b888331fa018f14575ac60a1233cec5163422ee",
+          "start_line": 38,
+          "end_line": 63
+        },
+        {
+          "path": "src/include/gnunet_statistics_service.h",
+          "sha256": "a5a1dcf63bdb909d7cababe47aeda2c9442ee1464d4d497323f9b049935f65ec",
+          "start_line": 153,
+          "end_line": 184
+        }
+      ],
+      "rust_entry_refs": [
+        {
+          "path": "crates/gnunet-statistics/src/service.rs",
+          "sha256": "b2d0fbd3cc80d974d100fffcf226f3d664dcaac6826597f377933967ed586486",
+          "anchor": "pub fn get<",
+          "lines": [
+            736
+          ]
+        },
+        {
+          "path": "crates/gnunet-statistics/src/service.rs",
+          "sha256": "b2d0fbd3cc80d974d100fffcf226f3d664dcaac6826597f377933967ed586486",
+          "anchor": "fn next(&mut self)",
+          "lines": [
+            964,
+            999
+          ]
+        },
+        {
+          "path": "crates/gnunet-client/src/statistics.rs",
+          "sha256": "b9b34b0b9837fcbd8c6ff35b130a9f1e9ec566f45b5923b4743d602a722261a8",
+          "anchor": "pub enum Response",
+          "lines": [
+            104
+          ]
+        },
+        {
+          "path": "apps/gnunet-cli/src/statistics_watch/finite.rs",
+          "sha256": "f5900a265b449980eda6bc3dc451f6e4af12c1088121699fa8cdd13f86237aee",
+          "anchor": "Event::GetComplete",
+          "lines": [
+            66
+          ]
+        },
+        {
+          "path": "apps/gnunet-cli/src/statistics_watch/output.rs",
+          "sha256": "1d7dbef9f82c7c2bf8561a9eb5b237496d5d83c0a93a9b6e906c82a6ac292cde",
+          "anchor": "pub fn stage_get(",
+          "lines": [
+            100
+          ]
+        },
+        {
+          "path": "crates/gnunet-statistics/src/service/snapshot.rs",
+          "sha256": "4573afed0f840991ac0ff2f4cf56eb247f6bebdf6aa66b0c1086a7810d92aaf5",
+          "anchor": "pub fn snapshot(",
+          "lines": [
+            42
+          ]
+        },
+        {
+          "path": "crates/gnunet-statistics/src/service/snapshot.rs",
+          "sha256": "4573afed0f840991ac0ff2f4cf56eb247f6bebdf6aa66b0c1086a7810d92aaf5",
+          "anchor": "pub fn snapshot_reply(",
+          "lines": [
+            123
+          ]
+        },
+        {
+          "path": "adapters/ipc-unix/src/server.rs",
+          "sha256": "2ce620f486563f077d57f8380043cc74a1c89a92ef211c168b34dec7bbf4973e",
+          "anchor": "fn outbound(",
+          "lines": [
+            462
+          ]
+        }
+      ],
+      "necessary_case_group": {
+        "id": "STAT.CASE.get",
+        "stimulus": "Use exact/independent wildcard selectors over missing, single and multiple rows and follow original stream to real END.",
+        "expected_observations": [
+          "Match original name/value/persistence/UID fields and complete row set; empty selection has END0.",
+          "Consumer requires actual END and zero exit; partial rows followed by later failure never count as complete listing."
+        ],
+        "variants": [
+          "zero/one/many rows",
+          "all-subsystems/all-names/one-axis wildcards",
+          "unset row and opaque native name rendering",
+          "slow row output preserves one original GET cursor"
+        ],
+        "profiles": [
+          "wire-bilateral",
+          "native-field-view",
+          "capacity-profile"
+        ],
+        "behavior_status": "unverified"
+      },
+      "code_status": "source-entries-present-only",
+      "behavior_verified": false
+    },
+    {
+      "id": "STAT.EXT.watch",
+      "title": "WATCH WID, initial values and true changes",
+      "requirement_kind": "default-required",
+      "boundary": "live notifications for exact selector",
+      "contract": [
+        "WATCH has exact literal names, no ACK or END. WIDs enumerate actual wire registrations per connection from0; WATCH_VALUE carries absolute value, flags0/2, reserved0.",
+        "Initial nonzero current value notifies; initial0 (including set0) is silent. Watch on missing row creates zero/unset row visible through GET.",
+        "First SET on a watch-created unset row can notify0. Later equal values are suppressed per subscription; changing only persistence does not notify. A real numeric change reflects the new persistence in subsequent notification.",
+        "Closing one connection removes only its watches/queued effects, retaining global values and other connections."
+      ],
+      "official_refs": [
+        {
+          "path": "src/service/statistics/gnunet-service-statistics.c",
+          "sha256": "e3f4d0e0445a892dc715d903018f2a5b62596e4d4431c1c519cc6cb0dcc7767f",
+          "start_line": 459,
+          "end_line": 491
+        },
+        {
+          "path": "src/service/statistics/gnunet-service-statistics.c",
+          "sha256": "e3f4d0e0445a892dc715d903018f2a5b62596e4d4431c1c519cc6cb0dcc7767f",
+          "start_line": 698,
+          "end_line": 788
+        },
+        {
+          "path": "src/service/statistics/gnunet-service-statistics.c",
+          "sha256": "e3f4d0e0445a892dc715d903018f2a5b62596e4d4431c1c519cc6cb0dcc7767f",
+          "start_line": 864,
+          "end_line": 900
+        },
+        {
+          "path": "src/service/statistics/statistics.h",
+          "sha256": "38ad15e5b61387f1f91f57592b888331fa018f14575ac60a1233cec5163422ee",
+          "start_line": 110,
+          "end_line": 146
+        }
+      ],
+      "rust_entry_refs": [
+        {
+          "path": "crates/gnunet-statistics/src/service.rs",
+          "sha256": "b2d0fbd3cc80d974d100fffcf226f3d664dcaac6826597f377933967ed586486",
+          "anchor": "pub fn watch(",
+          "lines": [
+            659
+          ]
+        },
+        {
+          "path": "crates/gnunet-statistics/src/service.rs",
+          "sha256": "b2d0fbd3cc80d974d100fffcf226f3d664dcaac6826597f377933967ed586486",
+          "anchor": "fn notify(",
+          "lines": [
+            632
+          ]
+        },
+        {
+          "path": "crates/gnunet-statistics/src/service.rs",
+          "sha256": "b2d0fbd3cc80d974d100fffcf226f3d664dcaac6826597f377933967ed586486",
+          "anchor": "pub fn disconnect(",
+          "lines": [
+            781
+          ]
+        },
+        {
+          "path": "crates/gnunet-statistics/src/protocol.rs",
+          "sha256": "ab592d849d5a7352b0c44524ad61a3101692de82911d99141f8e112a68361664",
+          "anchor": "pub struct Notification",
+          "lines": [
+            116
+          ]
+        },
+        {
+          "path": "crates/gnunet-client/src/statistics.rs",
+          "sha256": "b9b34b0b9837fcbd8c6ff35b130a9f1e9ec566f45b5923b4743d602a722261a8",
+          "anchor": "pub struct WatchValue",
+          "lines": [
+            194
+          ]
+        }
+      ],
+      "necessary_case_group": {
+        "id": "STAT.CASE.watch",
+        "stimulus": "Register multiple actual watches, mutate from a separate client and independently observe exact notification fields.",
+        "expected_observations": [
+          "No fabricated initial zero, registration ACK or END. WID and selector stay bound to the original subscription/connection.",
+          "Only required numeric/initial-set changes notify; other watchers remain correct after one owner retires."
+        ],
+        "variants": [
+          "missing/zero/nonzero initial values",
+          "first zero SET then duplicate0",
+          "real changes and persistence-only toggle",
+          "two registrations, two connections and one disconnect"
+        ],
+        "profiles": [
+          "wire-bilateral",
+          "watch-bilateral"
+        ],
+        "behavior_status": "unverified"
+      },
+      "code_status": "source-entries-present-only",
+      "behavior_verified": false
+    },
+    {
+      "id": "STAT.EXT.get-cancel",
+      "title": "GET cancellation, aborted iteration and late replies",
+      "requirement_kind": "default-required-native-client-lifecycle",
+      "boundary": "original public API/IPC operation and connection epoch",
+      "contract": [
+        "Explicit cancel of queued GET removes it. Cancel of current GET suppresses its rows and continuation but leaves the original stream draining until its END; there is no wire CANCEL or requestID.",
+        "Iterator AbortIteration suppresses remaining rows but is distinct from explicit cancellation: the ordinary END can still yield original successful completion. Connection loss completes a non-aborted original GET with failure, never a new query success.",
+        "A cancelled/stale original ID cannot capture later replies or authorize cancellation in another instance. A later queued GET is not assigned the cancelled stream late VALUE/END. C same-stack destroy prohibition is handled by Rust callback/lifetime API rather than copying an unsafe ABI."
+      ],
+      "official_refs": [
+        {
+          "path": "src/include/gnunet_statistics_service.h",
+          "sha256": "a5a1dcf63bdb909d7cababe47aeda2c9442ee1464d4d497323f9b049935f65ec",
+          "start_line": 145,
+          "end_line": 190
+        },
+        {
+          "path": "src/service/statistics/statistics_api.c",
+          "sha256": "c9aebde968e58fdebf3f2f708b251f1a0e338601c3b999a127ac1203318d8445",
+          "start_line": 387,
+          "end_line": 409
+        },
+        {
+          "path": "src/service/statistics/statistics_api.c",
+          "sha256": "c9aebde968e58fdebf3f2f708b251f1a0e338601c3b999a127ac1203318d8445",
+          "start_line": 454,
+          "end_line": 490
+        },
+        {
+          "path": "src/service/statistics/statistics_api.c",
+          "sha256": "c9aebde968e58fdebf3f2f708b251f1a0e338601c3b999a127ac1203318d8445",
+          "start_line": 613,
+          "end_line": 640
+        },
+        {
+          "path": "src/service/statistics/statistics_api.c",
+          "sha256": "c9aebde968e58fdebf3f2f708b251f1a0e338601c3b999a127ac1203318d8445",
+          "start_line": 1106,
+          "end_line": 1125
+        }
+      ],
+      "rust_entry_refs": [
+        {
+          "path": "crates/gnunet-client/src/statistics_handle.rs",
+          "sha256": "c26b6222b589063700b0e9dbc36dbd9e5d4680b62ab3ae25ee8a9162ffbeff49",
+          "anchor": "pub fn get_cancel(",
+          "lines": [
+            659
+          ]
+        },
+        {
+          "path": "crates/gnunet-client/src/statistics_handle.rs",
+          "sha256": "c26b6222b589063700b0e9dbc36dbd9e5d4680b62ab3ae25ee8a9162ffbeff49",
+          "anchor": "pub fn get_value_result(",
+          "lines": [
+            687
+          ]
+        },
+        {
+          "path": "crates/gnunet-client/src/statistics_handle.rs",
+          "sha256": "c26b6222b589063700b0e9dbc36dbd9e5d4680b62ab3ae25ee8a9162ffbeff49",
+          "anchor": "pub fn prepare_connection_lost(",
+          "lines": [
+            1206
+          ]
+        },
+        {
+          "path": "adapters/ipc-unix/src/handle.rs",
+          "sha256": "b42d0a7955e742b39ff396b495ef7ca0f68306269c1e8a7810cbd51d7a626eea",
+          "anchor": "pub fn get_cancel(",
+          "lines": [
+            430,
+            678
+          ]
+        },
+        {
+          "path": "adapters/ipc-unix/src/handle.rs",
+          "sha256": "b42d0a7955e742b39ff396b495ef7ca0f68306269c1e8a7810cbd51d7a626eea",
+          "anchor": "async fn drive_step(",
+          "lines": [
+            1108
+          ]
+        },
+        {
+          "path": "apps/gnunet-cli/src/statistics_watch/finite.rs",
+          "sha256": "f5900a265b449980eda6bc3dc451f6e4af12c1088121699fa8cdd13f86237aee",
+          "anchor": "current.get_cancel(get)",
+          "lines": [
+            383
+          ]
+        }
+      ],
+      "necessary_case_group": {
+        "id": "STAT.CASE.get-cancel",
+        "stimulus": "Cancel a queued/current original GET or abort its iterator, then allow actual late stream bytes and a distinct later query.",
+        "expected_observations": [
+          "Cancelled original has no rows/continuation after cancellation; late END drains its stream without completing the later GET.",
+          "Iterator-aborted rows remain suppressed but real END/loss retains the corresponding success/failure distinction."
+        ],
+        "variants": [
+          "queued versus current cancel",
+          "iterator abort versus explicit cancel",
+          "late VALUE/END with another queued GET",
+          "source loss and stale/cross-owner ID refusal"
+        ],
+        "profiles": [
+          "native-handle-lifecycle",
+          "wire-bilateral"
+        ],
+        "behavior_status": "unverified"
+      },
+      "code_status": "source-entries-present-only",
+      "behavior_verified": false
+    },
+    {
+      "id": "STAT.EXT.watch-cancel-reconnect",
+      "title": "Logical WATCH cancellation and new physical WID mapping",
+      "requirement_kind": "default-required-native-client-lifecycle",
+      "boundary": "original public API/IPC operation and connection epoch",
+      "contract": [
+        "watch_cancel removes the local live subscription; no wire UNWATCH exists. Late old WID notifications must not reach a cancelled callback, and ordinary connection close releases server registrations.",
+        "Reconnect may re-register only live logical watches, with fresh connection-local WIDs determined by new actual registration order. Stable logical subscription identity is distinct from each physical WID and old connection epoch.",
+        "Cancel holes and logical slot reuse must not cause old callbacks or route another selector notification to the wrong owner. Fixed C client has a source-predicted hole/reconnect indexing defect; preserve official wire WIDs and correct logical ownership instead of reproducing that defect."
+      ],
+      "official_refs": [
+        {
+          "path": "src/include/gnunet_statistics_service.h",
+          "sha256": "a5a1dcf63bdb909d7cababe47aeda2c9442ee1464d4d497323f9b049935f65ec",
+          "start_line": 110,
+          "end_line": 143
+        },
+        {
+          "path": "src/service/statistics/statistics_api.c",
+          "sha256": "c9aebde968e58fdebf3f2f708b251f1a0e338601c3b999a127ac1203318d8445",
+          "start_line": 497,
+          "end_line": 524
+        },
+        {
+          "path": "src/service/statistics/statistics_api.c",
+          "sha256": "c9aebde968e58fdebf3f2f708b251f1a0e338601c3b999a127ac1203318d8445",
+          "start_line": 646,
+          "end_line": 705
+        },
+        {
+          "path": "src/service/statistics/statistics_api.c",
+          "sha256": "c9aebde968e58fdebf3f2f708b251f1a0e338601c3b999a127ac1203318d8445",
+          "start_line": 1132,
+          "end_line": 1157
+        },
+        {
+          "path": "src/service/statistics/statistics_api.c",
+          "sha256": "c9aebde968e58fdebf3f2f708b251f1a0e338601c3b999a127ac1203318d8445",
+          "start_line": 1171,
+          "end_line": 1201
+        },
+        {
+          "path": "src/service/statistics/gnunet-service-statistics.c",
+          "sha256": "e3f4d0e0445a892dc715d903018f2a5b62596e4d4431c1c519cc6cb0dcc7767f",
+          "start_line": 173,
+          "end_line": 194
+        },
+        {
+          "path": "src/service/statistics/gnunet-service-statistics.c",
+          "sha256": "e3f4d0e0445a892dc715d903018f2a5b62596e4d4431c1c519cc6cb0dcc7767f",
+          "start_line": 363,
+          "end_line": 376
+        },
+        {
+          "path": "src/service/statistics/gnunet-service-statistics.c",
+          "sha256": "e3f4d0e0445a892dc715d903018f2a5b62596e4d4431c1c519cc6cb0dcc7767f",
+          "start_line": 740,
+          "end_line": 788
+        }
+      ],
+      "rust_entry_refs": [
+        {
+          "path": "crates/gnunet-client/src/statistics_handle.rs",
+          "sha256": "c26b6222b589063700b0e9dbc36dbd9e5d4680b62ab3ae25ee8a9162ffbeff49",
+          "anchor": "pub fn watch_cancel(",
+          "lines": [
+            743
+          ]
+        },
+        {
+          "path": "crates/gnunet-client/src/statistics_handle.rs",
+          "sha256": "c26b6222b589063700b0e9dbc36dbd9e5d4680b62ab3ae25ee8a9162ffbeff49",
+          "anchor": "pub fn begin_connection(",
+          "lines": [
+            791
+          ]
+        },
+        {
+          "path": "adapters/ipc-unix/src/handle.rs",
+          "sha256": "b42d0a7955e742b39ff396b495ef7ca0f68306269c1e8a7810cbd51d7a626eea",
+          "anchor": "pub fn watch_cancel(",
+          "lines": [
+            442,
+            690
+          ]
+        },
+        {
+          "path": "adapters/ipc-unix/src/handle.rs",
+          "sha256": "b42d0a7955e742b39ff396b495ef7ca0f68306269c1e8a7810cbd51d7a626eea",
+          "anchor": "Event::WatchValue",
+          "lines": [
+            1221
+          ]
+        },
+        {
+          "path": "apps/gnunet-cli/src/statistics_watch/driver.rs",
+          "sha256": "177baf3f13120b6c9cfc13063233e183a2156c71b8f4aabf0084e2f2ebf6edd0",
+          "anchor": "fn callback<",
+          "lines": [
+            275
+          ]
+        }
+      ],
+      "necessary_case_group": {
+        "id": "STAT.CASE.watch-cancel-reconnect",
+        "stimulus": "Register two real watches, cancel an early registration, reconnect the same logical owner, and mutate the remaining exact selector.",
+        "expected_observations": [
+          "Cancelled callback stays silent; surviving logical watch receives its own actual absolute value with the new physical WID.",
+          "No invented ACK or retained old-epoch authorization; old notifications cannot be rebound through slot reuse."
+        ],
+        "variants": [
+          "cancel-before-connect and cancel-live",
+          "late cancelled-WID notification",
+          "early-hole plus surviving watch across reconnect",
+          "fresh logical generation and old-epoch refusal"
+        ],
+        "profiles": [
+          "native-handle-lifecycle",
+          "wire-bilateral"
+        ],
+        "behavior_status": "unverified"
+      },
+      "code_status": "source-entries-present-only",
+      "behavior_verified": false
+    },
+    {
+      "id": "STAT.EXT.loss-unknown",
+      "title": "Connection loss, pending intent and unknown exposed mutations",
+      "requirement_kind": "default-required-native-client-lifecycle",
+      "boundary": "original public API/IPC operation and connection epoch",
+      "contract": [
+        "Client loss distinguishes the current GET, live logical subscriptions, still-queued mutation intent and a SET/UPDATE already exposed to the old connection. Current non-aborted GET fails; pending independent intent may remain eligible for the owner documented retry path.",
+        "An exposed mutation may already have changed the service when reply/connection is lost. Reconnect cannot manufacture old processing confirmation or blindly replay an unknown SET/UPDATE into a new epoch.",
+        "Native destroy receipt retains discarded queued mutations plus unconfirmed mutation/persistent counts across original epochs. A later epoch confirmation may confirm only its own current work, not erase unknown old history.",
+        "No automatic exactly-once or durable claim is inferred from C void setter APIs, local MQ acceptance, local whole-write, reconnect, or a new independent GET."
+      ],
+      "official_refs": [
+        {
+          "path": "src/include/gnunet_statistics_service.h",
+          "sha256": "a5a1dcf63bdb909d7cababe47aeda2c9442ee1464d4d497323f9b049935f65ec",
+          "start_line": 189,
+          "end_line": 223
+        },
+        {
+          "path": "src/service/statistics/statistics_api.c",
+          "sha256": "c9aebde968e58fdebf3f2f708b251f1a0e338601c3b999a127ac1203318d8445",
+          "start_line": 387,
+          "end_line": 409
+        },
+        {
+          "path": "src/service/statistics/statistics_api.c",
+          "sha256": "c9aebde968e58fdebf3f2f708b251f1a0e338601c3b999a127ac1203318d8445",
+          "start_line": 530,
+          "end_line": 553
+        },
+        {
+          "path": "src/service/statistics/statistics_api.c",
+          "sha256": "c9aebde968e58fdebf3f2f708b251f1a0e338601c3b999a127ac1203318d8445",
+          "start_line": 729,
+          "end_line": 761
+        },
+        {
+          "path": "src/service/statistics/statistics_api.c",
+          "sha256": "c9aebde968e58fdebf3f2f708b251f1a0e338601c3b999a127ac1203318d8445",
+          "start_line": 990,
+          "end_line": 1058
+        },
+        {
+          "path": "src/service/statistics/statistics_api.c",
+          "sha256": "c9aebde968e58fdebf3f2f708b251f1a0e338601c3b999a127ac1203318d8445",
+          "start_line": 1204,
+          "end_line": 1340
+        }
+      ],
+      "rust_entry_refs": [
+        {
+          "path": "crates/gnunet-client/src/statistics_handle.rs",
+          "sha256": "c26b6222b589063700b0e9dbc36dbd9e5d4680b62ab3ae25ee8a9162ffbeff49",
+          "anchor": "pub fn prepare_connection_lost(",
+          "lines": [
+            1206
+          ]
+        },
+        {
+          "path": "crates/gnunet-client/src/statistics_handle.rs",
+          "sha256": "c26b6222b589063700b0e9dbc36dbd9e5d4680b62ab3ae25ee8a9162ffbeff49",
+          "anchor": "fn finish_destroy(",
+          "lines": [
+            1247
+          ]
+        },
+        {
+          "path": "adapters/ipc-unix/src/handle.rs",
+          "sha256": "b42d0a7955e742b39ff396b495ef7ca0f68306269c1e8a7810cbd51d7a626eea",
+          "anchor": "IoEvent::Lost",
+          "lines": [
+            778,
+            1179
+          ]
+        },
+        {
+          "path": "adapters/ipc-unix/src/handle.rs",
+          "sha256": "b42d0a7955e742b39ff396b495ef7ca0f68306269c1e8a7810cbd51d7a626eea",
+          "anchor": "pub fn take_io_error(",
+          "lines": [
+            732
+          ]
+        },
+        {
+          "path": "apps/gnunet-cli/src/statistics_watch/finite.rs",
+          "sha256": "f5900a265b449980eda6bc3dc451f6e4af12c1088121699fa8cdd13f86237aee",
+          "anchor": "Event::ConnectionLost",
+          "lines": [
+            83
+          ]
+        }
+      ],
+      "necessary_case_group": {
+        "id": "STAT.CASE.loss-unknown",
+        "stimulus": "Lose the actual old connection before transmission versus after a mutation may have been written; reconnect only according to retained native intent.",
+        "expected_observations": [
+          "Preserve original typed loss/transport cause and unknown mutation accounting. No old confirmation or automatic exposed mutation replay enters a new epoch.",
+          "A new independent observation is labelled as such; it does not retroactively prove old operation processing."
+        ],
+        "variants": [
+          "unexposed queued intent vs exposed SET/relative update",
+          "current GET fails while live WATCH can re-register",
+          "old unknown mutation plus later epoch confirmed work",
+          "destroying owner cannot reconnect to invent success"
+        ],
+        "profiles": [
+          "native-handle-lifecycle",
+          "wire-bilateral"
+        ],
+        "behavior_status": "unverified"
+      },
+      "code_status": "source-entries-present-only",
+      "behavior_verified": false
+    },
+    {
+      "id": "STAT.EXT.destroy",
+      "title": "sync_first destruction and actual processing receipt",
+      "requirement_kind": "default-required-native-client-lifecycle",
+      "boundary": "original public API/IPC operation and connection epoch",
+      "contract": [
+        "Public destroy(sync_first) means pending SET requests should be completed. Active C defers only when sync_first, a real MQ exists and its non-transmitted length is positive; otherwise destruction discards remaining work, not processing confirmation.",
+        "Deferred destroy suppresses queued GET/WATCH work, drains its admitted ordering, sends original DISCONNECT and waits for matching confirmation under the already-selected five-times-backoff deadline. Do not require a C scheduler/task implementation or callback ABI.",
+        "Immediate discard, deadline, loss, physical drop and successful processing confirmation remain distinct terminal outcomes. No later retry renews original destruction deadline or turns discarded/unknown mutation counts into zero.",
+        "Normal finite SET requires ProcessingConfirmed with all discarded/unconfirmed fields zero. Cleanup must continue same started destruction, preserve original/independent causes and physically release resources without substituting Drop for a receipt."
+      ],
+      "official_refs": [
+        {
+          "path": "src/include/gnunet_statistics_service.h",
+          "sha256": "a5a1dcf63bdb909d7cababe47aeda2c9442ee1464d4d497323f9b049935f65ec",
+          "start_line": 93,
+          "end_line": 107
+        },
+        {
+          "path": "src/service/statistics/statistics_api.c",
+          "sha256": "c9aebde968e58fdebf3f2f708b251f1a0e338601c3b999a127ac1203318d8445",
+          "start_line": 530,
+          "end_line": 553
+        },
+        {
+          "path": "src/service/statistics/statistics_api.c",
+          "sha256": "c9aebde968e58fdebf3f2f708b251f1a0e338601c3b999a127ac1203318d8445",
+          "start_line": 581,
+          "end_line": 603
+        },
+        {
+          "path": "src/service/statistics/statistics_api.c",
+          "sha256": "c9aebde968e58fdebf3f2f708b251f1a0e338601c3b999a127ac1203318d8445",
+          "start_line": 729,
+          "end_line": 761
+        },
+        {
+          "path": "src/service/statistics/statistics_api.c",
+          "sha256": "c9aebde968e58fdebf3f2f708b251f1a0e338601c3b999a127ac1203318d8445",
+          "start_line": 916,
+          "end_line": 984
+        }
+      ],
+      "rust_entry_refs": [
+        {
+          "path": "crates/gnunet-client/src/statistics_handle.rs",
+          "sha256": "c26b6222b589063700b0e9dbc36dbd9e5d4680b62ab3ae25ee8a9162ffbeff49",
+          "anchor": "pub enum DestroyOutcome",
+          "lines": [
+            139
+          ]
+        },
+        {
+          "path": "crates/gnunet-client/src/statistics_handle.rs",
+          "sha256": "c26b6222b589063700b0e9dbc36dbd9e5d4680b62ab3ae25ee8a9162ffbeff49",
+          "anchor": "pub struct DestroyReport",
+          "lines": [
+            151
+          ]
+        },
+        {
+          "path": "crates/gnunet-client/src/statistics_handle.rs",
+          "sha256": "c26b6222b589063700b0e9dbc36dbd9e5d4680b62ab3ae25ee8a9162ffbeff49",
+          "anchor": "pub fn begin_destroy(",
+          "lines": [
+            1309
+          ]
+        },
+        {
+          "path": "crates/gnunet-client/src/statistics_handle.rs",
+          "sha256": "c26b6222b589063700b0e9dbc36dbd9e5d4680b62ab3ae25ee8a9162ffbeff49",
+          "anchor": "fn finish_destroy(",
+          "lines": [
+            1247
+          ]
+        },
+        {
+          "path": "adapters/ipc-unix/src/handle.rs",
+          "sha256": "b42d0a7955e742b39ff396b495ef7ca0f68306269c1e8a7810cbd51d7a626eea",
+          "anchor": "pub fn destroy(",
+          "lines": [
+            698
+          ]
+        },
+        {
+          "path": "apps/gnunet-cli/src/statistics_watch/finite.rs",
+          "sha256": "f5900a265b449980eda6bc3dc451f6e4af12c1088121699fa8cdd13f86237aee",
+          "anchor": "receipt.outcome != DestroyOutcome::ProcessingConfirmed",
+          "lines": [
+            213
+          ]
+        },
+        {
+          "path": "apps/gnunet-cli/src/statistics_watch/driver.rs",
+          "sha256": "177baf3f13120b6c9cfc13063233e183a2156c71b8f4aabf0084e2f2ebf6edd0",
+          "anchor": "pub(super) async fn retire",
+          "lines": [
+            449
+          ]
+        }
+      ],
+      "necessary_case_group": {
+        "id": "STAT.CASE.destroy",
+        "stimulus": "Begin one native destruction with and without pending original mutation work and observe the actual source terminal.",
+        "expected_observations": [
+          "Only matching actual confirmation plus complete original accounting permits confirmed SET output.",
+          "Discard/deadline/loss/drop remain non-success and original deadline/cause is retained through cleanup."
+        ],
+        "variants": [
+          "sync_first=false/immediate cleanup",
+          "sync_first=true with pending envelope versus no pending envelope",
+          "missing/late/foreign confirmation",
+          "fixed original deadline and independent cleanup failure"
+        ],
+        "profiles": [
+          "native-handle-lifecycle",
+          "wire-bilateral"
+        ],
+        "behavior_status": "unverified"
+      },
+      "code_status": "source-entries-present-only",
+      "behavior_verified": false
+    },
+    {
+      "id": "STAT.EXT.barrier",
+      "title": "DISCONNECT processing confirmation is separate from durable save",
+      "requirement_kind": "default-required",
+      "boundary": "ordered IPC processing barrier",
+      "contract": [
+        "DISCONNECT174 produces exact CONFIRM175 after preceding request handling on that connection. The active official handler does not call save/fsync despite its stale sync-to-disk comment.",
+        "Confirmation proves IPC ordering, not independently observed durable filesystem commit. Local write, destroy/drop, EOF or any other terminal outcome cannot substitute for the matching actual confirmation.",
+        "Service need not close the connection merely on receiving DISCONNECT; caller lifecycle owns physical retirement. Graceful service shutdown is the separate persistence boundary."
+      ],
+      "official_refs": [
+        {
+          "path": "src/service/statistics/gnunet-service-statistics.c",
+          "sha256": "e3f4d0e0445a892dc715d903018f2a5b62596e4d4431c1c519cc6cb0dcc7767f",
+          "start_line": 791,
+          "end_line": 825
+        },
+        {
+          "path": "src/service/statistics/statistics.h",
+          "sha256": "38ad15e5b61387f1f91f57592b888331fa018f14575ac60a1233cec5163422ee",
+          "start_line": 93,
+          "end_line": 105
+        },
+        {
+          "path": "src/include/gnunet_statistics_service.h",
+          "sha256": "a5a1dcf63bdb909d7cababe47aeda2c9442ee1464d4d497323f9b049935f65ec",
+          "start_line": 93,
+          "end_line": 107
+        }
+      ],
+      "rust_entry_refs": [
+        {
+          "path": "crates/gnunet-statistics/src/protocol.rs",
+          "sha256": "ab592d849d5a7352b0c44524ad61a3101692de82911d99141f8e112a68361664",
+          "anchor": "pub fn encode_disconnect_confirmation(",
+          "lines": [
+            147
+          ]
+        },
+        {
+          "path": "adapters/ipc-unix/src/server.rs",
+          "sha256": "2ce620f486563f077d57f8380043cc74a1c89a92ef211c168b34dec7bbf4973e",
+          "anchor": "Request::Disconnect =>",
+          "lines": [
+            597
+          ]
+        },
+        {
+          "path": "crates/gnunet-client/src/statistics.rs",
+          "sha256": "b9b34b0b9837fcbd8c6ff35b130a9f1e9ec566f45b5923b4743d602a722261a8",
+          "anchor": "pub fn confirm_disconnect(",
+          "lines": [
+            168
+          ]
+        },
+        {
+          "path": "apps/gnunet-cli/src/statistics_watch/finite.rs",
+          "sha256": "f5900a265b449980eda6bc3dc451f6e4af12c1088121699fa8cdd13f86237aee",
+          "anchor": "receipt.outcome != DestroyOutcome::ProcessingConfirmed",
+          "lines": [
+            213
+          ]
+        },
+        {
+          "path": "apps/gnunet-service-statistics/src/host.rs",
+          "sha256": "073416284aa0f4fc03824e7382d55118c2cb89d5c49204cfc0b1c1f732ea84cc",
+          "anchor": "let saved = store.as_ref().map",
+          "lines": [
+            150
+          ]
+        }
+      ],
+      "necessary_case_group": {
+        "id": "STAT.CASE.barrier",
+        "stimulus": "Order a mutation and barrier on the same real connection; separately shut down/restart for durability evidence.",
+        "expected_observations": [
+          "Require exact actual CONFIRM and complete original mutation accounting before confirmed output.",
+          "A separately observed restart is required for retained values; ACK alone grants no persistence credit."
+        ],
+        "variants": [
+          "valid barrier after update",
+          "missing/wrong/extra-payload confirmation or connection loss",
+          "clean shutdown distinct from IPC processing"
+        ],
+        "profiles": [
+          "wire-bilateral",
+          "database-restart"
+        ],
+        "behavior_status": "unverified"
+      },
+      "code_status": "source-entries-present-only",
+      "behavior_verified": false
+    },
+    {
+      "id": "STAT.EXT.snapshot",
+      "title": "Public SET dump, restart and empty removal",
+      "requirement_kind": "profile-conditional",
+      "boundary": "configured DATABASE public artifact",
+      "contract": [
+        "Canonical saved database is concatenated official absolute persistent SET168 frames, flags2, values and two NUL strings. It has no private header, UID, watcher or connection state.",
+        "Only persistent rows survive a real graceful stop/restart; transient values must first be observed present, then absent afterward. Saved values can be loaded by either implementation.",
+        "An empty persistent set removes the previous database, or leaves it absent; it does not preserve stale counters in a private empty wrapper.",
+        "Official loader applies complete ordinary SET semantics in order; Rust production uses replay into a fresh unpublished candidate and refuses malformed/truncated/over-capacity load rather than advertising a partial empty core. The strict canonical-only SDK restore is a separate API.",
+        "Filesystem errors preserve actual stage/cause/uncertain namespace-commit outcome; graceful-save success is not a claim about power-loss durability."
+      ],
+      "official_refs": [
+        {
+          "path": "src/service/statistics/gnunet-service-statistics.c",
+          "sha256": "e3f4d0e0445a892dc715d903018f2a5b62596e4d4431c1c519cc6cb0dcc7767f",
+          "start_line": 234,
+          "end_line": 317
+        },
+        {
+          "path": "src/service/statistics/gnunet-service-statistics.c",
+          "sha256": "e3f4d0e0445a892dc715d903018f2a5b62596e4d4431c1c519cc6cb0dcc7767f",
+          "start_line": 903,
+          "end_line": 1008
+        },
+        {
+          "path": "src/service/statistics/gnunet-service-statistics.c",
+          "sha256": "e3f4d0e0445a892dc715d903018f2a5b62596e4d4431c1c519cc6cb0dcc7767f",
+          "start_line": 812,
+          "end_line": 861
+        }
+      ],
+      "rust_entry_refs": [
+        {
+          "path": "crates/gnunet-statistics/src/service.rs",
+          "sha256": "b2d0fbd3cc80d974d100fffcf226f3d664dcaac6826597f377933967ed586486",
+          "anchor": "pub fn persistent(",
+          "lines": [
+            840
+          ]
+        },
+        {
+          "path": "crates/gnunet-statistics/src/service.rs",
+          "sha256": "b2d0fbd3cc80d974d100fffcf226f3d664dcaac6826597f377933967ed586486",
+          "anchor": "pub fn restore(",
+          "lines": [
+            852
+          ]
+        },
+        {
+          "path": "crates/gnunet-statistics/src/service.rs",
+          "sha256": "b2d0fbd3cc80d974d100fffcf226f3d664dcaac6826597f377933967ed586486",
+          "anchor": "pub fn replay(",
+          "lines": [
+            875
+          ]
+        },
+        {
+          "path": "adapters/statistics-store/src/store.rs",
+          "sha256": "fbdc3cab1768a646401d35f0bc6cc1ae3f515dc0ea38a8163e2f033769292686",
+          "anchor": "pub fn load<",
+          "lines": [
+            156
+          ]
+        },
+        {
+          "path": "adapters/statistics-store/src/store.rs",
+          "sha256": "fbdc3cab1768a646401d35f0bc6cc1ae3f515dc0ea38a8163e2f033769292686",
+          "anchor": "pub fn save_with<",
+          "lines": [
+            371
+          ]
+        },
+        {
+          "path": "adapters/statistics-store/src/store.rs",
+          "sha256": "fbdc3cab1768a646401d35f0bc6cc1ae3f515dc0ea38a8163e2f033769292686",
+          "anchor": "fn remove_empty(",
+          "lines": [
+            456
+          ]
+        },
+        {
+          "path": "apps/gnunet-service-statistics/src/host.rs",
+          "sha256": "073416284aa0f4fc03824e7382d55118c2cb89d5c49204cfc0b1c1f732ea84cc",
+          "anchor": "let saved = store.as_ref().map",
+          "lines": [
+            150
+          ]
+        },
+        {
+          "path": "adapters/statistics-store/src/error.rs",
+          "sha256": "d9c448a5105bd0f62825018c2cc0c373b16ad5f03a5ca2a22e7ad506450e2a31",
+          "anchor": "pub enum CommitOutcome",
+          "lines": [
+            6
+          ]
+        },
+        {
+          "path": "crates/gnunet-statistics/src/service/snapshot.rs",
+          "sha256": "4573afed0f840991ac0ff2f4cf56eb247f6bebdf6aa66b0c1086a7810d92aaf5",
+          "anchor": "pub fn persistent_snapshot(",
+          "lines": [
+            163
+          ]
+        },
+        {
+          "path": "adapters/statistics-store/src/store.rs",
+          "sha256": "fbdc3cab1768a646401d35f0bc6cc1ae3f515dc0ea38a8163e2f033769292686",
+          "anchor": "pub fn load_with<",
+          "lines": [
+            171
+          ]
+        }
+      ],
+      "necessary_case_group": {
+        "id": "STAT.CASE.snapshot",
+        "stimulus": "Observe persistent and transient counters before an actual zero-exit service stop; inspect public bytes and perform real restart/cross-load.",
+        "expected_observations": [
+          "Persistent value/flag survives both loading directions; transient was proven present before absence afterward.",
+          "No UID/watch metadata enters public artifact; no-persistent shutdown removes old file and restart has empty result.",
+          "Broken load/save never becomes a valid empty authoritative observation or passing persistence result."
+        ],
+        "variants": [
+          "canonical C→Rust and Rust→C loads",
+          "duplicate/relative/unknown-bit SET replay within valid SET stream",
+          "persistent-to-transient change followed by empty-file removal",
+          "bounded malformed/truncated/error load/save rejection"
+        ],
+        "profiles": [
+          "database-restart"
+        ],
+        "behavior_status": "unverified"
+      },
+      "code_status": "source-entries-present-only",
+      "behavior_verified": false
+    },
+    {
+      "id": "STAT.EXT.stream-limits",
+      "title": "Malformed streams, owner isolation and resource refusal",
+      "requirement_kind": "default-required-with-selected-limits",
+      "boundary": "real session framing/cleanup",
+      "contract": [
+        "Fixed-size and names integrity checks apply before dispatch. Partial EOF, malformed lengths/names and exhausted selected capacity may terminate that original session; they do not produce END or processing confirmation.",
+        "A bad/slow connection must not be reported as successful or corrupt independent healthy clients and original global state. Retiring that connection removes its watches/notifications.",
+        "Rust explicitly bounds frames, pending bytes, sessions, rows, name storage, watchers and queued effects. Capacity/error policy is distinct from the65535-byte public format and must be recorded for a selected profile.",
+        "Unknown-message default C MQ handling has a known unmatched-handler pause/soft-shutdown defect; diagnose it separately rather than requiring Rust to reproduce it or converting timeout/kill to a successful close. TOLERANT is a separately selected common-service profile."
+      ],
+      "official_refs": [
+        {
+          "path": "src/service/statistics/gnunet-service-statistics.c",
+          "sha256": "e3f4d0e0445a892dc715d903018f2a5b62596e4d4431c1c519cc6cb0dcc7767f",
+          "start_line": 388,
+          "end_line": 405
+        },
+        {
+          "path": "src/service/statistics/gnunet-service-statistics.c",
+          "sha256": "e3f4d0e0445a892dc715d903018f2a5b62596e4d4431c1c519cc6cb0dcc7767f",
+          "start_line": 562,
+          "end_line": 579
+        },
+        {
+          "path": "src/service/statistics/gnunet-service-statistics.c",
+          "sha256": "e3f4d0e0445a892dc715d903018f2a5b62596e4d4431c1c519cc6cb0dcc7767f",
+          "start_line": 698,
+          "end_line": 723
+        },
+        {
+          "path": "src/service/statistics/gnunet-service-statistics.c",
+          "sha256": "e3f4d0e0445a892dc715d903018f2a5b62596e4d4431c1c519cc6cb0dcc7767f",
+          "start_line": 1014,
+          "end_line": 1038
+        },
+        {
+          "path": "src/lib/util/service.c",
+          "sha256": "51d9a618682670f23bd6450531e91ca56b0b626bb0ef0d4eb269508a45801dae",
+          "start_line": 673,
+          "end_line": 694
+        },
+        {
+          "path": "src/lib/util/mq.c",
+          "sha256": "e7d81696911fae5a15c7bf1045905605252af20a8ecda08183f800225c742763",
+          "start_line": 186,
+          "end_line": 202
+        },
+        {
+          "path": "src/lib/util/mq.c",
+          "sha256": "e7d81696911fae5a15c7bf1045905605252af20a8ecda08183f800225c742763",
+          "start_line": 265,
+          "end_line": 276
+        }
+      ],
+      "rust_entry_refs": [
+        {
+          "path": "crates/gnunet-statistics/src/protocol.rs",
+          "sha256": "ab592d849d5a7352b0c44524ad61a3101692de82911d99141f8e112a68361664",
+          "anchor": "pub fn decode(",
+          "lines": [
+            25
+          ]
+        },
+        {
+          "path": "adapters/ipc-unix/src/server.rs",
+          "sha256": "2ce620f486563f077d57f8380043cc74a1c89a92ef211c168b34dec7bbf4973e",
+          "anchor": "fn dispatch(",
+          "lines": [
+            572
+          ]
+        },
+        {
+          "path": "adapters/ipc-unix/src/server.rs",
+          "sha256": "2ce620f486563f077d57f8380043cc74a1c89a92ef211c168b34dec7bbf4973e",
+          "anchor": "fn close(",
+          "lines": [
+            297
+          ]
+        },
+        {
+          "path": "adapters/ipc-unix/src/server.rs",
+          "sha256": "2ce620f486563f077d57f8380043cc74a1c89a92ef211c168b34dec7bbf4973e",
+          "anchor": "fn notifications(",
+          "lines": [
+            607
+          ]
+        },
+        {
+          "path": "apps/gnunet-service-statistics/src/host.rs",
+          "sha256": "073416284aa0f4fc03824e7382d55118c2cb89d5c49204cfc0b1c1f732ea84cc",
+          "anchor": "type Core = AllocatedStatistics",
+          "lines": [
+            21
+          ]
+        },
+        {
+          "path": "apps/gnunet-service-statistics/src/settings.rs",
+          "sha256": "d76890db368c289e1c354bc7263137c6446410b44313cbaf676c755067b8875e",
+          "anchor": "pub(crate) fn read(",
+          "lines": [
+            77
+          ]
+        },
+        {
+          "path": "crates/gnunet-statistics/src/service.rs",
+          "sha256": "b2d0fbd3cc80d974d100fffcf226f3d664dcaac6826597f377933967ed586486",
+          "anchor": "pub fn with_limits(",
+          "lines": [
+            910
+          ]
+        },
+        {
+          "path": "crates/gnunet-statistics/src/service.rs",
+          "sha256": "b2d0fbd3cc80d974d100fffcf226f3d664dcaac6826597f377933967ed586486",
+          "anchor": "pub fn retained_bytes(",
+          "lines": [
+            256
+          ]
+        },
+        {
+          "path": "adapters/ipc-unix/src/server.rs",
+          "sha256": "2ce620f486563f077d57f8380043cc74a1c89a92ef211c168b34dec7bbf4973e",
+          "anchor": "fn reserve_host<",
+          "lines": [
+            328
+          ]
+        }
+      ],
+      "necessary_case_group": {
+        "id": "STAT.CASE.stream-limits",
+        "stimulus": "Open a healthy independent client alongside a bounded malformed/partial/over-capacity session and observe both real outcomes.",
+        "expected_observations": [
+          "Only actual terminal/error and resource outcomes are recorded; healthy state/query remains usable.",
+          "No fake completion or relaxed framing results from capacity/timeout; unknown-C variance is separate diagnostic evidence."
+        ],
+        "variants": [
+          "invalid fixed-size/names/header and partial EOF",
+          "configured input/output/session capacity boundary",
+          "bounded slow/stopped receiver with healthy independent client",
+          "unsupported-type diagnostic or explicit TOLERANT profile"
+        ],
+        "profiles": [
+          "wire-bilateral",
+          "capacity-profile"
+        ],
+        "behavior_status": "unverified"
+      },
+      "code_status": "source-entries-present-only",
+      "behavior_verified": false
+    },
+    {
+      "id": "STAT.EXT.endpoint-acl",
+      "title": "Configured Unix/TCP and selected admission policy",
+      "requirement_kind": "profile-conditional",
+      "boundary": "normal endpoint/native credentials and ACL",
+      "contract": [
+        "Normal service reads statistics UNIXPATH/PORT/BINDTO/DISABLEV6; configured clients use UNIXPATH/HOSTNAME/PORT on the same native Resolver/clock domain. At least one usable endpoint is required.",
+        "Default installed statistics configuration selects local Unix path and DATABASE with localhost ACL defaults. An explicitly selected TCP profile uses the same168–175 protocol, not peer/P2P transport.",
+        "Configured IPv4/IPv6 allow-list must match (or be absent), and deny-list takes precedence. Unix UID/GID admission and filesystem policy are selected deployment conditions; Rust uses actual kernel credentials with UID precedence, then GID/group membership.",
+        "Denied, malformed, unavailable or failed endpoint/admission outcomes are real failures, not authenticated STATISTICS peers or successful operations. Do not equate implementation-specific credential checks with a new wire authentication schema."
+      ],
+      "official_refs": [
+        {
+          "path": "src/service/statistics/statistics.conf.in",
+          "sha256": "7841586663b4f34e9580a0366af25aafe5f6bba14ea3b13285d44005107f8762",
+          "start_line": 1,
+          "end_line": 20
+        },
+        {
+          "path": "src/lib/util/service.c",
+          "sha256": "51d9a618682670f23bd6450531e91ca56b0b626bb0ef0d4eb269508a45801dae",
+          "start_line": 201,
+          "end_line": 218
+        },
+        {
+          "path": "src/lib/util/service.c",
+          "sha256": "51d9a618682670f23bd6450531e91ca56b0b626bb0ef0d4eb269508a45801dae",
+          "start_line": 792,
+          "end_line": 843
+        },
+        {
+          "path": "src/lib/util/service.c",
+          "sha256": "51d9a618682670f23bd6450531e91ca56b0b626bb0ef0d4eb269508a45801dae",
+          "start_line": 1088,
+          "end_line": 1194
+        },
+        {
+          "path": "src/lib/util/service.c",
+          "sha256": "51d9a618682670f23bd6450531e91ca56b0b626bb0ef0d4eb269508a45801dae",
+          "start_line": 1654,
+          "end_line": 1666
+        }
+      ],
+      "rust_entry_refs": [
+        {
+          "path": "adapters/service-runtime/src/listeners.rs",
+          "sha256": "fa4406e8cba797792c75a5fc825deccc3c3e1b42c7986137e9faa5584f0e53e1",
+          "anchor": "fn configured_addresses(",
+          "lines": [
+            199
+          ]
+        },
+        {
+          "path": "adapters/service-runtime/src/acl.rs",
+          "sha256": "e780ec1f3e5e3cd31bbb63b0bb74b73435f57f53dbbe0d80a2745964f33385b5",
+          "anchor": "pub fn allows(",
+          "lines": [
+            41
+          ]
+        },
+        {
+          "path": "adapters/service-runtime/src/credentials.rs",
+          "sha256": "c296f2970e5f8639fdecaf81e12ee267051331de808302f5f4e3207a5ea376ab",
+          "anchor": "pub fn allows(",
+          "lines": [
+            14
+          ]
+        },
+        {
+          "path": "adapters/ipc-unix/src/server.rs",
+          "sha256": "2ce620f486563f077d57f8380043cc74a1c89a92ef211c168b34dec7bbf4973e",
+          "anchor": "fn accept(",
+          "lines": [
+            486
+          ]
+        },
+        {
+          "path": "adapters/client-std/src/client_transport.rs",
+          "sha256": "34ceba495fbd83ae8244b8558ea16f7348010f4a9457a6494c2c03e0c127fbad",
+          "anchor": "fn basic(",
+          "lines": [
+            88
+          ]
+        },
+        {
+          "path": "adapters/client-std/src/client_transport.rs",
+          "sha256": "34ceba495fbd83ae8244b8558ea16f7348010f4a9457a6494c2c03e0c127fbad",
+          "anchor": "pub(crate) fn resolve(",
+          "lines": [
+            222
+          ]
+        }
+      ],
+      "necessary_case_group": {
+        "id": "STAT.CASE.endpoint-acl",
+        "stimulus": "Select the actual normal configuration and independently observe Unix/TCP connection, allowed/denied identities or addresses, and actual IPC results.",
+        "expected_observations": [
+          "Same public fields/semantics hold on each explicitly selected endpoint; configured denial is observed before core admission.",
+          "Record platform/identity/address capability and selected limits. Unsupported/missing capability remains unverified, never a fabricated pass."
+        ],
+        "variants": [
+          "default private Unix with selected UID/GID policy",
+          "configured IPv4/IPv6 TCP, HOSTNAME/BINDTO/PORT",
+          "allow+deny precedence and denied connection",
+          "Unix unavailable plus configured TCP or explicit Unix-only refusal"
+        ],
+        "profiles": [
+          "unix-configured",
+          "tcp-acl"
+        ],
+        "behavior_status": "unverified"
+      },
+      "code_status": "source-entries-present-only",
+      "behavior_verified": false
+    },
+    {
+      "id": "STAT.EXT.normal-cli",
+      "title": "Normal configured GET/SET/WATCH and bounded native output",
+      "requirement_kind": "selected-rust-product-profile",
+      "boundary": "ordinary PROGRAM/native client entry",
+      "contract": [
+        "Normal get/set/watch routes through PROGRAM before outer stdout lock/UTF8 conversion; - selects configured endpoint, explicit Unix path disables TCP fallback. Finite GNUNET_ARGS prefix defaults permit explicit common option override before endpoint; signed relative value and suffix flags remain literal command data.",
+        "GET stdout retains actual value, UID, boolean persistence, displayed selector plus exact bytes; terminal count is wholly written rows after original real END. SET emits confirmed only from original complete processing receipt; zero-relative has distinct noop.",
+        "One original10s finite command bound covers admission/stream/terminal output; stalled output retains one row and original native cursor. WATCH has no synthesized ACK/zero; it retains its continuous original subscription and row bounds.",
+        "Signal/parent stop, clock/Resolver loss, output/flush/native failure retain actual original and independent cleanup causes. Cancel only the still-owned original GET/WATCH; retire same native handle then Resolver. Synchronous OS write/flush cannot be preempted; late return fails."
+      ],
+      "official_refs": [
+        {
+          "path": "src/include/gnunet_statistics_service.h",
+          "sha256": "a5a1dcf63bdb909d7cababe47aeda2c9442ee1464d4d497323f9b049935f65ec",
+          "start_line": 60,
+          "end_line": 223
+        },
+        {
+          "path": "src/service/statistics/gnunet-service-statistics.c",
+          "sha256": "e3f4d0e0445a892dc715d903018f2a5b62596e4d4431c1c519cc6cb0dcc7767f",
+          "start_line": 419,
+          "end_line": 454
+        },
+        {
+          "path": "src/service/statistics/gnunet-service-statistics.c",
+          "sha256": "e3f4d0e0445a892dc715d903018f2a5b62596e4d4431c1c519cc6cb0dcc7767f",
+          "start_line": 459,
+          "end_line": 491
+        },
+        {
+          "path": "src/service/statistics/gnunet-service-statistics.c",
+          "sha256": "e3f4d0e0445a892dc715d903018f2a5b62596e4d4431c1c519cc6cb0dcc7767f",
+          "start_line": 791,
+          "end_line": 809
+        }
+      ],
+      "rust_entry_refs": [
+        {
+          "path": "apps/gnunet-cli/src/main.rs",
+          "sha256": "288b1df81d688982efd7380d6cf44a5b1d058d5d85e70d57b235d2571a4b3b76",
+          "anchor": "fn entry(",
+          "lines": [
+            40
+          ]
+        },
+        {
+          "path": "apps/gnunet-cli/src/statistics_watch/mod.rs",
+          "sha256": "391bea9e7a1027c6a3a0e654ee8a212c5e15f2327d7863d391fd52bd0cb0bbf8",
+          "anchor": "pub(super) fn run(",
+          "lines": [
+            23
+          ]
+        },
+        {
+          "path": "apps/gnunet-cli/src/statistics_watch/mod.rs",
+          "sha256": "391bea9e7a1027c6a3a0e654ee8a212c5e15f2327d7863d391fd52bd0cb0bbf8",
+          "anchor": "fn run_selected(",
+          "lines": [
+            106
+          ]
+        },
+        {
+          "path": "apps/gnunet-cli/src/statistics_watch/finite.rs",
+          "sha256": "f5900a265b449980eda6bc3dc451f6e4af12c1088121699fa8cdd13f86237aee",
+          "anchor": "pub(super) async fn command(",
+          "lines": [
+            102
+          ]
+        },
+        {
+          "path": "apps/gnunet-cli/src/statistics_watch/driver.rs",
+          "sha256": "177baf3f13120b6c9cfc13063233e183a2156c71b8f4aabf0084e2f2ebf6edd0",
+          "anchor": "pub(super) async fn retire",
+          "lines": [
+            449
+          ]
+        },
+        {
+          "path": "apps/gnunet-cli/src/statistics_watch/output.rs",
+          "sha256": "1d7dbef9f82c7c2bf8561a9eb5b237496d5d83c0a93a9b6e906c82a6ac292cde",
+          "anchor": "pub fn stage_get(",
+          "lines": [
+            100
+          ]
+        },
+        {
+          "path": "apps/gnunet-cli/src/statistics_watch/output.rs",
+          "sha256": "1d7dbef9f82c7c2bf8561a9eb5b237496d5d83c0a93a9b6e906c82a6ac292cde",
+          "anchor": "pub fn stage_terminal(",
+          "lines": [
+            123
+          ]
+        }
+      ],
+      "necessary_case_group": {
+        "id": "STAT.CASE.normal-cli",
+        "stimulus": "Invoke ordinary configured commands and observe actual data/terminal/exit and cause, with bounded output interruption as applicable.",
+        "expected_observations": [
+          "Do not treat emitted terminal alone as whole success: require zero exit and completed flush/retirement.",
+          "No fallback fake client, second mutation owner, unbounded row aggregate or destroyed-as-confirmed result."
+        ],
+        "variants": [
+          "GNUNET_ARGS defaults vs explicit common options and signed-7 suffix flags",
+          "wildcard GET and opaque selector rendering",
+          "real SET receipt vs zero-relative noop",
+          "stdout pause/error, signal/parent stop and original native hard"
+        ],
+        "profiles": [
+          "native-field-view"
+        ],
+        "behavior_status": "unverified"
+      },
+      "code_status": "source-entries-present-only",
+      "behavior_verified": false
+    }
+  ],
+  "behavior_verified": false,
+  "runtime_verified": false,
+  "whole_goal_complete": false,
+  "client_evidence": "Root supplied four bounded fixed-client/public-API groups; relevant named source slices were read and SHA-bound independently before merge.",
+  "wire_profiles": {
+    "messages": [
+      {
+        "type": 168,
+        "name": "SET",
+        "total_bytes": "18..65535",
+        "fields": "header4; flagsBE32@4; valueBE64@8; subsystemNUL+nameNUL@16"
+      },
+      {
+        "type": 169,
+        "name": "GET",
+        "total_bytes": "6..65535",
+        "fields": "header4; subsystemNUL+nameNUL@4"
+      },
+      {
+        "type": 170,
+        "name": "VALUE",
+        "total_bytes": "18..65535",
+        "fields": "header4; rawUIDBE32@4; valueBE64@8; subsystemNUL+nameNUL@16"
+      },
+      {
+        "type": 171,
+        "name": "END",
+        "total_bytes": 4,
+        "fields": "header only"
+      },
+      {
+        "type": 172,
+        "name": "WATCH",
+        "total_bytes": "6..65535",
+        "fields": "header4; exact subsystemNUL+nameNUL@4"
+      },
+      {
+        "type": 173,
+        "name": "WATCH_VALUE",
+        "total_bytes": 24,
+        "fields": "header4; flagsBE32@4; widBE32@8; reservedBE32@12; valueBE64@16"
+      },
+      {
+        "type": 174,
+        "name": "DISCONNECT",
+        "total_bytes": 4,
+        "fields": "header only"
+      },
+      {
+        "type": 175,
+        "name": "DISCONNECT_CONFIRM",
+        "total_bytes": 4,
+        "fields": "header only"
+      }
+    ],
+    "flags": {
+      "set_relative": 1,
+      "set_persistent": 2,
+      "get_value_uid_persistent": 2147483648,
+      "watch_service_flags_persistent": 2,
+      "watch_service_reserved": 0,
+      "unknown_set_bits": "retained/ignored for known-bit semantics",
+      "watch_raw_flags_reserved": "decode preserves actual bytes; producer emits known fields"
+    },
+    "official_refs": [
+      {
+        "path": "src/include/gnunet_common.h",
+        "sha256": "03bc808f9b183fda2ece71d1e0c5453af127d7f9be59ba80d28df68e46ca6861",
+        "start_line": 320,
+        "end_line": 335
+      },
+      {
+        "path": "src/include/gnunet_protocols.h",
+        "sha256": "9a86ea10c53da11d68c255fa732d24f9d8695a6405396b965893384d3c952392",
+        "start_line": 697,
+        "end_line": 738
+      },
+      {
+        "path": "src/service/statistics/statistics.h",
+        "sha256": "38ad15e5b61387f1f91f57592b888331fa018f14575ac60a1233cec5163422ee",
+        "start_line": 31,
+        "end_line": 146
+      },
+      {
+        "path": "src/service/statistics/gnunet-service-statistics.c",
+        "sha256": "e3f4d0e0445a892dc715d903018f2a5b62596e4d4431c1c519cc6cb0dcc7767f",
+        "start_line": 459,
+        "end_line": 491
+      }
+    ]
+  },
+  "profiles": [
+    {
+      "id": "wire-bilateral",
+      "when": "normal168–175 IPC enabled",
+      "requirement_kind": "default-required",
+      "directions": [
+        "actual Rust native client/ordinary CLI→unmodified fixed official C service",
+        "actual fixed official C public API or supported ordinary CLI operation→normal Rust service"
+      ],
+      "remaining": "All behavior unexecuted. Fixed C CLI has no relative option; -r means remote. Reverse relative requires actual GNUNET_STATISTICS_update public API caller profile, not an invented CLI flag.",
+      "official_refs": [
+        {
+          "path": "src/cli/statistics/gnunet-statistics.c",
+          "sha256": "fa9e185a751e39c4c9e59c17dea163cb97b5ec8c62efd674e27b7d78e8e2943b",
+          "start_line": 544,
+          "end_line": 558
+        },
+        {
+          "path": "src/cli/statistics/gnunet-statistics.c",
+          "sha256": "fa9e185a751e39c4c9e59c17dea163cb97b5ec8c62efd674e27b7d78e8e2943b",
+          "start_line": 716,
+          "end_line": 735
+        },
+        {
+          "path": "src/cli/statistics/gnunet-statistics.c",
+          "sha256": "fa9e185a751e39c4c9e59c17dea163cb97b5ec8c62efd674e27b7d78e8e2943b",
+          "start_line": 817,
+          "end_line": 868
+        },
+        {
+          "path": "src/include/gnunet_statistics_service.h",
+          "sha256": "a5a1dcf63bdb909d7cababe47aeda2c9442ee1464d4d497323f9b049935f65ec",
+          "start_line": 189,
+          "end_line": 223
+        }
+      ]
+    },
+    {
+      "id": "watch-bilateral",
+      "when": "WATCH selected on a live connection",
+      "requirement_kind": "default-required",
+      "directions": [
+        "Rust WATCH→C service",
+        "C WATCH→Rust service"
+      ],
+      "remaining": "Initial/change/flags/WID/cancel/reconnect all unverified; fixed C flag and cancel-hole variations must be separately attributed."
+    },
+    {
+      "id": "native-handle-lifecycle",
+      "when": "public long-lived native handle API selected",
+      "requirement_kind": "default-required-native-profile",
+      "directions": [
+        "Rust owner against actual fixed C service",
+        "public C API callbacks against Rust service where exposed"
+      ],
+      "remaining": "No cancellation/retry/unknown mutation/deadline behavior executed; no requirement for same C helper/task timing."
+    },
+    {
+      "id": "database-restart",
+      "when": "statistics DATABASE selected and save/load available",
+      "requirement_kind": "conditional-required; normal official default provides DATABASE",
+      "directions": [
+        "official SET snapshot C→Rust",
+        "official SET snapshot Rust→C",
+        "each implementation graceful restart"
+      ],
+      "remaining": "Prove pre-stop transient existence, post-stop persistence/absence, real shutdown exit and empty removal. ACK is not durability; crash/power-loss is unverified."
+    },
+    {
+      "id": "unix-configured",
+      "when": "Unix endpoint enabled with actual selected identity/permissions",
+      "requirement_kind": "default local deployment profile",
+      "directions": [
+        "both client/service directions using same selected Unix config"
+      ],
+      "remaining": "Actual kernel/NSS/filesystem admission and path cleanup unexecuted. Official defaults must actually be loaded; file/credential internals may differ."
+    },
+    {
+      "id": "tcp-acl",
+      "when": "nonzero PORT/HOSTNAME and selected BINDTO/IPv4/IPv6 ACL configuration",
+      "requirement_kind": "conditional-required",
+      "directions": [
+        "both client/service directions over selected TCP address family"
+      ],
+      "remaining": "No TCP/ACL runs. Record actual allowed/denied addresses and platform capability; lack of capability is not pass."
+    },
+    {
+      "id": "native-field-view",
+      "when": "ordinary Rust PROGRAM get/set/watch selected",
+      "requirement_kind": "selected product interface, not new GNUnet wire",
+      "directions": [
+        "normal native CLI→selected official endpoint"
+      ],
+      "remaining": "Configured common options/GNUNET_ARGS, exact raw selector output/NDJSON terminal, cancellation/slow output and cleanup unexecuted."
+    },
+    {
+      "id": "capacity-profile",
+      "when": "every concrete daemon/SDK build",
+      "requirement_kind": "explicit deployment bounds, not C memory-layout parity",
+      "directions": [
+        "format encode/decode at public16-bit boundary",
+        "live service/client operations within separately recorded actual capacity"
+      ],
+      "remaining": "The normal Rust daemon uses the shared bounded allocated core. Defaults:65536 distinct rows,65519 combined name bytes including2NULs,32 clients,65536 watches,262144 queued effects and64MiB accounted retained bytes. Limits are configurable; complete SET/VALUE must fit selected frame. Actual container/name/snapshot/host capacities are accounted; allocator overhead, kernel storage and unpublished reservation peaks are excluded. Maxima are independent ceilings, not a simultaneous admission promise. GET captures original generation/value/rawUID metadata once and queues one frame at a time. The fixed/no_std constructor remains allocation-free. Real capacity, atomic refusal, slow-client isolation, performance and RSS behavior remain unexecuted."
+    }
+  ],
+  "reference_variances": [
+    {
+      "id": "C.watch-persistence-bit",
+      "status": "source-established-difference-not-executed-here",
+      "fact": "Service emits flags2 but fixed C WATCH callback interprets bit31. Rust follows active producer wire flags2 and preserves raw fields; numerical C WATCH value alone does not validate persistence.",
+      "official_refs": [
+        {
+          "path": "src/service/statistics/gnunet-service-statistics.c",
+          "sha256": "e3f4d0e0445a892dc715d903018f2a5b62596e4d4431c1c519cc6cb0dcc7767f",
+          "start_line": 481,
+          "end_line": 487
+        },
+        {
+          "path": "src/service/statistics/statistics_api.c",
+          "sha256": "c9aebde968e58fdebf3f2f708b251f1a0e338601c3b999a127ac1203318d8445",
+          "start_line": 497,
+          "end_line": 524
+        }
+      ],
+      "rust_refs": [
+        {
+          "path": "crates/gnunet-client/src/statistics.rs",
+          "sha256": "b9b34b0b9837fcbd8c6ff35b130a9f1e9ec566f45b5923b4743d602a722261a8",
+          "anchor": "pub const fn persistent(self)",
+          "lines": [
+            97,
+            230
+          ]
+        }
+      ]
+    },
+    {
+      "id": "C.watch-cancel-hole-reconnect",
+      "status": "source-predicted-not-executed",
+      "fact": "C cancel leaves NULL array slot; reconnect resends only live entries without compaction; server restarts physical WIDs from0; incoming C dispatch still indexes old array by WID. Cancelled early slot can therefore suppress/misroute surviving watch after reconnect. Rust rebuilds physical WID→live logical mapping and must not reproduce wrong ownership.",
+      "official_refs": [
+        {
+          "path": "src/service/statistics/statistics_api.c",
+          "sha256": "c9aebde968e58fdebf3f2f708b251f1a0e338601c3b999a127ac1203318d8445",
+          "start_line": 497,
+          "end_line": 524
+        },
+        {
+          "path": "src/service/statistics/statistics_api.c",
+          "sha256": "c9aebde968e58fdebf3f2f708b251f1a0e338601c3b999a127ac1203318d8445",
+          "start_line": 646,
+          "end_line": 705
+        },
+        {
+          "path": "src/service/statistics/statistics_api.c",
+          "sha256": "c9aebde968e58fdebf3f2f708b251f1a0e338601c3b999a127ac1203318d8445",
+          "start_line": 1132,
+          "end_line": 1157
+        },
+        {
+          "path": "src/service/statistics/statistics_api.c",
+          "sha256": "c9aebde968e58fdebf3f2f708b251f1a0e338601c3b999a127ac1203318d8445",
+          "start_line": 1171,
+          "end_line": 1201
+        },
+        {
+          "path": "src/service/statistics/gnunet-service-statistics.c",
+          "sha256": "e3f4d0e0445a892dc715d903018f2a5b62596e4d4431c1c519cc6cb0dcc7767f",
+          "start_line": 173,
+          "end_line": 194
+        },
+        {
+          "path": "src/service/statistics/gnunet-service-statistics.c",
+          "sha256": "e3f4d0e0445a892dc715d903018f2a5b62596e4d4431c1c519cc6cb0dcc7767f",
+          "start_line": 363,
+          "end_line": 376
+        },
+        {
+          "path": "src/service/statistics/gnunet-service-statistics.c",
+          "sha256": "e3f4d0e0445a892dc715d903018f2a5b62596e4d4431c1c519cc6cb0dcc7767f",
+          "start_line": 740,
+          "end_line": 788
+        }
+      ],
+      "rust_refs": [
+        {
+          "path": "crates/gnunet-client/src/statistics_handle.rs",
+          "sha256": "c26b6222b589063700b0e9dbc36dbd9e5d4680b62ab3ae25ee8a9162ffbeff49",
+          "anchor": "pub fn begin_connection(",
+          "lines": [
+            791
+          ]
+        }
+      ]
+    },
+    {
+      "id": "C.unknown-message-pause",
+      "status": "source-predicted-runtime-observation-separate",
+      "fact": "MQ inject handles SYSERR but not unmatched NO; service sets needs_continue before injection. Unsupported-type pause/soft-shutdown timeout is not a successful close or a Rust requirement.",
+      "official_refs": [
+        {
+          "path": "src/lib/util/mq.c",
+          "sha256": "e7d81696911fae5a15c7bf1045905605252af20a8ecda08183f800225c742763",
+          "start_line": 186,
+          "end_line": 202
+        },
+        {
+          "path": "src/lib/util/mq.c",
+          "sha256": "e7d81696911fae5a15c7bf1045905605252af20a8ecda08183f800225c742763",
+          "start_line": 265,
+          "end_line": 276
+        },
+        {
+          "path": "src/lib/util/service.c",
+          "sha256": "51d9a618682670f23bd6450531e91ca56b0b626bb0ef0d4eb269508a45801dae",
+          "start_line": 673,
+          "end_line": 694
+        }
+      ]
+    },
+    {
+      "id": "C.disconnect-stale-disk-comment",
+      "status": "source-established-doc-code-conflict",
+      "fact": "Active DISCONNECT handler only sends confirmation; actual save is shutdown. Do not elevate stale sync-to-disk comment to fsync ACK requirement.",
+      "official_refs": [
+        {
+          "path": "src/service/statistics/gnunet-service-statistics.c",
+          "sha256": "e3f4d0e0445a892dc715d903018f2a5b62596e4d4431c1c519cc6cb0dcc7767f",
+          "start_line": 791,
+          "end_line": 825
+        }
+      ]
+    },
+    {
+      "id": "C.undefined-or-exhausted-edges",
+      "status": "not-a-portable-C-runtime-oracle",
+      "fact": "C signed -delta at INT64_MIN is undefined; save asserts frame size<UINT16_MAX and UID allocator eventually overlaps persistence bit. Rust must retain signed64 format/safe arithmetic and explicit resource refusal, not emulate undefined behavior/assertion/UID corruption. Positive unsigned overflow has defined wrap and is separately required.",
+      "official_refs": [
+        {
+          "path": "src/service/statistics/gnunet-service-statistics.c",
+          "sha256": "e3f4d0e0445a892dc715d903018f2a5b62596e4d4431c1c519cc6cb0dcc7767f",
+          "start_line": 269,
+          "end_line": 280
+        },
+        {
+          "path": "src/service/statistics/gnunet-service-statistics.c",
+          "sha256": "e3f4d0e0445a892dc715d903018f2a5b62596e4d4431c1c519cc6cb0dcc7767f",
+          "start_line": 625,
+          "end_line": 685
+        }
+      ],
+      "rust_refs": [
+        {
+          "path": "crates/gnunet-statistics/src/service.rs",
+          "sha256": "b2d0fbd3cc80d974d100fffcf226f3d664dcaac6826597f377933967ed586486",
+          "anchor": "row.value.saturating_sub(delta.unsigned_abs())",
+          "lines": [
+            551
+          ]
+        },
+        {
+          "path": "crates/gnunet-statistics/src/service.rs",
+          "sha256": "b2d0fbd3cc80d974d100fffcf226f3d664dcaac6826597f377933967ed586486",
+          "anchor": "if self.next_uid >= u64::from(crate::PERSIST_BIT)",
+          "lines": [
+            501
+          ]
+        }
+      ]
+    }
+  ],
+  "execution_policy": {
+    "runtime_paused": true,
+    "this_work_executes_products": false,
+    "authorization_for_future_cases": false,
+    "case_counts_are_completion_credit": false,
+    "canonical_requirements_changed": false,
+    "reference_abi_parity_required": false
+  },
+  "unknowns": [
+    "All listed behavioral case groups are unverified; source-present is neither correctness nor complete interoperability.",
+    "Current native-host static compile receipts are not normal-bin provenance or execution receipts. Actual participant/build/source/state binding remains separate.",
+    "Actual bilateral API, opaque-name/UID/large-list, cancellation/late replies, reconnect/unknown mutation, slow output, TCP/ACL and crash-durability behaviors remain unexecuted.",
+    "A future runtime harness subset cannot satisfy unselected groups by inference. Warm transient state must be observed before post-restart absence.",
+    "No new canonical schema, requirements, lock, gate or overall completion credit is created by this candidate."
+  ],
+  "active_build_refs": [
+    {
+      "path": "src/service/statistics/meson.build",
+      "sha256": "4ab2b3c56c845b65c05353818db953fc0081060f7624a9e78c272c877f540199",
+      "start_line": 1,
+      "end_line": 46
+    }
+  ],
+  "scope_coverage": {
+    "168–175 exact fields/flags/names": [
+      "STAT.EXT.wire"
+    ],
+    "UID/persistence/arithmetic": [
+      "STAT.EXT.set",
+      "STAT.EXT.get",
+      "STAT.EXT.watch"
+    ],
+    "END and GET cancellation/late replies": [
+      "STAT.EXT.get",
+      "STAT.EXT.get-cancel"
+    ],
+    "WATCH real changes/cancel/reconnect": [
+      "STAT.EXT.watch",
+      "STAT.EXT.watch-cancel-reconnect"
+    ],
+    "DISCONNECT processing versus persistence": [
+      "STAT.EXT.barrier",
+      "STAT.EXT.destroy",
+      "STAT.EXT.snapshot"
+    ],
+    "loss/reconnect/unknown mutation": [
+      "STAT.EXT.loss-unknown",
+      "STAT.EXT.destroy"
+    ],
+    "public SET snapshot/restart/empty removal": [
+      "STAT.EXT.snapshot"
+    ],
+    "Unix/TCP/native fields/config/ACL/resource profile": [
+      "STAT.EXT.endpoint-acl",
+      "STAT.EXT.normal-cli",
+      "STAT.EXT.stream-limits"
+    ]
+  },
+  "current_harness_navigation": {
+    "handoff": {
+      "path": "/private/tmp/gnunet-STATISTICS-transient-observation-forward-20261102-lL0iUsNU/handoff.json",
+      "sha256": "4e0c09b403695b876ce337973451c7b36bf432150e235fd0e92b853011f0b93e"
+    },
+    "source_overlay": {
+      "path": "tools/reference/statistics_daemons.py",
+      "operation": "modify",
+      "before_sha256": "e2f14ac69a3a409d728cb4af91f1d8be38975143d3e322c90d01758cd02ed83e",
+      "after_sha256": "d665cd263133bdea7959f3c6933087e297f3724c390b83c71a434b59c980505b"
+    },
+    "matrix": {
+      "path": "/private/tmp/gnunet-STATISTICS-transient-observation-forward-20261102-lL0iUsNU/matrix.json",
+      "sha256": "2b9ad2ca646f19de6f7f9056928db64915d33e234f87854833e1fe85c325b380"
+    },
+    "prepared_only": true,
+    "note": "Warm transient existence GETs are source-prepared before restart absence checks; no harness/helper was executed here and this pointer grants no coverage to unselected contract groups. Baseline map remains9d472.",
+    "runtime_verified": false
+  },
+  "new_confirmed_rust_semantic_gaps": [],
+  "source_review_limit": "Finite source-entry/observable-contract check only; absence of newly determined code gaps is not full implementation or interoperability acceptance.",
+  "current_resource_source_overlay": {
+    "status": "installed-source-and-selected-static-checks-only; no behavior or runtime credit",
+    "base_map": {
+      "path": "/private/tmp/gnunet-STATISTICS-allocated-resource-integration-20261102-zvsh_s17/source-inputs-before.json",
+      "sha256": "5f3f08161c5523fb2e48d158d71f16cac108a978fc48dfd33cf1ec946c21fbc7"
+    },
+    "production_paths": [
+      {
+        "path": "crates/gnunet-statistics/Cargo.toml",
+        "sha256": "2d30a1423b6159e9019edda7806972486a400bf149a57f8f9e61aae2ec45c8bb"
+      },
+      {
+        "path": "crates/gnunet-statistics/src/lib.rs",
+        "sha256": "f006feb728aab3221f1751d22684b23f64086c1dee5d245b9601c5485d93cff8"
+      },
+      {
+        "path": "crates/gnunet-statistics/src/service.rs",
+        "sha256": "b2d0fbd3cc80d974d100fffcf226f3d664dcaac6826597f377933967ed586486"
+      },
+      {
+        "path": "adapters/ipc-unix/Cargo.toml",
+        "sha256": "a2b3ca4d96d2cd509c9beded74f3c8a5086fc5894aa51773a774429cbcb27843"
+      },
+      {
+        "path": "adapters/ipc-unix/src/server.rs",
+        "sha256": "2ce620f486563f077d57f8380043cc74a1c89a92ef211c168b34dec7bbf4973e"
+      },
+      {
+        "path": "crates/gnunet-statistics/src/storage.rs",
+        "sha256": "f6aa413843bc0012ff045505d338fb26588241a1771b6a62e54cea3edab022c2"
+      },
+      {
+        "path": "crates/gnunet-statistics/src/service/snapshot.rs",
+        "sha256": "4573afed0f840991ac0ff2f4cf56eb247f6bebdf6aa66b0c1086a7810d92aaf5"
+      },
+      {
+        "path": "adapters/statistics-store/Cargo.toml",
+        "sha256": "f41ea7eac9d9d3e75a415975e6c2b1053ac552baf56a9ba776c6772038c37b07"
+      },
+      {
+        "path": "adapters/statistics-store/src/store.rs",
+        "sha256": "fbdc3cab1768a646401d35f0bc6cc1ae3f515dc0ea38a8163e2f033769292686"
+      },
+      {
+        "path": "adapters/statistics-store/README.md",
+        "sha256": "dec3dd77f7533b344bc74a382e3cfdfae7000ee5f4d3a0167a1e1babf2bcc0ac"
+      },
+      {
+        "path": "apps/gnunet-service-statistics/src/host.rs",
+        "sha256": "073416284aa0f4fc03824e7382d55118c2cb89d5c49204cfc0b1c1f732ea84cc"
+      },
+      {
+        "path": "apps/gnunet-service-statistics/src/settings.rs",
+        "sha256": "d76890db368c289e1c354bc7263137c6446410b44313cbaf676c755067b8875e"
+      },
+      {
+        "path": "apps/gnunet-service-statistics/README.md",
+        "sha256": "5ec3632d7a7d8666b11823c628a1984260b2f38381757c683b265c19be43331b"
+      }
+    ],
+    "runtime_verified": false,
+    "whole_goal_complete": false
+  }
+}

@@ -1,0 +1,16 @@
+[package]
+name = "gnunet-nat-burst-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+gnunet-types.workspace = true
+gnunet-nat.workspace = true
+gnunet-service-runtime.workspace = true
+tokio = { workspace = true, features = ["net", "rt", "time"] }
+zeroize = { workspace = true, features = ["alloc"] }
+
+[lints]
+workspace = true

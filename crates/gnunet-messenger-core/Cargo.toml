@@ -1,0 +1,23 @@
+[package]
+name = "gnunet-messenger-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = []
+alloc = ["zeroize/alloc"]
+std = ["alloc", "gnunet-types/std"]
+
+[dependencies]
+gnunet-types.workspace = true
+gnunet-wire.workspace = true
+gnunet-crypto.workspace = true
+gnunet-messenger.workspace = true
+gnunet-identity.workspace = true
+subtle.workspace = true
+zeroize.workspace = true
+
+[lints]
+workspace = true

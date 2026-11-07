@@ -1,0 +1,13 @@
+[package]
+name = "gnunet-did"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+[dependencies]
+gnunet-types.workspace = true
+gnunet-gnsrecord.workspace = true
+gnunet-json.workspace = true
+base64ct = { version = "=1.8.3", default-features = false }
+[lints]
+workspace = true

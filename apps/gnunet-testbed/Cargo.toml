@@ -1,0 +1,19 @@
+[package]
+name = "gnunet-testbed-tool"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "gnunet-testbed"
+path = "src/main.rs"
+
+[target.'cfg(unix)'.dependencies]
+gnunet-testbed-host.workspace = true
+gnunet-program-host.workspace = true
+gnunet-config.workspace = true
+gnunet-types.workspace = true
+
+[lints]
+workspace = true

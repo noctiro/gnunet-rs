@@ -1,0 +1,1087 @@
+{
+  "source_receipt": "/private/tmp/gnunet-dns-foundation-audit-20261026/parser-result.json",
+  "source_sha256": "23a49c38ded2d6f24b18a3c7788c0e97abb5e3b1d77dd27ecef865002b9474c6",
+  "rows": [
+    {
+      "id": "actual-idna-and-wire-profile",
+      "c_mode": "profile",
+      "execution_action": "profile",
+      "classification": "reference_profile",
+      "reason": "Bind actual libidn2 flags/version/layout, not a Rust capability."
+    },
+    {
+      "id": "name-check-00",
+      "c_mode": "check",
+      "execution_action": "wire-projection",
+      "classification": "pending_idna",
+      "reason": "Wire projection may execute for accepted C output, but native Unicode/checker validation is handled by the separate complete backend proof, including rejected cases and frontend capacity semantics."
+    },
+    {
+      "id": "name-check-01",
+      "c_mode": "check",
+      "execution_action": "wire-projection",
+      "classification": "pending_idna",
+      "reason": "Wire projection may execute for accepted C output, but native Unicode/checker validation is handled by the separate complete backend proof, including rejected cases and frontend capacity semantics."
+    },
+    {
+      "id": "name-check-02",
+      "c_mode": "check",
+      "execution_action": "wire-projection",
+      "classification": "pending_idna",
+      "reason": "Wire projection may execute for accepted C output, but native Unicode/checker validation is handled by the separate complete backend proof, including rejected cases and frontend capacity semantics."
+    },
+    {
+      "id": "name-check-03",
+      "c_mode": "check",
+      "execution_action": "wire-projection",
+      "classification": "pending_idna",
+      "reason": "Wire projection may execute for accepted C output, but native Unicode/checker validation is handled by the separate complete backend proof, including rejected cases and frontend capacity semantics."
+    },
+    {
+      "id": "name-check-04",
+      "c_mode": "check",
+      "execution_action": "wire-projection",
+      "classification": "pending_idna",
+      "reason": "Wire projection may execute for accepted C output, but native Unicode/checker validation is handled by the separate complete backend proof, including rejected cases and frontend capacity semantics."
+    },
+    {
+      "id": "name-check-05",
+      "c_mode": "check",
+      "execution_action": "wire-projection",
+      "classification": "pending_idna",
+      "reason": "Wire projection may execute for accepted C output, but native Unicode/checker validation is handled by the separate complete backend proof, including rejected cases and frontend capacity semantics."
+    },
+    {
+      "id": "name-check-06",
+      "c_mode": "check",
+      "execution_action": "wire-projection",
+      "classification": "pending_idna",
+      "reason": "Wire projection may execute for accepted C output, but native Unicode/checker validation is handled by the separate complete backend proof, including rejected cases and frontend capacity semantics."
+    },
+    {
+      "id": "name-check-07",
+      "c_mode": "check",
+      "execution_action": "wire-projection",
+      "classification": "pending_idna",
+      "reason": "Wire projection may execute for accepted C output, but native Unicode/checker validation is handled by the separate complete backend proof, including rejected cases and frontend capacity semantics."
+    },
+    {
+      "id": "name-check-08",
+      "c_mode": "check",
+      "execution_action": "wire-projection",
+      "classification": "pending_idna",
+      "reason": "Wire projection may execute for accepted C output, but native Unicode/checker validation is handled by the separate complete backend proof, including rejected cases and frontend capacity semantics."
+    },
+    {
+      "id": "name-check-09",
+      "c_mode": "check",
+      "execution_action": "wire-projection",
+      "classification": "pending_idna",
+      "reason": "Wire projection may execute for accepted C output, but native Unicode/checker validation is handled by the separate complete backend proof, including rejected cases and frontend capacity semantics."
+    },
+    {
+      "id": "name-check-10",
+      "c_mode": "check",
+      "execution_action": "wire-projection",
+      "classification": "pending_idna",
+      "reason": "Wire projection may execute for accepted C output, but native Unicode/checker validation is handled by the separate complete backend proof, including rejected cases and frontend capacity semantics."
+    },
+    {
+      "id": "name-check-11",
+      "c_mode": "check",
+      "execution_action": "wire-projection",
+      "classification": "pending_idna",
+      "reason": "Wire projection may execute for accepted C output, but native Unicode/checker validation is handled by the separate complete backend proof, including rejected cases and frontend capacity semantics."
+    },
+    {
+      "id": "name-check-12",
+      "c_mode": "check",
+      "execution_action": "wire-projection",
+      "classification": "pending_idna",
+      "reason": "Wire projection may execute for accepted C output, but native Unicode/checker validation is handled by the separate complete backend proof, including rejected cases and frontend capacity semantics."
+    },
+    {
+      "id": "name-check-13",
+      "c_mode": "check",
+      "execution_action": "wire-projection",
+      "classification": "pending_idna",
+      "reason": "Wire projection may execute for accepted C output, but native Unicode/checker validation is handled by the separate complete backend proof, including rejected cases and frontend capacity semantics."
+    },
+    {
+      "id": "name-check-14",
+      "c_mode": "check",
+      "execution_action": "wire-projection",
+      "classification": "pending_idna",
+      "reason": "Wire projection may execute for accepted C output, but native Unicode/checker validation is handled by the separate complete backend proof, including rejected cases and frontend capacity semantics."
+    },
+    {
+      "id": "name-check-15",
+      "c_mode": "check",
+      "execution_action": "wire-projection",
+      "classification": "pending_idna",
+      "reason": "Wire projection may execute for accepted C output, but native Unicode/checker validation is handled by the separate complete backend proof, including rejected cases and frontend capacity semantics."
+    },
+    {
+      "id": "name-check-16",
+      "c_mode": "check",
+      "execution_action": "wire-projection",
+      "classification": "pending_idna",
+      "reason": "Wire projection may execute for accepted C output, but native Unicode/checker validation is handled by the separate complete backend proof, including rejected cases and frontend capacity semantics."
+    },
+    {
+      "id": "name-check-17",
+      "c_mode": "check",
+      "execution_action": "wire-projection",
+      "classification": "pending_idna",
+      "reason": "Wire projection may execute for accepted C output, but native Unicode/checker validation is handled by the separate complete backend proof, including rejected cases and frontend capacity semantics."
+    },
+    {
+      "id": "name-check-18",
+      "c_mode": "check",
+      "execution_action": "pending",
+      "classification": "pending_idna",
+      "reason": "Wire projection may execute for accepted C output, but native Unicode/checker validation is handled by the separate complete backend proof, including rejected cases and frontend capacity semantics."
+    },
+    {
+      "id": "name-check-19",
+      "c_mode": "check",
+      "execution_action": "pending",
+      "classification": "pending_idna",
+      "reason": "Wire projection may execute for accepted C output, but native Unicode/checker validation is handled by the separate complete backend proof, including rejected cases and frontend capacity semantics."
+    },
+    {
+      "id": "name-check-20",
+      "c_mode": "check",
+      "execution_action": "pending",
+      "classification": "pending_idna",
+      "reason": "Wire projection may execute for accepted C output, but native Unicode/checker validation is handled by the separate complete backend proof, including rejected cases and frontend capacity semantics."
+    },
+    {
+      "id": "name-check-21",
+      "c_mode": "check",
+      "execution_action": "wire-projection",
+      "classification": "pending_idna",
+      "reason": "Wire projection may execute for accepted C output, but native Unicode/checker validation is handled by the separate complete backend proof, including rejected cases and frontend capacity semantics."
+    },
+    {
+      "id": "name-check-22",
+      "c_mode": "check",
+      "execution_action": "wire-projection",
+      "classification": "pending_idna",
+      "reason": "Wire projection may execute for accepted C output, but native Unicode/checker validation is handled by the separate complete backend proof, including rejected cases and frontend capacity semantics."
+    },
+    {
+      "id": "name-check-23",
+      "c_mode": "check",
+      "execution_action": "wire-projection",
+      "classification": "pending_idna",
+      "reason": "Wire projection may execute for accepted C output, but native Unicode/checker validation is handled by the separate complete backend proof, including rejected cases and frontend capacity semantics."
+    },
+    {
+      "id": "name-check-24",
+      "c_mode": "check",
+      "execution_action": "pending",
+      "classification": "pending_idna",
+      "reason": "Wire projection may execute for accepted C output, but native Unicode/checker validation is handled by the separate complete backend proof, including rejected cases and frontend capacity semantics."
+    },
+    {
+      "id": "name-check-25",
+      "c_mode": "check",
+      "execution_action": "wire-projection",
+      "classification": "pending_idna",
+      "reason": "Wire projection may execute for accepted C output, but native Unicode/checker validation is handled by the separate complete backend proof, including rejected cases and frontend capacity semantics."
+    },
+    {
+      "id": "name-check-26",
+      "c_mode": "check",
+      "execution_action": "pending",
+      "classification": "pending_idna",
+      "reason": "Wire projection may execute for accepted C output, but native Unicode/checker validation is handled by the separate complete backend proof, including rejected cases and frontend capacity semantics."
+    },
+    {
+      "id": "name-check-27",
+      "c_mode": "check",
+      "execution_action": "wire-projection",
+      "classification": "pending_idna",
+      "reason": "Wire projection may execute for accepted C output, but native Unicode/checker validation is handled by the separate complete backend proof, including rejected cases and frontend capacity semantics."
+    },
+    {
+      "id": "name-check-28",
+      "c_mode": "check",
+      "execution_action": "wire-projection",
+      "classification": "pending_idna",
+      "reason": "Wire projection may execute for accepted C output, but native Unicode/checker validation is handled by the separate complete backend proof, including rejected cases and frontend capacity semantics."
+    },
+    {
+      "id": "name-check-29",
+      "c_mode": "check",
+      "execution_action": "pending",
+      "classification": "pending_idna",
+      "reason": "Wire projection may execute for accepted C output, but native Unicode/checker validation is handled by the separate complete backend proof, including rejected cases and frontend capacity semantics."
+    },
+    {
+      "id": "name-check-30",
+      "c_mode": "check",
+      "execution_action": "pending",
+      "classification": "pending_idna",
+      "reason": "Wire projection may execute for accepted C output, but native Unicode/checker validation is handled by the separate complete backend proof, including rejected cases and frontend capacity semantics."
+    },
+    {
+      "id": "name-check-31",
+      "c_mode": "check",
+      "execution_action": "pending",
+      "classification": "pending_idna",
+      "reason": "Wire projection may execute for accepted C output, but native Unicode/checker validation is handled by the separate complete backend proof, including rejected cases and frontend capacity semantics."
+    },
+    {
+      "id": "raw-name-check-0",
+      "c_mode": "check",
+      "execution_action": "pending",
+      "classification": "pending_idna",
+      "reason": "Wire projection may execute for accepted C output, but native Unicode/checker validation is handled by the separate complete backend proof, including rejected cases and frontend capacity semantics."
+    },
+    {
+      "id": "raw-name-check-1",
+      "c_mode": "check",
+      "execution_action": "wire-projection",
+      "classification": "pending_idna",
+      "reason": "Wire projection may execute for accepted C output, but native Unicode/checker validation is handled by the separate complete backend proof, including rejected cases and frontend capacity semantics."
+    },
+    {
+      "id": "name-cap-0-0",
+      "c_mode": "check",
+      "execution_action": "pending",
+      "classification": "pending_idna",
+      "reason": "Wire projection may execute for accepted C output, but native Unicode/checker validation is handled by the separate complete backend proof, including rejected cases and frontend capacity semantics."
+    },
+    {
+      "id": "name-cap-0-1",
+      "c_mode": "check",
+      "execution_action": "pending",
+      "classification": "pending_idna",
+      "reason": "Wire projection may execute for accepted C output, but native Unicode/checker validation is handled by the separate complete backend proof, including rejected cases and frontend capacity semantics."
+    },
+    {
+      "id": "name-cap-0-2",
+      "c_mode": "check",
+      "execution_action": "wire-projection",
+      "classification": "pending_idna",
+      "reason": "Wire projection may execute for accepted C output, but native Unicode/checker validation is handled by the separate complete backend proof, including rejected cases and frontend capacity semantics."
+    },
+    {
+      "id": "name-cap-0-3",
+      "c_mode": "check",
+      "execution_action": "wire-projection",
+      "classification": "pending_idna",
+      "reason": "Wire projection may execute for accepted C output, but native Unicode/checker validation is handled by the separate complete backend proof, including rejected cases and frontend capacity semantics."
+    },
+    {
+      "id": "name-cap-0-10",
+      "c_mode": "check",
+      "execution_action": "wire-projection",
+      "classification": "pending_idna",
+      "reason": "Wire projection may execute for accepted C output, but native Unicode/checker validation is handled by the separate complete backend proof, including rejected cases and frontend capacity semantics."
+    },
+    {
+      "id": "name-cap-0-11",
+      "c_mode": "check",
+      "execution_action": "wire-projection",
+      "classification": "pending_idna",
+      "reason": "Wire projection may execute for accepted C output, but native Unicode/checker validation is handled by the separate complete backend proof, including rejected cases and frontend capacity semantics."
+    },
+    {
+      "id": "name-cap-0-12",
+      "c_mode": "check",
+      "execution_action": "wire-projection",
+      "classification": "pending_idna",
+      "reason": "Wire projection may execute for accepted C output, but native Unicode/checker validation is handled by the separate complete backend proof, including rejected cases and frontend capacity semantics."
+    },
+    {
+      "id": "name-cap-1-0",
+      "c_mode": "check",
+      "execution_action": "pending",
+      "classification": "pending_idna",
+      "reason": "Wire projection may execute for accepted C output, but native Unicode/checker validation is handled by the separate complete backend proof, including rejected cases and frontend capacity semantics."
+    },
+    {
+      "id": "name-cap-1-1",
+      "c_mode": "check",
+      "execution_action": "pending",
+      "classification": "pending_idna",
+      "reason": "Wire projection may execute for accepted C output, but native Unicode/checker validation is handled by the separate complete backend proof, including rejected cases and frontend capacity semantics."
+    },
+    {
+      "id": "name-cap-1-2",
+      "c_mode": "check",
+      "execution_action": "pending",
+      "classification": "pending_idna",
+      "reason": "Wire projection may execute for accepted C output, but native Unicode/checker validation is handled by the separate complete backend proof, including rejected cases and frontend capacity semantics."
+    },
+    {
+      "id": "name-cap-1-3",
+      "c_mode": "check",
+      "execution_action": "wire-projection",
+      "classification": "pending_idna",
+      "reason": "Wire projection may execute for accepted C output, but native Unicode/checker validation is handled by the separate complete backend proof, including rejected cases and frontend capacity semantics."
+    },
+    {
+      "id": "name-cap-1-10",
+      "c_mode": "check",
+      "execution_action": "wire-projection",
+      "classification": "pending_idna",
+      "reason": "Wire projection may execute for accepted C output, but native Unicode/checker validation is handled by the separate complete backend proof, including rejected cases and frontend capacity semantics."
+    },
+    {
+      "id": "name-cap-1-11",
+      "c_mode": "check",
+      "execution_action": "wire-projection",
+      "classification": "pending_idna",
+      "reason": "Wire projection may execute for accepted C output, but native Unicode/checker validation is handled by the separate complete backend proof, including rejected cases and frontend capacity semantics."
+    },
+    {
+      "id": "name-cap-1-12",
+      "c_mode": "check",
+      "execution_action": "wire-projection",
+      "classification": "pending_idna",
+      "reason": "Wire projection may execute for accepted C output, but native Unicode/checker validation is handled by the separate complete backend proof, including rejected cases and frontend capacity semantics."
+    },
+    {
+      "id": "name-cap-9-0",
+      "c_mode": "check",
+      "execution_action": "pending",
+      "classification": "pending_idna",
+      "reason": "Wire projection may execute for accepted C output, but native Unicode/checker validation is handled by the separate complete backend proof, including rejected cases and frontend capacity semantics."
+    },
+    {
+      "id": "name-cap-9-1",
+      "c_mode": "check",
+      "execution_action": "pending",
+      "classification": "pending_idna",
+      "reason": "Wire projection may execute for accepted C output, but native Unicode/checker validation is handled by the separate complete backend proof, including rejected cases and frontend capacity semantics."
+    },
+    {
+      "id": "name-cap-9-2",
+      "c_mode": "check",
+      "execution_action": "pending",
+      "classification": "pending_idna",
+      "reason": "Wire projection may execute for accepted C output, but native Unicode/checker validation is handled by the separate complete backend proof, including rejected cases and frontend capacity semantics."
+    },
+    {
+      "id": "name-cap-9-3",
+      "c_mode": "check",
+      "execution_action": "pending",
+      "classification": "pending_idna",
+      "reason": "Wire projection may execute for accepted C output, but native Unicode/checker validation is handled by the separate complete backend proof, including rejected cases and frontend capacity semantics."
+    },
+    {
+      "id": "name-cap-9-10",
+      "c_mode": "check",
+      "execution_action": "pending",
+      "classification": "pending_idna",
+      "reason": "Wire projection may execute for accepted C output, but native Unicode/checker validation is handled by the separate complete backend proof, including rejected cases and frontend capacity semantics."
+    },
+    {
+      "id": "name-cap-9-11",
+      "c_mode": "check",
+      "execution_action": "wire-projection",
+      "classification": "pending_idna",
+      "reason": "Wire projection may execute for accepted C output, but native Unicode/checker validation is handled by the separate complete backend proof, including rejected cases and frontend capacity semantics."
+    },
+    {
+      "id": "name-cap-9-12",
+      "c_mode": "check",
+      "execution_action": "wire-projection",
+      "classification": "pending_idna",
+      "reason": "Wire projection may execute for accepted C output, but native Unicode/checker validation is handled by the separate complete backend proof, including rejected cases and frontend capacity semantics."
+    },
+    {
+      "id": "parse-name-root",
+      "c_mode": "name",
+      "execution_action": "name",
+      "classification": "native_compare",
+      "reason": "Compression/offset/native ASCII name result."
+    },
+    {
+      "id": "parse-name-plain",
+      "c_mode": "name",
+      "execution_action": "name",
+      "classification": "native_compare",
+      "reason": "Compression/offset/native ASCII name result."
+    },
+    {
+      "id": "parse-name-pointer",
+      "c_mode": "name",
+      "execution_action": "name",
+      "classification": "native_compare",
+      "reason": "Compression/offset/native ASCII name result."
+    },
+    {
+      "id": "parse-name-prefix-pointer",
+      "c_mode": "name",
+      "execution_action": "name",
+      "classification": "native_compare",
+      "reason": "Compression/offset/native ASCII name result."
+    },
+    {
+      "id": "parse-name-forward-pointer",
+      "c_mode": "name",
+      "execution_action": "name",
+      "classification": "native_compare",
+      "reason": "Compression/offset/native ASCII name result."
+    },
+    {
+      "id": "parse-name-pointer-root",
+      "c_mode": "name",
+      "execution_action": "name",
+      "classification": "native_compare",
+      "reason": "Compression/offset/native ASCII name result."
+    },
+    {
+      "id": "parse-name-cycle",
+      "c_mode": "name",
+      "execution_action": "name",
+      "classification": "native_compare",
+      "reason": "Compression/offset/native ASCII name result."
+    },
+    {
+      "id": "parse-name-out-of-range",
+      "c_mode": "name",
+      "execution_action": "name",
+      "classification": "native_compare",
+      "reason": "Compression/offset/native ASCII name result."
+    },
+    {
+      "id": "parse-name-reserved40",
+      "c_mode": "name",
+      "execution_action": "name",
+      "classification": "native_compare",
+      "reason": "Compression/offset/native ASCII name result."
+    },
+    {
+      "id": "parse-name-reserved80",
+      "c_mode": "name",
+      "execution_action": "name",
+      "classification": "native_compare",
+      "reason": "Compression/offset/native ASCII name result."
+    },
+    {
+      "id": "parse-name-punycode",
+      "c_mode": "name",
+      "execution_action": "name",
+      "classification": "pending_idna",
+      "reason": "Wire decode executes, but native Unicode text conversion is outside this wire-only proof."
+    },
+    {
+      "id": "parse-name-invalid-alabel",
+      "c_mode": "name",
+      "execution_action": "name",
+      "classification": "native_compare",
+      "reason": "Compression/offset/native ASCII name result."
+    },
+    {
+      "id": "parse-name-label-with-dot",
+      "c_mode": "name",
+      "execution_action": "name",
+      "classification": "native_compare",
+      "reason": "Compression/offset/native ASCII name result."
+    },
+    {
+      "id": "parse-name-label-with-nul",
+      "c_mode": "name",
+      "execution_action": "name",
+      "classification": "lossless_wire_variance",
+      "reason": "Wire retains label NUL bytes; native C string truncates. No malformed string pointer is recreated."
+    },
+    {
+      "id": "parse-name-truncated-label",
+      "c_mode": "name",
+      "execution_action": "name",
+      "classification": "native_compare",
+      "reason": "Compression/offset/native ASCII name result."
+    },
+    {
+      "id": "compression-depth-32",
+      "c_mode": "name",
+      "execution_action": "name",
+      "classification": "native_compare",
+      "reason": "Compression/offset/native ASCII name result."
+    },
+    {
+      "id": "compression-depth-33",
+      "c_mode": "name",
+      "execution_action": "name",
+      "classification": "native_compare",
+      "reason": "Compression/offset/native ASCII name result."
+    },
+    {
+      "id": "compression-depth-34",
+      "c_mode": "name",
+      "execution_action": "name",
+      "classification": "native_compare",
+      "reason": "Compression/offset/native ASCII name result."
+    },
+    {
+      "id": "hex-",
+      "c_mode": "hex",
+      "execution_action": "hex",
+      "classification": "native_compare",
+      "reason": "Native lowerHEX and partial-pair conversion."
+    },
+    {
+      "id": "hex-30306146",
+      "c_mode": "hex",
+      "execution_action": "hex",
+      "classification": "native_compare",
+      "reason": "Native lowerHEX and partial-pair conversion."
+    },
+    {
+      "id": "hex-61",
+      "c_mode": "hex",
+      "execution_action": "hex",
+      "classification": "native_compare",
+      "reason": "Native lowerHEX and partial-pair conversion."
+    },
+    {
+      "id": "hex-615a",
+      "c_mode": "hex",
+      "execution_action": "hex",
+      "classification": "native_compare",
+      "reason": "Native lowerHEX and partial-pair conversion."
+    },
+    {
+      "id": "hex-5a5a",
+      "c_mode": "hex",
+      "execution_action": "hex",
+      "classification": "native_compare",
+      "reason": "Native lowerHEX and partial-pair conversion."
+    },
+    {
+      "id": "hex-3178",
+      "c_mode": "hex",
+      "execution_action": "hex",
+      "classification": "native_compare",
+      "reason": "Native lowerHEX and partial-pair conversion."
+    },
+    {
+      "id": "hex-2031",
+      "c_mode": "hex",
+      "execution_action": "hex",
+      "classification": "native_compare",
+      "reason": "Native lowerHEX and partial-pair conversion."
+    },
+    {
+      "id": "hex-2d31",
+      "c_mode": "hex",
+      "execution_action": "hex",
+      "classification": "native_compare",
+      "reason": "Native lowerHEX and partial-pair conversion."
+    },
+    {
+      "id": "hex-2b31",
+      "c_mode": "hex",
+      "execution_action": "hex",
+      "classification": "native_compare",
+      "reason": "Native lowerHEX and partial-pair conversion."
+    },
+    {
+      "id": "hex-3078",
+      "c_mode": "hex",
+      "execution_action": "hex",
+      "classification": "native_compare",
+      "reason": "Native lowerHEX and partial-pair conversion."
+    },
+    {
+      "id": "typed-query",
+      "c_mode": "typed",
+      "execution_action": "typed",
+      "classification": "native_compare",
+      "reason": "Actual C-generated standalone typed success bytes and values."
+    },
+    {
+      "id": "typed-query-cap4",
+      "c_mode": "typed",
+      "execution_action": "typed-cap",
+      "classification": "atomic_error_variance",
+      "reason": "Both refuse capacity, Rust intentionally preserves full output/cursor rather than a partially written numeric prefix."
+    },
+    {
+      "id": "typed-query-cap8",
+      "c_mode": "typed",
+      "execution_action": "typed-cap",
+      "classification": "atomic_error_variance",
+      "reason": "Both refuse capacity, Rust intentionally preserves full output/cursor rather than a partially written numeric prefix."
+    },
+    {
+      "id": "typed-query-cap10",
+      "c_mode": "typed",
+      "execution_action": "typed-cap",
+      "classification": "atomic_error_variance",
+      "reason": "Both refuse capacity, Rust intentionally preserves full output/cursor rather than a partially written numeric prefix."
+    },
+    {
+      "id": "typed-mx",
+      "c_mode": "typed",
+      "execution_action": "typed",
+      "classification": "native_compare",
+      "reason": "Actual C-generated standalone typed success bytes and values."
+    },
+    {
+      "id": "typed-mx-cap4",
+      "c_mode": "typed",
+      "execution_action": "typed-cap",
+      "classification": "atomic_error_variance",
+      "reason": "Both refuse capacity, Rust intentionally preserves full output/cursor rather than a partially written numeric prefix."
+    },
+    {
+      "id": "typed-mx-cap8",
+      "c_mode": "typed",
+      "execution_action": "typed-cap",
+      "classification": "atomic_error_variance",
+      "reason": "Both refuse capacity, Rust intentionally preserves full output/cursor rather than a partially written numeric prefix."
+    },
+    {
+      "id": "typed-mx-cap10",
+      "c_mode": "typed",
+      "execution_action": "typed-cap",
+      "classification": "atomic_error_variance",
+      "reason": "Both refuse capacity, Rust intentionally preserves full output/cursor rather than a partially written numeric prefix."
+    },
+    {
+      "id": "typed-soa",
+      "c_mode": "typed",
+      "execution_action": "typed",
+      "classification": "native_compare",
+      "reason": "Actual C-generated standalone typed success bytes and values."
+    },
+    {
+      "id": "typed-soa-cap4",
+      "c_mode": "typed",
+      "execution_action": "typed-cap",
+      "classification": "atomic_error_variance",
+      "reason": "Both refuse capacity, Rust intentionally preserves full output/cursor rather than a partially written numeric prefix."
+    },
+    {
+      "id": "typed-soa-cap8",
+      "c_mode": "typed",
+      "execution_action": "typed-cap",
+      "classification": "atomic_error_variance",
+      "reason": "Both refuse capacity, Rust intentionally preserves full output/cursor rather than a partially written numeric prefix."
+    },
+    {
+      "id": "typed-soa-cap10",
+      "c_mode": "typed",
+      "execution_action": "typed-cap",
+      "classification": "atomic_error_variance",
+      "reason": "Both refuse capacity, Rust intentionally preserves full output/cursor rather than a partially written numeric prefix."
+    },
+    {
+      "id": "typed-srv",
+      "c_mode": "typed",
+      "execution_action": "typed",
+      "classification": "native_compare",
+      "reason": "Actual C-generated standalone typed success bytes and values."
+    },
+    {
+      "id": "typed-srv-cap4",
+      "c_mode": "typed",
+      "execution_action": "typed-cap",
+      "classification": "atomic_error_variance",
+      "reason": "Both refuse capacity, Rust intentionally preserves full output/cursor rather than a partially written numeric prefix."
+    },
+    {
+      "id": "typed-srv-cap8",
+      "c_mode": "typed",
+      "execution_action": "typed-cap",
+      "classification": "atomic_error_variance",
+      "reason": "Both refuse capacity, Rust intentionally preserves full output/cursor rather than a partially written numeric prefix."
+    },
+    {
+      "id": "typed-srv-cap10",
+      "c_mode": "typed",
+      "execution_action": "typed-cap",
+      "classification": "atomic_error_variance",
+      "reason": "Both refuse capacity, Rust intentionally preserves full output/cursor rather than a partially written numeric prefix."
+    },
+    {
+      "id": "typed-uri",
+      "c_mode": "typed",
+      "execution_action": "typed",
+      "classification": "rfc_correction",
+      "reason": "C builder bytes are correct; Rust parser preserves full target instead of native four-byte truncation."
+    },
+    {
+      "id": "typed-cert",
+      "c_mode": "typed",
+      "execution_action": "typed",
+      "classification": "rfc_correction",
+      "reason": "Discard nonprotocol native sixth padding octet; compare semantic CERT fields with RFC4398 five-byte header."
+    },
+    {
+      "id": "typed-cert-cap4",
+      "c_mode": "typed",
+      "execution_action": "typed-cap",
+      "classification": "atomic_error_variance",
+      "reason": "Both refuse capacity, Rust intentionally preserves full output/cursor rather than a partially written numeric prefix."
+    },
+    {
+      "id": "typed-cert-cap8",
+      "c_mode": "typed",
+      "execution_action": "typed-cap",
+      "classification": "atomic_error_variance",
+      "reason": "Both refuse capacity, Rust intentionally preserves full output/cursor rather than a partially written numeric prefix."
+    },
+    {
+      "id": "typed-cert-cap10",
+      "c_mode": "typed",
+      "execution_action": "typed-cap",
+      "classification": "atomic_error_variance",
+      "reason": "Both refuse capacity, Rust intentionally preserves full output/cursor rather than a partially written numeric prefix."
+    },
+    {
+      "id": "all-deep-copy-and-free-families",
+      "c_mode": "duplicate",
+      "execution_action": "duplicate",
+      "classification": "ownership_equivalence",
+      "reason": "C deep-copy/free families correspond to actual Rust independent Arena copies/drop lifetimes."
+    },
+    {
+      "id": "query-full",
+      "c_mode": "query",
+      "execution_action": "query",
+      "classification": "native_compare",
+      "reason": "Type/class/name; transactional cursor on error intentionally stronger than C."
+    },
+    {
+      "id": "query-short-line",
+      "c_mode": "query",
+      "execution_action": "query",
+      "classification": "native_compare",
+      "reason": "Type/class/name; transactional cursor on error intentionally stronger than C."
+    },
+    {
+      "id": "hostname-record-2",
+      "c_mode": "record",
+      "execution_action": "record",
+      "classification": "native_compare",
+      "reason": "Typed/native metadata plus explicit clock TTL math."
+    },
+    {
+      "id": "hostname-record-5",
+      "c_mode": "record",
+      "execution_action": "record",
+      "classification": "native_compare",
+      "reason": "Typed/native metadata plus explicit clock TTL math."
+    },
+    {
+      "id": "hostname-record-12",
+      "c_mode": "record",
+      "execution_action": "record",
+      "classification": "native_compare",
+      "reason": "Typed/native metadata plus explicit clock TTL math."
+    },
+    {
+      "id": "hostname-record-39",
+      "c_mode": "record",
+      "execution_action": "record",
+      "classification": "native_compare",
+      "reason": "Typed/native metadata plus explicit clock TTL math."
+    },
+    {
+      "id": "raw-record-1",
+      "c_mode": "record",
+      "execution_action": "record",
+      "classification": "native_compare",
+      "reason": "Typed/native metadata plus explicit clock TTL math."
+    },
+    {
+      "id": "raw-record-28",
+      "c_mode": "record",
+      "execution_action": "record",
+      "classification": "native_compare",
+      "reason": "Typed/native metadata plus explicit clock TTL math."
+    },
+    {
+      "id": "raw-record-16",
+      "c_mode": "record",
+      "execution_action": "record",
+      "classification": "native_compare",
+      "reason": "Typed/native metadata plus explicit clock TTL math."
+    },
+    {
+      "id": "raw-record-257",
+      "c_mode": "record",
+      "execution_action": "record",
+      "classification": "native_compare",
+      "reason": "Typed/native metadata plus explicit clock TTL math."
+    },
+    {
+      "id": "raw-record-65000",
+      "c_mode": "record",
+      "execution_action": "record",
+      "classification": "native_compare",
+      "reason": "Typed/native metadata plus explicit clock TTL math."
+    },
+    {
+      "id": "structured-record-mx",
+      "c_mode": "record",
+      "execution_action": "record",
+      "classification": "native_compare",
+      "reason": "Typed/native metadata plus explicit clock TTL math."
+    },
+    {
+      "id": "structured-record-soa",
+      "c_mode": "record",
+      "execution_action": "record",
+      "classification": "native_compare",
+      "reason": "Typed/native metadata plus explicit clock TTL math."
+    },
+    {
+      "id": "structured-record-srv",
+      "c_mode": "record",
+      "execution_action": "record",
+      "classification": "native_compare",
+      "reason": "Typed/native metadata plus explicit clock TTL math."
+    },
+    {
+      "id": "structured-record-uri",
+      "c_mode": "record",
+      "execution_action": "record",
+      "classification": "rfc_correction",
+      "reason": "Native URI parser drops four bytes and rejects valid RDATA; Rust parses complete RFC7553 target."
+    },
+    {
+      "id": "record-ttl-0",
+      "c_mode": "record",
+      "execution_action": "record",
+      "classification": "native_compare",
+      "reason": "Typed/native metadata plus explicit clock TTL math."
+    },
+    {
+      "id": "record-ttl-1",
+      "c_mode": "record",
+      "execution_action": "record",
+      "classification": "native_compare",
+      "reason": "Typed/native metadata plus explicit clock TTL math."
+    },
+    {
+      "id": "record-ttl-4294967295",
+      "c_mode": "record",
+      "execution_action": "record",
+      "classification": "native_compare",
+      "reason": "Typed/native metadata plus explicit clock TTL math."
+    },
+    {
+      "id": "pack-type-0",
+      "c_mode": "pack",
+      "execution_action": "packet-wire",
+      "classification": "native_compare",
+      "reason": "Actual C packed wire parsed and fully re-encoded at explicit equivalent TTL."
+    },
+    {
+      "id": "pack-type-1",
+      "c_mode": "pack",
+      "execution_action": "packet-wire",
+      "classification": "native_compare",
+      "reason": "Actual C packed wire parsed and fully re-encoded at explicit equivalent TTL."
+    },
+    {
+      "id": "pack-type-2",
+      "c_mode": "pack",
+      "execution_action": "packet-wire",
+      "classification": "native_compare",
+      "reason": "Actual C packed wire parsed and fully re-encoded at explicit equivalent TTL."
+    },
+    {
+      "id": "pack-type-5",
+      "c_mode": "pack",
+      "execution_action": "packet-wire",
+      "classification": "native_compare",
+      "reason": "Actual C packed wire parsed and fully re-encoded at explicit equivalent TTL."
+    },
+    {
+      "id": "pack-type-6",
+      "c_mode": "pack",
+      "execution_action": "packet-wire",
+      "classification": "native_compare",
+      "reason": "Actual C packed wire parsed and fully re-encoded at explicit equivalent TTL."
+    },
+    {
+      "id": "pack-type-12",
+      "c_mode": "pack",
+      "execution_action": "packet-wire",
+      "classification": "native_compare",
+      "reason": "Actual C packed wire parsed and fully re-encoded at explicit equivalent TTL."
+    },
+    {
+      "id": "pack-type-15",
+      "c_mode": "pack",
+      "execution_action": "packet-wire",
+      "classification": "native_compare",
+      "reason": "Actual C packed wire parsed and fully re-encoded at explicit equivalent TTL."
+    },
+    {
+      "id": "pack-type-28",
+      "c_mode": "pack",
+      "execution_action": "packet-wire",
+      "classification": "native_compare",
+      "reason": "Actual C packed wire parsed and fully re-encoded at explicit equivalent TTL."
+    },
+    {
+      "id": "pack-type-33",
+      "c_mode": "pack",
+      "execution_action": "packet-wire",
+      "classification": "native_compare",
+      "reason": "Actual C packed wire parsed and fully re-encoded at explicit equivalent TTL."
+    },
+    {
+      "id": "pack-type-37",
+      "c_mode": "pack",
+      "execution_action": "packet-wire",
+      "classification": "rfc_correction",
+      "reason": "CERT semantic projection strips native padding and fixes RDLEN."
+    },
+    {
+      "id": "pack-type-39",
+      "c_mode": "pack",
+      "execution_action": "dname-native-defect",
+      "classification": "rfc_correction",
+      "reason": "C emits invalid zero-length DNAME; Rust safely rejects it and separately proves correct DNAME encode/decode."
+    },
+    {
+      "id": "pack-type-256",
+      "c_mode": "pack",
+      "execution_action": "packet-wire",
+      "classification": "native_compare",
+      "reason": "Actual C packed wire parsed and fully re-encoded at explicit equivalent TTL."
+    },
+    {
+      "id": "pack-type-257",
+      "c_mode": "pack",
+      "execution_action": "packet-wire",
+      "classification": "native_compare",
+      "reason": "Actual C packed wire parsed and fully re-encoded at explicit equivalent TTL."
+    },
+    {
+      "id": "pack-type-65000",
+      "c_mode": "pack",
+      "execution_action": "packet-wire",
+      "classification": "native_compare",
+      "reason": "Actual C packed wire parsed and fully re-encoded at explicit equivalent TTL."
+    },
+    {
+      "id": "pack-ttl-future",
+      "c_mode": "pack",
+      "execution_action": "packet-wire",
+      "classification": "native_compare",
+      "reason": "Actual C packed wire parsed and fully re-encoded at explicit equivalent TTL."
+    },
+    {
+      "id": "pack-ttl-subsecond",
+      "c_mode": "pack",
+      "execution_action": "packet-wire",
+      "classification": "native_compare",
+      "reason": "Actual C packed wire parsed and fully re-encoded at explicit equivalent TTL."
+    },
+    {
+      "id": "pack-ttl-never",
+      "c_mode": "pack",
+      "execution_action": "packet-wire",
+      "classification": "native_compare",
+      "reason": "Actual C packed wire parsed and fully re-encoded at explicit equivalent TTL."
+    },
+    {
+      "id": "pack-two-query-cap-12",
+      "c_mode": "pack",
+      "execution_action": "pack-two-query",
+      "classification": "rfc_correction",
+      "reason": "Correct actual emitted count and TC; preserve valid uncompressed bytes."
+    },
+    {
+      "id": "pack-two-query-cap-20",
+      "c_mode": "pack",
+      "execution_action": "pack-two-query",
+      "classification": "rfc_correction",
+      "reason": "Correct actual emitted count and TC; preserve valid uncompressed bytes."
+    },
+    {
+      "id": "pack-two-query-cap-29",
+      "c_mode": "pack",
+      "execution_action": "pack-two-query",
+      "classification": "rfc_correction",
+      "reason": "Correct actual emitted count and TC; preserve valid uncompressed bytes."
+    },
+    {
+      "id": "pack-two-query-cap-30",
+      "c_mode": "pack",
+      "execution_action": "pack-two-query",
+      "classification": "rfc_correction",
+      "reason": "Correct actual emitted count and TC; preserve valid uncompressed bytes."
+    },
+    {
+      "id": "pack-two-query-cap-45",
+      "c_mode": "pack",
+      "execution_action": "pack-two-query",
+      "classification": "rfc_correction",
+      "reason": "Correct actual emitted count and TC; preserve valid uncompressed bytes."
+    },
+    {
+      "id": "packet-empty",
+      "c_mode": "packet",
+      "execution_action": "packet",
+      "classification": "native_compare",
+      "reason": "All sections/ID/flags/trailing acceptance, native ASCII fields."
+    },
+    {
+      "id": "packet-one-query",
+      "c_mode": "packet",
+      "execution_action": "packet",
+      "classification": "native_compare",
+      "reason": "All sections/ID/flags/trailing acceptance, native ASCII fields."
+    },
+    {
+      "id": "packet-all-sections",
+      "c_mode": "packet",
+      "execution_action": "packet",
+      "classification": "native_compare",
+      "reason": "All sections/ID/flags/trailing acceptance, native ASCII fields."
+    },
+    {
+      "id": "packet-trailing",
+      "c_mode": "packet",
+      "execution_action": "packet",
+      "classification": "native_compare",
+      "reason": "All sections/ID/flags/trailing acceptance, native ASCII fields."
+    },
+    {
+      "id": "packet-short-counted-query",
+      "c_mode": "packet",
+      "execution_action": "packet",
+      "classification": "native_compare",
+      "reason": "All sections/ID/flags/trailing acceptance, native ASCII fields."
+    },
+    {
+      "id": "packet-short-header",
+      "c_mode": "packet",
+      "execution_action": "packet",
+      "classification": "native_compare",
+      "reason": "All sections/ID/flags/trailing acceptance, native ASCII fields."
+    },
+    {
+      "id": "packet-uri-roundtrip",
+      "c_mode": "packet",
+      "execution_action": "packet",
+      "classification": "rfc_correction",
+      "reason": "Valid URI packet succeeds after the documented native length correction."
+    }
+  ],
+  "classifications": {
+    "atomic_error_variance": 15,
+    "lossless_wire_variance": 1,
+    "native_compare": 68,
+    "ownership_equivalence": 1,
+    "pending_idna": 56,
+    "reference_profile": 1,
+    "rfc_correction": 11
+  },
+  "no_full_idna_claim": true
+}

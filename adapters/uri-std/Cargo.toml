@@ -1,0 +1,18 @@
+[package]
+name = "gnunet-uri-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+gnunet-config.workspace = true
+gnunet-program-host = { workspace = true, features = ["service-runtime"] }
+gnunet-service-runtime.workspace = true
+gnunet-service-startup.workspace = true
+gnunet-types.workspace = true
+nix = { workspace = true, features = ["signal", "process"] }
+tokio = { workspace = true, features = ["rt", "time", "signal"] }
+
+[lints]
+workspace = true

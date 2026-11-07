@@ -1,0 +1,15 @@
+# GNUnet DID
+
+Allocation-free helpers for the active v0.29.1 `did:gns:` method. They format/parse the complete Base32GNS typed public zone, construct the pinned Ed25519VerificationKey2020 default document, and select a matching document record using the shared bounded `gnunet-json` parser. No key generation/derivation/signature, private key, resolver, service, storage, IO or task is created by this crate.
+
+`Did::from_public`, `Did::parse`, `Did::write` and `Did::zone` use `gnunet-gnsrecord::ZoneKey`; no new identifier alphabet or curve parser is copied. The public type-and-key bytes are36, the Base32GNS identifier58, and a complete DID66 bytes. Trailing scanf-ignored whitespace/path/fragment tails are refused. Canonical encoding is uppercase; decoding preserves the existing official Base32 aliases/case rules. Formatting a typed public key is not curve-point or controller authentication.
+
+`template` implements the pinned `did_helper.c` fields: both contexts, id, `verificationMethod` key-1 using the `Ed25519VerificationKey2020` type, controller, and the `u`-prefixed base64url-unpadded multibase of `ed01 || public32`. Authentication/assertionMethod contain `#key-1`. It requires an EdDSA zone. It reuses **base64ct1.8.3**, already locked in the workspace graph; no encoding/crypto/JSON tables are copied and no new registry version is requested. JSON whitespace is not a method protocol requirement.
+
+`check_document` admits a complete JSON object and a decoded id that parses to exactly the requested `did:gns:` public zone. Caller-owned Workspace and explicit byte/token/depth/work bounds apply. This is format/source binding, not W3C schema, signature, controller or credential authentication. The template fields and arbitrary extensions remain public JSON; this library does not create a private verification scheme.
+
+`select` consumes one original GNS record set. It first validates all authoritative DID_DOCUMENT65561 records, refusing conflicting matching bodies. Only when no authoritative document exists does it consider the current official producer's TXT16 records. Such TXT must be complete valid JSON with an id bound to the exact requested method/zone; arbitrary/mismatched TXT stays unrelated. Conflicting valid matching TXT is also refused. One terminal C NUL is stripped, interior ignored tails are rejected, and exact unterminated JSON is also safe. Resource/work refusal is never guessed to mean an unrelated TXT or not-found. The returned borrowed Document exposes the original body and record form explicitly; it grants no crypto proof.
+
+Canonical document label is `didd`; relative default lifetime is **365days**, the actual `did_core.h` constant. This crate does not clear `@`, change a private wire format, or add any DID IPC protocol/message number.
+
+One focused source model uses explicitly unvalidated **public** bytes only, template/JSON/record codecs, authoritative precedence, current-C TXT fallback and conflict refusal. It contains no private seed, entropy, hashing, derivation, store, native/C process.

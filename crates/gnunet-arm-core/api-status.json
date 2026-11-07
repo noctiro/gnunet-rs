@@ -1,0 +1,349 @@
+{
+  "schema": 1,
+  "scope": "8 ARM functions plus6 separate testing functions, no verified promotion",
+  "arm_functions": 8,
+  "testing_functions": 6,
+  "functions": [
+    {
+      "name": "GNUNET_ARM_connect",
+      "c_signature": "struct GNUNET_ARM_Handle *(const struct GNUNET_CONFIGURATION_Handle *, GNUNET_ARM_ConnectionStatusCallback, void *)",
+      "public_header_line": 300,
+      "rust_equivalence": "client::Client::new / take_effect / connection_admitted / connection_unavailable",
+      "status": "in_progress",
+      "verification": null,
+      "actual_pure_test": "test_confirmation_remote_results_cancel_envelope_and_no_remote_deadline",
+      "host_remaining": "Production MQ/config/runtime adapter and all source-derived public-function branches; local start additionally needs real command/stdio/readiness pipe. Two normal C/Rust owned-Unix scenario traces are only a tested subset."
+    },
+    {
+      "name": "GNUNET_ARM_disconnect",
+      "c_signature": "void (struct GNUNET_ARM_Handle *)",
+      "public_header_line": 312,
+      "rust_equivalence": "client::Client::disconnect / next_event / is_closed",
+      "status": "in_progress",
+      "verification": null,
+      "actual_pure_test": "cancel_arm_stop_tombstone_and_explicit_disconnect_are_safe_without_false_callbacks",
+      "host_remaining": "Production MQ/config/runtime adapter and all source-derived public-function branches; local start additionally needs real command/stdio/readiness pipe. Two normal C/Rust owned-Unix scenario traces are only a tested subset."
+    },
+    {
+      "name": "GNUNET_ARM_operation_cancel",
+      "c_signature": "void (struct GNUNET_ARM_Operation *)",
+      "public_header_line": 323,
+      "rust_equivalence": "client::Client::operation_cancel",
+      "status": "in_progress",
+      "verification": null,
+      "actual_pure_test": "canceled_callback_slot_reuse_does_not_cancel_envelope_or_consume_ids_on_capacity_error",
+      "host_remaining": "Production MQ/config/runtime adapter and all source-derived public-function branches; local start additionally needs real command/stdio/readiness pipe. Two normal C/Rust owned-Unix scenario traces are only a tested subset."
+    },
+    {
+      "name": "GNUNET_ARM_request_service_list",
+      "c_signature": "struct GNUNET_ARM_Operation *(struct GNUNET_ARM_Handle *, GNUNET_ARM_ServiceListCallback, void *)",
+      "public_header_line": 336,
+      "rust_equivalence": "client::Client::request_service_list / receive",
+      "status": "in_progress",
+      "verification": null,
+      "actual_pure_test": "successful_list_borrows_validated_rows_and_wrong_registered_reply_retires_silently",
+      "host_remaining": "Production MQ/config/runtime adapter and all source-derived public-function branches; local start additionally needs real command/stdio/readiness pipe. Two normal C/Rust owned-Unix scenario traces are only a tested subset."
+    },
+    {
+      "name": "GNUNET_ARM_request_service_stop",
+      "c_signature": "struct GNUNET_ARM_Operation *(struct GNUNET_ARM_Handle *, const char *, GNUNET_ARM_ResultCallback, void *)",
+      "public_header_line": 357,
+      "rust_equivalence": "client::Client::request_service_stop / receive / connection_lost",
+      "status": "in_progress",
+      "verification": null,
+      "actual_pure_test": "arm_stop_waits_eof_then_failures_before_connection_notice_and_persistent_backoff",
+      "host_remaining": "Production MQ/config/runtime adapter and all source-derived public-function branches; local start additionally needs real command/stdio/readiness pipe. Two normal C/Rust owned-Unix scenario traces are only a tested subset."
+    },
+    {
+      "name": "GNUNET_ARM_request_service_start",
+      "c_signature": "struct GNUNET_ARM_Operation *(struct GNUNET_ARM_Handle *, const char *, enum GNUNET_OS_InheritStdioFlags, GNUNET_ARM_ResultCallback, void *)",
+      "public_header_line": 375,
+      "rust_equivalence": "client::Client::request_service_start / startup_report / tick / next_event",
+      "status": "in_progress",
+      "verification": null,
+      "actual_pure_test": "local_arm_start_stored_result_original60s_signal_cleanup_and_repeated_up_notice",
+      "host_remaining": "Production MQ/config/runtime adapter and all source-derived public-function branches; local start additionally needs real command/stdio/readiness pipe. Two normal C/Rust owned-Unix scenario traces are only a tested subset."
+    },
+    {
+      "name": "GNUNET_ARM_monitor_start",
+      "c_signature": "struct GNUNET_ARM_MonitorHandle *(const struct GNUNET_CONFIGURATION_Handle *, GNUNET_ARM_ServiceMonitorCallback, void *)",
+      "public_header_line": 415,
+      "rust_equivalence": "monitor::Monitor::new / take_connect / connection_admitted / receive",
+      "status": "in_progress",
+      "verification": null,
+      "actual_pure_test": "subscribe_is_monitor_not_test_and_unknown_notifications_do_not_reset_backoff",
+      "host_remaining": "Production MQ/config/runtime adapter and all source-derived public-function branches; local start additionally needs real command/stdio/readiness pipe. Two normal C/Rust owned-Unix scenario traces are only a tested subset."
+    },
+    {
+      "name": "GNUNET_ARM_monitor_stop",
+      "c_signature": "void (struct GNUNET_ARM_MonitorHandle *)",
+      "public_header_line": 427,
+      "rust_equivalence": "monitor::Monitor::stop",
+      "status": "in_progress",
+      "verification": null,
+      "actual_pure_test": "stop_revokes_pending_frame_connect_attempt_and_every_later_notification",
+      "host_remaining": "Production MQ/config/runtime adapter and all source-derived public-function branches; local start additionally needs real command/stdio/readiness pipe. Two normal C/Rust owned-Unix scenario traces are only a tested subset."
+    },
+    {
+      "name": "GNUNET_TESTING_ARM_cmd_start_peer",
+      "c_signature": "struct GNUNET_TESTING_Command (const char *, const char *, const char *)",
+      "public_header_line": 15,
+      "rust_equivalence": null,
+      "status": "host_testing_pending",
+      "verification": null,
+      "host_remaining": "Complete testing interpreter/testbed/config/process integration, not part of first control-owner component."
+    },
+    {
+      "name": "GNUNET_TESTING_cmd_stop_peer",
+      "c_signature": "struct GNUNET_TESTING_Command (const char *, const char *)",
+      "public_header_line": 29,
+      "rust_equivalence": null,
+      "status": "host_testing_pending",
+      "verification": null,
+      "host_remaining": "Complete testing interpreter/testbed/config/process integration, not part of first control-owner component."
+    },
+    {
+      "name": "GNUNET_TESTING_ARM_get_trait_arm_handle",
+      "c_signature": "enum GNUNET_GenericReturnValue (const struct GNUNET_TESTING_Command *, struct GNUNET_ARM_Handle **)",
+      "public_header_line": 46,
+      "rust_equivalence": null,
+      "status": "host_testing_pending",
+      "verification": null,
+      "host_remaining": "Complete testing interpreter/testbed/config/process integration, not part of first control-owner component."
+    },
+    {
+      "name": "GNUNET_TESTING_ARM_make_trait_arm_handle",
+      "c_signature": "struct GNUNET_TESTING_Trait (struct GNUNET_ARM_Handle *)",
+      "public_header_line": 46,
+      "rust_equivalence": null,
+      "status": "host_testing_pending",
+      "verification": null,
+      "host_remaining": "Complete testing interpreter/testbed/config/process integration, not part of first control-owner component."
+    },
+    {
+      "name": "GNUNET_TESTING_ARM_get_trait_config",
+      "c_signature": "enum GNUNET_GenericReturnValue (const struct GNUNET_TESTING_Command *, const struct GNUNET_CONFIGURATION_Handle **)",
+      "public_header_line": 46,
+      "rust_equivalence": null,
+      "status": "host_testing_pending",
+      "verification": null,
+      "host_remaining": "Complete testing interpreter/testbed/config/process integration, not part of first control-owner component."
+    },
+    {
+      "name": "GNUNET_TESTING_ARM_make_trait_config",
+      "c_signature": "struct GNUNET_TESTING_Trait (const struct GNUNET_CONFIGURATION_Handle *)",
+      "public_header_line": 46,
+      "rust_equivalence": null,
+      "status": "host_testing_pending",
+      "verification": null,
+      "host_remaining": "Complete testing interpreter/testbed/config/process integration, not part of first control-owner component."
+    }
+  ],
+  "surface_declarations": [
+    {
+      "kind": "EnumDecl",
+      "name": "GNUNET_ARM_RequestStatus",
+      "line": 58,
+      "type": null,
+      "constants": [
+        {
+          "name": "GNUNET_ARM_REQUEST_SENT_OK",
+          "value": "0"
+        },
+        {
+          "name": "GNUNET_ARM_REQUEST_DISCONNECTED",
+          "value": "2"
+        }
+      ]
+    },
+    {
+      "kind": "EnumDecl",
+      "name": "GNUNET_ARM_ServiceMonitorStatus",
+      "line": 75,
+      "type": null,
+      "constants": [
+        {
+          "name": "GNUNET_ARM_SERVICE_MONITORING_STARTED",
+          "value": "0"
+        },
+        {
+          "name": "GNUNET_ARM_SERVICE_STOPPED",
+          "value": "1"
+        },
+        {
+          "name": "GNUNET_ARM_SERVICE_STARTING",
+          "value": "2"
+        },
+        {
+          "name": "GNUNET_ARM_SERVICE_STOPPING",
+          "value": "3"
+        }
+      ]
+    },
+    {
+      "kind": "EnumDecl",
+      "name": "GNUNET_ARM_Result",
+      "line": 102,
+      "type": null,
+      "constants": [
+        {
+          "name": "GNUNET_ARM_RESULT_STOPPED",
+          "value": "0"
+        },
+        {
+          "name": "GNUNET_ARM_RESULT_STOPPING",
+          "value": "1"
+        },
+        {
+          "name": "GNUNET_ARM_RESULT_STARTING",
+          "value": "2"
+        },
+        {
+          "name": "GNUNET_ARM_RESULT_IS_STARTING_ALREADY",
+          "value": "3"
+        },
+        {
+          "name": "GNUNET_ARM_RESULT_IS_STOPPING_ALREADY",
+          "value": "4"
+        },
+        {
+          "name": "GNUNET_ARM_RESULT_IS_STARTED_ALREADY",
+          "value": "5"
+        },
+        {
+          "name": "GNUNET_ARM_RESULT_IS_STOPPED_ALREADY",
+          "value": "6"
+        },
+        {
+          "name": "GNUNET_ARM_RESULT_IS_NOT_KNOWN",
+          "value": "7"
+        },
+        {
+          "name": "GNUNET_ARM_RESULT_START_FAILED",
+          "value": "8"
+        },
+        {
+          "name": "GNUNET_ARM_RESULT_IN_SHUTDOWN",
+          "value": "9"
+        }
+      ]
+    },
+    {
+      "kind": "EnumDecl",
+      "name": "GNUNET_ARM_ServiceStatus",
+      "line": 159,
+      "type": null,
+      "constants": [
+        {
+          "name": "GNUNET_ARM_SERVICE_STATUS_STOPPED",
+          "value": "0"
+        },
+        {
+          "name": "GNUNET_ARM_SERVICE_STATUS_STARTED",
+          "value": "1"
+        },
+        {
+          "name": "GNUNET_ARM_SERVICE_STATUS_FAILED",
+          "value": "2"
+        },
+        {
+          "name": "GNUNET_ARM_SERVICE_STATUS_FINISHED",
+          "value": "3"
+        },
+        {
+          "name": "GNUNET_ARM_SERVICE_STATUS_STOPPING",
+          "value": "4"
+        }
+      ]
+    },
+    {
+      "kind": "RecordDecl",
+      "name": "GNUNET_ARM_ServiceInfo",
+      "line": 193,
+      "type": null,
+      "fields": [
+        {
+          "name": "status",
+          "type": "enum GNUNET_ARM_ServiceStatus",
+          "bitfield": false
+        },
+        {
+          "name": "name",
+          "type": "const char *",
+          "bitfield": false
+        },
+        {
+          "name": "binary",
+          "type": "const char *",
+          "bitfield": false
+        },
+        {
+          "name": "restart_at",
+          "type": "struct GNUNET_TIME_Absolute",
+          "bitfield": false
+        },
+        {
+          "name": "last_started_at",
+          "type": "struct GNUNET_TIME_Absolute",
+          "bitfield": false
+        },
+        {
+          "name": "last_exit_status",
+          "type": "int",
+          "bitfield": false
+        }
+      ]
+    },
+    {
+      "kind": "RecordDecl",
+      "name": "GNUNET_ARM_Handle",
+      "line": 231,
+      "type": null,
+      "fields": []
+    },
+    {
+      "kind": "RecordDecl",
+      "name": "GNUNET_ARM_Operation",
+      "line": 236,
+      "type": null,
+      "fields": []
+    },
+    {
+      "kind": "TypedefDecl",
+      "name": "GNUNET_ARM_ConnectionStatusCallback",
+      "line": 247,
+      "type": "void (*)(void *, enum GNUNET_GenericReturnValue)"
+    },
+    {
+      "kind": "TypedefDecl",
+      "name": "GNUNET_ARM_ResultCallback",
+      "line": 263,
+      "type": "void (*)(void *, enum GNUNET_ARM_RequestStatus, enum GNUNET_ARM_Result)"
+    },
+    {
+      "kind": "TypedefDecl",
+      "name": "GNUNET_ARM_ServiceListCallback",
+      "line": 281,
+      "type": "void (*)(void *, enum GNUNET_ARM_RequestStatus, unsigned int, const struct GNUNET_ARM_ServiceInfo *)"
+    },
+    {
+      "kind": "RecordDecl",
+      "name": "GNUNET_ARM_MonitorHandle",
+      "line": 386,
+      "type": null,
+      "fields": []
+    },
+    {
+      "kind": "TypedefDecl",
+      "name": "GNUNET_ARM_ServiceMonitorCallback",
+      "line": 397,
+      "type": "void (*)(void *, const char *, enum GNUNET_ARM_ServiceMonitorStatus)"
+    }
+  ],
+  "compiler_inventory_sha256": {
+    "data/compiler-arm.json": "1ff11e36a45bc5a276ba3c8bb9a0ab501a189433c67bf47b114c4a5356bbca69",
+    "data/compiler-testing-arm.json": "d91c5fc8e6b06616455af74d90875fd4d62625eb0a448035a4862dd1f317d718"
+  },
+  "macro_version": 3,
+  "verification": null
+}

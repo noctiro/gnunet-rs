@@ -1,0 +1,22 @@
+{
+  "evidence_schema_sha256": "ac8da96cfa48d907d0bcde1dab4c19e12ef226c4478c16d78d1b325176e28caf",
+  "kind": "reviewed-external-release-stage2-lock",
+  "legacy_draft_lock_sha256": "27b765155fc9f77bf58b13dae7f46108d402dae599cb053cc2c33210cbb9a50a",
+  "predecessor": {
+    "path": "history/stage1/release-lock.json",
+    "sha256": "4383f92e780fe2cbeece121429691bde7957d61ee7181b0a03adc156d2b46f4a"
+  },
+  "reference_revision": "346358e26d4dcc2dc4f51bef5d52dca29c7d8165",
+  "requirements_sha256": "b5b21b7d09d47906a96c0792865fe34057706e90e9e7399f3193bc7c109ecd54",
+  "review": "Additive pending FS semantic inventory; original34+8/677/156/734 floor preserved byte-for-byte. No owner/profile semantic review completion, adapter, interoperability or release credit.",
+  "schema": 2,
+  "semantic_inventories": [
+    {
+      "id": "fs",
+      "path": "semantic/fs.json",
+      "sha256": "56216e9ca7f8c43b4156206132bf86b6c9b1ea3f3f995f8284c6c42c14ef61e6"
+    }
+  ],
+  "semantic_inventory_schema_sha256": "036b569cf96a194da43b09310698676ca30140e8cebe5b1d190d1a3739ca2adf",
+  "source_index_sha256": "16491122ceb5635244b9bd339fba93d1f27475e8fb5bd1362104193da91151df"
+}

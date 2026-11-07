@@ -1,0 +1,21 @@
+[package]
+name = "gnunet-scalarproduct-paillier"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = []
+alloc = ["dep:gnunet-wire", "dep:gnunet-scalarproduct", "zeroize/alloc"]
+
+[dependencies]
+gnunet-types.workspace = true
+gnunet-wire = { workspace = true, optional = true }
+gnunet-paillier.workspace = true
+gnunet-scalarproduct = { workspace = true, features = ["alloc"], optional = true }
+crypto-bigint.workspace = true
+zeroize.workspace = true
+
+[lints]
+workspace = true

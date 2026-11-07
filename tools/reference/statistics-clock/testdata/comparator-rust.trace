@@ -1,0 +1,88 @@
+
+running 7 tests
+test staged_handle::finite_io_proof::dropping_drive_after_partial_preserves_both_original_cursors ... ok
+test staged_handle::finite_io_proof::fatal_first_epipe_never_marks_inflight_or_admits_second_mutation ... normalized-owner-fatal-first|0|1
+ok
+test staged_handle::finite_io_proof::first_partial_admits_only_second_immutable_copy_and_keeps_third_pending ... immutable|partial|3|1|1|1
+immutable|second|0|1|2
+ok
+test staged_handle::finite_io_proof::full_first_continues_without_marking_partial ... normalized-io|full|0|20|0|0|1|0
+ok
+test staged_handle::finite_io_proof::partial_zero_eagain_eintr_preserve_front_and_mark_only_once ... normalized-io|partial|0|3|0|1|0|0
+normalized-io|partial|1|3|0|1|0|0
+normalized-io|partial|2|3|0|1|0|0
+normalized-io|partial|3|3|0|1|0|0
+normalized-io|partial|4|20|0|0|1|0
+normalized-io|zero|0|0|0|1|0|0
+normalized-io|zero|1|0|0|1|0|0
+normalized-io|zero|2|0|0|1|0|0
+normalized-io|zero|3|0|0|1|0|0
+normalized-io|zero|4|20|0|0|1|0
+normalized-io|eagain|0|0|0|1|0|0
+normalized-io|eagain|1|0|0|1|0|0
+normalized-io|eagain|2|0|0|1|0|0
+normalized-io|eagain|3|0|0|1|0|0
+normalized-io|eagain|4|20|0|0|1|0
+normalized-io|eintr|0|0|0|1|0|0
+normalized-io|eintr|1|0|0|1|0|0
+normalized-io|eintr|2|0|0|1|0|0
+normalized-io|eintr|3|0|0|1|0|0
+normalized-io|eintr|4|20|0|0|1|0
+ok
+test staged_handle::finite_io_proof::readiness_pending_wait_deadline_and_cancelled_drive_do_not_start_an_attempt ... ok
+test staged_handle::finite_io_proof::ready_error_is_not_a_send_attempt ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 8 tests
+test connection_loss_cancels_captured_deadline_and_reports_unconfirmed ... ok
+test create_is_lazy_and_owner_retry_doubles_caps_then_only_end_resets ... backoff|0|1000|1000
+backoff|1|2000|3000
+backoff|2|4000|7000
+backoff|3|8000|15000
+backoff|4|16000|31000
+backoff|5|32000|63000
+backoff|6|64000|127000
+backoff|7|128000|255000
+backoff|8|256000|511000
+backoff|9|512000|1023000
+backoff|10|1024000|2047000
+backoff|11|2048000|4095000
+backoff|12|4096000|8191000
+backoff|13|8192000|16383000
+backoff|14|16384000|32767000
+backoff|15|32768000|65535000
+backoff|16|65536000|131071000
+backoff|17|131072000|262143000
+backoff|18|262144000|524287000
+backoff|19|524288000|1048575000
+backoff|20|900000000|1948575000
+backoff|21|900000000|2848575000
+backoff|22|900000000|3748575000
+backoff|23|900000000|4648575000
+backoff|24|900000000|5548575000
+backoff|25|900000000|6448575000
+backoff|26|900000000|7348575000
+backoff|27|900000000|8248575000
+backoff|28|900000000|9148575000
+backoff|29|900000000|10048575000
+backoff|30|900000000|10948575000
+backoff|31|900000000|11848575000
+end-reset|1000|1|1
+ok
+test create_socket_start_and_write_progress_do_not_reset_owner_backoff ... ok
+test deferred_destroy_uses_one_captured_deadline_despite_end_and_progress ... ok
+test exact_confirmation_cancels_captured_deadline_without_durability_claim ... ok
+test finite_destroy_overflow_is_rejected_atomically_in_explicit_bounded_profile ... ok
+test sync_destroy_no_mq_empty_or_only_inflight_is_immediate ... ok
+test value_and_watch_callbacks_do_not_reset_owner_backoff ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+normalized-clock-overflow|18446744073709551615

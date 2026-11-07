@@ -1,0 +1,31 @@
+{
+  "unicode_version": "15.1.0",
+  "libidn2_version": "2.3.8",
+  "libidn2_tar_sha256": "f557911bf6171621e1f72ff35f5b1825bb35b52ed45325dcdee931e5d3c0787a",
+  "ucd_zip_sha256": "cb1c663d053926500cd501229736045752713a066bd75802098598b7a7056177",
+  "runtime_unicode_version": "18.0.0",
+  "ucd18_zip_sha256": "7b3e555514060b92290d154f53655c5eb0fa62b16eb04c03434ff72d1a66a0d8",
+  "source_inputs": {
+    "libidn2-2.3.8/lib/IdnaMappingTable.txt": "402cbd285f1f952fcd0834b63541d54f69d3d8f1b8f8599bf71a1a14935f82c4",
+    "libidn2-2.3.8/lib/Idna2008.txt": "0729ec8d63ede7fe9f90b14e069cee550050bbdecc0356162a975d3aa9cb6322",
+    "UCD-15.1.0.zip:UnicodeData.txt": "2fc713e6a31a87c4850a37fe2caffa4218180fadb5de86b43a143ddb4581fb86",
+    "libidn2-2.3.8/lib/DerivedNormalizationProps.txt": "8875dccee2bc1a7c1fe568a3b502a9e78c9e0495afd96b6568b4294d0ed1f7e1",
+    "UCD-15.1.0.zip:extracted/DerivedJoiningType.txt": "2e0ed3733272299007cf0b76e84a8a653192d99a4429d2232fffcabccfd2d462",
+    "UCD-15.1.0.zip:Scripts.txt": "0eacb65169ae6eb1d399cd70826b3da15fff19f6f586eecf819b70c83b1d9b32",
+    "UCD-18.0.0.zip:UnicodeData.txt": "0736451de439ae7baf1425136617da495e09ee5afbe6e394374db7009ea08950",
+    "UCD-18.0.0.zip:DerivedNormalizationProps.txt": "98ac7f67d985fe781e317f6182e885e94cabb0c314769e6dd73e48b226931ccd",
+    "UCD-18.0.0.zip:extracted/DerivedJoiningType.txt": "e2408ff2c92b175b0f7bf62c989bbb54c7b077528fe31f8d69b96fa09e7d61ed",
+    "UCD-18.0.0.zip:Scripts.txt": "0071fd81b6aeae25f6e8bce8efec3066a6476a91b49bdb2f52dc76e817862a6a"
+  },
+  "table_sha256": "1f9fbc8abb5ac8848351004a8b57456efe23b74ca9ad2790dcd58206aa68ef59",
+  "max_canonical_decomposition": 4,
+  "counts": {
+    "mapping": 9012,
+    "mapped_codepoints": 7812,
+    "validity": 2985,
+    "decomposition": 2061,
+    "composition": 941,
+    "ccc_ranges": 388,
+    "joining_ranges": 506
+  }
+}

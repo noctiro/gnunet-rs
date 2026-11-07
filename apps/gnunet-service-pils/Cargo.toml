@@ -1,0 +1,17 @@
+[package]
+name = "gnunet-service-pils"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+gnunet-config.workspace = true
+gnunet-program-host = { workspace = true, features = ["service-runtime"] }
+gnunet-pils-host = { workspace = true, features = ["service"] }
+gnunet-service-runtime.workspace = true
+gnunet-service-startup.workspace = true
+tokio = { workspace = true, features = ["rt", "signal"] }
+
+[lints]
+workspace = true

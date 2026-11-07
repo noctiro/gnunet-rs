@@ -1,0 +1,17 @@
+[package]
+name = "gnunet-rps-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+[dependencies]
+gnunet-rps = { path = "../../crates/gnunet-rps", default-features = false, features = ["alloc"] }
+gnunet-cadet-host.workspace = true
+gnunet-service-runtime.workspace = true
+gnunet-types.workspace = true
+gnunet-wire.workspace = true
+gnunet-crypto.workspace = true
+getrandom.workspace = true
+tokio = { workspace = true, features = ["rt", "net", "time"] }
+[lints]
+workspace = true

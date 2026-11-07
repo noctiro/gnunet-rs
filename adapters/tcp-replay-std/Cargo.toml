@@ -1,0 +1,17 @@
+[package]
+name = "gnunet-tcp-replay-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+gnunet-snapshot-host.workspace = true
+gnunet-tcp-communicator-core.workspace = true
+gnunet-crypto.workspace = true
+gnunet-types.workspace = true
+libc.workspace = true
+zeroize = { workspace = true, features = ["alloc"] }
+
+[lints]
+workspace = true

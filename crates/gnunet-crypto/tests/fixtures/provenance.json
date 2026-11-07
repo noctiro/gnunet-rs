@@ -1,0 +1,15 @@
+{
+  "upstream_commit": "346358e26d4dcc2dc4f51bef5d52dca29c7d8165",
+  "source": {
+    "path": "src/lib/util/crypto_ecc.c",
+    "sha256": "8b7124466b75768125c028c63d51c4892c35aff5c2b6bc560b120a90659d6273"
+  },
+  "generator": "OpenSSL ordinary Ed25519 pkeyutl -sign -rawin; seed bytes 00..1f",
+  "openssl_version": "OpenSSL 4.0.3 29 Sep 2026 (Library: OpenSSL 4.0.3 29 Sep 2026)",
+  "fixture_sha256": {
+    "peer-public.bin": "56475aa75463474c0285df5dbf2bcab73da651358839e9b77481b2eab107708c",
+    "peer-purpose.bin": "b0f9030b6a68ad1410f4a8be04d31efb65bb67e1a7fb3fca1ae4ade598431014",
+    "peer-purpose.sig": "81f67f549efb7640fd0cc1a476a5745fd2f22357e077ba36e22c7ec06fc46673"
+  },
+  "scope": "Independent primitive and purpose-region representation vectors; no C daemon, GNS suite, CORE or communicator claim."
+}

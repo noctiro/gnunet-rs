@@ -1,0 +1,19 @@
+[package]
+name = "gnunet-auto-share"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+gnunet-fs-host = { workspace = true, features = ["auto-share"] }
+gnunet-config.workspace = true
+gnunet-client-host.workspace = true
+gnunet-program-host = { workspace = true, features = ["resolver-broker", "service-runtime"] }
+gnunet-resolver-broker.workspace = true
+gnunet-service-runtime.workspace = true
+gnunet-service-startup.workspace = true
+tokio = { workspace = true, features = ["rt", "net", "time", "signal"] }
+
+[lints]
+workspace = true

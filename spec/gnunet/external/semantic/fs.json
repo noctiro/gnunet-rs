@@ -1,0 +1,3570 @@
+{
+  "cases": [
+    {
+      "contract": "Official created CHK parsed by Rust and Rust output parsed by official implementation, including zero and maximal file lengths.",
+      "evidence_slots": [],
+      "id": "fs:uri-chk:case:1",
+      "operation": "fs:uri-chk",
+      "profile_candidates": [
+        "fs-artifact-uri"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Alias/padding/case handling and canonical output preserve all hash bytes.",
+      "evidence_slots": [],
+      "id": "fs:uri-chk:case:2",
+      "operation": "fs:uri-chk",
+      "profile_candidates": [
+        "fs-artifact-uri"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Missing/truncated hash, separator, size, embedded NUL and capacity rejection cannot expose a partial artifact.",
+      "evidence_slots": [],
+      "id": "fs:uri-chk:case:3",
+      "operation": "fs:uri-chk",
+      "profile_candidates": [
+        "fs-artifact-uri"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "C and Rust cross-parse empty, slash-bearing and percent-bearing identifiers.",
+      "evidence_slots": [],
+      "id": "fs:uri-sks:case:1",
+      "operation": "fs:uri-sks",
+      "profile_candidates": [
+        "fs-artifact-uri"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Opaque non-UTF8 bytes preserve identity where the public string boundary can represent them.",
+      "evidence_slots": [],
+      "id": "fs:uri-sks:case:2",
+      "operation": "fs:uri-sks",
+      "profile_candidates": [
+        "fs-artifact-uri"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Malformed keys or caller resource limits reject without writes.",
+      "evidence_slots": [],
+      "id": "fs:uri-sks:case:3",
+      "operation": "fs:uri-sks",
+      "profile_candidates": [
+        "fs-artifact-uri"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Cross-parse optional/mandatory terms, duplicate and literal plus payloads.",
+      "evidence_slots": [],
+      "id": "fs:uri-ksk:case:1",
+      "operation": "fs:uri-ksk",
+      "profile_candidates": [
+        "fs-artifact-uri"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Official constructor marker-only %2B remains one mandatory term with zero payload.",
+      "evidence_slots": [],
+      "id": "fs:uri-ksk:case:2",
+      "operation": "fs:uri-ksk",
+      "profile_candidates": [
+        "fs-artifact-uri"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Malformed escapes and unbalanced syntax reject safely.",
+      "evidence_slots": [],
+      "id": "fs:uri-ksk:case:3",
+      "operation": "fs:uri-ksk",
+      "profile_candidates": [
+        "fs-artifact-uri"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Keep the three observed C-permissive optional-empty/raw-quote differences explicit; do not call every C input accepted.",
+      "evidence_slots": [],
+      "id": "fs:uri-ksk:case:4",
+      "operation": "fs:uri-ksk",
+      "profile_candidates": [
+        "fs-artifact-uri"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "C-created/Rust-created LOCs authenticate in the other implementation.",
+      "evidence_slots": [],
+      "id": "fs:uri-loc:case:1",
+      "operation": "fs:uri-loc",
+      "profile_candidates": [
+        "fs-artifact-uri"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Every changed signed field and signature is rejected.",
+      "evidence_slots": [],
+      "id": "fs:uri-loc:case:2",
+      "operation": "fs:uri-loc",
+      "profile_candidates": [
+        "fs-artifact-uri"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Whole-second creation and nonwhole wrapped authenticated input cannot silently serialize an invalid signature.",
+      "evidence_slots": [],
+      "id": "fs:uri-loc:case:3",
+      "operation": "fs:uri-loc",
+      "profile_candidates": [
+        "fs-artifact-uri"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Expired authentic artifact stays distinguishable from a consumer availability/expiration decision.",
+      "evidence_slots": [],
+      "id": "fs:uri-loc:case:4",
+      "operation": "fs:uri-loc",
+      "profile_candidates": [
+        "fs-artifact-uri"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Cross-implementation plaintext/key/query/ciphertext/MAC equivalence at zero, one byte, 32767/32768 bytes.",
+      "evidence_slots": [],
+      "id": "fs:content-block:case:1",
+      "operation": "fs:content-block",
+      "profile_candidates": [
+        "fs-content-artifact"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Wrong query, key, ciphertext or tag never releases authenticated plaintext.",
+      "evidence_slots": [],
+      "id": "fs:content-block:case:2",
+      "operation": "fs:content-block",
+      "profile_candidates": [
+        "fs-content-artifact"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Short output/scratch fails atomically with no input/state loss.",
+      "evidence_slots": [],
+      "id": "fs:content-block:case:3",
+      "operation": "fs:content-block",
+      "profile_candidates": [
+        "fs-content-artifact"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "A public primitive composition oracle is labeled primitive-only, not original complete FS encoder verification.",
+      "evidence_slots": [],
+      "id": "fs:content-block:case:4",
+      "operation": "fs:content-block",
+      "profile_candidates": [
+        "fs-content-artifact"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Empty file and 32768 boundary produce the same root CHK and file size as original FS.",
+      "evidence_slots": [],
+      "id": "fs:content-tree:case:1",
+      "operation": "fs:content-tree",
+      "profile_candidates": [
+        "fs-content-artifact"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "256 leaves, 256 leaves plus one byte, multi-index levels and partial final nodes match official encoding.",
+      "evidence_slots": [],
+      "id": "fs:content-tree:case:2",
+      "operation": "fs:content-tree",
+      "profile_candidates": [
+        "fs-content-artifact"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Large-size/u64 overflow paths remain bounded and never wrap indexing/offset arithmetic.",
+      "evidence_slots": [],
+      "id": "fs:content-tree:case:3",
+      "operation": "fs:content-tree",
+      "profile_candidates": [
+        "fs-content-artifact"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Decode exact plaintext size and tree shape; reject missing/extra/wrong child bytes in file context.",
+      "evidence_slots": [],
+      "id": "fs:content-tree:case:4",
+      "operation": "fs:content-tree",
+      "profile_candidates": [
+        "fs-content-artifact"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "No new type-AAD or magic is invented; raw valid bytes may admit multiple contextual interpretations.",
+      "evidence_slots": [],
+      "id": "fs:content-tree:case:5",
+      "operation": "fs:content-tree",
+      "profile_candidates": [
+        "fs-content-artifact"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "C compressed and uncompressed v2 metadata parses in Rust and Rust-produced metadata parses in C.",
+      "evidence_slots": [],
+      "id": "fs:metadata:case:1",
+      "operation": "fs:metadata",
+      "profile_candidates": [
+        "fs-artifact-metadata"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "UTF8/C-string/binary values and null/empty metadata retain meaning.",
+      "evidence_slots": [],
+      "id": "fs:metadata:case:2",
+      "operation": "fs:metadata",
+      "profile_candidates": [
+        "fs-artifact-metadata"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Entry sizes, unsupported versions, unterminated strings, decompression failure and output limits are bounded.",
+      "evidence_slots": [],
+      "id": "fs:metadata:case:3",
+      "operation": "fs:metadata",
+      "profile_candidates": [
+        "fs-artifact-metadata"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Partial serialization policy preserves legal selected entries without claiming all entries were retained.",
+      "evidence_slots": [],
+      "id": "fs:metadata:case:4",
+      "operation": "fs:metadata",
+      "profile_candidates": [
+        "fs-artifact-metadata"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Distinguish strict malformed-input refusal from C partial-container recovery; record actual differences.",
+      "evidence_slots": [],
+      "id": "fs:metadata:case:5",
+      "operation": "fs:metadata",
+      "profile_candidates": [
+        "fs-artifact-metadata"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "C and Rust full/partial directory parse and construction cross-check entry URIs, metadata, names and embedded data.",
+      "evidence_slots": [],
+      "id": "fs:directory:case:1",
+      "operation": "fs:directory",
+      "profile_candidates": [
+        "fs-artifact-directory"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Cross a 32KiB block boundary, padding, directory metadata, empty directory and recursive directories.",
+      "evidence_slots": [],
+      "id": "fs:directory:case:2",
+      "operation": "fs:directory",
+      "profile_candidates": [
+        "fs-artifact-directory"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Truncated URI/length/metadata yields explicit incomplete/error status without OOB reads.",
+      "evidence_slots": [],
+      "id": "fs:directory:case:3",
+      "operation": "fs:directory",
+      "profile_candidates": [
+        "fs-artifact-directory"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "KSK entries reject; inline bytes must match contextual CHK and declared file size.",
+      "evidence_slots": [],
+      "id": "fs:directory:case:4",
+      "operation": "fs:directory",
+      "profile_candidates": [
+        "fs-artifact-directory"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Untrusted names and extraction targets cannot overwrite unrelated paths; product path policy is explicit.",
+      "evidence_slots": [],
+      "id": "fs:directory:case:5",
+      "operation": "fs:directory",
+      "profile_candidates": [
+        "fs-artifact-directory"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Cross-construct and authenticate keyword and signed namespace UBLOCKs including update identifier.",
+      "evidence_slots": [],
+      "id": "fs:ublock:case:1",
+      "operation": "fs:ublock",
+      "profile_candidates": [
+        "fs-artifact-ublock"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Derive query from verification key and reject wrong namespace/label/signature/purpose/size.",
+      "evidence_slots": [],
+      "id": "fs:ublock:case:2",
+      "operation": "fs:ublock",
+      "profile_candidates": [
+        "fs-artifact-ublock"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Verify MAC before interpreting strings or metadata; malformed plaintext cannot become a search result.",
+      "evidence_slots": [],
+      "id": "fs:ublock:case:3",
+      "operation": "fs:ublock",
+      "profile_candidates": [
+        "fs-artifact-ublock"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Maximum legal blocks, metadata truncation, empty update marker and expired publication policy are exercised.",
+      "evidence_slots": [],
+      "id": "fs:ublock:case:4",
+      "operation": "fs:ublock",
+      "profile_candidates": [
+        "fs-artifact-ublock"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Compare official word/quote/mandatory handling against Rust UI input.",
+      "evidence_slots": [],
+      "id": "fs:keyword-construction:case:1",
+      "operation": "fs:keyword-construction",
+      "profile_candidates": [
+        "fs-query-construction"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Metadata lowercase+NFD behavior, invalid UTF8/locale conversion and short-token policy are version/profile bound.",
+      "evidence_slots": [],
+      "id": "fs:keyword-construction:case:2",
+      "operation": "fs:keyword-construction",
+      "profile_candidates": [
+        "fs-query-construction"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Merging optional/mandatory duplicates preserves intended mandatory satisfaction.",
+      "evidence_slots": [],
+      "id": "fs:keyword-construction:case:3",
+      "operation": "fs:keyword-construction",
+      "profile_candidates": [
+        "fs-query-construction"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Artifact term byte preservation is not mislabeled metadata normalization or query execution.",
+      "evidence_slots": [],
+      "id": "fs:keyword-construction:case:4",
+      "operation": "fs:keyword-construction",
+      "profile_candidates": [
+        "fs-query-construction"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Publish equivalent bytes from file, memory and incremental reader to equal CHK output.",
+      "evidence_slots": [],
+      "id": "fs:publish-input:case:1",
+      "operation": "fs:publish-input",
+      "profile_candidates": [
+        "fs-product-local"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Nested empty/nonempty directories retain links, entry metadata and options.",
+      "evidence_slots": [],
+      "id": "fs:publish-input:case:2",
+      "operation": "fs:publish-input",
+      "profile_candidates": [
+        "fs-product-local"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Reader errors, changed/truncated source, cancellation and resource exhaustion produce explicit failure.",
+      "evidence_slots": [],
+      "id": "fs:publish-input:case:3",
+      "operation": "fs:publish-input",
+      "profile_candidates": [
+        "fs-product-local"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Independent concurrent publications retain distinct sources and progress.",
+      "evidence_slots": [],
+      "id": "fs:publish-input:case:4",
+      "operation": "fs:publish-input",
+      "profile_candidates": [
+        "fs-product-local"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Rust publisher content is downloadable by official nodes and official publication is downloadable by Rust.",
+      "evidence_slots": [],
+      "id": "fs:publish-content:case:1",
+      "operation": "fs:publish-content",
+      "profile_candidates": [
+        "fs-mixed-publish"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Full insertion and on-demand index modes both work for files and directories.",
+      "evidence_slots": [],
+      "id": "fs:publish-content:case:2",
+      "operation": "fs:publish-content",
+      "profile_candidates": [
+        "fs-mixed-publish"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Simulate-only calculates artifacts without committing datastore/network state.",
+      "evidence_slots": [],
+      "id": "fs:publish-content:case:3",
+      "operation": "fs:publish-content",
+      "profile_candidates": [
+        "fs-mixed-publish"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Cancellation/error cannot report completed publication or replay a stale operation.",
+      "evidence_slots": [],
+      "id": "fs:publish-content:case:4",
+      "operation": "fs:publish-content",
+      "profile_candidates": [
+        "fs-mixed-publish"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Bounded retries and dependency loss preserve independent operations and the selected anonymity policy.",
+      "evidence_slots": [],
+      "id": "fs:publish-content:case:5",
+      "operation": "fs:publish-content",
+      "profile_candidates": [
+        "fs-mixed-publish"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Official search finds Rust keyword publication and Rust finds official keyword publication.",
+      "evidence_slots": [],
+      "id": "fs:publish-keywords:case:1",
+      "operation": "fs:publish-keywords",
+      "profile_candidates": [
+        "fs-mixed-search"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Mandatory/optional keyword selection and metadata-derived variants bind the intended exact labels.",
+      "evidence_slots": [],
+      "id": "fs:publish-keywords:case:2",
+      "operation": "fs:publish-keywords",
+      "profile_candidates": [
+        "fs-mixed-search"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Partial failure/cancel does not report all mappings successful; no stale continuation is reused.",
+      "evidence_slots": [],
+      "id": "fs:publish-keywords:case:3",
+      "operation": "fs:publish-keywords",
+      "profile_candidates": [
+        "fs-mixed-search"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Cross-node lookup finds signed namespace records and follows next-version identifiers.",
+      "evidence_slots": [],
+      "id": "fs:publish-namespace:case:1",
+      "operation": "fs:publish-namespace",
+      "profile_candidates": [
+        "fs-mixed-namespace",
+        "fs-durable-restart"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Different namespaces and identical labels never alias authority.",
+      "evidence_slots": [],
+      "id": "fs:publish-namespace:case:2",
+      "operation": "fs:publish-namespace",
+      "profile_candidates": [
+        "fs-mixed-namespace",
+        "fs-durable-restart"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Update graph roots, branches, cycles and duplicate discoveries stay bounded and preserve required discoverability.",
+      "evidence_slots": [],
+      "id": "fs:publish-namespace:case:3",
+      "operation": "fs:publish-namespace",
+      "profile_candidates": [
+        "fs-mixed-namespace",
+        "fs-durable-restart"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Failure, cancellation and restart cannot fabricate a locally published update.",
+      "evidence_slots": [],
+      "id": "fs:publish-namespace:case:4",
+      "operation": "fs:publish-namespace",
+      "profile_candidates": [
+        "fs-mixed-namespace",
+        "fs-durable-restart"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Official client indexes through Rust service and Rust client indexes through official service.",
+      "evidence_slots": [],
+      "id": "fs:ipc-index:case:1",
+      "operation": "fs:ipc-index",
+      "profile_candidates": [
+        "fs-client-ipc"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Valid file gets exact success; changed content, unreadable path, or mismatched hash gets failure with valid terminated reason.",
+      "evidence_slots": [],
+      "id": "fs:ipc-index:case:2",
+      "operation": "fs:ipc-index",
+      "profile_candidates": [
+        "fs-client-ipc"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Reserved/filename/frame errors are refused safely; fragmentation and back-to-back frames retain original requests.",
+      "evidence_slots": [],
+      "id": "fs:ipc-index:case:3",
+      "operation": "fs:ipc-index",
+      "profile_candidates": [
+        "fs-client-ipc"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Cancellation/EOF while hashing retires original source and suppresses stale completion.",
+      "evidence_slots": [],
+      "id": "fs:ipc-index:case:4",
+      "operation": "fs:ipc-index",
+      "profile_candidates": [
+        "fs-client-ipc"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Both client/service directions compare empty, one and multiple entries plus end marker.",
+      "evidence_slots": [],
+      "id": "fs:ipc-index-list:case:1",
+      "operation": "fs:ipc-index-list",
+      "profile_candidates": [
+        "fs-client-ipc"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Long/opaque filenames and exact hash values survive framing.",
+      "evidence_slots": [],
+      "id": "fs:ipc-index-list:case:2",
+      "operation": "fs:ipc-index-list",
+      "profile_candidates": [
+        "fs-client-ipc"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Missing terminator, malformed entry, EOF before END and cancel never imply a complete list.",
+      "evidence_slots": [],
+      "id": "fs:ipc-index-list:case:3",
+      "operation": "fs:ipc-index-list",
+      "profile_candidates": [
+        "fs-client-ipc"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Cross-direction existing/absent unindex acknowledgement matches service behavior.",
+      "evidence_slots": [],
+      "id": "fs:ipc-unindex:case:1",
+      "operation": "fs:ipc-unindex",
+      "profile_candidates": [
+        "fs-client-ipc",
+        "fs-durable-restart"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "After unindex, content no longer obtains an on-demand source from the removed file; unrelated indexed sources survive.",
+      "evidence_slots": [],
+      "id": "fs:ipc-unindex:case:2",
+      "operation": "fs:ipc-unindex",
+      "profile_candidates": [
+        "fs-client-ipc",
+        "fs-durable-restart"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Partial transport, cancel, file removal and restart cannot produce duplicate or foreign completion.",
+      "evidence_slots": [],
+      "id": "fs:ipc-unindex:case:3",
+      "operation": "fs:ipc-unindex",
+      "profile_candidates": [
+        "fs-client-ipc",
+        "fs-durable-restart"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "An official datastore on-demand record is resolved by Rust FS and produces the original expected encrypted block.",
+      "evidence_slots": [],
+      "id": "fs:ondemand:case:1",
+      "operation": "fs:ondemand",
+      "profile_candidates": [
+        "fs-mixed-ondemand"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Offset/tail, missing/modified file, invalid offset and stale index state never return unrelated bytes.",
+      "evidence_slots": [],
+      "id": "fs:ondemand:case:2",
+      "operation": "fs:ondemand",
+      "profile_candidates": [
+        "fs-mixed-ondemand"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Rust-native storage may use a different private record format only in a profile that does not expose official type6 records.",
+      "evidence_slots": [],
+      "id": "fs:ondemand:case:3",
+      "operation": "fs:ondemand",
+      "profile_candidates": [
+        "fs-mixed-ondemand"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Official publishing client accepts valid Rust service LOC and Rust client verifies official service reply.",
+      "evidence_slots": [],
+      "id": "fs:ipc-loc-sign:case:1",
+      "operation": "fs:ipc-loc-sign",
+      "profile_candidates": [
+        "fs-client-ipc"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Non-palindromic u64 file length catches endian mistakes; rounded time and identity must authenticate.",
+      "evidence_slots": [],
+      "id": "fs:ipc-loc-sign:case:2",
+      "operation": "fs:ipc-loc-sign",
+      "profile_candidates": [
+        "fs-client-ipc"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Wrong purpose/claim/key/time, partial reply/EOF/cancel and identity replacement cannot complete the original request.",
+      "evidence_slots": [],
+      "id": "fs:ipc-loc-sign:case:3",
+      "operation": "fs:ipc-loc-sign",
+      "profile_candidates": [
+        "fs-client-ipc"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Both IPC directions handle complete and fragmented already-seen lists beyond one frame.",
+      "evidence_slots": [],
+      "id": "fs:ipc-search:case:1",
+      "operation": "fs:ipc-search",
+      "profile_candidates": [
+        "fs-client-ipc"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Distinct concurrent query/type/target requests do not merge, including continuation and duplicate request cases.",
+      "evidence_slots": [],
+      "id": "fs:ipc-search:case:2",
+      "operation": "fs:ipc-search",
+      "profile_candidates": [
+        "fs-client-ipc"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Loopback-only never initiates P2P; anonymous requests do not leak targeted direct lookup behavior.",
+      "evidence_slots": [],
+      "id": "fs:ipc-search:case:3",
+      "operation": "fs:ipc-search",
+      "profile_candidates": [
+        "fs-client-ipc"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "EOF/cancel/reconnect retain original request ownership and known-result suppression without stale callbacks.",
+      "evidence_slots": [],
+      "id": "fs:ipc-search:case:4",
+      "operation": "fs:ipc-search",
+      "profile_candidates": [
+        "fs-client-ipc"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Both client directions parse real result metadata and exact encrypted payload without confusing peer layout.",
+      "evidence_slots": [],
+      "id": "fs:ipc-result:case:1",
+      "operation": "fs:ipc-result",
+      "profile_candidates": [
+        "fs-client-ipc"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "DBLOCK/IBLOCK single completion and UBLOCK multiple results/duplicates obey their contracts.",
+      "evidence_slots": [],
+      "id": "fs:ipc-result:case:2",
+      "operation": "fs:ipc-result",
+      "profile_candidates": [
+        "fs-client-ipc"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Wrong query/type/signature/MAC/expiration and malformed plaintext never become successful results.",
+      "evidence_slots": [],
+      "id": "fs:ipc-result:case:3",
+      "operation": "fs:ipc-result",
+      "profile_candidates": [
+        "fs-client-ipc"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Out-of-order concurrent results, canceled requests and old physical connections cannot settle another request.",
+      "evidence_slots": [],
+      "id": "fs:ipc-result:case:4",
+      "operation": "fs:ipc-result",
+      "profile_candidates": [
+        "fs-client-ipc"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Cross-node AND semantics hide a result until all required keywords are satisfied.",
+      "evidence_slots": [],
+      "id": "fs:search-keywords:case:1",
+      "operation": "fs:search-keywords",
+      "profile_candidates": [
+        "fs-mixed-search"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Optional support/duplicate arrivals cannot invent extra results or decrement a missing requirement twice.",
+      "evidence_slots": [],
+      "id": "fs:search-keywords:case:2",
+      "operation": "fs:search-keywords",
+      "profile_candidates": [
+        "fs-mixed-search"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Result URI and metadata retain identity across independent keyword subqueries.",
+      "evidence_slots": [],
+      "id": "fs:search-keywords:case:3",
+      "operation": "fs:search-keywords",
+      "profile_candidates": [
+        "fs-mixed-search"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Pause/continue and reconnect preserve delivered-result suppression and allow genuinely new results.",
+      "evidence_slots": [],
+      "id": "fs:search-keywords:case:4",
+      "operation": "fs:search-keywords",
+      "profile_candidates": [
+        "fs-mixed-search"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Rust and official peers discover both initial signed results and next-version entries.",
+      "evidence_slots": [],
+      "id": "fs:search-namespace:case:1",
+      "operation": "fs:search-namespace",
+      "profile_candidates": [
+        "fs-mixed-namespace"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Wrong namespace/identifier/signature fails even when URI/metadata parses.",
+      "evidence_slots": [],
+      "id": "fs:search-namespace:case:2",
+      "operation": "fs:search-namespace",
+      "profile_candidates": [
+        "fs-mixed-namespace"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Cyclic/branching updates, duplicate URIs and stopping parent searches retain bounded independent ownership.",
+      "evidence_slots": [],
+      "id": "fs:search-namespace:case:3",
+      "operation": "fs:search-namespace",
+      "profile_candidates": [
+        "fs-mixed-namespace"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Available and unavailable search results produce truthful updates from actual transfer activity.",
+      "evidence_slots": [],
+      "id": "fs:probes:case:1",
+      "operation": "fs:probes",
+      "profile_candidates": [
+        "fs-mixed-probe"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Stop probe, parent search cancellation and restarted physical connection cannot issue stale updates.",
+      "evidence_slots": [],
+      "id": "fs:probes:case:2",
+      "operation": "fs:probes",
+      "profile_candidates": [
+        "fs-mixed-probe"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Probes never persist as normal downloads and do not bypass anonymity or resource budgets.",
+      "evidence_slots": [],
+      "id": "fs:probes:case:3",
+      "operation": "fs:probes",
+      "profile_candidates": [
+        "fs-mixed-probe"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Download official publication with Rust and Rust publication with official clients using CHK and LOC.",
+      "evidence_slots": [],
+      "id": "fs:download:case:1",
+      "operation": "fs:download",
+      "profile_candidates": [
+        "fs-mixed-download"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Empty/full/tail/range and >8MiB multi-level content reconstruct exact logical bytes.",
+      "evidence_slots": [],
+      "id": "fs:download:case:2",
+      "operation": "fs:download",
+      "profile_candidates": [
+        "fs-mixed-download"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Corrupt/mismatched/missing block and bad LOC authority cannot report completion.",
+      "evidence_slots": [],
+      "id": "fs:download:case:3",
+      "operation": "fs:download",
+      "profile_candidates": [
+        "fs-mixed-download"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "File/callback output, optional temporaries and reuse of existing partial file data retain verified offsets.",
+      "evidence_slots": [],
+      "id": "fs:download:case:4",
+      "operation": "fs:download",
+      "profile_candidates": [
+        "fs-mixed-download"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Mixed-node nested directory and inline files produce expected byte trees and metadata.",
+      "evidence_slots": [],
+      "id": "fs:recursive-download:case:1",
+      "operation": "fs:recursive-download",
+      "profile_candidates": [
+        "fs-mixed-download"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Search stop does not incorrectly abort an associated download; parent loss yields explicit ownership transition.",
+      "evidence_slots": [],
+      "id": "fs:recursive-download:case:2",
+      "operation": "fs:recursive-download",
+      "profile_candidates": [
+        "fs-mixed-download"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Untrusted entry names, duplicate paths, recursion limits, partial directory data and cancellation do not corrupt unrelated outputs.",
+      "evidence_slots": [],
+      "id": "fs:recursive-download:case:3",
+      "operation": "fs:recursive-download",
+      "profile_candidates": [
+        "fs-mixed-download"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Cancel before send, after partial write, before reply and during dependency failure terminates the correct original operation.",
+      "evidence_slots": [],
+      "id": "fs:operation-lifecycle:case:1",
+      "operation": "fs:operation-lifecycle",
+      "profile_candidates": [
+        "fs-client-ipc",
+        "fs-durable-restart"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Completed/error remain distinct and observed terminal effects occur at most once.",
+      "evidence_slots": [],
+      "id": "fs:operation-lifecycle:case:2",
+      "operation": "fs:operation-lifecycle",
+      "profile_candidates": [
+        "fs-client-ipc",
+        "fs-durable-restart"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Concurrent operations and resource refusal preserve healthy independent work.",
+      "evidence_slots": [],
+      "id": "fs:operation-lifecycle:case:3",
+      "operation": "fs:operation-lifecycle",
+      "profile_candidates": [
+        "fs-client-ipc",
+        "fs-durable-restart"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Pause/continue, suspend/resume and explicit stop have distinct durable and callback consequences.",
+      "evidence_slots": [],
+      "id": "fs:operation-lifecycle:case:4",
+      "operation": "fs:operation-lifecycle",
+      "profile_candidates": [
+        "fs-client-ipc",
+        "fs-durable-restart"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "No callback is delivered after a completed global stop; caller reentrancy is specified without copying C pointer ABI.",
+      "evidence_slots": [],
+      "id": "fs:operation-lifecycle:case:5",
+      "operation": "fs:operation-lifecycle",
+      "profile_candidates": [
+        "fs-client-ipc",
+        "fs-durable-restart"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Restart each supported operation after actual progress and observe resume without false completion or wrong ownership.",
+      "evidence_slots": [],
+      "id": "fs:durable-restart:case:1",
+      "operation": "fs:durable-restart",
+      "profile_candidates": [
+        "fs-durable-restart"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Retain known search results, child associations, verified download ranges and namespace update graph.",
+      "evidence_slots": [],
+      "id": "fs:durable-restart:case:2",
+      "operation": "fs:durable-restart",
+      "profile_candidates": [
+        "fs-durable-restart"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Interrupted/corrupt/missing state and failed storage commits reject or recover explicitly; never activate unverified data.",
+      "evidence_slots": [],
+      "id": "fs:durable-restart:case:3",
+      "operation": "fs:durable-restart",
+      "profile_candidates": [
+        "fs-durable-restart"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Canceled/deleted operations stay retired after restart; independently healthy state survives another corrupt record.",
+      "evidence_slots": [],
+      "id": "fs:durable-restart:case:4",
+      "operation": "fs:durable-restart",
+      "profile_candidates": [
+        "fs-durable-restart"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Private Rust store format changes require own-state correctness, not old Rust/C on-disk migration.",
+      "evidence_slots": [],
+      "id": "fs:durable-restart:case:5",
+      "operation": "fs:durable-restart",
+      "profile_candidates": [
+        "fs-durable-restart"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "C-to-Rust and Rust-to-C CORE request frames match query and optional return/transmit targets.",
+      "evidence_slots": [],
+      "id": "fs:p2p-get:case:1",
+      "operation": "fs:p2p-get",
+      "profile_candidates": [
+        "fs-mixed-core"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "All supported bitmap combinations and Bloom boundaries parse with checked lengths; unknown/unsupported flags have reviewed policy.",
+      "evidence_slots": [],
+      "id": "fs:p2p-get:case:2",
+      "operation": "fs:p2p-get",
+      "profile_candidates": [
+        "fs-mixed-core"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Milliseconds remain distinct from microsecond local clocks; extreme signed TTL and decrement cannot overflow.",
+      "evidence_slots": [],
+      "id": "fs:p2p-get:case:3",
+      "operation": "fs:p2p-get",
+      "profile_candidates": [
+        "fs-mixed-core"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Missing reverse route, queue refusal, stale peer and cancellation cannot route a reply to a foreign owner.",
+      "evidence_slots": [],
+      "id": "fs:p2p-get:case:4",
+      "operation": "fs:p2p-get",
+      "profile_candidates": [
+        "fs-mixed-core"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Both peer directions deliver valid data/index/universal blocks and expected expiry.",
+      "evidence_slots": [],
+      "id": "fs:p2p-put:case:1",
+      "operation": "fs:p2p-put",
+      "profile_candidates": [
+        "fs-mixed-core"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Changed payload/key/signature/query/type rejects; unsolicited results cannot satisfy an unrelated pending request.",
+      "evidence_slots": [],
+      "id": "fs:p2p-put:case:2",
+      "operation": "fs:p2p-put",
+      "profile_candidates": [
+        "fs-mixed-core"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Multiple requesters, duplicate replies and one-shot data results preserve completion and suppression.",
+      "evidence_slots": [],
+      "id": "fs:p2p-put:case:3",
+      "operation": "fs:p2p-put",
+      "profile_candidates": [
+        "fs-mixed-core"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Mixed multi-hop C/Rust topologies exercise both origin directions and transit roles.",
+      "evidence_slots": [],
+      "id": "fs:routing-anonymity:case:1",
+      "operation": "fs:routing-anonymity",
+      "profile_candidates": [
+        "fs-mixed-core"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Loopback-only stays local; anonymity>0 does not silently downgrade to direct targeted CADET/DHT access.",
+      "evidence_slots": [],
+      "id": "fs:routing-anonymity:case:2",
+      "operation": "fs:routing-anonymity",
+      "profile_candidates": [
+        "fs-mixed-core"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Repeated requests/loops, expired TTL, Bloom known results and overload remain bounded and avoid false positives.",
+      "evidence_slots": [],
+      "id": "fs:routing-anonymity:case:3",
+      "operation": "fs:routing-anonymity",
+      "profile_candidates": [
+        "fs-mixed-core"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Peer disconnect/reconnect retires reverse routes and original outstanding work without replay on replacement ownership.",
+      "evidence_slots": [],
+      "id": "fs:routing-anonymity:case:4",
+      "operation": "fs:routing-anonymity",
+      "profile_candidates": [
+        "fs-mixed-core"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Rust resource policy may differ, but cannot invent replies or violate exposed anonymity guarantees.",
+      "evidence_slots": [],
+      "id": "fs:routing-anonymity:case:5",
+      "operation": "fs:routing-anonymity",
+      "profile_candidates": [
+        "fs-mixed-core"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Both directions accept valid pushed content and explicit migration-stop duration.",
+      "evidence_slots": [],
+      "id": "fs:migration:case:1",
+      "operation": "fs:migration",
+      "profile_candidates": [
+        "fs-mixed-core"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "While blocked the target receives no new migration; expiry re-enables legal pushing without duplicate timer ownership.",
+      "evidence_slots": [],
+      "id": "fs:migration:case:2",
+      "operation": "fs:migration",
+      "profile_candidates": [
+        "fs-mixed-core"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Queue/dependency failure and repeated stop/clock changes preserve bounds and distinguish local send from remote storage.",
+      "evidence_slots": [],
+      "id": "fs:migration:case:3",
+      "operation": "fs:migration",
+      "profile_candidates": [
+        "fs-mixed-core"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Replication and expiration policy changes remain externally meaningful without copying C selection order.",
+      "evidence_slots": [],
+      "id": "fs:migration:case:4",
+      "operation": "fs:migration",
+      "profile_candidates": [
+        "fs-mixed-core"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "C server/Rust client and Rust server/C client transfer actual content and reject wrong hash/type/MAC.",
+      "evidence_slots": [],
+      "id": "fs:cadet-transfer:case:1",
+      "operation": "fs:cadet-transfer",
+      "profile_candidates": [
+        "fs-mixed-cadet"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Concurrent queries and partial reply/EOF/cancel cannot deliver another channel/request result.",
+      "evidence_slots": [],
+      "id": "fs:cadet-transfer:case:2",
+      "operation": "fs:cadet-transfer",
+      "profile_candidates": [
+        "fs-mixed-cadet"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Channel capacity, reset/reconnect and idle close remain bounded with truthful error outcomes.",
+      "evidence_slots": [],
+      "id": "fs:cadet-transfer:case:3",
+      "operation": "fs:cadet-transfer",
+      "profile_candidates": [
+        "fs-mixed-cadet"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "CADET profile success is separate from anonymous CORE routing and complete FS acceptance.",
+      "evidence_slots": [],
+      "id": "fs:cadet-transfer:case:4",
+      "operation": "fs:cadet-transfer",
+      "profile_candidates": [
+        "fs-mixed-cadet"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Service unavailable, identity change, datastore full and dependency EOF preserve original operations and distinct errors.",
+      "evidence_slots": [],
+      "id": "fs:service-dependencies:case:1",
+      "operation": "fs:service-dependencies",
+      "profile_candidates": [
+        "fs-client-ipc",
+        "fs-durable-restart"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Clock rollback/refusal, disconnect/restart and late replies cannot activate a new identity from old capability.",
+      "evidence_slots": [],
+      "id": "fs:service-dependencies:case:2",
+      "operation": "fs:service-dependencies",
+      "profile_candidates": [
+        "fs-client-ipc",
+        "fs-durable-restart"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Mixed official service profiles verify every actually exposed IPC boundary; direct Rust assembly need not emulate unused C API/plugin loader.",
+      "evidence_slots": [],
+      "id": "fs:service-dependencies:case:3",
+      "operation": "fs:service-dependencies",
+      "profile_candidates": [
+        "fs-client-ipc",
+        "fs-durable-restart"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Declared supported platform profiles instantiate real endpoint ACL/path/port and filesystem semantics.",
+      "evidence_slots": [],
+      "id": "fs:resources-platform:case:1",
+      "operation": "fs:resources-platform",
+      "profile_candidates": [
+        "fs-client-ipc",
+        "fs-product-local"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Configured admission bounds reject locally/explicitly without corrupting unrelated active operations.",
+      "evidence_slots": [],
+      "id": "fs:resources-platform:case:2",
+      "operation": "fs:resources-platform",
+      "profile_candidates": [
+        "fs-client-ipc",
+        "fs-product-local"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Maximum frames, slow writers, partial I/O, termination and unsupported options keep finite resource ownership.",
+      "evidence_slots": [],
+      "id": "fs:resources-platform:case:3",
+      "operation": "fs:resources-platform",
+      "profile_candidates": [
+        "fs-client-ipc",
+        "fs-product-local"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Measure performance/RAM/stack separately from compile-only M0/M4 and functional evidence.",
+      "evidence_slots": [],
+      "id": "fs:resources-platform:case:4",
+      "operation": "fs:resources-platform",
+      "profile_candidates": [
+        "fs-client-ipc",
+        "fs-product-local"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Equivalent local directory input yields expected publish tree and metadata/keywords, including extractor-disabled mode.",
+      "evidence_slots": [],
+      "id": "fs:scan-extract:case:1",
+      "operation": "fs:scan-extract",
+      "profile_candidates": [
+        "fs-product-local"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Unreadable files, symlinks/platform variants, abort and extractor failure produce meaningful bounded outcomes.",
+      "evidence_slots": [],
+      "id": "fs:scan-extract:case:2",
+      "operation": "fs:scan-extract",
+      "profile_candidates": [
+        "fs-product-local"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Raw full paths are not published unintentionally; original filename and supported media metadata policy are explicit.",
+      "evidence_slots": [],
+      "id": "fs:scan-extract:case:3",
+      "operation": "fs:scan-extract",
+      "profile_candidates": [
+        "fs-product-local"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "If selected, cross-parse progress file/directory, skip/error, counting-done, metadata and finished notifications.",
+      "evidence_slots": [],
+      "id": "fs:optional-helper-ipc:case:1",
+      "operation": "fs:optional-helper-ipc",
+      "profile_candidates": [
+        "fs-optional-official-helper"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Filename NUL, traversal marker, metadata/current-entry association and empty completion payloads are checked.",
+      "evidence_slots": [],
+      "id": "fs:optional-helper-ipc:case:2",
+      "operation": "fs:optional-helper-ipc",
+      "profile_candidates": [
+        "fs-optional-official-helper"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Partial frame, helper EOF/exit/error, abort and repeated terminal notification never become successful scan.",
+      "evidence_slots": [],
+      "id": "fs:optional-helper-ipc:case:3",
+      "operation": "fs:optional-helper-ipc",
+      "profile_candidates": [
+        "fs-optional-official-helper"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "If replaced by Rust-native extraction, retain explicit reviewed profile N/A rationale while keeping all seven registry identities in the floor.",
+      "evidence_slots": [],
+      "id": "fs:optional-helper-ipc:case:4",
+      "operation": "fs:optional-helper-ipc",
+      "profile_candidates": [
+        "fs-optional-official-helper"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Publish from files/URI/namespace with noindex/simulate/metadata/keyword/replication/priority/anonymity controls.",
+      "evidence_slots": [],
+      "id": "fs:product-frontends:case:1",
+      "operation": "fs:product-frontends",
+      "profile_candidates": [
+        "fs-product-local"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Search bookmark-only/local/timeout/result-count/output-directory and supported formatting semantics work.",
+      "evidence_slots": [],
+      "id": "fs:product-frontends:case:2",
+      "operation": "fs:product-frontends",
+      "profile_candidates": [
+        "fs-product-local"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Download local/recursive/output/concurrency/delete-incomplete choices work on real transfer.",
+      "evidence_slots": [],
+      "id": "fs:product-frontends:case:3",
+      "operation": "fs:product-frontends",
+      "profile_candidates": [
+        "fs-product-local"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Auto-share observes local updates and persists/republishes truthfully without fake successful uploads.",
+      "evidence_slots": [],
+      "id": "fs:product-frontends:case:4",
+      "operation": "fs:product-frontends",
+      "profile_candidates": [
+        "fs-product-local"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    },
+    {
+      "contract": "Argument errors and interruption have explicit outcomes; exact gettext phrasing/help columns are not an implicit protocol prerequisite.",
+      "evidence_slots": [],
+      "id": "fs:product-frontends:case:5",
+      "operation": "fs:product-frontends",
+      "profile_candidates": [
+        "fs-product-local"
+      ],
+      "profile_direction_review": "pending",
+      "review_state": "draft"
+    }
+  ],
+  "kind": "external-semantic-inventory-draft",
+  "operations": [
+    {
+      "case_ids": [
+        "fs:uri-chk:case:1",
+        "fs:uri-chk:case:2",
+        "fs:uri-chk:case:3"
+      ],
+      "condition": "",
+      "contract": "Exact scheme/type, two SHA-512 values in key/query order and u64 length; standard normalization and explicit bounded malformed-input behavior.",
+      "id": "fs:uri-chk",
+      "necessity": "always",
+      "owner": "fs",
+      "review_state": "draft",
+      "source_refs": [
+        {
+          "anchor": "GNUNET_FS_uri_parse (",
+          "end_line": 676,
+          "path": "src/service/fs/fs_uri.c",
+          "sha256": "d9aabee2a52be9595fe009e9d1c0eee58848ba073a5503ff3741bc70f9e09ed1",
+          "start_line": 637
+        },
+        {
+          "anchor": "GNUNET_FS_uri_chk_get_file_size",
+          "end_line": 532,
+          "path": "src/include/gnunet_fs_service.h",
+          "sha256": "d5dab2081ea5eee985b373bd839a09cfc1392259ee905bc2178fb77494f7b4bc",
+          "start_line": 525
+        }
+      ],
+      "title": "CHK public content identifier"
+    },
+    {
+      "case_ids": [
+        "fs:uri-sks:case:1",
+        "fs:uri-sks:case:2",
+        "fs:uri-sks:case:3"
+      ],
+      "condition": "",
+      "contract": "Namespace EdDSA key plus literal identifier remainder; no DNS/path/percent interpretation.",
+      "id": "fs:uri-sks",
+      "necessity": "always",
+      "owner": "fs",
+      "review_state": "draft",
+      "source_refs": [
+        {
+          "anchor": "GNUNET_FS_uri_sks_create",
+          "end_line": 498,
+          "path": "src/include/gnunet_fs_service.h",
+          "sha256": "d5dab2081ea5eee985b373bd839a09cfc1392259ee905bc2178fb77494f7b4bc",
+          "start_line": 469
+        },
+        {
+          "anchor": "GNUNET_FS_uri_sks_create (",
+          "end_line": 923,
+          "path": "src/service/fs/fs_uri.c",
+          "sha256": "d9aabee2a52be9595fe009e9d1c0eee58848ba073a5503ff3741bc70f9e09ed1",
+          "start_line": 908
+        }
+      ],
+      "title": "SKS public namespace identifier"
+    },
+    {
+      "case_ids": [
+        "fs:uri-ksk:case:1",
+        "fs:uri-ksk:case:2",
+        "fs:uri-ksk:case:3",
+        "fs:uri-ksk:case:4"
+      ],
+      "condition": "",
+      "contract": "Encoded term order, duplicates, mandatory marker and balanced quote syntax are data artifacts, separate from UI tokenization and set operations.",
+      "id": "fs:uri-ksk",
+      "necessity": "always",
+      "owner": "fs",
+      "review_state": "draft",
+      "source_refs": [
+        {
+          "anchor": "GNUNET_FS_uri_ksk_create_from_args",
+          "end_line": 439,
+          "path": "src/include/gnunet_fs_service.h",
+          "sha256": "d5dab2081ea5eee985b373bd839a09cfc1392259ee905bc2178fb77494f7b4bc",
+          "start_line": 435
+        },
+        {
+          "anchor": "percent_decode_keyword (",
+          "end_line": 257,
+          "path": "src/service/fs/fs_uri.c",
+          "sha256": "d9aabee2a52be9595fe009e9d1c0eee58848ba073a5503ff3741bc70f9e09ed1",
+          "start_line": 212
+        }
+      ],
+      "title": "KSK public keyword artifact"
+    },
+    {
+      "case_ids": [
+        "fs:uri-loc:case:1",
+        "fs:uri-loc:case:2",
+        "fs:uri-loc:case:3",
+        "fs:uri-loc:case:4"
+      ],
+      "condition": "",
+      "contract": "Exact purpose5 placement signature binds content, file length, peer and expiration; artifact authenticity is separate from current validity/storage/reachability.",
+      "id": "fs:uri-loc",
+      "necessity": "always",
+      "owner": "fs",
+      "review_state": "draft",
+      "source_refs": [
+        {
+          "anchor": "GNUNET_FS_uri_loc_create (",
+          "end_line": 898,
+          "path": "src/service/fs/fs_uri.c",
+          "sha256": "d9aabee2a52be9595fe009e9d1c0eee58848ba073a5503ff3741bc70f9e09ed1",
+          "start_line": 869
+        },
+        {
+          "anchor": "GNUNET_FS_uri_loc_get_expiration",
+          "end_line": 373,
+          "path": "src/include/gnunet_fs_service.h",
+          "sha256": "d5dab2081ea5eee985b373bd839a09cfc1392259ee905bc2178fb77494f7b4bc",
+          "start_line": 352
+        }
+      ],
+      "title": "Authenticated LOC placement artifact"
+    },
+    {
+      "case_ids": [
+        "fs:content-block:case:1",
+        "fs:content-block:case:2",
+        "fs:content-block:case:3",
+        "fs:content-block:case:4"
+      ],
+      "condition": "",
+      "contract": "SHA512 plaintext forms CHK key; GNUnet HKDF labels derive XChaCha20Poly1305 material; empty AAD, detached MAC appended; query hashes complete ciphertext plus MAC.",
+      "id": "fs:content-block",
+      "necessity": "always",
+      "owner": "fs",
+      "review_state": "draft",
+      "source_refs": [
+        {
+          "anchor": "GNUNET_FS_tree_encoder_next (",
+          "end_line": 424,
+          "path": "src/service/fs/fs_tree.c",
+          "sha256": "d0c9b0fe9c0e55548059a5da4dd7e42a983330d967ac060f2fe3906fbbf4117b",
+          "start_line": 320
+        },
+        {
+          "anchor": "GNUNET_FS_hash_to_symmetric_key (",
+          "end_line": 3364,
+          "path": "src/service/fs/fs_api.c",
+          "sha256": "178f883214f46492222f3dab7770a3423c4f765d6f1d194adeb4007dd8a31a6b",
+          "start_line": 3342
+        },
+        {
+          "anchor": "GNUNET_CRYPTO_aead_encrypt (",
+          "end_line": 305,
+          "path": "src/lib/util/crypto_symmetric.c",
+          "sha256": "59c737ff060f8807fef50c317b977f83b541794a856b1e090014c12bc13d961a",
+          "start_line": 274
+        }
+      ],
+      "title": "DBLOCK/IBLOCK cryptographic byte artifacts"
+    },
+    {
+      "case_ids": [
+        "fs:content-tree:case:1",
+        "fs:content-tree:case:2",
+        "fs:content-tree:case:3",
+        "fs:content-tree:case:4",
+        "fs:content-tree:case:5"
+      ],
+      "condition": "",
+      "contract": "32KiB leaf plaintext, 256 children per index, each CHK key64/query64. Derive depth and exact tail geometry from total file size, supporting all representable practical sizes rather than only the first 8MiB.",
+      "id": "fs:content-tree",
+      "necessity": "always",
+      "owner": "fs",
+      "review_state": "draft",
+      "source_refs": [
+        {
+          "anchor": "#define DBLOCK_SIZE",
+          "end_line": 43,
+          "path": "src/service/fs/fs.h",
+          "sha256": "297e8fcdf27943c765e8275a2ddc0ea303cb7d25054656eb378e12c6f40960ee",
+          "start_line": 41
+        },
+        {
+          "anchor": "#define CHK_PER_INODE",
+          "end_line": 46,
+          "path": "src/service/fs/fs_api.h",
+          "sha256": "49adab35a5b5fe1cb94f0c66dca68dde49e982416f234575a55e4ceee14faae8",
+          "start_line": 44
+        },
+        {
+          "anchor": "GNUNET_FS_compute_depth (",
+          "end_line": 232,
+          "path": "src/service/fs/fs_tree.c",
+          "sha256": "d0c9b0fe9c0e55548059a5da4dd7e42a983330d967ac060f2fe3906fbbf4117b",
+          "start_line": 125
+        }
+      ],
+      "title": "Complete CHK tree and file reconstruction"
+    },
+    {
+      "case_ids": [
+        "fs:metadata:case:1",
+        "fs:metadata:case:2",
+        "fs:metadata:case:3",
+        "fs:metadata:case:4",
+        "fs:metadata:case:5"
+      ],
+      "condition": "",
+      "contract": "Header/entry framing, compressed flag, typed values, MIME/plugin names and null representation must interoperate. Compression algorithm implementation and metadata container layout may differ.",
+      "id": "fs:metadata",
+      "necessity": "always",
+      "owner": "fs",
+      "review_state": "draft",
+      "source_refs": [
+        {
+          "anchor": "struct MetaDataHeader",
+          "end_line": 620,
+          "path": "src/service/fs/meta_data.c",
+          "sha256": "08a6ca4251f53ebf84af933f0a122be8bcc458ea54a9207bbc8c9431c668aa87",
+          "start_line": 559
+        },
+        {
+          "anchor": "GNUNET_FS_meta_data_deserialize (",
+          "end_line": 1034,
+          "path": "src/service/fs/meta_data.c",
+          "sha256": "08a6ca4251f53ebf84af933f0a122be8bcc458ea54a9207bbc8c9431c668aa87",
+          "start_line": 885
+        },
+        {
+          "anchor": "GNUNET_FS_meta_data_serialize",
+          "end_line": 3180,
+          "path": "src/include/gnunet_fs_service.h",
+          "sha256": "d5dab2081ea5eee985b373bd839a09cfc1392259ee905bc2178fb77494f7b4bc",
+          "start_line": 3153
+        }
+      ],
+      "title": "Serialized metadata v2 and value semantics"
+    },
+    {
+      "case_ids": [
+        "fs:directory:case:1",
+        "fs:directory:case:2",
+        "fs:directory:case:3",
+        "fs:directory:case:4",
+        "fs:directory:case:5"
+      ],
+      "condition": "",
+      "contract": "Directory magic/header metadata plus NUL URI, metadata-length and metadata entries with 32KiB alignment and optional full-data metadata; KSK cannot be a file entry.",
+      "id": "fs:directory",
+      "necessity": "always",
+      "owner": "fs",
+      "review_state": "draft",
+      "source_refs": [
+        {
+          "anchor": "GNUNET_FS_directory_list_contents (",
+          "end_line": 319,
+          "path": "src/service/fs/fs_directory.c",
+          "sha256": "36f030f1ed399a23974f59bb139e8e914290322bc4c3f2bd4e032d2082391de5",
+          "start_line": 182
+        },
+        {
+          "anchor": "GNUNET_FS_directory_builder_finish (",
+          "end_line": 671,
+          "path": "src/service/fs/fs_directory.c",
+          "sha256": "36f030f1ed399a23974f59bb139e8e914290322bc4c3f2bd4e032d2082391de5",
+          "start_line": 578
+        },
+        {
+          "anchor": "#define GNUNET_FS_DIRECTORY_MAGIC",
+          "end_line": 2588,
+          "path": "src/include/gnunet_fs_service.h",
+          "sha256": "d5dab2081ea5eee985b373bd839a09cfc1392259ee905bc2178fb77494f7b4bc",
+          "start_line": 2584
+        }
+      ],
+      "title": "GNUnet directory and inline-file artifacts"
+    },
+    {
+      "case_ids": [
+        "fs:ublock:case:1",
+        "fs:ublock:case:2",
+        "fs:ublock:case:3",
+        "fs:ublock:case:4"
+      ],
+      "condition": "",
+      "contract": "Purpose-prefixed derived EdDSA signature and verification key cover encrypted update identifier, URI, metadata and MAC; derive with fs-ublock and UBLOCK-ENC labels, then exact content key derivation.",
+      "id": "fs:ublock",
+      "necessity": "always",
+      "owner": "fs",
+      "review_state": "draft",
+      "source_refs": [
+        {
+          "anchor": "struct UBlock",
+          "end_line": 80,
+          "path": "src/include/block_fs.h",
+          "sha256": "b48abe48ba3113bdeec40a57d4787bb42345770534baa6f4c81ba78c154cc338",
+          "start_line": 53
+        },
+        {
+          "anchor": "derive_ublock_encryption_key (",
+          "end_line": 88,
+          "path": "src/service/fs/fs_publish_ublock.c",
+          "sha256": "693132f51847047406c799a8d4d049feecfcc9d0e04ebba95bbe0bf531b706e8",
+          "start_line": 46
+        },
+        {
+          "anchor": "ub_enc->purpose.size",
+          "end_line": 276,
+          "path": "src/service/fs/fs_publish_ublock.c",
+          "sha256": "693132f51847047406c799a8d4d049feecfcc9d0e04ebba95bbe0bf531b706e8",
+          "start_line": 257
+        },
+        {
+          "anchor": "block_plugin_fs_check_block (",
+          "end_line": 249,
+          "path": "src/plugin/fs/plugin_block_fs.c",
+          "sha256": "5fbb347fe05fb488e47cbdeae3802f2f2159cd552177a036588b8e732ff9601d",
+          "start_line": 203
+        }
+      ],
+      "title": "Keyword/namespace universal result block"
+    },
+    {
+      "case_ids": [
+        "fs:keyword-construction:case:1",
+        "fs:keyword-construction:case:2",
+        "fs:keyword-construction:case:3",
+        "fs:keyword-construction:case:4"
+      ],
+      "condition": "",
+      "contract": "UI words, mandatory flags, metadata-derived keywords, duplicate merge and Unicode normalization that selects exact lookup keys must be explicit separate capabilities.",
+      "id": "fs:keyword-construction",
+      "necessity": "always",
+      "owner": "fs",
+      "review_state": "draft",
+      "source_refs": [
+        {
+          "anchor": "normalize_metadata (",
+          "end_line": 1504,
+          "path": "src/service/fs/fs_uri.c",
+          "sha256": "d9aabee2a52be9595fe009e9d1c0eee58848ba073a5503ff3741bc70f9e09ed1",
+          "start_line": 1453
+        },
+        {
+          "anchor": "GNUNET_FS_uri_ksk_merge (",
+          "end_line": 995,
+          "path": "src/service/fs/fs_uri.c",
+          "sha256": "d9aabee2a52be9595fe009e9d1c0eee58848ba073a5503ff3741bc70f9e09ed1",
+          "start_line": 931
+        },
+        {
+          "anchor": "GNUNET_FS_uri_ksk_create_from_meta_data",
+          "end_line": 565,
+          "path": "src/include/gnunet_fs_service.h",
+          "sha256": "d5dab2081ea5eee985b373bd839a09cfc1392259ee905bc2178fb77494f7b4bc",
+          "start_line": 558
+        }
+      ],
+      "title": "Search/publication keyword construction"
+    },
+    {
+      "case_ids": [
+        "fs:publish-input:case:1",
+        "fs:publish-input:case:2",
+        "fs:publish-input:case:3",
+        "fs:publish-input:case:4"
+      ],
+      "condition": "",
+      "contract": "Users can publish explicit bytes, files, readers and nested directories with metadata, keywords and publication options; source ownership and cancellation must remain safe.",
+      "id": "fs:publish-input",
+      "necessity": "always",
+      "owner": "fs",
+      "review_state": "draft",
+      "source_refs": [
+        {
+          "anchor": "GNUNET_FS_file_information_create_from_file",
+          "end_line": 2006,
+          "path": "src/include/gnunet_fs_service.h",
+          "sha256": "d5dab2081ea5eee985b373bd839a09cfc1392259ee905bc2178fb77494f7b4bc",
+          "start_line": 1887
+        },
+        {
+          "anchor": "GNUNET_FS_file_information_add",
+          "end_line": 2078,
+          "path": "src/include/gnunet_fs_service.h",
+          "sha256": "d5dab2081ea5eee985b373bd839a09cfc1392259ee905bc2178fb77494f7b4bc",
+          "start_line": 2036
+        },
+        {
+          "anchor": "GNUNET_FS_file_information_create_from_reader (",
+          "end_line": 154,
+          "path": "src/service/fs/fs_file_information.c",
+          "sha256": "8c864294beb234a0f37ef591d28b58c8a5dc15579cd04cc25320df8323e70d23",
+          "start_line": 117
+        }
+      ],
+      "title": "File/directory publication inputs"
+    },
+    {
+      "case_ids": [
+        "fs:publish-content:case:1",
+        "fs:publish-content:case:2",
+        "fs:publish-content:case:3",
+        "fs:publish-content:case:4",
+        "fs:publish-content:case:5"
+      ],
+      "condition": "",
+      "contract": "Store encoded data/index blocks and associated results with expiration, priority, anonymity and replication policy; simulate-only must not publish.",
+      "id": "fs:publish-content",
+      "necessity": "always",
+      "owner": "fs",
+      "review_state": "draft",
+      "source_refs": [
+        {
+          "anchor": "GNUNET_FS_publish_start",
+          "end_line": 2054,
+          "path": "src/include/gnunet_fs_service.h",
+          "sha256": "d5dab2081ea5eee985b373bd839a09cfc1392259ee905bc2178fb77494f7b4bc",
+          "start_line": 2027
+        },
+        {
+          "anchor": "struct GNUNET_FS_BlockOptions",
+          "end_line": 1772,
+          "path": "src/include/gnunet_fs_service.h",
+          "sha256": "d5dab2081ea5eee985b373bd839a09cfc1392259ee905bc2178fb77494f7b4bc",
+          "start_line": 1731
+        },
+        {
+          "anchor": "GNUNET_FS_publish_start (",
+          "end_line": 1525,
+          "path": "src/service/fs/fs_publish.c",
+          "sha256": "cef8fbcfffbcce85851c45fac88dcf22b99af83eef6626fe27c9f7449da03845",
+          "start_line": 1446
+        }
+      ],
+      "title": "File/directory publication and insertion/index modes"
+    },
+    {
+      "case_ids": [
+        "fs:publish-keywords:case:1",
+        "fs:publish-keywords:case:2",
+        "fs:publish-keywords:case:3"
+      ],
+      "condition": "",
+      "contract": "Publish each selected keyword mapping with the anonymous namespace key and exact derived lookup key, result URI and metadata.",
+      "id": "fs:publish-keywords",
+      "necessity": "always",
+      "owner": "fs",
+      "review_state": "draft",
+      "source_refs": [
+        {
+          "anchor": "publish_ksk_cont (",
+          "end_line": 183,
+          "path": "src/service/fs/fs_publish_ksk.c",
+          "sha256": "705a035c46a4d2dd1263617464358264c975f4e8c9119062c8ca6839e0ba4699",
+          "start_line": 114
+        },
+        {
+          "anchor": "GNUNET_FS_publish_ksk (",
+          "end_line": 2180,
+          "path": "src/include/gnunet_fs_service.h",
+          "sha256": "d5dab2081ea5eee985b373bd839a09cfc1392259ee905bc2178fb77494f7b4bc",
+          "start_line": 2163
+        }
+      ],
+      "title": "Keyword publication"
+    },
+    {
+      "case_ids": [
+        "fs:publish-namespace:case:1",
+        "fs:publish-namespace:case:2",
+        "fs:publish-namespace:case:3",
+        "fs:publish-namespace:case:4"
+      ],
+      "condition": "",
+      "contract": "Publish chosen identifier and optional next-version identifier using the selected namespace identity, and preserve updateable graph behavior.",
+      "id": "fs:publish-namespace",
+      "necessity": "always",
+      "owner": "fs",
+      "review_state": "draft",
+      "source_refs": [
+        {
+          "anchor": "GNUNET_FS_publish_sks (",
+          "end_line": 2224,
+          "path": "src/include/gnunet_fs_service.h",
+          "sha256": "d5dab2081ea5eee985b373bd839a09cfc1392259ee905bc2178fb77494f7b4bc",
+          "start_line": 2203
+        },
+        {
+          "anchor": "GNUNET_FS_publish_sks (",
+          "end_line": 495,
+          "path": "src/service/fs/fs_namespace.c",
+          "sha256": "9dee72ee9a220a860f1a26e640a28842224ab0ad720f4b3421c242396ba55295",
+          "start_line": 432
+        },
+        {
+          "anchor": "GNUNET_FS_namespace_list_updateable (",
+          "end_line": 720,
+          "path": "src/service/fs/fs_namespace.c",
+          "sha256": "9dee72ee9a220a860f1a26e640a28842224ab0ad720f4b3421c242396ba55295",
+          "start_line": 671
+        }
+      ],
+      "title": "Signed namespace publication and update discovery"
+    },
+    {
+      "case_ids": [
+        "fs:ipc-index:case:1",
+        "fs:ipc-index:case:2",
+        "fs:ipc-index:case:3",
+        "fs:ipc-index:case:4"
+      ],
+      "condition": "",
+      "contract": "FS_INDEX_START packed fields bind filename and full plaintext file hash; missing/mismatching file rejects. Device/inode matching is an optional safe optimization, not a required Rust mechanism.",
+      "id": "fs:ipc-index",
+      "necessity": "always",
+      "owner": "fs",
+      "review_state": "draft",
+      "source_refs": [
+        {
+          "anchor": "struct IndexStartMessage",
+          "end_line": 197,
+          "path": "src/service/fs/fs.h",
+          "sha256": "297e8fcdf27943c765e8275a2ddc0ea303cb7d25054656eb378e12c6f40960ee",
+          "start_line": 152
+        },
+        {
+          "anchor": "check_client_index_start (",
+          "end_line": 947,
+          "path": "src/service/fs/gnunet-service-fs.c",
+          "sha256": "c78fc231caa2f6b6a9c35d5ae5829074436281883551dc4d4064b3a8ab30aefb",
+          "start_line": 922
+        },
+        {
+          "anchor": "handle_client_index_start (",
+          "end_line": 1096,
+          "path": "src/service/fs/gnunet-service-fs.c",
+          "sha256": "c78fc231caa2f6b6a9c35d5ae5829074436281883551dc4d4064b3a8ab30aefb",
+          "start_line": 1024
+        }
+      ],
+      "title": "Index request and acceptance"
+    },
+    {
+      "case_ids": [
+        "fs:ipc-index-list:case:1",
+        "fs:ipc-index-list:case:2",
+        "fs:ipc-index-list:case:3"
+      ],
+      "condition": "",
+      "contract": "FS_INDEX_LIST_GET yields entry hash/filename records then FS_INDEX_LIST_END, with caller cancellation/EOF behavior.",
+      "id": "fs:ipc-index-list",
+      "necessity": "always",
+      "owner": "fs",
+      "review_state": "draft",
+      "source_refs": [
+        {
+          "anchor": "struct IndexInfoMessage",
+          "end_line": 224,
+          "path": "src/service/fs/fs.h",
+          "sha256": "297e8fcdf27943c765e8275a2ddc0ea303cb7d25054656eb378e12c6f40960ee",
+          "start_line": 196
+        },
+        {
+          "anchor": "GNUNET_FS_get_indexed_files (",
+          "end_line": 211,
+          "path": "src/service/fs/fs_list_indexed.c",
+          "sha256": "8d528a8c582ae3c292d701e6a353d84c55dccabd591dd7f833bfe9c025dc431b",
+          "start_line": 163
+        },
+        {
+          "anchor": "GNUNET_FS_indexing_send_list (",
+          "end_line": 403,
+          "path": "src/service/fs/gnunet-service-fs_indexing.c",
+          "sha256": "95d1dc443b7593114c75726a674bba3168fcdba33a599f40dce8c35bf4cd0d4f",
+          "start_line": 366
+        }
+      ],
+      "title": "Indexed-file list and termination"
+    },
+    {
+      "case_ids": [
+        "fs:ipc-unindex:case:1",
+        "fs:ipc-unindex:case:2",
+        "fs:ipc-unindex:case:3"
+      ],
+      "condition": "",
+      "contract": "FS_UNINDEX identifies plaintext file hash and replies FS_UNINDEX_OK even when absent; product unindex additionally retires local on-demand references and related state.",
+      "id": "fs:ipc-unindex",
+      "necessity": "always",
+      "owner": "fs",
+      "review_state": "draft",
+      "source_refs": [
+        {
+          "anchor": "struct UnindexMessage",
+          "end_line": 250,
+          "path": "src/service/fs/fs.h",
+          "sha256": "297e8fcdf27943c765e8275a2ddc0ea303cb7d25054656eb378e12c6f40960ee",
+          "start_line": 227
+        },
+        {
+          "anchor": "handle_client_unindex (",
+          "end_line": 1130,
+          "path": "src/service/fs/gnunet-service-fs.c",
+          "sha256": "c78fc231caa2f6b6a9c35d5ae5829074436281883551dc4d4064b3a8ab30aefb",
+          "start_line": 1105
+        },
+        {
+          "anchor": "GNUNET_FS_unindex_start (",
+          "end_line": 845,
+          "path": "src/service/fs/fs_unindex.c",
+          "sha256": "8f504754274551d91612b0b56be6b8f6633dc9cc1cbc33fa8112cec0773ce6c2",
+          "start_line": 796
+        }
+      ],
+      "title": "Unindex request and acknowledgement"
+    },
+    {
+      "case_ids": [
+        "fs:ondemand:case:1",
+        "fs:ondemand:case:2",
+        "fs:ondemand:case:3"
+      ],
+      "condition": "",
+      "contract": "Where the official datastore boundary is used, type6 records carry full-file hash and NBO offset; resolve the currently validated plaintext source and encode the requested block.",
+      "id": "fs:ondemand",
+      "necessity": "always",
+      "owner": "fs",
+      "review_state": "draft",
+      "source_refs": [
+        {
+          "anchor": "struct OnDemandBlock",
+          "end_line": 106,
+          "path": "src/include/block_fs.h",
+          "sha256": "b48abe48ba3113bdeec40a57d4787bb42345770534baa6f4c81ba78c154cc338",
+          "start_line": 85
+        },
+        {
+          "anchor": "GNUNET_FS_handle_on_demand_block (",
+          "end_line": 286,
+          "path": "src/service/fs/gnunet-service-fs_indexing.c",
+          "sha256": "95d1dc443b7593114c75726a674bba3168fcdba33a599f40dce8c35bf4cd0d4f",
+          "start_line": 249
+        }
+      ],
+      "title": "On-demand indexed block resolution"
+    },
+    {
+      "case_ids": [
+        "fs:ipc-loc-sign:case:1",
+        "fs:ipc-loc-sign:case:2",
+        "fs:ipc-loc-sign:case:3"
+      ],
+      "condition": "",
+      "contract": "FS_REQUEST_LOC_SIGN/FS_REQUEST_LOC_SIGNATURE exchange exact purpose, file claim, actual peer identity and rounded expiration; verify the service reply against the original request.",
+      "id": "fs:ipc-loc-sign",
+      "necessity": "always",
+      "owner": "fs",
+      "review_state": "draft",
+      "source_refs": [
+        {
+          "anchor": "struct RequestLocSignatureMessage",
+          "end_line": 150,
+          "path": "src/service/fs/fs.h",
+          "sha256": "297e8fcdf27943c765e8275a2ddc0ea303cb7d25054656eb378e12c6f40960ee",
+          "start_line": 75
+        },
+        {
+          "anchor": "handle_client_loc_sign (",
+          "end_line": 917,
+          "path": "src/service/fs/gnunet-service-fs.c",
+          "sha256": "c78fc231caa2f6b6a9c35d5ae5829074436281883551dc4d4064b3a8ab30aefb",
+          "start_line": 882
+        }
+      ],
+      "title": "Service placement-signing request/response"
+    },
+    {
+      "case_ids": [
+        "fs:ipc-search:case:1",
+        "fs:ipc-search:case:2",
+        "fs:ipc-search:case:3",
+        "fs:ipc-search:case:4"
+      ],
+      "condition": "",
+      "contract": "FS_START_SEARCH identifies block type, anonymity, optional target, query and already-seen result hashes; continuation fragments retain intended query/type/target and start exactly once.",
+      "id": "fs:ipc-search",
+      "necessity": "always",
+      "owner": "fs",
+      "review_state": "draft",
+      "source_refs": [
+        {
+          "anchor": "struct SearchMessage",
+          "end_line": 340,
+          "path": "src/service/fs/fs.h",
+          "sha256": "297e8fcdf27943c765e8275a2ddc0ea303cb7d25054656eb378e12c6f40960ee",
+          "start_line": 269
+        },
+        {
+          "anchor": "check_client_start_search (",
+          "end_line": 864,
+          "path": "src/service/fs/gnunet-service-fs.c",
+          "sha256": "c78fc231caa2f6b6a9c35d5ae5829074436281883551dc4d4064b3a8ab30aefb",
+          "start_line": 747
+        },
+        {
+          "anchor": "struct MessageBuilderContext",
+          "end_line": 1043,
+          "path": "src/service/fs/fs_search.c",
+          "sha256": "a38126e9432bd8f906adfa2ea8fa5d7a419e537b12073c10ac3b5ae5722d66ed",
+          "start_line": 1014
+        }
+      ],
+      "title": "FS search request, continuation and cancellation"
+    },
+    {
+      "case_ids": [
+        "fs:ipc-result:case:1",
+        "fs:ipc-result:case:2",
+        "fs:ipc-result:case:3",
+        "fs:ipc-result:case:4"
+      ],
+      "condition": "",
+      "contract": "Client FS_PUT has a distinct 32-byte prefix including transfer observations; peer FS_PUT uses a 16-byte prefix. Validate block type/key/query/signature before exposing content.",
+      "id": "fs:ipc-result",
+      "necessity": "always",
+      "owner": "fs",
+      "review_state": "draft",
+      "source_refs": [
+        {
+          "anchor": "struct PutMessage",
+          "end_line": 386,
+          "path": "src/service/fs/fs.h",
+          "sha256": "297e8fcdf27943c765e8275a2ddc0ea303cb7d25054656eb378e12c6f40960ee",
+          "start_line": 329
+        },
+        {
+          "anchor": "client_response_handler",
+          "end_line": 424,
+          "path": "src/service/fs/gnunet-service-fs.c",
+          "sha256": "c78fc231caa2f6b6a9c35d5ae5829074436281883551dc4d4064b3a8ab30aefb",
+          "start_line": 391
+        },
+        {
+          "anchor": "decrypt_block_with_keyword (",
+          "end_line": 797,
+          "path": "src/service/fs/fs_search.c",
+          "sha256": "a38126e9432bd8f906adfa2ea8fa5d7a419e537b12073c10ac3b5ae5722d66ed",
+          "start_line": 754
+        }
+      ],
+      "title": "FS result delivery and validation"
+    },
+    {
+      "case_ids": [
+        "fs:search-keywords:case:1",
+        "fs:search-keywords:case:2",
+        "fs:search-keywords:case:3",
+        "fs:search-keywords:case:4"
+      ],
+      "condition": "",
+      "contract": "Derived keyword queries, all mandatory terms, optional support, result deduplication and metadata aggregation determine observable search results.",
+      "id": "fs:search-keywords",
+      "necessity": "always",
+      "owner": "fs",
+      "review_state": "draft",
+      "source_refs": [
+        {
+          "anchor": "process_ksk_result (",
+          "end_line": 664,
+          "path": "src/service/fs/fs_search.c",
+          "sha256": "a38126e9432bd8f906adfa2ea8fa5d7a419e537b12073c10ac3b5ae5722d66ed",
+          "start_line": 565
+        },
+        {
+          "anchor": "GNUNET_CRYPTO_eddsa_public_key_derive (&anon_pub",
+          "end_line": 1438,
+          "path": "src/service/fs/fs_search.c",
+          "sha256": "a38126e9432bd8f906adfa2ea8fa5d7a419e537b12073c10ac3b5ae5722d66ed",
+          "start_line": 1425
+        }
+      ],
+      "title": "Mandatory/optional keyword search aggregation"
+    },
+    {
+      "case_ids": [
+        "fs:search-namespace:case:1",
+        "fs:search-namespace:case:2",
+        "fs:search-namespace:case:3"
+      ],
+      "condition": "",
+      "contract": "Authenticate and decrypt SKS results under the original namespace/identifier, discover associated next-version searches, and bound cycles.",
+      "id": "fs:search-namespace",
+      "necessity": "always",
+      "owner": "fs",
+      "review_state": "draft",
+      "source_refs": [
+        {
+          "anchor": "process_sks_result (",
+          "end_line": 751,
+          "path": "src/service/fs/fs_search.c",
+          "sha256": "a38126e9432bd8f906adfa2ea8fa5d7a419e537b12073c10ac3b5ae5722d66ed",
+          "start_line": 686
+        },
+        {
+          "anchor": "GNUNET_FS_ublock_decrypt_ (&ub[1]",
+          "end_line": 911,
+          "path": "src/service/fs/fs_search.c",
+          "sha256": "a38126e9432bd8f906adfa2ea8fa5d7a419e537b12073c10ac3b5ae5722d66ed",
+          "start_line": 882
+        }
+      ],
+      "title": "Namespace search and update chains"
+    },
+    {
+      "case_ids": [
+        "fs:probes:case:1",
+        "fs:probes:case:2",
+        "fs:probes:case:3"
+      ],
+      "condition": "",
+      "contract": "Optional probes measure availability and emit typed updates without claiming permanent storage, while respecting selected anonymity and owner priority.",
+      "id": "fs:probes",
+      "necessity": "always",
+      "owner": "fs",
+      "review_state": "draft",
+      "source_refs": [
+        {
+          "anchor": "GNUNET_FS_FLAGS_DO_PROBES",
+          "end_line": 1701,
+          "path": "src/include/gnunet_fs_service.h",
+          "sha256": "d5dab2081ea5eee985b373bd839a09cfc1392259ee905bc2178fb77494f7b4bc",
+          "start_line": 1696
+        },
+        {
+          "anchor": "GNUNET_FS_probe (",
+          "end_line": 2430,
+          "path": "src/include/gnunet_fs_service.h",
+          "sha256": "d5dab2081ea5eee985b373bd839a09cfc1392259ee905bc2178fb77494f7b4bc",
+          "start_line": 2411
+        },
+        {
+          "anchor": "GNUNET_FS_search_start_probe_",
+          "end_line": 236,
+          "path": "src/service/fs/fs_search.c",
+          "sha256": "a38126e9432bd8f906adfa2ea8fa5d7a419e537b12073c10ac3b5ae5722d66ed",
+          "start_line": 212
+        }
+      ],
+      "title": "Search availability probes and updates"
+    },
+    {
+      "case_ids": [
+        "fs:download:case:1",
+        "fs:download:case:2",
+        "fs:download:case:3",
+        "fs:download:case:4"
+      ],
+      "condition": "",
+      "contract": "Resolve the content tree, verify/decrypt before delivery, and return exact logical file bytes; a requested range is a focus hint at block granularity, not a promise against surrounding block writes.",
+      "id": "fs:download",
+      "necessity": "always",
+      "owner": "fs",
+      "review_state": "draft",
+      "source_refs": [
+        {
+          "anchor": "GNUNET_FS_download_start (",
+          "end_line": 2532,
+          "path": "src/include/gnunet_fs_service.h",
+          "sha256": "d5dab2081ea5eee985b373bd839a09cfc1392259ee905bc2178fb77494f7b4bc",
+          "start_line": 2499
+        },
+        {
+          "anchor": "GNUNET_FS_download_start_from_search (",
+          "end_line": 2564,
+          "path": "src/include/gnunet_fs_service.h",
+          "sha256": "d5dab2081ea5eee985b373bd839a09cfc1392259ee905bc2178fb77494f7b4bc",
+          "start_line": 2543
+        },
+        {
+          "anchor": "GNUNET_FS_download_start (",
+          "end_line": 1029,
+          "path": "src/service/fs/fs_download.c",
+          "sha256": "26eadc569500e2869aad63ef325a5d5717b15641a55c01c32267a3e630c589e2",
+          "start_line": 992
+        }
+      ],
+      "title": "CHK/LOC transfer and focused ranges"
+    },
+    {
+      "case_ids": [
+        "fs:recursive-download:case:1",
+        "fs:recursive-download:case:2",
+        "fs:recursive-download:case:3"
+      ],
+      "condition": "",
+      "contract": "Download directory metadata/entries/inline files and attach child downloads; detaching a stopped search preserves a live associated download as standalone.",
+      "id": "fs:recursive-download",
+      "necessity": "always",
+      "owner": "fs",
+      "review_state": "draft",
+      "source_refs": [
+        {
+          "anchor": "GNUNET_FS_DOWNLOAD_OPTION_RECURSIVE",
+          "end_line": 2460,
+          "path": "src/include/gnunet_fs_service.h",
+          "sha256": "d5dab2081ea5eee985b373bd839a09cfc1392259ee905bc2178fb77494f7b4bc",
+          "start_line": 2449
+        },
+        {
+          "anchor": "Download parts of a file based on a search result.",
+          "end_line": 2524,
+          "path": "src/include/gnunet_fs_service.h",
+          "sha256": "d5dab2081ea5eee985b373bd839a09cfc1392259ee905bc2178fb77494f7b4bc",
+          "start_line": 2509
+        },
+        {
+          "anchor": "GNUNET_FS_download_start_from_search (",
+          "end_line": 2215,
+          "path": "src/service/fs/fs_download.c",
+          "sha256": "26eadc569500e2869aad63ef325a5d5717b15641a55c01c32267a3e630c589e2",
+          "start_line": 2171
+        }
+      ],
+      "title": "Directory recursion and associated downloads"
+    },
+    {
+      "case_ids": [
+        "fs:operation-lifecycle:case:1",
+        "fs:operation-lifecycle:case:2",
+        "fs:operation-lifecycle:case:3",
+        "fs:operation-lifecycle:case:4",
+        "fs:operation-lifecycle:case:5"
+      ],
+      "condition": "",
+      "contract": "Provide meaningful start/progress/error/completed/stop, pause/continue/suspend/resume and cancellation ownership as appropriate. Rust enums/callback API may differ; no post-stop notification or false success.",
+      "id": "fs:operation-lifecycle",
+      "necessity": "always",
+      "owner": "fs",
+      "review_state": "draft",
+      "source_refs": [
+        {
+          "anchor": "enum GNUNET_FS_Status",
+          "end_line": 853,
+          "path": "src/include/gnunet_fs_service.h",
+          "sha256": "d5dab2081ea5eee985b373bd839a09cfc1392259ee905bc2178fb77494f7b4bc",
+          "start_line": 630
+        },
+        {
+          "anchor": "GNUNET_FS_stop (",
+          "end_line": 1807,
+          "path": "src/include/gnunet_fs_service.h",
+          "sha256": "d5dab2081ea5eee985b373bd839a09cfc1392259ee905bc2178fb77494f7b4bc",
+          "start_line": 1806
+        },
+        {
+          "anchor": "GNUNET_FS_search_pause",
+          "end_line": 2407,
+          "path": "src/include/gnunet_fs_service.h",
+          "sha256": "d5dab2081ea5eee985b373bd839a09cfc1392259ee905bc2178fb77494f7b4bc",
+          "start_line": 2379
+        },
+        {
+          "anchor": "GNUNET_FS_download_suspend",
+          "end_line": 2584,
+          "path": "src/include/gnunet_fs_service.h",
+          "sha256": "d5dab2081ea5eee985b373bd839a09cfc1392259ee905bc2178fb77494f7b4bc",
+          "start_line": 2568
+        }
+      ],
+      "title": "Observable publication/search/download/unindex lifecycle"
+    },
+    {
+      "case_ids": [
+        "fs:durable-restart:case:1",
+        "fs:durable-restart:case:2",
+        "fs:durable-restart:case:3",
+        "fs:durable-restart:case:4",
+        "fs:durable-restart:case:5"
+      ],
+      "condition": "",
+      "contract": "Requested persistence restores publication/search/results/download/unindex and updateable namespace progress, preserving verified content and observable associations; Rust disk encoding need not equal private C BIO records.",
+      "id": "fs:durable-restart",
+      "necessity": "always",
+      "owner": "fs",
+      "review_state": "draft",
+      "source_refs": [
+        {
+          "anchor": "GNUNET_FS_FLAGS_PERSISTENCE",
+          "end_line": 1696,
+          "path": "src/include/gnunet_fs_service.h",
+          "sha256": "d5dab2081ea5eee985b373bd839a09cfc1392259ee905bc2178fb77494f7b4bc",
+          "start_line": 1689
+        },
+        {
+          "anchor": "#define GNUNET_FS_SYNC_PATH_MASTER_SEARCH",
+          "end_line": 98,
+          "path": "src/service/fs/fs_api.h",
+          "sha256": "49adab35a5b5fe1cb94f0c66dca68dde49e982416f234575a55e4ceee14faae8",
+          "start_line": 55
+        },
+        {
+          "anchor": "deserialize_publish_file (",
+          "end_line": 1635,
+          "path": "src/service/fs/fs_api.c",
+          "sha256": "178f883214f46492222f3dab7770a3423c4f765d6f1d194adeb4007dd8a31a6b",
+          "start_line": 1616
+        },
+        {
+          "anchor": "GNUNET_FS_start (",
+          "end_line": 3333,
+          "path": "src/service/fs/fs_api.c",
+          "sha256": "178f883214f46492222f3dab7770a3423c4f765d6f1d194adeb4007dd8a31a6b",
+          "start_line": 3264
+        }
+      ],
+      "title": "Persistent operation and namespace recovery"
+    },
+    {
+      "case_ids": [
+        "fs:p2p-get:case:1",
+        "fs:p2p-get:case:2",
+        "fs:p2p-get:case:3",
+        "fs:p2p-get:case:4"
+      ],
+      "condition": "",
+      "contract": "Exact type/priority/signed millisecond TTL/reserved/bitmap/query and ordered optional peer identities plus reply-suppression Bloom data; address hash comment must not substitute 32-byte peer identities.",
+      "id": "fs:p2p-get",
+      "necessity": "always",
+      "owner": "fs",
+      "review_state": "draft",
+      "source_refs": [
+        {
+          "anchor": "struct GetMessage",
+          "end_line": 130,
+          "path": "src/service/fs/gnunet-service-fs.h",
+          "sha256": "4a635ca87a9f69ae1fbdcef2acde78ebd53dd5dade926c5111035e0e6df6e503",
+          "start_line": 82
+        },
+        {
+          "anchor": "handle_p2p_get (",
+          "end_line": 1196,
+          "path": "src/service/fs/gnunet-service-fs_cp.c",
+          "sha256": "4cc2b50b6c0e4c31f36669d1cc412c719aecbd0f440bb5d70b2321ccbdba95c7",
+          "start_line": 1047
+        }
+      ],
+      "title": "Anonymous CORE FS_GET request"
+    },
+    {
+      "case_ids": [
+        "fs:p2p-put:case:1",
+        "fs:p2p-put:case:2",
+        "fs:p2p-put:case:3"
+      ],
+      "condition": "",
+      "contract": "Peer result has type, expiration and encrypted payload; validate/extract the exact block query before delivering/routing, preserving duplicate and type-specific terminal semantics.",
+      "id": "fs:p2p-put",
+      "necessity": "always",
+      "owner": "fs",
+      "review_state": "draft",
+      "source_refs": [
+        {
+          "anchor": "struct PutMessage",
+          "end_line": 353,
+          "path": "src/service/fs/fs.h",
+          "sha256": "297e8fcdf27943c765e8275a2ddc0ea303cb7d25054656eb378e12c6f40960ee",
+          "start_line": 329
+        },
+        {
+          "anchor": "handle_p2p_put",
+          "end_line": 1751,
+          "path": "src/service/fs/gnunet-service-fs_pr.c",
+          "sha256": "bc4646c16f94e3b5bc7515c29a32e30bf2d374173d2cfb4a728c0bd42f0c241f",
+          "start_line": 1697
+        },
+        {
+          "anchor": "block_plugin_fs_check_reply (",
+          "end_line": 309,
+          "path": "src/plugin/fs/plugin_block_fs.c",
+          "sha256": "5fbb347fe05fb488e47cbdeae3802f2f2159cd552177a036588b8e732ff9601d",
+          "start_line": 265
+        }
+      ],
+      "title": "CORE FS_PUT response and block routing"
+    },
+    {
+      "case_ids": [
+        "fs:routing-anonymity:case:1",
+        "fs:routing-anonymity:case:2",
+        "fs:routing-anonymity:case:3",
+        "fs:routing-anonymity:case:4",
+        "fs:routing-anonymity:case:5"
+      ],
+      "condition": "",
+      "contract": "Implement required anonymous and nonanonymous retrieval, reverse routing, bounded request lifetime, duplicate suppression, priorities and cover-traffic policy without copying C scheduler/queue/scoring internals.",
+      "id": "fs:routing-anonymity",
+      "necessity": "always",
+      "owner": "fs",
+      "review_state": "draft",
+      "source_refs": [
+        {
+          "anchor": "struct GNUNET_FS_BlockOptions",
+          "end_line": 1769,
+          "path": "src/include/gnunet_fs_service.h",
+          "sha256": "d5dab2081ea5eee985b373bd839a09cfc1392259ee905bc2178fb77494f7b4bc",
+          "start_line": 1731
+        },
+        {
+          "anchor": "GSF_pending_request_create_",
+          "end_line": 297,
+          "path": "src/service/fs/gnunet-service-fs_pr.c",
+          "sha256": "bc4646c16f94e3b5bc7515c29a32e30bf2d374173d2cfb4a728c0bd42f0c241f",
+          "start_line": 278
+        },
+        {
+          "anchor": "bound_ttl (",
+          "end_line": 973,
+          "path": "src/service/fs/gnunet-service-fs_cp.c",
+          "sha256": "4cc2b50b6c0e4c31f36669d1cc412c719aecbd0f440bb5d70b2321ccbdba95c7",
+          "start_line": 944
+        },
+        {
+          "anchor": "DISABLE_ANON_TRANSFER",
+          "end_line": 62,
+          "path": "src/service/fs/fs.conf.in",
+          "sha256": "9f0410526b88257d3d93b74cdadd5ece0aa39bef6ce03a17e9aa4c2a2426147b",
+          "start_line": 54
+        }
+      ],
+      "title": "Forwarding, suppression, anonymity and load behavior"
+    },
+    {
+      "case_ids": [
+        "fs:migration:case:1",
+        "fs:migration:case:2",
+        "fs:migration:case:3",
+        "fs:migration:case:4"
+      ],
+      "condition": "",
+      "contract": "Support unsolicited content where configured, cache/replication effects and FS_MIGRATION_STOP duration semantics; no peer retention guarantee is inferred from a local send.",
+      "id": "fs:migration",
+      "necessity": "always",
+      "owner": "fs",
+      "review_state": "draft",
+      "source_refs": [
+        {
+          "anchor": "struct MigrationStopMessage",
+          "end_line": 152,
+          "path": "src/service/fs/gnunet-service-fs.h",
+          "sha256": "4a635ca87a9f69ae1fbdcef2acde78ebd53dd5dade926c5111035e0e6df6e503",
+          "start_line": 134
+        },
+        {
+          "anchor": "handle_p2p_migration_stop (",
+          "end_line": 590,
+          "path": "src/service/fs/gnunet-service-fs_cp.c",
+          "sha256": "4cc2b50b6c0e4c31f36669d1cc412c719aecbd0f440bb5d70b2321ccbdba95c7",
+          "start_line": 555
+        },
+        {
+          "anchor": "GSF_push_start_",
+          "end_line": 586,
+          "path": "src/service/fs/gnunet-service-fs_push.c",
+          "sha256": "7f5d3ed476869f1d16ac7126ea2e73d1c383738b7d9d1be66256a4986ef974f6",
+          "start_line": 567
+        },
+        {
+          "anchor": "CONTENT_PUSHING",
+          "end_line": 28,
+          "path": "src/service/fs/fs.conf.in",
+          "sha256": "9f0410526b88257d3d93b74cdadd5ece0aa39bef6ce03a17e9aa4c2a2426147b",
+          "start_line": 25
+        }
+      ],
+      "title": "Content caching, pushing and migration suppression"
+    },
+    {
+      "case_ids": [
+        "fs:cadet-transfer:case:1",
+        "fs:cadet-transfer:case:2",
+        "fs:cadet-transfer:case:3",
+        "fs:cadet-transfer:case:4"
+      ],
+      "condition": "",
+      "contract": "Use the official hashed fs-block port, query72-byte type+query frame, reply16-byte type+expiration frame plus encoded DBLOCK/IBLOCK; match the requested hash/type and original channel.",
+      "id": "fs:cadet-transfer",
+      "necessity": "always",
+      "owner": "fs",
+      "review_state": "draft",
+      "source_refs": [
+        {
+          "anchor": "#define GNUNET_APPLICATION_PORT_FS_BLOCK_TRANSFER",
+          "end_line": 60,
+          "path": "src/include/gnunet_applications.h",
+          "sha256": "516f973423837222d8c41d3262aba8e8b932eeadfd376943f2be699d8c5e352b",
+          "start_line": 59
+        },
+        {
+          "anchor": "struct CadetQueryMessage",
+          "end_line": 165,
+          "path": "src/service/fs/gnunet-service-fs_cadet.h",
+          "sha256": "3da59a585f6b47d56118b78766267e8312899f117e879bc57e68edf35ed0d860",
+          "start_line": 123
+        },
+        {
+          "anchor": "handle_reply (",
+          "end_line": 369,
+          "path": "src/service/fs/gnunet-service-fs_cadet_client.c",
+          "sha256": "30e253100cc65dadc7c836344531b2d3488269c77933191f6680899dcf83231b",
+          "start_line": 322
+        },
+        {
+          "anchor": "GNUNET_CRYPTO_hash (GNUNET_APPLICATION_PORT_FS_BLOCK_TRANSFER",
+          "end_line": 514,
+          "path": "src/service/fs/gnunet-service-fs_cadet_server.c",
+          "sha256": "c477a5ade75cf98a7fb600d15db1b3fc50b13de785efb702b1487a271aec3eb9",
+          "start_line": 506
+        }
+      ],
+      "title": "Nonanonymous fs-block CADET transfer"
+    },
+    {
+      "case_ids": [
+        "fs:service-dependencies:case:1",
+        "fs:service-dependencies:case:2",
+        "fs:service-dependencies:case:3"
+      ],
+      "condition": "",
+      "contract": "Own actual peer identity/signing and required datastore/BLOCK/CORE/CADET/discovery/peer credit operations behind typed Rust ports or independently compatible service clients; no production C FFI substitutes ownership.",
+      "id": "fs:service-dependencies",
+      "necessity": "always",
+      "owner": "fs",
+      "review_state": "draft",
+      "source_refs": [
+        {
+          "anchor": "gnunetservicefs_src",
+          "end_line": 35,
+          "path": "src/service/fs/meson.build",
+          "sha256": "7a02ea7b291e2bba78dd605babafeed40fa7b93ae2faa4fc313515bd17fe64b3",
+          "start_line": 22
+        },
+        {
+          "anchor": "struct GNUNET_PILS_Handle *GSF_pils",
+          "end_line": 297,
+          "path": "src/service/fs/gnunet-service-fs.c",
+          "sha256": "c78fc231caa2f6b6a9c35d5ae5829074436281883551dc4d4064b3a8ab30aefb",
+          "start_line": 295
+        },
+        {
+          "anchor": "shutdown_task (",
+          "end_line": 1177,
+          "path": "src/service/fs/gnunet-service-fs.c",
+          "sha256": "c78fc231caa2f6b6a9c35d5ae5829074436281883551dc4d4064b3a8ab30aefb",
+          "start_line": 1133
+        }
+      ],
+      "title": "FS service identity, datastore and shared dependencies"
+    },
+    {
+      "case_ids": [
+        "fs:resources-platform:case:1",
+        "fs:resources-platform:case:2",
+        "fs:resources-platform:case:3",
+        "fs:resources-platform:case:4"
+      ],
+      "condition": "",
+      "contract": "Expose required local/remote service accessibility and selected behavior settings, bounded active requests/downloads/CADET clients/storage queues and clean shutdown; internal allocator/runtime may differ.",
+      "id": "fs:resources-platform",
+      "necessity": "always",
+      "owner": "fs",
+      "review_state": "draft",
+      "source_refs": [
+        {
+          "anchor": "MAX_PENDING_REQUESTS",
+          "end_line": 54,
+          "path": "src/service/fs/fs.conf.in",
+          "sha256": "9f0410526b88257d3d93b74cdadd5ece0aa39bef6ce03a17e9aa4c2a2426147b",
+          "start_line": 38
+        },
+        {
+          "anchor": "enum GNUNET_FS_OPTIONS",
+          "end_line": 1725,
+          "path": "src/include/gnunet_fs_service.h",
+          "sha256": "d5dab2081ea5eee985b373bd839a09cfc1392259ee905bc2178fb77494f7b4bc",
+          "start_line": 1703
+        },
+        {
+          "anchor": "UNIXPATH",
+          "end_line": 34,
+          "path": "src/service/fs/fs.conf.in",
+          "sha256": "9f0410526b88257d3d93b74cdadd5ece0aa39bef6ce03a17e9aa4c2a2426147b",
+          "start_line": 27
+        }
+      ],
+      "title": "Bounded FS host and supported platform configuration"
+    },
+    {
+      "case_ids": [
+        "fs:scan-extract:case:1",
+        "fs:scan-extract:case:2",
+        "fs:scan-extract:case:3"
+      ],
+      "condition": "",
+      "contract": "Read local files/directories with explicit extraction policy, progress/skip/error, safe original filenames, keyword derivation and abort. Rust may invoke a typed extractor or perform equivalent extraction in process.",
+      "id": "fs:scan-extract",
+      "necessity": "always",
+      "owner": "fs",
+      "review_state": "draft",
+      "source_refs": [
+        {
+          "anchor": "GNUNET_FS_directory_scan_start",
+          "end_line": 2888,
+          "path": "src/include/gnunet_fs_service.h",
+          "sha256": "d5dab2081ea5eee985b373bd839a09cfc1392259ee905bc2178fb77494f7b4bc",
+          "start_line": 2857
+        },
+        {
+          "anchor": "process_helper_msgs (",
+          "end_line": 405,
+          "path": "src/service/fs/fs_dirmetascan.c",
+          "sha256": "c0742b1650830062bfddde8b303b6c2baa592b255668f75cfd6e8e97ed7aadef",
+          "start_line": 243
+        },
+        {
+          "anchor": "GNUNET_FS_share_tree_trim",
+          "end_line": 440,
+          "path": "src/service/fs/fs_sharetree.c",
+          "sha256": "503378cb0eeb4c68b7c989198077b9e82695309c6e517262ba88beaa9b65983a",
+          "start_line": 417
+        }
+      ],
+      "title": "Directory scanning and metadata extraction user capability"
+    },
+    {
+      "case_ids": [
+        "fs:optional-helper-ipc:case:1",
+        "fs:optional-helper-ipc:case:2",
+        "fs:optional-helper-ipc:case:3",
+        "fs:optional-helper-ipc:case:4"
+      ],
+      "condition": "Only required if the Rust product chooses to communicate with or expose the official publish-helper process boundary. Metadata scanning/extraction remains required independently.",
+      "contract": "Seven registered helper-to-client notifications are a real framed boundary if Rust chooses to communicate with the official helper; preserving the feature does not mandate this process separation.",
+      "id": "fs:optional-helper-ipc",
+      "necessity": "selected-external-boundary",
+      "owner": "fs",
+      "review_state": "draft",
+      "source_refs": [
+        {
+          "anchor": "process_helper_msgs (",
+          "end_line": 405,
+          "path": "src/service/fs/fs_dirmetascan.c",
+          "sha256": "c0742b1650830062bfddde8b303b6c2baa592b255668f75cfd6e8e97ed7aadef",
+          "start_line": 243
+        },
+        {
+          "anchor": "write_message (",
+          "end_line": 252,
+          "path": "src/service/fs/gnunet-helper-fs-publish.c",
+          "sha256": "df3dc8edcfd76f762b150ea195b6fa03128a40a85229f45c1544acfd63f49f2e",
+          "start_line": 218
+        }
+      ],
+      "title": "Official publish-helper interoperation profile"
+    },
+    {
+      "case_ids": [
+        "fs:product-frontends:case:1",
+        "fs:product-frontends:case:2",
+        "fs:product-frontends:case:3",
+        "fs:product-frontends:case:4",
+        "fs:product-frontends:case:5"
+      ],
+      "condition": "",
+      "contract": "Provide publish/search/download/directory-inspection/index-list/unindex/auto-share capabilities and their substantive flags; Rust API/CLI layout and human help formatting may differ unless a separate CLI compatibility promise is selected.",
+      "id": "fs:product-frontends",
+      "necessity": "always",
+      "owner": "fs",
+      "review_state": "draft",
+      "source_refs": [
+        {
+          "anchor": "GNUNET_FS_GETOPT_KEYWORDS",
+          "end_line": 934,
+          "path": "src/cli/fs/gnunet-publish.c",
+          "sha256": "8e55c1398a74d6bfc2005f9101b47f12020d7e3a1d06c2a8dbb8407d490cbe58",
+          "start_line": 917
+        },
+        {
+          "anchor": "\"bookmark-only\"",
+          "end_line": 736,
+          "path": "src/cli/fs/gnunet-search.c",
+          "sha256": "340c914a50b93d48ade70eda80befa094a81ec034878bcea7c0a409701a46133",
+          "start_line": 725
+        },
+        {
+          "anchor": "\"recursive\"",
+          "end_line": 360,
+          "path": "src/cli/fs/gnunet-download.c",
+          "sha256": "7e1e51b4c0030ffaa5b3f47edb10166b0c53c065b937537dbc60db74351dff9d",
+          "start_line": 353
+        },
+        {
+          "anchor": "\"disable-extractor\"",
+          "end_line": 743,
+          "path": "src/cli/fs/gnunet-auto-share.c",
+          "sha256": "3968da2bcbe7bf4e8595d82026bfe3d4c59292a266852025f1238f7d0cdb6d68",
+          "start_line": 735
+        }
+      ],
+      "title": "Complete FS user operations and CLI-facing capabilities"
+    }
+  ],
+  "owner": "fs",
+  "owner_review_complete": false,
+  "pending_surveys": [
+    "Independently review every proposed operation/case and the FS owner scope; expand any missed capability.",
+    "Review pinned living-standard and actual installed/generated/non-C/submodule content and supported build/platform variants.",
+    "Resolve explicitly noted source comments/reference quirks against actual valid external behavior, not automatic C bug copying.",
+    "Review cross-owner CORE/CADET/DATASTORE/PILS/identity/discovery/peerstore/BLOCK interface contracts without taking over stopped branches.",
+    "Register source-pinned semantic evidence adapters and formal profile/direction slots in a separate reviewed additive requirement/checker/schema/lock delta.",
+    "Review declared Rust process architecture and actually selected external helper boundary before classifying optional helper IPC. Preserve required in-process scanning/extraction and all original registry review identities."
+  ],
+  "profiles": [
+    {
+      "candidate_directions": [
+        "artifact",
+        "C-to-Rust",
+        "Rust-to-C",
+        "negative"
+      ],
+      "id": "fs-artifact-uri",
+      "required_operations": [
+        "fs:uri-chk",
+        "fs:uri-sks",
+        "fs:uri-ksk",
+        "fs:uri-loc"
+      ],
+      "review_state": "draft",
+      "scope": "Pure URI parser/formatter/placement signer: original two unmodified FS TUs and normal util/Unicode; no FS daemon"
+    },
+    {
+      "candidate_directions": [
+        "artifact",
+        "C-to-Rust",
+        "Rust-to-C",
+        "negative"
+      ],
+      "id": "fs-content-artifact",
+      "required_operations": [
+        "fs:content-block",
+        "fs:content-tree"
+      ],
+      "review_state": "draft",
+      "scope": "Actual original FS file/tree artifacts in both directions; primitive-only KDF/AEAD oracle is insufficient for complete tree"
+    },
+    {
+      "candidate_directions": [
+        "artifact",
+        "C-to-Rust",
+        "Rust-to-C",
+        "negative"
+      ],
+      "id": "fs-artifact-metadata",
+      "required_operations": [
+        "fs:metadata"
+      ],
+      "review_state": "draft",
+      "scope": "Metadata serializer/parser compression/null/value domains"
+    },
+    {
+      "candidate_directions": [
+        "artifact",
+        "C-to-Rust",
+        "Rust-to-C",
+        "negative"
+      ],
+      "id": "fs-artifact-directory",
+      "required_operations": [
+        "fs:directory"
+      ],
+      "review_state": "draft",
+      "scope": "Directory/inline bytes and partial listing"
+    },
+    {
+      "candidate_directions": [
+        "artifact",
+        "C-to-Rust",
+        "Rust-to-C",
+        "negative"
+      ],
+      "id": "fs-artifact-ublock",
+      "required_operations": [
+        "fs:ublock"
+      ],
+      "review_state": "draft",
+      "scope": "Derived signature, label/query, AEAD and result URI/metadata"
+    },
+    {
+      "candidate_directions": [
+        "oracle",
+        "negative"
+      ],
+      "id": "fs-query-construction",
+      "required_operations": [
+        "fs:keyword-construction"
+      ],
+      "review_state": "draft",
+      "scope": "User/metadata query words and normalized exact lookup labels"
+    },
+    {
+      "candidate_directions": [
+        "C-to-Rust",
+        "Rust-to-C",
+        "negative",
+        "recovery"
+      ],
+      "id": "fs-client-ipc",
+      "required_operations": [
+        "fs:ipc-index",
+        "fs:ipc-index-list",
+        "fs:ipc-unindex",
+        "fs:ipc-loc-sign",
+        "fs:ipc-search",
+        "fs:ipc-result",
+        "fs:operation-lifecycle",
+        "fs:service-dependencies",
+        "fs:resources-platform"
+      ],
+      "review_state": "draft",
+      "scope": "Official client to Rust service plus Rust client to official service; same original physical connection and cancellation identity"
+    },
+    {
+      "candidate_directions": [
+        "mixed",
+        "C-to-Rust",
+        "Rust-to-C",
+        "negative",
+        "recovery"
+      ],
+      "id": "fs-mixed-core",
+      "required_operations": [
+        "fs:p2p-get",
+        "fs:p2p-put",
+        "fs:routing-anonymity",
+        "fs:migration"
+      ],
+      "review_state": "draft",
+      "scope": "Multi-hop FS anonymous CORE request/result/transit/migration with real block data"
+    },
+    {
+      "candidate_directions": [
+        "mixed",
+        "C-to-Rust",
+        "Rust-to-C",
+        "negative",
+        "recovery"
+      ],
+      "id": "fs-mixed-cadet",
+      "required_operations": [
+        "fs:cadet-transfer"
+      ],
+      "review_state": "draft",
+      "scope": "Official fs-block CADET application and real directed data transfer"
+    },
+    {
+      "candidate_directions": [
+        "mixed",
+        "negative",
+        "recovery"
+      ],
+      "id": "fs-mixed-publish",
+      "required_operations": [
+        "fs:publish-content"
+      ],
+      "review_state": "draft",
+      "scope": "Data/index store effects and shared file downloadability"
+    },
+    {
+      "candidate_directions": [
+        "mixed",
+        "negative",
+        "recovery"
+      ],
+      "id": "fs-mixed-search",
+      "required_operations": [
+        "fs:publish-keywords",
+        "fs:search-keywords"
+      ],
+      "review_state": "draft",
+      "scope": "Keyword publications and AND/optional/dedup search results"
+    },
+    {
+      "candidate_directions": [
+        "mixed",
+        "negative",
+        "recovery"
+      ],
+      "id": "fs-mixed-namespace",
+      "required_operations": [
+        "fs:publish-namespace",
+        "fs:search-namespace"
+      ],
+      "review_state": "draft",
+      "scope": "Signed namespace/update search and publication"
+    },
+    {
+      "candidate_directions": [
+        "mixed",
+        "negative",
+        "recovery"
+      ],
+      "id": "fs-mixed-ondemand",
+      "required_operations": [
+        "fs:ondemand"
+      ],
+      "review_state": "draft",
+      "scope": "Official datastore FS_ONDEMAND record boundary if selected"
+    },
+    {
+      "candidate_directions": [
+        "mixed",
+        "negative",
+        "recovery"
+      ],
+      "id": "fs-mixed-probe",
+      "required_operations": [
+        "fs:probes"
+      ],
+      "review_state": "draft",
+      "scope": "Actual bounded probe observations and cancellation"
+    },
+    {
+      "candidate_directions": [
+        "mixed",
+        "negative",
+        "recovery"
+      ],
+      "id": "fs-mixed-download",
+      "required_operations": [
+        "fs:download",
+        "fs:recursive-download"
+      ],
+      "review_state": "draft",
+      "scope": "File/LOC/range/recursive data and ownership"
+    },
+    {
+      "candidate_directions": [
+        "recovery",
+        "negative"
+      ],
+      "id": "fs-durable-restart",
+      "required_operations": [
+        "fs:publish-namespace",
+        "fs:ipc-unindex",
+        "fs:operation-lifecycle",
+        "fs:durable-restart",
+        "fs:service-dependencies"
+      ],
+      "review_state": "draft",
+      "scope": "Actual progress and crash/restart/recovery storage semantics"
+    },
+    {
+      "candidate_directions": [
+        "oracle",
+        "negative",
+        "recovery"
+      ],
+      "id": "fs-product-local",
+      "required_operations": [
+        "fs:publish-input",
+        "fs:resources-platform",
+        "fs:scan-extract",
+        "fs:product-frontends"
+      ],
+      "review_state": "draft",
+      "scope": "Substantive user operations and supported configuration/platform semantics"
+    },
+    {
+      "candidate_directions": [
+        "C-to-Rust",
+        "negative",
+        "recovery"
+      ],
+      "id": "fs-optional-official-helper",
+      "required_operations": [
+        "fs:optional-helper-ipc"
+      ],
+      "review_state": "draft",
+      "scope": "Only if the product chooses official helper process interoperation"
+    }
+  ],
+  "reference_revision": "346358e26d4dcc2dc4f51bef5d52dca29c7d8165",
+  "registry_classifications": [
+    {
+      "id": "FS_CADET_QUERY",
+      "number": 140,
+      "operations": [
+        "fs:cadet-transfer"
+      ],
+      "proposed_boundary": "CADET",
+      "review_state": "draft",
+      "unknown_obligation": "registry:FS_CADET_QUERY"
+    },
+    {
+      "id": "FS_CADET_REPLY",
+      "number": 141,
+      "operations": [
+        "fs:cadet-transfer"
+      ],
+      "proposed_boundary": "CADET",
+      "review_state": "draft",
+      "unknown_obligation": "registry:FS_CADET_REPLY"
+    },
+    {
+      "id": "FS_GET",
+      "number": 137,
+      "operations": [
+        "fs:p2p-get"
+      ],
+      "proposed_boundary": "CORE peer protocol",
+      "review_state": "draft",
+      "unknown_obligation": "registry:FS_GET"
+    },
+    {
+      "id": "FS_INDEX_LIST_END",
+      "number": 133,
+      "operations": [
+        "fs:ipc-index-list"
+      ],
+      "proposed_boundary": "FS local IPC",
+      "review_state": "draft",
+      "unknown_obligation": "registry:FS_INDEX_LIST_END"
+    },
+    {
+      "id": "FS_INDEX_LIST_ENTRY",
+      "number": 132,
+      "operations": [
+        "fs:ipc-index-list"
+      ],
+      "proposed_boundary": "FS local IPC",
+      "review_state": "draft",
+      "unknown_obligation": "registry:FS_INDEX_LIST_ENTRY"
+    },
+    {
+      "id": "FS_INDEX_LIST_GET",
+      "number": 131,
+      "operations": [
+        "fs:ipc-index-list"
+      ],
+      "proposed_boundary": "FS local IPC",
+      "review_state": "draft",
+      "unknown_obligation": "registry:FS_INDEX_LIST_GET"
+    },
+    {
+      "id": "FS_INDEX_START",
+      "number": 128,
+      "operations": [
+        "fs:ipc-index"
+      ],
+      "proposed_boundary": "FS local IPC",
+      "review_state": "draft",
+      "unknown_obligation": "registry:FS_INDEX_START"
+    },
+    {
+      "id": "FS_INDEX_START_FAILED",
+      "number": 130,
+      "operations": [
+        "fs:ipc-index"
+      ],
+      "proposed_boundary": "FS local IPC",
+      "review_state": "draft",
+      "unknown_obligation": "registry:FS_INDEX_START_FAILED"
+    },
+    {
+      "id": "FS_INDEX_START_OK",
+      "number": 129,
+      "operations": [
+        "fs:ipc-index"
+      ],
+      "proposed_boundary": "FS local IPC",
+      "review_state": "draft",
+      "unknown_obligation": "registry:FS_INDEX_START_OK"
+    },
+    {
+      "id": "FS_MIGRATION_STOP",
+      "number": 139,
+      "operations": [
+        "fs:migration"
+      ],
+      "proposed_boundary": "CORE peer protocol",
+      "review_state": "draft",
+      "unknown_obligation": "registry:FS_MIGRATION_STOP"
+    },
+    {
+      "id": "FS_PUBLISH_HELPER_COUNTING_DONE",
+      "number": 424,
+      "operations": [
+        "fs:optional-helper-ipc"
+      ],
+      "proposed_boundary": "Optional official publish-helper IPC",
+      "review_state": "draft",
+      "unknown_obligation": "registry:FS_PUBLISH_HELPER_COUNTING_DONE"
+    },
+    {
+      "id": "FS_PUBLISH_HELPER_ERROR",
+      "number": 422,
+      "operations": [
+        "fs:optional-helper-ipc"
+      ],
+      "proposed_boundary": "Optional official publish-helper IPC",
+      "review_state": "draft",
+      "unknown_obligation": "registry:FS_PUBLISH_HELPER_ERROR"
+    },
+    {
+      "id": "FS_PUBLISH_HELPER_FINISHED",
+      "number": 426,
+      "operations": [
+        "fs:optional-helper-ipc"
+      ],
+      "proposed_boundary": "Optional official publish-helper IPC",
+      "review_state": "draft",
+      "unknown_obligation": "registry:FS_PUBLISH_HELPER_FINISHED"
+    },
+    {
+      "id": "FS_PUBLISH_HELPER_META_DATA",
+      "number": 425,
+      "operations": [
+        "fs:optional-helper-ipc"
+      ],
+      "proposed_boundary": "Optional official publish-helper IPC",
+      "review_state": "draft",
+      "unknown_obligation": "registry:FS_PUBLISH_HELPER_META_DATA"
+    },
+    {
+      "id": "FS_PUBLISH_HELPER_PROGRESS_DIRECTORY",
+      "number": 421,
+      "operations": [
+        "fs:optional-helper-ipc"
+      ],
+      "proposed_boundary": "Optional official publish-helper IPC",
+      "review_state": "draft",
+      "unknown_obligation": "registry:FS_PUBLISH_HELPER_PROGRESS_DIRECTORY"
+    },
+    {
+      "id": "FS_PUBLISH_HELPER_PROGRESS_FILE",
+      "number": 420,
+      "operations": [
+        "fs:optional-helper-ipc"
+      ],
+      "proposed_boundary": "Optional official publish-helper IPC",
+      "review_state": "draft",
+      "unknown_obligation": "registry:FS_PUBLISH_HELPER_PROGRESS_FILE"
+    },
+    {
+      "id": "FS_PUBLISH_HELPER_SKIP_FILE",
+      "number": 423,
+      "operations": [
+        "fs:optional-helper-ipc"
+      ],
+      "proposed_boundary": "Optional official publish-helper IPC",
+      "review_state": "draft",
+      "unknown_obligation": "registry:FS_PUBLISH_HELPER_SKIP_FILE"
+    },
+    {
+      "id": "FS_PUT",
+      "number": 138,
+      "operations": [
+        "fs:p2p-put",
+        "fs:ipc-result"
+      ],
+      "proposed_boundary": "Two role-specific layouts: CORE peer and FS local IPC",
+      "review_state": "draft",
+      "unknown_obligation": "registry:FS_PUT"
+    },
+    {
+      "id": "FS_REQUEST_LOC_SIGN",
+      "number": 126,
+      "operations": [
+        "fs:ipc-loc-sign"
+      ],
+      "proposed_boundary": "FS local IPC",
+      "review_state": "draft",
+      "unknown_obligation": "registry:FS_REQUEST_LOC_SIGN"
+    },
+    {
+      "id": "FS_REQUEST_LOC_SIGNATURE",
+      "number": 127,
+      "operations": [
+        "fs:ipc-loc-sign"
+      ],
+      "proposed_boundary": "FS local IPC",
+      "review_state": "draft",
+      "unknown_obligation": "registry:FS_REQUEST_LOC_SIGNATURE"
+    },
+    {
+      "id": "FS_START_SEARCH",
+      "number": 136,
+      "operations": [
+        "fs:ipc-search"
+      ],
+      "proposed_boundary": "FS local IPC",
+      "review_state": "draft",
+      "unknown_obligation": "registry:FS_START_SEARCH"
+    },
+    {
+      "id": "FS_UNINDEX",
+      "number": 134,
+      "operations": [
+        "fs:ipc-unindex"
+      ],
+      "proposed_boundary": "FS local IPC",
+      "review_state": "draft",
+      "unknown_obligation": "registry:FS_UNINDEX"
+    },
+    {
+      "id": "FS_UNINDEX_OK",
+      "number": 135,
+      "operations": [
+        "fs:ipc-unindex"
+      ],
+      "proposed_boundary": "FS local IPC",
+      "review_state": "draft",
+      "unknown_obligation": "registry:FS_UNINDEX_OK"
+    }
+  ],
+  "review_state": "draft",
+  "schema": 1,
+  "scope": "Source-bound draft only. Every case/profile/direction, owner scope and source interpretation still requires independent semantic review and actual evidence. Optional helper IPC does not mandate a C process/ABI; the scanning feature remains required. Counts are draft review units, not a permanent C-helper floor. Conditional helper IPC may be classified nonselected only by a later independently reviewed architecture/boundary determination that preserves required metadata extraction; no draft status or unsupported claim resolves unknowns."
+}

@@ -1,0 +1,24 @@
+[package]
+name = "gnunet-revocation-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+gnunet-revocation.workspace = true
+gnunet-block.workspace = true
+gnunet-crypto.workspace = true
+gnunet-gnsrecord.workspace = true
+gnunet-types.workspace = true
+gnunet-wire.workspace = true
+gnunet-client-host.workspace = true
+gnunet-core-client-host.workspace = true
+gnunet-setu-client-host.workspace = true
+gnunet-snapshot-host.workspace = true
+gnunet-service-runtime.workspace = true
+tokio = { workspace = true, features = ["sync", "rt", "time"] }
+zeroize = { workspace = true, features = ["alloc"] }
+
+[lints]
+workspace = true

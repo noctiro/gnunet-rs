@@ -1,0 +1,421 @@
+{
+  "schema": 1,
+  "revision": "346358e26d4dcc2dc4f51bef5d52dca29c7d8165",
+  "public_functions": [
+    {
+      "name": "GNUNET_ARM_connect",
+      "source": "arm_api.c:518-599",
+      "rust": "ClientHost::connect/connect_unix",
+      "status": "in_progress",
+      "verification": null,
+      "branches": [
+        {
+          "id": "GNUNET_ARM_connect.configuration-invalid",
+          "behavior": "Synchronous Error callback and failed handle, before socket I/O",
+          "witness": "invalid_initial_configuration_reports_each_original_unavailable_once",
+          "status": "implemented_witness_unsealed"
+        },
+        {
+          "id": "GNUNET_ARM_connect.mq-before-socket",
+          "behavior": "Queue TEST and ordinary requests in one admitted MQ while Unix/TCP socket retries",
+          "witness": "unavailable_socket_retries_inside_original_mq_and_preserves_queued_list",
+          "status": "implemented_witness_unsealed"
+        },
+        {
+          "id": "GNUNET_ARM_connect.test-once",
+          "behavior": "Only exact TEST confirms currently_up; repeats silent; escalating owner delay not reset",
+          "witness": "fragmented_unix_all_remote_requests_cancellation_and_list_borrow",
+          "status": "implemented_witness_unsealed"
+        },
+        {
+          "id": "GNUNET_ARM_connect.mq-loss",
+          "behavior": "Close physical owner, fail original callbacks before reconnect, no replay",
+          "witness": "bad_registered_frame_retires_one_epoch_without_replaying_operations",
+          "status": "implemented_witness_unsealed"
+        },
+        {
+          "id": "GNUNET_ARM_connect.transport-selection",
+          "behavior": "Official Unix/TCP/Resolver fa\u00e7ade; held attempt future across drive cancellation",
+          "witness": "canceled_drive_under_real_socket_backpressure_keeps_every_original_byte_once",
+          "status": "implemented_witness_unsealed"
+        },
+        {
+          "id": "GNUNET_ARM_connect.live-configuration-update",
+          "behavior": "Legal caller mutation of the same C configuration is not yet expressible through the current owned Rust snapshot: logical MQ recreation rereads all endpoints and later Unix attempts reread UNIXPATH; TCP fields remain MQ-cached. Add an explicit update port without resetting current attempts/cursors/operation authority.",
+          "witness": "normal-C mutable-config trial recorded separately; no current Rust update port",
+          "status": "implementation_pending"
+        }
+      ]
+    },
+    {
+      "name": "GNUNET_ARM_disconnect",
+      "source": "arm_api.c:608-647",
+      "rust": "ClientHost::disconnect / CallbackContext::disconnect",
+      "status": "in_progress",
+      "verification": null,
+      "branches": [
+        {
+          "id": "GNUNET_ARM_disconnect.pending-order",
+          "behavior": "Synchronous ordinary failure callbacks in core order",
+          "witness": "physical_eof_distinguishes_stopping_waiter_from_pending_stop; public normal-C/R per-owner traces",
+          "status": "implemented_witness_unsealed"
+        },
+        {
+          "id": "GNUNET_ARM_disconnect.partial-io-close",
+          "behavior": "Close original socket/connect/RX/TX state; never replay or report peer processing",
+          "witness": "canceled_drive_under_real_socket_backpressure_keeps_every_original_byte_once",
+          "status": "implemented_witness_unsealed"
+        },
+        {
+          "id": "GNUNET_ARM_disconnect.startup-close",
+          "behavior": "Close original signal resources without killing children",
+          "witness": "cancellation_and_disconnect_close_original_signal_without_killing_child",
+          "status": "implemented_witness_unsealed"
+        },
+        {
+          "id": "GNUNET_ARM_disconnect.drop-wait-authority",
+          "behavior": "Caller registry retains original children after host/launcher Drop",
+          "witness": "dropping_host_retains_original_live_child_wait_authority_in_caller_registry",
+          "status": "implemented_witness_unsealed"
+        },
+        {
+          "id": "GNUNET_ARM_disconnect.waiter-reclaim",
+          "behavior": "Safely reclaim special waiter rather than source leak; suppress canceled callback",
+          "witness": "core existing ownership tests; host pending",
+          "status": "pending"
+        }
+      ]
+    },
+    {
+      "name": "GNUNET_ARM_operation_cancel",
+      "source": "arm_api.c:784-813",
+      "rust": "ClientHost::operation_cancel / CallbackContext::operation_cancel",
+      "status": "in_progress",
+      "verification": null,
+      "branches": [
+        {
+          "id": "GNUNET_ARM_operation_cancel.queued-remote",
+          "behavior": "Suppress callback, leave queued START/STOP/LIST bytes intact",
+          "witness": "fragmented_unix_all_remote_requests_cancellation_and_list_borrow",
+          "status": "implemented_witness_unsealed"
+        },
+        {
+          "id": "GNUNET_ARM_operation_cancel.partial-remote",
+          "behavior": "No retraction/replay of already transmitted bytes",
+          "witness": "canceled_drive_under_real_socket_backpressure_keeps_every_original_byte_once",
+          "status": "implemented_witness_unsealed"
+        },
+        {
+          "id": "GNUNET_ARM_operation_cancel.local-signal",
+          "behavior": "Synchronously close owned signal READ; child keeps running",
+          "witness": "cancellation_and_disconnect_close_original_signal_without_killing_child",
+          "status": "implemented_witness_unsealed"
+        },
+        {
+          "id": "GNUNET_ARM_operation_cancel.before-host-setup",
+          "behavior": "Explicit async Rust admission decomposition: canceled unperformed setup does not spawn",
+          "witness": "canceled_unperformed_local_setup_creates_no_child_and_missing_helper_is_real_setup_failure",
+          "status": "implemented_witness_unsealed"
+        },
+        {
+          "id": "GNUNET_ARM_operation_cancel.arm-stop-tombstone",
+          "behavior": "Retain suppressed stop waiter until MQ error; do not call NULL callback (C UB)",
+          "witness": "core existing tests; host pending",
+          "status": "pending"
+        },
+        {
+          "id": "GNUNET_ARM_operation_cancel.stale-owner",
+          "behavior": "Reject obsolete/foreign generation without touching new resources",
+          "witness": "core existing ownership tests; host pending",
+          "status": "pending"
+        }
+      ]
+    },
+    {
+      "name": "GNUNET_ARM_request_service_list",
+      "source": "arm_api.c:1068-1095;349-462",
+      "rust": "ClientHost::request_service_list + borrowed Inbound::List",
+      "status": "in_progress",
+      "verification": null,
+      "branches": [
+        {
+          "id": "GNUNET_ARM_request_service_list.empty-or-rows",
+          "behavior": "Exact native ABI list, raw strings/time/status/exit65535",
+          "witness": "fragmented_unix_all_remote_requests_cancellation_and_list_borrow; normal public-owner canonical",
+          "status": "implemented_witness_unsealed"
+        },
+        {
+          "id": "GNUNET_ARM_request_service_list.pool-bounds",
+          "behavior": "Validate every row/index/eventual NUL before callback",
+          "witness": "core existing wire tests; host pending malformed list",
+          "status": "pending"
+        },
+        {
+          "id": "GNUNET_ARM_request_service_list.wrong-kind",
+          "behavior": "Other registered result retires silently if no list callback",
+          "witness": "core existing client tests; host pending",
+          "status": "pending"
+        },
+        {
+          "id": "GNUNET_ARM_request_service_list.borrowed-lifetime",
+          "behavior": "List cannot escape callback/overwrite RX; queue/cancel from callback",
+          "witness": "ClientHost::drive two actual docs compilefail/positive; real callback list in tools/public_suite.py",
+          "status": "implemented_witness_unsealed"
+        },
+        {
+          "id": "GNUNET_ARM_request_service_list.capacity-atomic",
+          "behavior": "Reject host/core capacity before queue admission; RX overlimit retires actual MQ observably",
+          "witness": "host pending",
+          "status": "pending"
+        }
+      ]
+    },
+    {
+      "name": "GNUNET_ARM_request_service_start",
+      "source": "arm_api.c:658-777;824-1013",
+      "rust": "ClientHost::request_service_start + LocalLauncher",
+      "status": "in_progress",
+      "verification": null,
+      "branches": [
+        {
+          "id": "GNUNET_ARM_request_service_start.remote",
+          "behavior": "Non-arm sends exact START; local stdio flags ignored",
+          "witness": "fragmented_unix_all_remote_requests_cancellation_and_list_borrow",
+          "status": "implemented_witness_unsealed"
+        },
+        {
+          "id": "GNUNET_ARM_request_service_start.already-up",
+          "behavior": "Async AlreadyStarted then repeated YES only if still up after callback",
+          "witness": "normal public-owner canonical",
+          "status": "implemented_witness_unsealed"
+        },
+        {
+          "id": "GNUNET_ARM_request_service_start.missing-binary",
+          "behavior": "Real pipe creation precedes missing BINARY=>NotKnown, EOF not readiness proof",
+          "witness": "missing_binary_nonexecutable_and_late_exec_failure_are_distinct",
+          "status": "implemented_witness_unsealed"
+        },
+        {
+          "id": "GNUNET_ARM_request_service_start.native-command",
+          "behavior": "PREFIX/OPTIONS dollar expansion, CONFIG filename, libexec cache, exact parser quirks",
+          "witness": "C command probes available; host matrix pending",
+          "status": "pending"
+        },
+        {
+          "id": "GNUNET_ARM_request_service_start.daemon-rule",
+          "behavior": "-d unless valid WEAKRANDOM YES and HOSTFILE absent",
+          "witness": "host/C matrix pending",
+          "status": "pending"
+        },
+        {
+          "id": "GNUNET_ARM_request_service_start.stdio-control",
+          "behavior": "Bits1/2/4 inheritance and bit8 control pipe; unknown bits ignored",
+          "witness": "tools/stdio_compare.py real80:62matches/18Cdefects; tools/signal_compare.py actual8pairs",
+          "status": "implemented_witness_unsealed"
+        },
+        {
+          "id": "GNUNET_ARM_request_service_start.check-before-spawn",
+          "behavior": "Native first PATH file then access; absolute/./ rules, no exec for nonexecutable",
+          "witness": "missing_binary_nonexecutable_and_late_exec_failure_are_distinct; PATH matrix pending",
+          "status": "pending"
+        },
+        {
+          "id": "GNUNET_ARM_request_service_start.helper-failure",
+          "behavior": "Missing helper/setup actual error is distinct from target exec failure",
+          "witness": "canceled_unperformed_local_setup_creates_no_child_and_missing_helper_is_real_setup_failure",
+          "status": "implemented_witness_unsealed"
+        },
+        {
+          "id": "GNUNET_ARM_request_service_start.late-exec",
+          "behavior": "Real helper created; target missing interpreter exits1 while result staysStarting on EOF",
+          "witness": "missing_binary_nonexecutable_and_late_exec_failure_are_distinct",
+          "status": "implemented_witness_unsealed"
+        },
+        {
+          "id": "GNUNET_ARM_request_service_start.readable-eof-deadline",
+          "behavior": "Byte readiness/EOF/original60s all return stored outcome; never synthetic timeout/ready",
+          "witness": "EOF actual_fixture_readiness_eof_is_starting_and_child_is_reaped; original60s actual_sixty_second_signal_deadline_keeps_starting_without_readiness; explicit ready-byte separate witness pending",
+          "status": "partial_witness_unsealed"
+        },
+        {
+          "id": "GNUNET_ARM_request_service_start.cancel-child-ownership",
+          "behavior": "Cancel/signal close/host Drop retain caller PID wait authority",
+          "witness": "dropping_host_retains_original_live_child_wait_authority_in_caller_registry",
+          "status": "implemented_witness_unsealed"
+        },
+        {
+          "id": "GNUNET_ARM_request_service_start.resource-retry",
+          "behavior": "Refused bounded resources retain effect; actual completed spawn outcome never replayed",
+          "witness": "one_signal_credit_defers_second_start_and_callback_reentry_until_cleanup; child_registry_credit_does_not_block_first_signal_cleanup_and_resumes_after_consuming_wait; quiet_connected_mq_and_unbounded_drive_wake_on_owned_child_exit_to_release_registry_credit",
+          "status": "implemented_witness_unsealed"
+        }
+      ]
+    },
+    {
+      "name": "GNUNET_ARM_request_service_stop",
+      "source": "arm_api.c:1032-1060;272-314;488-516",
+      "rust": "ClientHost::request_service_stop",
+      "status": "in_progress",
+      "verification": null,
+      "branches": [
+        {
+          "id": "GNUNET_ARM_request_service_stop.remote",
+          "behavior": "Exact STOP and unknown result passthrough, no implicit timeout",
+          "witness": "fragmented_unix_all_remote_requests_cancellation_and_list_borrow",
+          "status": "implemented_witness_unsealed"
+        },
+        {
+          "id": "GNUNET_ARM_request_service_stop.arm-stopping-then-eof",
+          "behavior": "Only actual RESULT_STOPPING moves arm op to EOF waiter, thenStopped",
+          "witness": "physical_eof_distinguishes_stopping_waiter_from_pending_stop",
+          "status": "implemented_witness_unsealed"
+        },
+        {
+          "id": "GNUNET_ARM_request_service_stop.arm-pending-eof",
+          "behavior": "No STOPPING result=>Disconnected, even if STATUS_STOPPING was observed",
+          "witness": "physical_eof_distinguishes_stopping_waiter_from_pending_stop",
+          "status": "implemented_witness_unsealed"
+        },
+        {
+          "id": "GNUNET_ARM_request_service_stop.two-waiters",
+          "behavior": "Safe original-op callback ownership instead of C mismatched callback/closure UB",
+          "witness": "core existing tests; host pending",
+          "status": "pending"
+        },
+        {
+          "id": "GNUNET_ARM_request_service_stop.name-and-boundaries",
+          "behavior": "Case-insensitive effective arm name, C-string prefix, maximum legal total65535",
+          "witness": "core existing tests; host pending",
+          "status": "pending"
+        }
+      ]
+    },
+    {
+      "name": "GNUNET_ARM_monitor_start",
+      "source": "arm_monitor_api.c:198-259",
+      "rust": "MonitorHost::start/start_unix",
+      "status": "in_progress",
+      "verification": null,
+      "branches": [
+        {
+          "id": "GNUNET_ARM_monitor_start.unavailable",
+          "behavior": "Initial None/STOPPED and failed handle; retry failure no new timer",
+          "witness": "invalid_initial_configuration_reports_each_original_unavailable_once; retry invalid config pending",
+          "status": "pending"
+        },
+        {
+          "id": "GNUNET_ARM_monitor_start.subscribe",
+          "behavior": "Independent4-byte MONITOR, no initial snapshot/no unused5s timeout",
+          "witness": "tcp_monitor_raw_status_reconnect_and_stop_inside_callback",
+          "status": "implemented_witness_unsealed"
+        },
+        {
+          "id": "GNUNET_ARM_monitor_start.status",
+          "behavior": "Raw/unknown status and effective C-string names, immutable callback borrow",
+          "witness": "tcp_monitor_raw_status_reconnect_and_stop_inside_callback",
+          "status": "implemented_witness_unsealed"
+        },
+        {
+          "id": "GNUNET_ARM_monitor_start.reconnect",
+          "behavior": "Actual loss silently retries current0/2ms/4ms capped15min; status no reset",
+          "witness": "tcp_monitor_raw_status_reconnect_and_stop_inside_callback",
+          "status": "implemented_witness_unsealed"
+        },
+        {
+          "id": "GNUNET_ARM_monitor_start.partial-cancel",
+          "behavior": "Persistent RX/TX/connect future across drive cancellation",
+          "witness": "MQ shared core exercised; monitor partial cancellation pending",
+          "status": "pending"
+        },
+        {
+          "id": "GNUNET_ARM_monitor_start.live-configuration-update",
+          "behavior": "Legal caller mutation of the same C configuration is not yet expressible through the current owned Rust snapshot: logical MQ recreation rereads all endpoints and later Unix attempts reread UNIXPATH; TCP fields remain MQ-cached. Add an explicit update port without resetting current attempts/cursors/operation authority.",
+          "witness": "normal-C mutable-config trial recorded separately; no current Rust update port",
+          "status": "implementation_pending"
+        }
+      ]
+    },
+    {
+      "name": "GNUNET_ARM_monitor_stop",
+      "source": "arm_monitor_api.c:267-285",
+      "rust": "MonitorHost::stop / MonitorContext::stop",
+      "status": "in_progress",
+      "verification": null,
+      "branches": [
+        {
+          "id": "GNUNET_ARM_monitor_stop.outside-callback",
+          "behavior": "Close original MQ/attempt/timer and reject stale epoch",
+          "witness": "tcp_monitor_raw_status_reconnect_and_stop_inside_callback",
+          "status": "implemented_witness_unsealed"
+        },
+        {
+          "id": "GNUNET_ARM_monitor_stop.inside-callback",
+          "behavior": "Close physical owner while callback bytes remain alive to return",
+          "witness": "tcp_monitor_raw_status_reconnect_and_stop_inside_callback",
+          "status": "implemented_witness_unsealed"
+        },
+        {
+          "id": "GNUNET_ARM_monitor_stop.idempotent-closed",
+          "behavior": "No later status/unavailable/retry after stop",
+          "witness": "tcp_monitor_raw_status_reconnect_and_stop_inside_callback",
+          "status": "implemented_witness_unsealed"
+        }
+      ]
+    }
+  ],
+  "source_inputs": {
+    "src/service/arm/arm_api.c": "a186cb0a4a396b962be7aa6a9536278aef86c380fd70147a606eb12ae738ed79",
+    "src/service/arm/arm_monitor_api.c": "49394890a664066283d9c24d5c488e27d362db440ae8ae2d6fc9170a6df91d1f",
+    "src/lib/util/os_process.c": "fbe432a54155a3c10164c11b0878e29c1c71209a03b4334b9d9de8af1a0cee49",
+    "src/lib/util/os_installation.c": "391fff2d5dbca7cd6b0c9230e0d30d09b3eb34f357b9709697b7423fed5520a5",
+    "src/lib/util/disk.c": "d68660547e31ed9409f22350a66878b3236655cea1b3541c5674850663b96e9e",
+    "src/lib/util/client.c": "95866e26472825549cb0f88d65768cca110d9ca53a5f37ca9d3e0d7266ec9062",
+    "src/include/gnunet_arm_service.h": "f407a4abc309f95e927bf590cc865c5c46054cff29edf598ac952ce33e4175e0",
+    "src/include/gnunet_os_lib.h": "c90a250accc85a999c84bb4646f1623a77e606c0d013f71abfb5ac832fa99485"
+  },
+  "core_requirements_origin": {
+    "path": "crates/gnunet-arm-core/requirements.json",
+    "sha256": "8fb040028bb90f755c427dc39873bc0368553421abf3f31521da6999ef06a97f",
+    "relative_to": "repository_root"
+  },
+  "verification_promotion": false,
+  "explicit_remaining": [
+    "All ARM daemon/service restart/listener/child inventory branches remain separate, pending implementation/evidence",
+    "CLI and all six TESTING ARM functions remain separate pending scope",
+    "Additional ABI/platform profiles remain unvalidated",
+    "Unfinished host/native-C branch witnesses are explicitly marked pending; counts never prove completion",
+    "Legal caller mutation of the same C configuration is not yet expressible through the current owned Rust snapshot: logical MQ recreation rereads all endpoints and later Unix attempts reread UNIXPATH; TCP fields remain MQ-cached. Add an explicit update port without resetting current attempts/cursors/operation authority."
+  ],
+  "public_surfaces": {
+    "callbacks": [
+      "GNUNET_ARM_ConnectionStatusCallback",
+      "GNUNET_ARM_ResultCallback",
+      "GNUNET_ARM_ServiceListCallback",
+      "GNUNET_ARM_ServiceMonitorCallback"
+    ],
+    "opaque_handles": [
+      "GNUNET_ARM_Handle",
+      "GNUNET_ARM_Operation",
+      "GNUNET_ARM_MonitorHandle"
+    ],
+    "enums": [
+      "GNUNET_ARM_RequestStatus",
+      "GNUNET_ARM_Result",
+      "GNUNET_ARM_ServiceMonitorStatus",
+      "GNUNET_ARM_ServiceStatus"
+    ],
+    "structs": [
+      "GNUNET_ARM_ServiceInfo"
+    ],
+    "macros": [
+      "GNUNET_ARM_VERSION=3"
+    ]
+  },
+  "host_decomposition": {
+    "local_start": "Synchronous Rust request admission, actual OS effects when driven; no helper success means service ready",
+    "startup_resource_credit": "Explicit core resource port defers only new startup, old cleanup/MQ continues; SIGCHLD and actual reap return Activity to release wait credit",
+    "numeric_pid_authority": "Actual ECHILD retires original numeric PID and returns error, without fabricating exit or retry",
+    "native_low_stdio": "62matches/18realCdefects retained separately; safe Rust pipe lift/closedstdio restoration expressly reviewed; no native equivalence claim",
+    "callback_channels": "Monitor and control are distinct original MQ owners; exact callback values/order compared per owner, independent socket scheduling may interleave"
+  }
+}

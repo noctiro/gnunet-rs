@@ -1,0 +1,22 @@
+[package]
+name = "gnunet-did-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+[dependencies]
+gnunet-did.workspace = true
+gnunet-json.workspace = true
+gnunet-identity-client-host.workspace = true
+gnunet-namestore-client-host.workspace = true
+gnunet-gns-client-host.workspace = true
+gnunet-client-host.workspace = true
+gnunet-gnsrecord.workspace = true
+gnunet-crypto.workspace = true
+gnunet-service-runtime.workspace = true
+gnunet-types.workspace = true
+gnunet-wire.workspace = true
+zeroize = { workspace = true, features = ["alloc"] }
+tokio = { workspace = true, features = ["rt", "time"] }
+[lints]
+workspace = true

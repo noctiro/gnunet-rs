@@ -1,0 +1,25 @@
+[package]
+name = "gnunet-transport-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+[features]
+default = []
+[dependencies]
+libc.workspace = true
+gnunet-transport = { workspace = true, features = ["alloc"] }
+gnunet-types.workspace = true
+gnunet-wire.workspace = true
+gnunet-crypto.workspace = true
+gnunet-hello.workspace = true
+gnunet-service-runtime.workspace = true
+zeroize.workspace = true
+getrandom.workspace = true
+tokio = { workspace = true, features = ["net", "time", "io-util", "rt"] }
+[dev-dependencies]
+socket2.workspace = true
+tokio = { workspace = true, features = ["macros"] }
+gnunet-tcp-communicator-core.workspace = true
+[lints]
+workspace = true

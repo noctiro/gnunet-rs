@@ -1,0 +1,25 @@
+[package]
+name = "gnunet-program-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = []
+resolver-broker = ["dep:gnunet-resolver-broker", "runtime", "service-runtime"]
+runtime = ["dep:tokio"]
+service-runtime = ["dep:gnunet-service-runtime"]
+
+[dependencies]
+libc = { workspace = true, features = ["std"] }
+getrandom.workspace = true
+gnunet-config.workspace = true
+gnunet-crypto.workspace = true
+gnunet-types.workspace = true
+gnunet-resolver-broker = { workspace = true, optional = true }
+gnunet-service-runtime = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true, features = ["rt", "time"] }
+
+[lints]
+workspace = true

@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "entries": [
+    {
+      "builder": "build_normal.py",
+      "profile_kind": "unmodified-official-c-tcp-communicator-reference-build",
+      "original_sha256": "936965ce018fab24257b9d8db7ce5367fb2bf5b1ef0ef8b306ae88cda42da075",
+      "archive": "history/936965ce018fab24257b9d8db7ce5367fb2bf5b1ef0ef8b306ae88cda42da075-build_normal.py.snapshot",
+      "replacement_builder_sha256": "cb7c90cd878825a84849f7006b25e0422f96a8f3056f03642900154dacfb5d62",
+      "origin": "exact original Root builder bytes archived before converting its four total active assertions to explicit raises",
+      "archive_executed": false
+    },
+    {
+      "builder": "build_peer_normal.py",
+      "profile_kind": "unmodified-official-c-tcp-peer-services-reference-build",
+      "original_sha256": "f6d544946182e1caf262794fe4f676d893996303126944de342717158db50460",
+      "archive": "history/f6d544946182e1caf262794fe4f676d893996303126944de342717158db50460-build_peer_normal.py.snapshot",
+      "replacement_builder_sha256": "56632da63ebf3dad0f3195d6cbbff73cb9a7228780221f44cac2cc412270aefc",
+      "origin": "exact original Root builder bytes archived before converting its four total active assertions to explicit raises",
+      "archive_executed": false
+    }
+  ]
+}

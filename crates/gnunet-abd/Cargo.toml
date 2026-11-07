@@ -1,0 +1,20 @@
+[package]
+name = "gnunet-abd"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = []
+alloc = ["gnunet-identity/alloc", "gnunet-crypto/alloc", "zeroize/alloc"]
+
+[dependencies]
+gnunet-types.workspace = true
+gnunet-wire.workspace = true
+gnunet-crypto.workspace = true
+gnunet-identity.workspace = true
+zeroize.workspace = true
+
+[lints]
+workspace = true

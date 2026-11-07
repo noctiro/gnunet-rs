@@ -1,0 +1,22 @@
+[package]
+name = "gnunet-fs"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = []
+alloc = []
+
+[dependencies]
+gnunet-block.workspace = true
+gnunet-types.workspace = true
+gnunet-wire.workspace = true
+gnunet-crypto.workspace = true
+gnunet-session-crypto.workspace = true
+subtle.workspace = true
+zeroize.workspace = true
+
+[lints]
+workspace = true

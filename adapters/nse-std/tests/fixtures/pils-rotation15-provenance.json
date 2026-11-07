@@ -1,0 +1,12 @@
+{
+  "kind": "source-bound-synthetic-default15-PILS-rotation-fixture",
+  "producer": "/private/tmp/gnunet-native-nse-host-20261028/rotation-key-search-v1/actor",
+  "actor_sha256": "28bd7afc13d65a0d116f3ad70d09dd81c1de81175b08dcd6d5212c1b4cb0a934",
+  "search_receipt": "/private/tmp/gnunet-native-nse-host-20261028/rotation-key-search-v1/result.json",
+  "search_receipt_sha256": "07bac49ab7c9c0d605f98659c306ee9058a78c0cb064f562c247e4a9ccd9db64",
+  "preparation_only": true,
+  "normal_C_execution": false,
+  "workbits": 15,
+  "candidates": 11584,
+  "synthetic_test_IKM": true
+}

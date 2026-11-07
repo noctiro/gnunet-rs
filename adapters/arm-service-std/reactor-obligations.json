@@ -1,0 +1,2257 @@
+{
+  "schema": 1,
+  "scope": "complete121-ID projection for actual reactor development; no acceptance promotion",
+  "pin": {
+    "tag": "v0.29.1",
+    "revision": "346358e26d4dcc2dc4f51bef5d52dca29c7d8165"
+  },
+  "sources": {
+    "src/service/arm/gnunet-service-arm.c": {
+      "sha256": "96c0ba0c52c21fe0d347818fa406a233e341868c8d9561d59d4e96fba62515df",
+      "lines": 2292
+    },
+    "src/cli/arm/gnunet-arm.c": {
+      "sha256": "dd0718e13650635466b120b2476c358b08f9bbdbdb572c2ce33c8ec1b7ba6a40",
+      "lines": 1108
+    },
+    "src/service/arm/testing_arm_cmd_start_peer.c": {
+      "sha256": "b2192163e2f5e5b9cbf7d8cfd3351c452f0aa029163dd0ed51527e9c179b008a",
+      "lines": 305
+    },
+    "src/service/arm/testing_arm_cmd_stop_peer.c": {
+      "sha256": "2a02e887ef11ffc5af1f02e8813e4dcda93a588b1c23ce37faf076d2b842dc0e",
+      "lines": 174
+    },
+    "src/service/arm/testing_arm_traits.c": {
+      "sha256": "6f1eda29c8320e05b1862d5ed3cf84c0f987777f1dd8199167ac6ce4f184490a",
+      "lines": 33
+    },
+    "src/include/gnunet_testing_arm_lib.h": {
+      "sha256": "82db5bfd30410a28bac2f496649f5fe73847e49bd9a24f60e21dda119a70d202",
+      "lines": 50
+    },
+    "src/include/gnunet_arm_service.h": {
+      "sha256": "f407a4abc309f95e927bf590cc865c5c46054cff29edf598ac952ce33e4175e0",
+      "lines": 439
+    },
+    "src/service/arm/arm.h": {
+      "sha256": "b65e52f7f8d14afaa0dae3cf8f33a06a255261a0e5c6f142d903815b802350f4",
+      "lines": 164
+    },
+    "src/service/arm/arm.conf.in": {
+      "sha256": "f694597cf7fb286d2abde7ce0ff812a1313c80f8a95a9bbbeeb0a2f4277f8c3d",
+      "lines": 60
+    },
+    "src/service/arm/meson.build": {
+      "sha256": "51310126ad6ef53beab8b8e0552a4d7aa0c6ab38962882d063248f0eea6cbccb",
+      "lines": 130
+    },
+    "src/service/arm/arm_api.c": {
+      "sha256": "a186cb0a4a396b962be7aa6a9536278aef86c380fd70147a606eb12ae738ed79",
+      "lines": 1099
+    },
+    "src/service/arm/arm_monitor_api.c": {
+      "sha256": "49394890a664066283d9c24d5c488e27d362db440ae8ae2d6fc9170a6df91d1f",
+      "lines": 274
+    },
+    "src/lib/util/os_process.c": {
+      "sha256": "fbe432a54155a3c10164c11b0878e29c1c71209a03b4334b9d9de8af1a0cee49",
+      "lines": 1173
+    },
+    "src/lib/util/nc.c": {
+      "sha256": "3fcf86f39b21a814701f045fcc449b3b76f892fa47a713541a064016697bea11",
+      "lines": 228
+    },
+    "src/lib/util/time.c": {
+      "sha256": "b29d79895626e6201a893d64d49ab34fa56692a89495711a42111acdd1ab2d24",
+      "lines": 1427
+    },
+    "src/lib/util/service.c": {
+      "sha256": "51d9a618682670f23bd6450531e91ca56b0b626bb0ef0d4eb269508a45801dae",
+      "lines": 2551
+    },
+    "src/service/arm/test_arm_api.c": {
+      "sha256": "d037b9152ffedcec8d8ddc24b6c010b3a4efecf98029214c557c814d02bc78f6",
+      "lines": 272
+    },
+    "src/service/arm/test_exponential_backoff.c": {
+      "sha256": "52c36c49b921d252a31d29e806f9637b2d08546f08b2b092354d86e9931d249c",
+      "lines": 493
+    },
+    "src/service/arm/test_gnunet_service_arm.c": {
+      "sha256": "1d57aab60cba386270756f8d1262ca7e877bd0d1b8ccbad100ea97e6ae660dac",
+      "lines": 267
+    },
+    "src/service/arm/mockup-service.c": {
+      "sha256": "32e41744229ef6cf5df6a38a1c3ebc2705faf27fbea85de591f5aca400b2ece4",
+      "lines": 124
+    },
+    "src/service/arm/test_arm_api_data.conf": {
+      "sha256": "2235f6e0aa872e860b78798d9f8cd23119650852bd619c9784107f6159b0d577",
+      "lines": 55
+    },
+    "src/service/arm/plugin_testing_arm_probnat.c": {
+      "sha256": "64fa040eb0d449fa317d10779383eaf095d985f8d207ceba90663c6b4398e224",
+      "lines": 81
+    }
+  },
+  "requirements": [
+    {
+      "id": "ARM-SERVER-CONFIG-01",
+      "group": "CONFIG",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 2096,
+        "function": "run"
+      },
+      "contract": "ARM global prefix/postfix missing values are empty; values dollar-expanded before service spawn composition.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "registry.rs/configuration source snapshot",
+        "reactor startup phase",
+        "generic service startup interface"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-CONFIG-02",
+      "group": "CONFIG",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 2096,
+        "function": "run"
+      },
+      "contract": "START_SYSTEM_SERVICES and START_USER_SERVICES invalid values shut down with global_ret1; missing both selects both, missing one does not automatically enable that category.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "registry.rs/configuration source snapshot",
+        "reactor startup phase",
+        "generic service startup interface"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-CONFIG-03",
+      "group": "CONFIG",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 2096,
+        "function": "run"
+      },
+      "contract": "Neither selected service category is a startup error, even if registry would be empty.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "registry.rs/configuration source snapshot",
+        "reactor startup phase",
+        "generic service startup interface"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-CONFIG-04",
+      "group": "CONFIG",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 2096,
+        "function": "run"
+      },
+      "contract": "RESOURCE_DIAGNOSTICS is optional filename/open-w mode under HAVE_WAIT4; open failure logs and falls back to ordinary wait.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "optional HAVE_WAIT4 resource diagnostics host port (pending)",
+        "actual open-w and consuming wait4 resource data, no fake empty log success"
+      ],
+      "reactor_implementation_status": "explicit frontend/native-profile pending"
+    },
+    {
+      "id": "ARM-SERVER-CONFIG-05",
+      "group": "CONFIG",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 2096,
+        "function": "run"
+      },
+      "contract": "Register shutdown and SIGCHLD-read tasks before service enumeration; start all forced entries before creating notifier, so initial starts have no monitor replay.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "registry.rs/configuration source snapshot",
+        "reactor startup phase",
+        "generic service startup interface"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-CONFIG-06",
+      "group": "CONFIG",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 1897,
+        "function": "setup_service"
+      },
+      "contract": "Ignore ARM section; include every other section with BINARY present, not only IMMEDIATE_START or START_ON_DEMAND.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "registry.rs/configuration source snapshot",
+        "reactor startup phase",
+        "generic service startup interface"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-CONFIG-07",
+      "group": "CONFIG",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 1897,
+        "function": "setup_service"
+      },
+      "contract": "RUN_PER_USER exactly YES selects user category, otherwise system; respect category selection.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "registry.rs/configuration source snapshot",
+        "reactor startup phase",
+        "generic service startup interface"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-CONFIG-08",
+      "group": "CONFIG",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 1897,
+        "function": "setup_service"
+      },
+      "contract": "Service names compare case-insensitively and preserve original spelling; duplicate case-insensitive name ignored.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "registry.rs/configuration source snapshot",
+        "reactor startup phase",
+        "generic service startup interface"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-CONFIG-09",
+      "group": "CONFIG",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 1897,
+        "function": "setup_service"
+      },
+      "contract": "CONFIG filename getter falls back to PATHS DEFAULTCONFIG; failed stat discards filename and child receives no -c; existence check does not require a regular file.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "registry.rs/configuration source snapshot",
+        "reactor startup phase",
+        "generic service startup interface"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-CONFIG-10",
+      "group": "CONFIG",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 1897,
+        "function": "setup_service"
+      },
+      "contract": "Register service at list head; preserve resulting registry order for initial starts, LIST, shutdown and restart scans.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "registry.rs/configuration source snapshot",
+        "reactor startup phase",
+        "generic service startup interface"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-CONFIG-11",
+      "group": "CONFIG",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 1897,
+        "function": "setup_service"
+      },
+      "contract": "Initial backoff1ms, restart_atFOREVER, last_started_at0, killed_at0, last_exit0, no pending stop or process.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "registry.rs/configuration source snapshot",
+        "reactor startup phase",
+        "generic service startup interface"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-CONFIG-12",
+      "group": "CONFIG",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 1897,
+        "function": "setup_service"
+      },
+      "contract": "PIPECONTROL exactly YES controls child signal pipe.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "registry.rs/configuration source snapshot",
+        "reactor startup phase",
+        "generic service startup interface"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-CONFIG-13",
+      "group": "CONFIG",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 1897,
+        "function": "setup_service"
+      },
+      "contract": "IMMEDIATE_START YES sets force_start; NOARMBIND YES only bypasses listeners in that branch.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "registry.rs/configuration source snapshot",
+        "reactor startup phase",
+        "generic service startup interface"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-CONFIG-14",
+      "group": "CONFIG",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 1897,
+        "function": "setup_service"
+      },
+      "contract": "Otherwise START_ON_DEMAND must equal YES to bind listeners, but the registered service remains explicitly startable without listeners.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "registry.rs/configuration source snapshot",
+        "reactor startup phase",
+        "generic service startup interface"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-CONFIG-15",
+      "group": "CONFIG",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 1897,
+        "function": "setup_service"
+      },
+      "contract": "Address computation/bind failure leaves the service registered and does not suppress its immediate-start flag.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "registry.rs/configuration source snapshot",
+        "reactor startup phase",
+        "generic service startup interface"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-CONFIG-16",
+      "group": "CONFIG",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 1897,
+        "function": "setup_service"
+      },
+      "contract": "Registry is built once; restart scan comment about configuration changes is not a public hot-reload implementation.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "registry.rs/configuration source snapshot",
+        "reactor startup phase",
+        "generic service startup interface"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-LISTENER-01",
+      "group": "LISTENER",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 342,
+        "function": "get_server_addresses"
+      },
+      "contract": "DISABLEV6 malformed is fatal to endpoint collection; IPv6 probing distinguishes ENOBUFS/ENOMEM/ENFILE/EACCES from unsupported-family errors.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "addresses.rs",
+        "listeners.rs",
+        "reactor managed-readiness scheduling"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-LISTENER-02",
+      "group": "LISTENER",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 342,
+        "function": "get_server_addresses"
+      },
+      "contract": "PORT missing means0; malformed logs but can continue with0; values above65535 fail endpoint collection.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "addresses.rs",
+        "listeners.rs",
+        "reactor managed-readiness scheduling"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-LISTENER-03",
+      "group": "LISTENER",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 342,
+        "function": "get_server_addresses"
+      },
+      "contract": "UNIXPATH filename expansion and native length shortening precede bind; Linux TESTING USE_ABSTRACT_SOCKETS selects abstract sockets.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "addresses.rs",
+        "listeners.rs",
+        "reactor managed-readiness scheduling"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-LISTENER-04",
+      "group": "LISTENER",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 342,
+        "function": "get_server_addresses"
+      },
+      "contract": "Normal Unix path parent directory creation failure logs and continues into actual bind; no new private endpoint option.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "addresses.rs",
+        "listeners.rs",
+        "reactor managed-readiness scheduling"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-LISTENER-05",
+      "group": "LISTENER",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 342,
+        "function": "get_server_addresses"
+      },
+      "contract": "Unix support probing has the same resource/permission hard-error classes as IPv6 support probing.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "addresses.rs",
+        "listeners.rs",
+        "reactor managed-readiness scheduling"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-LISTENER-06",
+      "group": "LISTENER",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 342,
+        "function": "get_server_addresses"
+      },
+      "contract": "No usable port or Unix path rejects endpoint collection; START_ON_DEMAND YES additionally emits missing-address diagnostic.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "addresses.rs",
+        "listeners.rs",
+        "reactor managed-readiness scheduling"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-LISTENER-07",
+      "group": "LISTENER",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 342,
+        "function": "get_server_addresses"
+      },
+      "contract": "BINDTO uses native getaddrinfo family/protocol/socktype filtering; keep returned order and IPv4/IPv6 ABI data without hostname-to-protocol substitution.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "addresses.rs",
+        "listeners.rs",
+        "reactor managed-readiness scheduling"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-LISTENER-08",
+      "group": "LISTENER",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 342,
+        "function": "get_server_addresses"
+      },
+      "contract": "Without BINDTO, endpoints are wildcard IPv6 then IPv4 unless IPv6 disabled; optional Unix endpoint is first.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "addresses.rs",
+        "listeners.rs",
+        "reactor managed-readiness scheduling"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-LISTENER-09",
+      "group": "LISTENER",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 342,
+        "function": "get_server_addresses"
+      },
+      "contract": "Keep borrowed numeric/opaque sockaddr values out of no_std owner; actual address resolution belongs to host and must not use public DNS in local tests.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "addresses.rs",
+        "listeners.rs",
+        "reactor managed-readiness scheduling"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-LISTENER-10",
+      "group": "LISTENER",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 995,
+        "function": "create_listen_socket"
+      },
+      "contract": "Create STREAM sockets; SO_REUSEADDR and IPv6 V6ONLY attempted before bind; listen backlog5.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "addresses.rs",
+        "listeners.rs",
+        "reactor managed-readiness scheduling"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-LISTENER-11",
+      "group": "LISTENER",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 995,
+        "function": "create_listen_socket"
+      },
+      "contract": "Unix precheck and UNIX_MATCH_UID/GID permission mode policy are not peer-credential authentication; do not add match-UID rejection to child activation.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "addresses.rs",
+        "listeners.rs",
+        "reactor managed-readiness scheduling"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-LISTENER-12",
+      "group": "LISTENER",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 995,
+        "function": "create_listen_socket"
+      },
+      "contract": "One address bind/listen failure logs/closes that socket and allows other service addresses; do not claim all-listeners success.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "addresses.rs",
+        "listeners.rs",
+        "reactor managed-readiness scheduling"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-LISTENER-13",
+      "group": "LISTENER",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 995,
+        "function": "create_listen_socket"
+      },
+      "contract": "Successful sockets remain parent-owned for demand and for repeated child inherit; child mapping must duplicate, not consume parent listener.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "addresses.rs",
+        "listeners.rs",
+        "reactor managed-readiness scheduling"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-LISTENER-14",
+      "group": "LISTENER",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 995,
+        "function": "create_listen_socket"
+      },
+      "contract": "Retain safe Unix path inode guard and private parent cleanup; do not unlink foreign/replaced paths while matching legitimate C behavior.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "addresses.rs",
+        "listeners.rs",
+        "reactor managed-readiness scheduling"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-LISTENER-15",
+      "group": "LISTENER",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 975,
+        "function": "accept_connection"
+      },
+      "contract": "Demand trigger observes readability only, cancels the current read task, and starts service; it never accept()s the queued connection.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "addresses.rs",
+        "listeners.rs",
+        "reactor managed-readiness scheduling"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-LISTENER-16",
+      "group": "LISTENER",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 975,
+        "function": "accept_connection"
+      },
+      "contract": "Starting one service cancels all its listener readiness tasks before native launch. A readiness event for stale service/listener generation cannot launch a replacement.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "addresses.rs",
+        "listeners.rs",
+        "reactor managed-readiness scheduling"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-SPAWN-01",
+      "group": "SPAWN",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 745,
+        "function": "start_process"
+      },
+      "contract": "All managed services inherit stdout+stderr; request reserved/std-inheritance field is not applied by daemon.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "shared service-runtime::process",
+        "reactor retained native tickets/original-child map",
+        "pure service core"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-SPAWN-02",
+      "group": "SPAWN",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 745,
+        "function": "start_process"
+      },
+      "contract": "Configured PIPECONTROL uses one-byte signal pipe in addition to inherited listeners.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "shared service-runtime::process",
+        "reactor retained native tickets/original-child map",
+        "pure service core"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-SPAWN-03",
+      "group": "SPAWN",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 745,
+        "function": "start_process"
+      },
+      "contract": "Per-service PREFIX overrides GLOBAL_PREFIX and is dollar-expanded; OPTIONS optional string expanded; GLOBAL_POSTFIX replaces all {} with service name and is prepended before final dollar expansion.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "shared service-runtime::process",
+        "reactor retained native tickets/original-child map",
+        "pure service core"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-SPAWN-04",
+      "group": "SPAWN",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 745,
+        "function": "start_process"
+      },
+      "contract": "DEBUG uses C enum truthiness: malformed SYSERR(-1) is also true in command composition; TYPE SIMPLE selected only by successful choice, otherwise GNUNET.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "shared service-runtime::process",
+        "reactor retained native tickets/original-child map",
+        "pure service core"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-SPAWN-05",
+      "group": "SPAWN",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 745,
+        "function": "start_process"
+      },
+      "contract": "GNUNET type resolves binary via project libexec helper and forms prefix,binary,optional -L DEBUG,optional -c config,options textual command.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "shared service-runtime::process",
+        "reactor retained native tickets/original-child map",
+        "pure service core"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-SPAWN-06",
+      "group": "SPAWN",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 745,
+        "function": "start_process"
+      },
+      "contract": "Textual command uses official custom GNUNET_process_run_command parsing, not a shell or standard shell_words parser.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "shared service-runtime::process",
+        "reactor retained native tickets/original-child map",
+        "pure service core"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-SPAWN-07",
+      "group": "SPAWN",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 745,
+        "function": "start_process"
+      },
+      "contract": "SIMPLE uses filename=prefix, argv0=binary, argv1=whole options, no implied executable from binary; empty prefix fails normal helper precheck.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "shared service-runtime::process",
+        "reactor retained native tickets/original-child map",
+        "pure service core"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-SPAWN-08",
+      "group": "SPAWN",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 745,
+        "function": "start_process"
+      },
+      "contract": "Native command precheck/fork failure returns START_FAILED, destroys process object and does not itself rearm demand listeners or schedule restart.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "shared service-runtime::process",
+        "reactor retained native tickets/original-child map",
+        "pure service core"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-SPAWN-09",
+      "group": "SPAWN",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 745,
+        "function": "start_process"
+      },
+      "contract": "Actual fork admission success sets last_started_at UTC now, broadcasts STARTING then sends request STARTING; no application readiness guarantee.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "shared service-runtime::process",
+        "reactor retained native tickets/original-child map",
+        "pure service core"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-SPAWN-10",
+      "group": "SPAWN",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 745,
+        "function": "start_process"
+      },
+      "contract": "Later execvp failure is real child exit1 after STARTING, not pre-fork START_FAILED; std Command::spawn alone changes that observable boundary.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "shared service-runtime::process",
+        "reactor retained native tickets/original-child map",
+        "pure service core"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-SPAWN-11",
+      "group": "SPAWN",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 745,
+        "function": "start_process"
+      },
+      "contract": "Demand start does not set force_start; explicit START and IMMEDIATE_START do. Starting resets neither backoff nor killed_at.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "shared service-runtime::process",
+        "reactor retained native tickets/original-child map",
+        "pure service core"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-SPAWN-12",
+      "group": "SPAWN",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 745,
+        "function": "start_process"
+      },
+      "contract": "Do not let host awaits expose a second start for the same pending spawn; leased spawn generation must prevent duplicate actual children.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "shared service-runtime::process",
+        "reactor retained native tickets/original-child map",
+        "pure service core"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-SPAWN-13",
+      "group": "SPAWN",
+      "anchor": {
+        "source": "src/lib/util/os_process.c",
+        "line": 307,
+        "function": "GNUNET_process_kill"
+      },
+      "contract": "Signal via control pipe first; exact one-byte write succeeds, otherwise fall back to native kill(pid,sig); never signal a reused PID after releasing its child owner.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "shared service-runtime::process",
+        "reactor retained native tickets/original-child map",
+        "pure service core"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-SPAWN-14",
+      "group": "SPAWN",
+      "anchor": {
+        "source": "src/lib/util/os_process.c",
+        "line": 307,
+        "function": "GNUNET_process_kill"
+      },
+      "contract": "Process object destruction closes owned mappings/control pipe but does not implicitly kill or reap; lifecycle requires an explicit owned child drain policy.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "shared service-runtime::process",
+        "reactor retained native tickets/original-child map",
+        "pure service core"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-WIRE-01",
+      "group": "WIRE",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 2206,
+        "function": "main"
+      },
+      "contract": "Register START8/STOP9 variable-size request handlers with final NUL check; first embedded NUL selects name and final NUL is still required.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "pure service core",
+        "reactor framed Unix/TCP RX/TX",
+        "per-client durable queue and EOF"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-WIRE-02",
+      "group": "WIRE",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 2206,
+        "function": "main"
+      },
+      "contract": "MONITOR14/TEST15 require exact4-byte frames; LIST12 requires exact16-byte GNUNET_ARM_Message; known wrong-size is MQ protocol failure.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "pure service core",
+        "reactor framed Unix/TCP RX/TX",
+        "per-client durable queue and EOF"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-WIRE-03",
+      "group": "WIRE",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 2206,
+        "function": "main"
+      },
+      "contract": "Unknown type follows actual generic MQ dispatch policy; do not invent rejection solely because absent from ARM handler table.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "pure service core",
+        "reactor framed Unix/TCP RX/TX",
+        "per-client durable queue and EOF"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-WIRE-04",
+      "group": "WIRE",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 2206,
+        "function": "main"
+      },
+      "contract": "Generic service MANUAL_SHUTDOWN|CLOSE_LSOCKS options have startup/runtime semantics independent of ARM private control fields.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "pure service core",
+        "reactor framed Unix/TCP RX/TX",
+        "per-client durable queue and EOF"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-WIRE-05",
+      "group": "WIRE",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 1160,
+        "function": "handle_start"
+      },
+      "contract": "Continue client processing before action; shutdown check precedes name lookup.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "pure service core",
+        "reactor framed Unix/TCP RX/TX",
+        "per-client durable queue and EOF"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-WIRE-06",
+      "group": "WIRE",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 1160,
+        "function": "handle_start"
+      },
+      "contract": "Unknown START replies IS_NOT_KNOWN; known START sets force_startYES before testing existing process.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "pure service core",
+        "reactor framed Unix/TCP RX/TX",
+        "per-client durable queue and EOF"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-WIRE-07",
+      "group": "WIRE",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 1160,
+        "function": "handle_start"
+      },
+      "contract": "Known process replies IS_STARTED_ALREADY; otherwise executes native start. No synthetic IS_STARTING_ALREADY state is emitted by this daemon.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "pure service core",
+        "reactor framed Unix/TCP RX/TX",
+        "per-client durable queue and EOF"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-WIRE-08",
+      "group": "WIRE",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 1239,
+        "function": "handle_stop"
+      },
+      "contract": "STOP arm is case-insensitive and precedes global-shutdown/name lookup; broadcast STOPPING with request spelling, queue STOPPING result, persist client, schedule scheduler shutdown.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "pure service core",
+        "reactor framed Unix/TCP RX/TX",
+        "per-client durable queue and EOF"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-WIRE-09",
+      "group": "WIRE",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 1239,
+        "function": "handle_stop"
+      },
+      "contract": "Queued self-stop result/status is not a guaranteed physical-write barrier before shutdown; client EOF before RESULT_STOPPING remains Disconnected, after RESULT_STOPPING becomes SentOk/Stopped.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "pure service core",
+        "reactor framed Unix/TCP RX/TX",
+        "per-client durable queue and EOF"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-WIRE-10",
+      "group": "WIRE",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 1239,
+        "function": "handle_stop"
+      },
+      "contract": "Other STOP unknown returns IS_NOT_KNOWN; known sets force_startNO before shutdown/stopping/stopped checks.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "pure service core",
+        "reactor framed Unix/TCP RX/TX",
+        "per-client durable queue and EOF"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-WIRE-11",
+      "group": "WIRE",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 1239,
+        "function": "handle_stop"
+      },
+      "contract": "Other STOP precedence is IN_SHUTDOWN, IS_STOPPING_ALREADY, IS_STOPPED_ALREADY, then actual TERM and pending completion.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "pure service core",
+        "reactor framed Unix/TCP RX/TX",
+        "per-client durable queue and EOF"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-WIRE-12",
+      "group": "WIRE",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 1239,
+        "function": "handle_stop"
+      },
+      "contract": "TERM failure logs but pending stop remains until actual child exit; do not fabricate STOPPED or introduce arbitrary grace/SIGKILL timeout.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "pure service core",
+        "reactor framed Unix/TCP RX/TX",
+        "per-client durable queue and EOF"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-WIRE-13",
+      "group": "WIRE",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 1239,
+        "function": "handle_stop"
+      },
+      "contract": "Pending stop retains requesting ClientId and opaque request ID; one ordinary stop completion is sent after reaping, not after kill syscall.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "pure service core",
+        "reactor framed Unix/TCP RX/TX",
+        "per-client durable queue and EOF"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-WIRE-14",
+      "group": "WIRE",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 1350,
+        "function": "handle_list"
+      },
+      "contract": "Nonzero LIST reserved field logs break-op but still returns list; preserve opaque request ID bytes and C aggregate ABI.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "pure service core",
+        "reactor framed Unix/TCP RX/TX",
+        "per-client durable queue and EOF"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-WIRE-15",
+      "group": "WIRE",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 1350,
+        "function": "handle_list"
+      },
+      "contract": "LIST contains all registered non-ARM services in registry order, name/binary string pool, status, last_exit16, restart_at and last_started UTC.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "pure service core",
+        "reactor framed Unix/TCP RX/TX",
+        "per-client durable queue and EOF"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-WIRE-16",
+      "group": "WIRE",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 1350,
+        "function": "handle_list"
+      },
+      "contract": "No process: never-started=>STOPPED, prior exit0=>FINISHED, prior nonzero=>FAILED; process plus pending stopping client or global shutdown=>STOPPING, otherwise STARTED.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "pure service core",
+        "reactor framed Unix/TCP RX/TX",
+        "per-client durable queue and EOF"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-WIRE-17",
+      "group": "WIRE",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 1350,
+        "function": "handle_list"
+      },
+      "contract": "Exact native ABI profile is explicit: align8 LIST prefix24/RESULT24; align4 requires independent profile evidence; per-service info28.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "pure service core",
+        "reactor framed Unix/TCP RX/TX",
+        "per-client durable queue and EOF"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-WIRE-18",
+      "group": "WIRE",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 1350,
+        "function": "handle_list"
+      },
+      "contract": "Preflight count, pool offsets and total frame<=65535 without u16/usize wrap; reject resource/oversized output explicitly rather than wrapping or emitting empty success.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "pure service core",
+        "reactor framed Unix/TCP RX/TX",
+        "per-client durable queue and EOF"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-WIRE-19",
+      "group": "WIRE",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 1437,
+        "function": "handle_test"
+      },
+      "contract": "TEST returns exact4-byte TEST and continues processing; response follows actual output ownership, not synchronous transport acknowledgement.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "pure service core",
+        "reactor framed Unix/TCP RX/TX",
+        "per-client durable queue and EOF"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-MONITOR-01",
+      "group": "MONITOR",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 2070,
+        "function": "handle_monitor"
+      },
+      "contract": "Monitor registration deduplicates MQ membership but sends direct arm/MONITORING_STARTED on every request.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "pure service core",
+        "reactor framed Unix/TCP RX/TX",
+        "per-client durable queue and EOF"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-MONITOR-02",
+      "group": "MONITOR",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 2070,
+        "function": "handle_monitor"
+      },
+      "contract": "Registration has no snapshot of running services; retain original configured service name in start/exit notifications.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "pure service core",
+        "reactor framed Unix/TCP RX/TX",
+        "per-client durable queue and EOF"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-MONITOR-03",
+      "group": "MONITOR",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 2070,
+        "function": "handle_monitor"
+      },
+      "contract": "All generic clients are mark_monitor and do not delay daemon shutdown; STOP-arm client persist is an explicit exception.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "pure service core",
+        "reactor framed Unix/TCP RX/TX",
+        "per-client durable queue and EOF"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-MONITOR-04",
+      "group": "MONITOR",
+      "anchor": {
+        "source": "src/lib/util/nc.c",
+        "line": 190,
+        "function": "GNUNET_notification_context_broadcast"
+      },
+      "contract": "Optional status notification is skipped only when actual logical MQ length>1024, not >=1024.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "pure service core",
+        "reactor framed Unix/TCP RX/TX",
+        "per-client durable queue and EOF"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-MONITOR-05",
+      "group": "MONITOR",
+      "anchor": {
+        "source": "src/lib/util/nc.c",
+        "line": 190,
+        "function": "GNUNET_notification_context_broadcast"
+      },
+      "contract": "Broadcast order is subscriber-list order; required direct responses are not optional queue drops.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "pure service core",
+        "reactor framed Unix/TCP RX/TX",
+        "per-client durable queue and EOF"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-MONITOR-06",
+      "group": "MONITOR",
+      "anchor": {
+        "source": "src/lib/util/nc.c",
+        "line": 190,
+        "function": "GNUNET_notification_context_broadcast"
+      },
+      "contract": "Monitor EOF removes subscriber exactly once; recycled ClientId must never receive old stop completion or queued notification.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "pure service core",
+        "reactor framed Unix/TCP RX/TX",
+        "per-client durable queue and EOF"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-EOF-01",
+      "group": "EOF",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 2049,
+        "function": "client_disconnect_cb"
+      },
+      "contract": "Disconnect clears killing_client pointer but leaves request-id storage; do not keep a zombie client authority.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "reactor physical stream EOF/error",
+        "original client revoke before new frame admission",
+        "per-client TX/resource cleanup independent of other backpressure"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-EOF-02",
+      "group": "EOF",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 2049,
+        "function": "client_disconnect_cb"
+      },
+      "contract": "Since LIST uses killing_client as stopping marker, disconnect can change a still-live terminating service LIST state back to STARTED.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "reactor physical stream EOF/error",
+        "original client revoke before new frame admission",
+        "per-client TX/resource cleanup independent of other backpressure"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-EOF-03",
+      "group": "EOF",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 2049,
+        "function": "client_disconnect_cb"
+      },
+      "contract": "A later STOP may establish a new stop requester and signal again after prior requester EOF; do not add an independent permanent stopping flag that changes this behavior.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "reactor physical stream EOF/error",
+        "original client revoke before new frame admission",
+        "per-client TX/resource cleanup independent of other backpressure"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-REAP-01",
+      "group": "REAP",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 1872,
+        "function": "sighandler_child_death"
+      },
+      "contract": "SIGCHLD writes one signal byte preserving errno; reactor drains up to16 bytes then scans all owned service children because signals may coalesce.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "shared service-runtime::process",
+        "reactor retained native tickets/original-child map",
+        "pure service core"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-REAP-02",
+      "group": "REAP",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 1648,
+        "function": "maint_child_death"
+      },
+      "contract": "Use waitpid/wait4 on each owned native child PID/token with WNOHANG; never reap unrelated children with waitpid(-1).",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "shared service-runtime::process",
+        "reactor retained native tickets/original-child map",
+        "pure service core"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-REAP-03",
+      "group": "REAP",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 1648,
+        "function": "maint_child_death"
+      },
+      "contract": "Not-ready/error/STOPPED/UNKNOWN/RUNNING results leave the process owner; actual Exited/Signaled is required for stop completion.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "shared service-runtime::process",
+        "reactor retained native tickets/original-child map",
+        "pure service core"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-REAP-04",
+      "group": "REAP",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 1648,
+        "function": "maint_child_death"
+      },
+      "contract": "Destroy native process owner, clear proc, broadcast STOPPED, complete pending stop and clear it, then compute backoff or free during shutdown.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "shared service-runtime::process",
+        "reactor retained native tickets/original-child map",
+        "pure service core"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-REAP-05",
+      "group": "REAP",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 1648,
+        "function": "maint_child_death"
+      },
+      "contract": "Exit code and signal number feed same LIST last_exit value; status reason itself is not a separate wire field.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "shared service-runtime::process",
+        "reactor retained native tickets/original-child map",
+        "pure service core"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-REAP-06",
+      "group": "REAP",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 1648,
+        "function": "maint_child_death"
+      },
+      "contract": "With HAVE_WAIT4 and open diagnostics file, append actual rusage for reaped child; C user/system microseconds use /10e6, not /1e6, and source formatting must be an explicit profile decision.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "shared service-runtime::process",
+        "reactor retained native tickets/original-child map",
+        "pure service core"
+      ],
+      "reactor_implementation_status": "explicit frontend/native-profile pending"
+    },
+    {
+      "id": "ARM-SERVER-REAP-07",
+      "group": "REAP",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 1648,
+        "function": "maint_child_death"
+      },
+      "contract": "A stale child generation/result must not reap, free, notify, or restart the new child occupying same service slot.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "shared service-runtime::process",
+        "reactor retained native tickets/original-child map",
+        "pure service core"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-CLOCK-01",
+      "group": "CLOCK",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 1648,
+        "function": "maint_child_death"
+      },
+      "contract": "Clean Exited/0 sets restart_at0 and rearms all demand listeners; does not itself schedule a forced restart, even force_startYES.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "pure core restart/backoff",
+        "actual owned IDLE-priority restart timer lane",
+        "UTC re-evaluation after actual wake"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-CLOCK-02",
+      "group": "CLOCK",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 1648,
+        "function": "maint_child_death"
+      },
+      "contract": "Abnormal exit cool-down duration is measured from old restart_at, not last_started_at; future FOREVER yields0 duration.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "pure core restart/backoff",
+        "actual owned IDLE-priority restart timer lane",
+        "UTC re-evaluation after actual wake"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-CLOCK-03",
+      "group": "CLOCK",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 1648,
+        "function": "maint_child_death"
+      },
+      "contract": "Minutes=floor(duration/60s); >31 sets backoff0, otherwise bit-shifts current backoff right by minutes.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "pure core restart/backoff",
+        "actual owned IDLE-priority restart timer lane",
+        "UTC re-evaluation after actual wake"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-CLOCK-04",
+      "group": "CLOCK",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 1648,
+        "function": "maint_child_death"
+      },
+      "contract": "Set restart_at=UTCnow+current reduced backoff with official FOREVER/overflow saturation, then update backoff=min15min,2*max1ms,backoff.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "pure core restart/backoff",
+        "actual owned IDLE-priority restart timer lane",
+        "UTC re-evaluation after actual wake"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-CLOCK-05",
+      "group": "CLOCK",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 1648,
+        "function": "maint_child_death"
+      },
+      "contract": "Cancel prior global restart task and schedule one immediate IDLE-priority scan; no jitter or invented per-service worker timer.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "pure core restart/backoff",
+        "actual owned IDLE-priority restart timer lane",
+        "UTC re-evaluation after actual wake"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-CLOCK-06",
+      "group": "CLOCK",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 1648,
+        "function": "maint_child_death"
+      },
+      "contract": "Preserve source UTC comparisons on wall-clock jumps; use monotonic reactor waits only as re-evaluated wake hints, not a silent protocol-time substitution.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "pure core restart/backoff",
+        "actual owned IDLE-priority restart timer lane",
+        "UTC re-evaluation after actual wake"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-CLOCK-07",
+      "group": "CLOCK",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 1571,
+        "function": "delayed_restart_task"
+      },
+      "contract": "Skip active children; due nonrunning force_start service launches, due on-demand service rearms previously paused listener tasks.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "pure core restart/backoff",
+        "actual owned IDLE-priority restart timer lane",
+        "UTC re-evaluation after actual wake"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-CLOCK-08",
+      "group": "CLOCK",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 1571,
+        "function": "delayed_restart_task"
+      },
+      "contract": "Select minimum future restart remaining duration and schedule one IDLE timer only if finite; FOREVER produces no timer.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "pure core restart/backoff",
+        "actual owned IDLE-priority restart timer lane",
+        "UTC re-evaluation after actual wake"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-CLOCK-09",
+      "group": "CLOCK",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 1571,
+        "function": "delayed_restart_task"
+      },
+      "contract": "A launch failure inside scan does not itself create a new future restart deadline; other services can still determine next scan.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "pure core restart/backoff",
+        "actual owned IDLE-priority restart timer lane",
+        "UTC re-evaluation after actual wake"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-CLOCK-10",
+      "group": "CLOCK",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 1571,
+        "function": "delayed_restart_task"
+      },
+      "contract": "Initial explicit START bypasses restart cooldown; only automatic restart/demand rearm paths wait on restart_at.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "pure core restart/backoff",
+        "actual owned IDLE-priority restart timer lane",
+        "UTC re-evaluation after actual wake"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-SHUTDOWN-01",
+      "group": "SHUTDOWN",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 1500,
+        "function": "shutdown_task"
+      },
+      "contract": "Enter shutdown, cancel restart timer, close all managed service listeners/read tasks before TERM all children. Keep the separate ARM control IPC listener and ordinary handlers accepting throughout manual Draining: new TEST still echoes and START returns IN_SHUTDOWN before name lookup; final generic service shutdown closes ARM control admission only after real children drain.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "pure service core",
+        "reactor owned timer/native/close cleanup lanes"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-SHUTDOWN-02",
+      "group": "SHUTDOWN",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 1500,
+        "function": "shutdown_task"
+      },
+      "contract": "Free service entries already without child; wait for each real remaining owned child exit and continue reaping.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "pure service core",
+        "reactor owned timer/native/close cleanup lanes"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-SHUTDOWN-03",
+      "group": "SHUTDOWN",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 1500,
+        "function": "shutdown_task"
+      },
+      "contract": "Pending client output or optional monitor backlog must not prevent listener close/TERM/reap progress with caller-bounded effect capacity.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "pure service core",
+        "reactor owned timer/native/close cleanup lanes"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-SHUTDOWN-04",
+      "group": "SHUTDOWN",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 1500,
+        "function": "shutdown_task"
+      },
+      "contract": "No implicit timeout/SIGKILL escalation or invented successful child cleanup; a still-running child keeps manual shutdown pending.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "pure service core",
+        "reactor owned timer/native/close cleanup lanes"
+      ],
+      "reactor_implementation_status": "candidate component implemented; complete obligation acceptance pending"
+    },
+    {
+      "id": "ARM-SERVER-SHUTDOWN-05",
+      "group": "SHUTDOWN",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 1455,
+        "function": "do_shutdown"
+      },
+      "contract": "Destroy notification context and generic service only after all registry children gone; cancel SIGCHLD read task at final phase.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "pure service core",
+        "reactor owned timer/native/close cleanup lanes"
+      ],
+      "reactor_implementation_status": "explicit frontend/native-profile pending"
+    },
+    {
+      "id": "ARM-SERVER-SHUTDOWN-06",
+      "group": "SHUTDOWN",
+      "anchor": {
+        "source": "src/service/arm/gnunet-service-arm.c",
+        "line": 1455,
+        "function": "do_shutdown"
+      },
+      "contract": "Finally close resource log, uninstall signal handler and close self-pipe; preserve process-global capture/descriptor preconditions and close-after-bind option4 separately.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "pure service core",
+        "reactor owned timer/native/close cleanup lanes"
+      ],
+      "reactor_implementation_status": "explicit frontend/native-profile pending"
+    },
+    {
+      "id": "ARM-SERVER-CLI-01",
+      "group": "CLI",
+      "anchor": {
+        "source": "src/cli/arm/gnunet-arm.c",
+        "line": 1019,
+        "function": "main"
+      },
+      "contract": "Provide all13 ARM options: end,init,kill,all,start,restart,delete,monitor,quiet,timeout,info,no-stdout,no-stderr with official short names.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "future actual daemon/gnunet-arm CLI frontend (pending)"
+      ],
+      "reactor_implementation_status": "explicit frontend/native-profile pending"
+    },
+    {
+      "id": "ARM-SERVER-CLI-02",
+      "group": "CLI",
+      "anchor": {
+        "source": "src/cli/arm/gnunet-arm.c",
+        "line": 1019,
+        "function": "main"
+      },
+      "contract": "Generic PROGRAM_run options, GNUNET_ARGS/config/project paths, diagnostics and help/version are additional obligations, not supplied by an ARM wire codec.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "future actual daemon/gnunet-arm CLI frontend (pending)"
+      ],
+      "reactor_implementation_status": "explicit frontend/native-profile pending"
+    },
+    {
+      "id": "ARM-SERVER-CLI-03",
+      "group": "CLI",
+      "anchor": {
+        "source": "src/cli/arm/gnunet-arm.c",
+        "line": 746,
+        "function": "action_loop"
+      },
+      "contract": "Action order is stop specific, end/restart ARM, start ARM, init specific, LIST, monitor; advance phase before waiting callback.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "future actual daemon/gnunet-arm CLI frontend (pending)"
+      ],
+      "reactor_implementation_status": "explicit frontend/native-profile pending"
+    },
+    {
+      "id": "ARM-SERVER-CLI-04",
+      "group": "CLI",
+      "anchor": {
+        "source": "src/cli/arm/gnunet-arm.c",
+        "line": 746,
+        "function": "action_loop"
+      },
+      "contract": "Native ARM liveness test precedes actions that would otherwise retry indefinitely; missing ARM ordinary service action sets exit4.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "future actual daemon/gnunet-arm CLI frontend (pending)"
+      ],
+      "reactor_implementation_status": "explicit frontend/native-profile pending"
+    },
+    {
+      "id": "ARM-SERVER-CLI-05",
+      "group": "CLI",
+      "anchor": {
+        "source": "src/cli/arm/gnunet-arm.c",
+        "line": 746,
+        "function": "action_loop"
+      },
+      "contract": "Restart while ARM absent becomes start; initial ARM self launch respects no-stdout/no-stderr, managed service START has no stdio override.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "future actual daemon/gnunet-arm CLI frontend (pending)"
+      ],
+      "reactor_implementation_status": "explicit frontend/native-profile pending"
+    },
+    {
+      "id": "ARM-SERVER-CLI-06",
+      "group": "CLI",
+      "anchor": {
+        "source": "src/cli/arm/gnunet-arm.c",
+        "line": 746,
+        "function": "action_loop"
+      },
+      "contract": "Monitor phase clears quiet and keeps process running until interrupt/timeout; only one current request owner retained and canceled during cleanup.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "future actual daemon/gnunet-arm CLI frontend (pending)"
+      ],
+      "reactor_implementation_status": "explicit frontend/native-profile pending"
+    },
+    {
+      "id": "ARM-SERVER-CLI-07",
+      "group": "CLI",
+      "anchor": {
+        "source": "src/cli/arm/gnunet-arm.c",
+        "line": 966,
+        "function": "run"
+      },
+      "contract": "Duplicate config, require PATHS GNUNET_HOME raw string, retain ARM CONFIG filename, connect owner and optional separate monitor channel.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "future actual daemon/gnunet-arm CLI frontend (pending)"
+      ],
+      "reactor_implementation_status": "explicit frontend/native-profile pending"
+    },
+    {
+      "id": "ARM-SERVER-CLI-08",
+      "group": "CLI",
+      "anchor": {
+        "source": "src/cli/arm/gnunet-arm.c",
+        "line": 966,
+        "function": "run"
+      },
+      "contract": "Schedule timeout only when nonzero; actual timeout exits2; first connection SYSERR shuts down without automatically inventing exit1.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "future actual daemon/gnunet-arm CLI frontend (pending)"
+      ],
+      "reactor_implementation_status": "explicit frontend/native-profile pending"
+    },
+    {
+      "id": "ARM-SERVER-CLI-09",
+      "group": "CLI",
+      "anchor": {
+        "source": "src/cli/arm/gnunet-arm.c",
+        "line": 348,
+        "function": "start_callback"
+      },
+      "contract": "Several failure callbacks log/shutdown without setting global ret (still0); preserve exact version behavior or document a deliberate CLI discrepancy.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "future actual daemon/gnunet-arm CLI frontend (pending)"
+      ],
+      "reactor_implementation_status": "explicit frontend/native-profile pending"
+    },
+    {
+      "id": "ARM-SERVER-CLI-10",
+      "group": "CLI",
+      "anchor": {
+        "source": "src/cli/arm/gnunet-arm.c",
+        "line": 348,
+        "function": "start_callback"
+      },
+      "contract": "START accepts STARTING or IS_STARTED_ALREADY; ARM stop accepts STOPPING/STOPPED/IS_STOPPED_ALREADY, particular stop accepts STOPPED/IS_STOPPED_ALREADY.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "future actual daemon/gnunet-arm CLI frontend (pending)"
+      ],
+      "reactor_implementation_status": "explicit frontend/native-profile pending"
+    },
+    {
+      "id": "ARM-SERVER-CLI-11",
+      "group": "CLI",
+      "anchor": {
+        "source": "src/cli/arm/gnunet-arm.c",
+        "line": 391,
+        "function": "stop_callback"
+      },
+      "contract": "Successful ARM stop clears end flag; restart clears restart and sets start before advancing action sequence.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "future actual daemon/gnunet-arm CLI frontend (pending)"
+      ],
+      "reactor_implementation_status": "explicit frontend/native-profile pending"
+    },
+    {
+      "id": "ARM-SERVER-CLI-12",
+      "group": "CLI",
+      "anchor": {
+        "source": "src/cli/arm/gnunet-arm.c",
+        "line": 548,
+        "function": "list_callback"
+      },
+      "contract": "Communication/list NULL failures set exit3; show-all includes stopped entries; quiet suppresses headings not row output.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "future actual daemon/gnunet-arm CLI frontend (pending)"
+      ],
+      "reactor_implementation_status": "explicit frontend/native-profile pending"
+    },
+    {
+      "id": "ARM-SERVER-CLI-13",
+      "group": "CLI",
+      "anchor": {
+        "source": "src/cli/arm/gnunet-arm.c",
+        "line": 548,
+        "function": "list_callback"
+      },
+      "contract": "STOPPING/unknown rows can be printed twice by count loop and main print loop; source text/format belongs to explicit CLI profile, not new wire semantics.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "future actual daemon/gnunet-arm CLI frontend (pending)"
+      ],
+      "reactor_implementation_status": "explicit frontend/native-profile pending"
+    },
+    {
+      "id": "ARM-SERVER-CLI-14",
+      "group": "CLI",
+      "anchor": {
+        "source": "src/cli/arm/gnunet-arm.c",
+        "line": 548,
+        "function": "list_callback"
+      },
+      "contract": "FAILED/FINISHED remain visible without all; failure messages use source last_exit16 and UTC restart remaining.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "future actual daemon/gnunet-arm CLI frontend (pending)"
+      ],
+      "reactor_implementation_status": "explicit frontend/native-profile pending"
+    },
+    {
+      "id": "ARM-SERVER-CLI-15",
+      "group": "CLI",
+      "anchor": {
+        "source": "src/cli/arm/gnunet-arm.c",
+        "line": 151,
+        "function": "delete_files"
+      },
+      "contract": "Delete configured config file and GNUNET_HOME recursively only along exact CLI cleanup path and explicit user request; never test against real user data.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "future actual daemon/gnunet-arm CLI frontend (pending)"
+      ],
+      "reactor_implementation_status": "explicit frontend/native-profile pending"
+    },
+    {
+      "id": "ARM-SERVER-CLI-16",
+      "group": "CLI",
+      "anchor": {
+        "source": "src/cli/arm/gnunet-arm.c",
+        "line": 180,
+        "function": "shutdown_task"
+      },
+      "contract": "Cancel action/current operation/timer, disconnect command and monitor owners, then delete only if end&&delete at cleanup.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "future actual daemon/gnunet-arm CLI frontend (pending)"
+      ],
+      "reactor_implementation_status": "explicit frontend/native-profile pending"
+    },
+    {
+      "id": "ARM-SERVER-CLI-17",
+      "group": "CLI",
+      "anchor": {
+        "source": "src/cli/arm/gnunet-arm.c",
+        "line": 180,
+        "function": "shutdown_task"
+      },
+      "contract": "Because successful stop already clears end, source delete trigger differs from option prose; record this before proposing a safe compatible CLI implementation.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "future actual daemon/gnunet-arm CLI frontend (pending)"
+      ],
+      "reactor_implementation_status": "explicit frontend/native-profile pending"
+    },
+    {
+      "id": "ARM-SERVER-TESTING-01",
+      "group": "TESTING",
+      "anchor": {
+        "source": "src/service/arm/testing_arm_cmd_start_peer.c",
+        "line": 111,
+        "function": "start_peer_run"
+      },
+      "contract": "Start-peer command resolves testbed system trait, creates/loads/reconfigures actual peer config, writes DEFAULTCONFIG, and owns actual ARM native child.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "future testing-arm command/trait owners (pending)"
+      ],
+      "reactor_implementation_status": "explicit frontend/native-profile pending"
+    },
+    {
+      "id": "ARM-SERVER-TESTING-02",
+      "group": "TESTING",
+      "anchor": {
+        "source": "src/service/arm/testing_arm_cmd_start_peer.c",
+        "line": 111,
+        "function": "start_peer_run"
+      },
+      "contract": "Wrapper launch uses run_command_va with main_binary prefix-or-libexec and args libexec-or-empty as argv0; options are whole varargs, not shell parsing.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "future testing-arm command/trait owners (pending)"
+      ],
+      "reactor_implementation_status": "explicit frontend/native-profile pending"
+    },
+    {
+      "id": "ARM-SERVER-TESTING-03",
+      "group": "TESTING",
+      "anchor": {
+        "source": "src/service/arm/testing_arm_cmd_start_peer.c",
+        "line": 111,
+        "function": "start_peer_run"
+      },
+      "contract": "First ARM connection YES finishes async command; first failure fails; no fake readiness from native child creation alone.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "future testing-arm command/trait owners (pending)"
+      ],
+      "reactor_implementation_status": "explicit frontend/native-profile pending"
+    },
+    {
+      "id": "ARM-SERVER-TESTING-04",
+      "group": "TESTING",
+      "anchor": {
+        "source": "src/service/arm/testing_arm_cmd_start_peer.c",
+        "line": 228,
+        "function": "start_peer_cleanup"
+      },
+      "contract": "Cleanup disconnects ARM, TERM+blocking-waits actual owned child, destroys process/config; safe Rust must take ownership once and retain parent testbed lifetimes.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "future testing-arm command/trait owners (pending)"
+      ],
+      "reactor_implementation_status": "explicit frontend/native-profile pending"
+    },
+    {
+      "id": "ARM-SERVER-TESTING-05",
+      "group": "TESTING",
+      "anchor": {
+        "source": "src/service/arm/testing_arm_cmd_stop_peer.c",
+        "line": 90,
+        "function": "stop_peer_run"
+      },
+      "contract": "Stop command borrows start-peer ARM trait and issues request stop arm; cleanup of incomplete command cancels its operation.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "future testing-arm command/trait owners (pending)"
+      ],
+      "reactor_implementation_status": "explicit frontend/native-profile pending"
+    },
+    {
+      "id": "ARM-SERVER-TESTING-06",
+      "group": "TESTING",
+      "anchor": {
+        "source": "src/service/arm/testing_arm_cmd_stop_peer.c",
+        "line": 68,
+        "function": "stop_cb"
+      },
+      "contract": "Source stop callback tests result only and ignores RequestStatus; Disconnected result is undefined and must not be interpreted as safe Stopped success.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "future testing-arm command/trait owners (pending)"
+      ],
+      "reactor_implementation_status": "explicit frontend/native-profile pending"
+    },
+    {
+      "id": "ARM-SERVER-TESTING-07",
+      "group": "TESTING",
+      "anchor": {
+        "source": "src/service/arm/testing_arm_cmd_start_peer.c",
+        "line": 265,
+        "function": "start_peer_traits"
+      },
+      "contract": "Expose borrowed ARM/config and existing process trait with lifetimes tied to live start command; four ARM get/make traits are real API obligations, not untyped trait-map placeholders.",
+      "implementation_status": "pending",
+      "acceptance_status": "not-certified",
+      "reactor_projection": [
+        "future testing-arm command/trait owners (pending)"
+      ],
+      "reactor_implementation_status": "explicit frontend/native-profile pending"
+    }
+  ],
+  "group_counts": {
+    "CONFIG": 16,
+    "LISTENER": 16,
+    "SPAWN": 14,
+    "WIRE": 19,
+    "MONITOR": 6,
+    "EOF": 3,
+    "REAP": 7,
+    "CLOCK": 10,
+    "SHUTDOWN": 6,
+    "CLI": 17,
+    "TESTING": 7
+  },
+  "process_handoff": {
+    "path": "/private/tmp/gnunet-arm-process-handoff-20261027/manifest.json",
+    "sha256": "a7442b7a333a7fb927a095c242cecf350ab09f6c7265495f60c0a6e070d88fcd"
+  },
+  "component_scope": {
+    "actual_layers": [
+      "official source registry and address/readiness owner",
+      "bounded persistent official framing and durable per-client TX",
+      "borrowed formal Owner plus single shared native process backend",
+      "actual fork admission/control TERM/wait/backoff/IDLE/manual drain",
+      "dedicated native registry only; foreign completion returns explicit receipt"
+    ],
+    "runtime_witnesses": 33,
+    "borrowed_RX_documentation_witnesses": 2,
+    "negative_tool_controls": 11,
+    "actual_fresh_pair_cases": 8,
+    "validation_recipe": "tools/verify.py",
+    "full_121_obligations_accepted": false,
+    "pre_exec_signal_result_parity": "pending native profile; admitted does not mean executed/ready",
+    "foreground_entrypoint": "finite integration fixture; PROGRAM/CLI/CLOSE_LSOCKS/privilege/diagnostic frontend pending"
+  }
+}

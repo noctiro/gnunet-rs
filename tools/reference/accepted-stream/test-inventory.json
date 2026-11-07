@@ -1,0 +1,188 @@
+{
+  "schema": 1,
+  "scope": "Exact named current native/IPC/runtime/broker test groups, not whole owner coverage",
+  "groups": {
+    "native": {
+      "package": "gnunet-native",
+      "targets": [
+        "--lib",
+        "--test",
+        "addresses"
+      ],
+      "files": [
+        "adapters/native-std/src/lib.rs",
+        "adapters/native-std/src/network.rs",
+        "adapters/native-std/tests/addresses.rs"
+      ],
+      "count": 12,
+      "tests": [
+        "actual_native_family_refusal_does_not_resolve_unspecified_then_filter",
+        "actual_native_ipv4_uses_exact_arm_hints_and_null_service_port",
+        "cloexec_and_nodelay_failure_are_nonfatal_with_bounded_ordered_diagnostics",
+        "darwin_nosigpipe_failure_is_fatal_before_nodelay",
+        "earlier_nonfatal_diagnostic_survives_later_fatal_error",
+        "exact_source_order_preserves_flags_and_skips_redundant_cloexec_set",
+        "hostname_uses_the_native_limit_and_preserves_c_string_bytes",
+        "invalid_or_fdsetsize_boundary_mints_no_native_attempt",
+        "nonblocking_failure_is_fatal_and_does_not_attempt_later_options",
+        "numeric_native_lookup_uses_null_hints_without_external_name_resolution",
+        "raw_invalid_bytes_and_nul_are_classified_without_unicode_rewrite",
+        "real_wrong_kind_setter_failure_keeps_owned_socket_usable"
+      ]
+    },
+    "ipc": {
+      "package": "gnunet-ipc-unix",
+      "targets": [
+        "--tests"
+      ],
+      "files": [
+        "adapters/ipc-unix/src/stream.rs",
+        "adapters/ipc-unix/src/presence.rs",
+        "adapters/ipc-unix/src/handle.rs",
+        "adapters/ipc-unix/src/transport.rs",
+        "adapters/ipc-unix/src/lib.rs",
+        "adapters/ipc-unix/src/server.rs",
+        "adapters/ipc-unix/src/live_configuration.rs",
+        "adapters/ipc-unix/src/watch.rs",
+        "adapters/ipc-unix/src/resolution.rs",
+        "adapters/ipc-unix/src/resolver.rs",
+        "adapters/ipc-unix/src/accepted.rs",
+        "adapters/ipc-unix/src/client_transport.rs",
+        "adapters/ipc-unix/tests/handle_authority.rs",
+        "adapters/ipc-unix/tests/handle.rs",
+        "adapters/ipc-unix/tests/transport.rs",
+        "adapters/ipc-unix/tests/resolver.rs",
+        "adapters/ipc-unix/tests/client_transport.rs",
+        "adapters/ipc-unix/tests/tcp_server.rs"
+      ],
+      "count": 55,
+      "tests": [
+        "accepted_tcp_is_canonical_before_statistics_core_admission",
+        "callback_reconfiguration_preserves_old_mq_then_uses_new_endpoint_after_idle_close",
+        "cancellation_inside_callback_drains_old_end_before_next_query",
+        "cancelled_notifications_never_extend_the_original_next_deadline",
+        "cancelled_partial_receive_closes_the_actual_socket",
+        "cancelling_a_drive_future_preserves_partial_header_and_original_get",
+        "cancelling_the_server_future_releases_watches_and_partial_sessions",
+        "closed_driver_dispatches_original_failure_once_then_revokes_all_callbacks",
+        "configured_mq_failure_times_out_without_blocking_numeric_fast_requests",
+        "configured_tcp_uses_identical_official_frames_and_retains_partial_cursors",
+        "connection_limit_and_idle_deadline_release_real_ids",
+        "denied_tcp_peer_and_tolerant_unknown_frame_have_explicit_separate_outcomes",
+        "dropping_a_partially_read_operation_retires_the_socket",
+        "dropping_drive_after_real_short_writes_preserves_immutable_tx_cursor",
+        "dropping_owner_closes_its_socket_and_does_not_dispatch_a_completion",
+        "dropping_pending_drive_preserves_partial_response_header_and_body",
+        "expanded_unix_validation_precedes_tcp_and_raw_empty_is_a_relative_path",
+        "expired_connect_submits_no_connection",
+        "expired_destroy_never_submits_a_late_connect_and_delivers_failure_report",
+        "finite_emfile_observation_pauses_accept_until_original_live_client_physically_closes",
+        "fragmented_notifications_keep_original_ids_after_cancellation",
+        "fragmented_official_reply_and_original_deadline",
+        "initial_socket_retries_keep_original_virtual_epoch_and_request",
+        "initial_socket_retry_retains_virtual_mq_and_immutable_first_setter",
+        "initial_tcp_refusal_preserves_virtual_mq_and_the_first_immutable_setter",
+        "injected_fatal_initialization_closes_only_actual_accepted_owner",
+        "injected_wrong_kind_actual_nonfatal_setter_error_returns_original_usable_stream",
+        "interrupted_partial_stream_keeps_original_frame_and_send_cursor",
+        "invalid_configuration_fastpaths_are_lazy_async_and_cancel_between_callbacks",
+        "invalid_configuration_is_lazy_observable_and_never_creates_mq_or_unknown_setters",
+        "invalid_to_valid_connect_restores_future_admission_without_losing_local_task",
+        "iterator_abort_completes_on_end_but_suppresses_disconnect_continuation",
+        "late_timed_out_id_reconnects_next_query_with_its_original_id",
+        "lazy_noop_and_coalescing_across_get_match_independent_wire_order",
+        "malformed_oversized_and_partial_eof_close_only_their_session",
+        "malformed_reply_and_callback_refusal_retire_the_socket",
+        "official_soft_shutdown_finishes_writer_and_does_not_wait_for_monitors",
+        "output_and_core_notification_overflow_have_real_close_outcomes",
+        "overflowing_one_watch_queue_does_not_consume_another_clients_effects",
+        "oversized_response_is_explicit_capacity_loss_and_never_successful_empty_result",
+        "partial_reply_timeout_retires_connection",
+        "preflight_capacity_and_expiry_submit_no_bytes_and_preserve_connection",
+        "processing_confirmation_retires_socket_and_callback_admission",
+        "public_configured_tcp_attempt_reuses_native_stream_without_resolver_dependency",
+        "public_unix_attempt_is_lazy_and_canceled_wait_retains_original_io",
+        "real_rust_client_and_literal_peer_get_watch_and_barrier",
+        "real_watch_client_keeps_id_one_after_cancelling_zero",
+        "repeated_interruptions_do_not_extend_the_original_io_deadline",
+        "restart_remaps_cancelled_watch_holes_to_stable_logical_owners",
+        "synchronously_ready_end_cannot_complete_after_callback_crosses_deadline",
+        "tcp_reverse_uses_raw_ip_and_name_callback_cancel_suppresses_end",
+        "unix_and_tcp_share_one_core_and_acl_rejection_does_not_consume_an_id",
+        "unix_fifo_sent_cancel_drains_without_an_extra_cancel_frame",
+        "unknown_wid_retires_connection_and_expired_preflight_preserves_it",
+        "unpolled_watch_and_rejected_preflight_submit_nothing_and_keep_wid_zero"
+      ]
+    },
+    "broker": {
+      "package": "gnunet-resolver-broker",
+      "targets": [
+        "--tests"
+      ],
+      "files": [
+        "adapters/resolver-broker-std/tests/two_services.rs",
+        "adapters/resolver-broker-std/tests/client_rounds.rs",
+        "adapters/resolver-broker-std/tests/numeric_client.rs",
+        "adapters/resolver-broker-std/tests/shared.rs"
+      ],
+      "count": 19,
+      "tests": [
+        "arm_and_statistics_share_fifo_and_keep_dns_subscription_after_arm_test_success",
+        "callback_return_lease_blocks_next_effect_but_allows_cancellation_then_safe_pool_reuse",
+        "callback_stack_survives_source_clock_backwards_before_other_due_timeout",
+        "client_tcp_success_retains_dns_drain_until_actual_end_and_ignores_later_addresses",
+        "cloned_contexts_share_one_fifo_mq_and_end_advances_original_tail",
+        "combined_endpoints_use_unix_on_even_rounds_tcp_on_odd_and_fallback_after_real_unix_failure",
+        "driver_drop_reports_owner_loss_and_preserves_no_fake_dns_terminal",
+        "existing_mq_admission_owns_frame_before_immediate_cancel_or_another_drive",
+        "expired_then_canceled_unsent_envelopes_retain_exact_mq_ownership_with_bounded_credits",
+        "local_fast_callbacks_are_deferred_shared_cancellable_and_reverse_requires_current_config",
+        "logical_clock_revision_wakes_unbounded_drive_and_timeout_keeps_original_deadline",
+        "maximum_65535_frame_reaches_shared_mq_and_rejected_names_preserve_admission",
+        "numeric_address_hold_precedes_real_socket_and_only_own_null_continues",
+        "numeric_client_starts_real_socket_then_finishes_own_callback_stack_before_connection_notice",
+        "selected_configuration_changes_only_next_mq_while_old_unix_identity_remains_live",
+        "stale_foreign_capacity_and_clock_failure_drop_do_not_alias_callback_authority",
+        "tcp_resolver_own_numeric_lookup_uses_shared_core_without_self_deadlock",
+        "transmitted_cancel_drains_original_end_without_private_connection_or_callback",
+        "unreachable_valid_resolver_expires_the_original_five_second_client_lookup"
+      ]
+    },
+    "runtime": {
+      "package": "gnunet-service-runtime",
+      "targets": [
+        "--lib",
+        "official_masks_ports_denial_and_zero_terminator"
+      ],
+      "files": [
+        "adapters/service-runtime/src/acl.rs",
+        "adapters/service-runtime/src/network.rs"
+      ],
+      "count": 1,
+      "tests": [
+        "official_masks_ports_denial_and_zero_terminator"
+      ]
+    }
+  },
+  "docs": {
+    "ipc": {
+      "package": "gnunet-ipc-unix",
+      "count": 4,
+      "compile_fail": 3
+    },
+    "broker": {
+      "package": "gnunet-resolver-broker",
+      "count": 2,
+      "compile_fail": 1
+    }
+  },
+  "transition": {
+    "prior_runtime_count": 72,
+    "old_private_transport_unit_net_removed": 6,
+    "new_shared_broker_runtime": 19,
+    "new_M12_statistics_unit": 2,
+    "current_runtime_count": 87,
+    "resolver12": "All12 original resolver integration cases were directly ported to the real shared broker Context/Query/Driver, still executed under IPC. No removed-private API compatibility facade or filtered cases.",
+    "private7": "One expanded UNIX filename assertion retained in IPC; other private transport assertions moved to the shared broker real endpoint rounds/five-second/numeric/MAX-frame/retained-drain tests. Refer to adapters/resolver-broker-std/INTEGRATION.json."
+  }
+}

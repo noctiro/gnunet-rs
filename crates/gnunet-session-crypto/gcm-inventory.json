@@ -1,0 +1,104 @@
+{
+  "revision": "346358e26d4dcc2dc4f51bef5d52dca29c7d8165",
+  "source": "src/service/transport/gnunet-communicator-udp.c",
+  "source_sha256": "2e8b3085910489bcd5ce81994133ce5fee89c3b8cf37065f09efec9a61f43cd7",
+  "macros": [
+    "#define AES_KEY_SIZE (256 / 8)",
+    "#define AES_IV_SIZE (96 / 8)",
+    "#define GCM_TAG_SIZE (128 / 8)"
+  ],
+  "function_components": [
+    {
+      "name": "get_iv_key",
+      "line": 1208,
+      "sha256": "71b0eb5e7cb3b3fe52e58ebaf36bf44dd37967d1da32447e495f035ec462d91c",
+      "rust_equivalent": "session::udp_key_iv",
+      "scope": "internal primitive component"
+    },
+    {
+      "kind": "function",
+      "name": "get_kid",
+      "line": 1058,
+      "sha256": "ec71ed1b7ff38bf14eb74c061a2b2ce7417364d7615643d553a326c9992bef7b",
+      "rust_equivalent": "session::udp_key_id",
+      "scope": "internal primitive component"
+    },
+    {
+      "kind": "function",
+      "name": "calculate_cmac",
+      "line": 1351,
+      "sha256": "a8bf30b39054af6c6a2808a1ab4cdbad55f1a83d83d9e9db4af80a1cf5e76a80",
+      "rust_equivalent": "session::udp_cmac",
+      "scope": "internal primitive component"
+    },
+    {
+      "kind": "function",
+      "name": "setup_cipher",
+      "line": 1419,
+      "sha256": "c6ee48bc104ddac3ce97b31ecec17ccc2a79188cb942f83fb455c74c29335114",
+      "rust_equivalent": "gcm::Aes256Gcm plus DatagramKey::derive",
+      "scope": "internal primitive component"
+    },
+    {
+      "kind": "function",
+      "name": "try_decrypt",
+      "line": 1454,
+      "sha256": "27f57b1d6c3af0869f74d72157c714a279aa135da17297f75005450fcf4f914d",
+      "rust_equivalent": "DatagramKey::open_body (failed-output zeroizing difference)",
+      "scope": "internal primitive component"
+    }
+  ],
+  "struct_components": [
+    {
+      "kind": "struct",
+      "name": "InitialKX",
+      "line": 212,
+      "sha256": "4d5807380601b2d514d286c21f605f9c23c9fc3ffd74912ebe3e0f5a73f0f6a8"
+    },
+    {
+      "kind": "struct",
+      "name": "UDPConfirmation",
+      "line": 232,
+      "sha256": "744d0fde490892bcad2bdff5da461b818f3f4457498c03c55cfa268f837aeb32"
+    },
+    {
+      "kind": "struct",
+      "name": "UDPAck",
+      "line": 260,
+      "sha256": "6179cb6edf557cc072d4d7e9099ba4e54488bd3897431adc4e0b3d76596de0d9"
+    },
+    {
+      "kind": "struct",
+      "name": "UDPBox",
+      "line": 332,
+      "sha256": "1142bfdf8ec7a2005d4969b2ac7cf229e8133a8d7eef8b4a9081821061d9250f"
+    },
+    {
+      "kind": "struct",
+      "name": "SharedSecret",
+      "line": 430,
+      "sha256": "2a67db95bba171661487ed6ee03fb083a7e8dfe9344b54cf7011afd1e0fd4c41"
+    }
+  ],
+  "normal_native_profile": {
+    "key": 32,
+    "nonce": 12,
+    "tag": 16,
+    "InitialKX": 48,
+    "UDPConfirmation": 104,
+    "UDPAck": 72,
+    "UDPBox": 48,
+    "UDPBox_tag_offset": 32,
+    "UDPConfirmation_time_offset": 96,
+    "UDPAck_cmac_offset": 8
+  },
+  "official_public_function_credit": null,
+  "whole_communicator_execution": false,
+  "pending": [
+    "initial Elligator0x0022 plus purpose-signature confirmation",
+    "peer/KID replay cache consumption and ACK credits",
+    "rekey lifecycle/timers and native UDP transport",
+    "MTU/padding admission and address/NAT lifecycle"
+  ],
+  "source_binding_note": "Full source SHA plus unchanged extracted function bodies and normal Meson TU profile, not rewritten crypto recipe."
+}

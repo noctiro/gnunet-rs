@@ -1,0 +1,33 @@
+[package]
+name = "gnunet-nse-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = []
+
+[dependencies]
+gnunet-nse.workspace = true
+gnunet-crypto.workspace = true
+gnunet-pils.workspace = true
+gnunet-pils-host = { workspace = true, features = ["client"] }
+gnunet-core-client-host.workspace = true
+gnunet-client-host.workspace = true
+gnunet-types.workspace = true
+gnunet-wire.workspace = true
+gnunet-config.workspace = true
+gnunet-resolver-broker.workspace = true
+gnunet-service-runtime.workspace = true
+gnunet-service-startup.workspace = true
+getrandom.workspace = true
+tokio = { workspace = true, features = ["rt", "net", "time"] }
+
+[dev-dependencies]
+gnunet-client.workspace = true
+gnunet-program-host = { workspace = true, features = ["resolver-broker", "service-runtime"] }
+tokio = { workspace = true, features = ["io-util", "sync"] }
+
+[lints]
+workspace = true

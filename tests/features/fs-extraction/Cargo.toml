@@ -1,0 +1,24 @@
+[package]
+name = "gnunet-fs-extraction-check"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99.1"
+license = "MPL-2.0"
+publish = false
+
+[workspace]
+resolver = "3"
+
+[features]
+default = []
+host = ["dep:fs-host"]
+facade = ["dep:gnunet"]
+
+[dependencies]
+fs-host = { package = "gnunet-fs-host", path = "../../../adapters/fs-std", default-features = false, features = ["extraction"], optional = true }
+gnunet = { path = "../../../crates/gnunet", default-features = false, features = ["official-fs-extraction"], optional = true }
+
+[lints.rust]
+unsafe_code = "forbid"
+warnings = "deny"
+missing_docs = "deny"

@@ -1,0 +1,28 @@
+[package]
+name = "gnunet-ipc-unix"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = []
+
+[dependencies]
+gnunet-client-host.workspace = true
+gnunet-client = { path = "../../crates/gnunet-client" }
+gnunet-statistics = { path = "../../crates/gnunet-statistics", features = ["alloc"] }
+gnunet-types.workspace = true
+gnunet-wire.workspace = true
+gnunet-config.workspace = true
+gnunet-service-runtime.workspace = true
+tokio = { workspace = true, features = ["net", "time", "io-util", "rt"] }
+
+[dev-dependencies]
+nix.workspace = true
+socket2.workspace = true
+gnunet-resolver-broker.workspace = true
+tokio = { workspace = true, features = ["rt", "io-std", "sync"] }
+
+[lints]
+workspace = true

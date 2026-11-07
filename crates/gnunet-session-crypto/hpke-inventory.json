@@ -1,0 +1,460 @@
+{
+  "schema": 1,
+  "revision": "346358e26d4dcc2dc4f51bef5d52dca29c7d8165",
+  "source_sha256": "da460803eeffe98ca8664cf1b9965244b392bd323f569d9a0991f1e244c38dba",
+  "header_sha256": "da243a272eb2d84e604d23dcce1ecd72852442e1e40ff0dae2ba6957df9d4294",
+  "public_function_count": 28,
+  "public_functions": [
+    {
+      "name": "GNUNET_CRYPTO_hpke_kem_encaps_norand",
+      "source_line": 211,
+      "header_line": 2448,
+      "header_id": "gnunet_crypto_lib.h:FunctionDecl:GNUNET_CRYPTO_hpke_kem_encaps_norand:62366",
+      "signature": "enum GNUNET_GenericReturnValue (const struct GNUNET_CRYPTO_HpkePublicKey *, struct GNUNET_CRYPTO_HpkeEncapsulation *, const struct GNUNET_CRYPTO_HpkePrivateKey *, struct GNUNET_ShortHashCode *)",
+      "status": "candidate",
+      "scope_note": "Existing primitives or new source-shaped operation; verification not yet assigned.",
+      "verification": null,
+      "rust_operations": [
+        "exchange::kem_encapsulate"
+      ],
+      "candidate_evidence_scope": "existing primitive implementation/composition; new context proof is not separate full direct function coverage"
+    },
+    {
+      "name": "GNUNET_CRYPTO_hpke_kem_encaps",
+      "source_line": 232,
+      "header_line": 2431,
+      "header_id": "gnunet_crypto_lib.h:FunctionDecl:GNUNET_CRYPTO_hpke_kem_encaps:61665",
+      "signature": "enum GNUNET_GenericReturnValue (const struct GNUNET_CRYPTO_HpkePublicKey *, struct GNUNET_CRYPTO_HpkeEncapsulation *, struct GNUNET_ShortHashCode *)",
+      "status": "candidate",
+      "scope_note": "Existing primitives or new source-shaped operation; verification not yet assigned.",
+      "verification": null,
+      "rust_operations": [
+        "exchange::kem_encapsulate_random"
+      ],
+      "candidate_evidence_scope": "existing primitive implementation/composition; new context proof is not separate full direct function coverage"
+    },
+    {
+      "name": "GNUNET_CRYPTO_eddsa_kem_encaps",
+      "source_line": 246,
+      "header_line": 2544,
+      "header_id": "gnunet_crypto_lib.h:FunctionDecl:GNUNET_CRYPTO_eddsa_kem_encaps:66717",
+      "signature": "enum GNUNET_GenericReturnValue (const struct GNUNET_CRYPTO_EddsaPublicKey *, struct GNUNET_CRYPTO_HpkeEncapsulation *, struct GNUNET_ShortHashCode *)",
+      "status": "candidate",
+      "scope_note": "Existing primitives or new source-shaped operation; verification not yet assigned.",
+      "verification": null,
+      "rust_operations": [
+        "exchange::EcdhePublic::from_edwards",
+        "exchange::kem_encapsulate_random"
+      ],
+      "candidate_evidence_scope": "existing primitive implementation/composition; new context proof is not separate full direct function coverage"
+    },
+    {
+      "name": "GNUNET_CRYPTO_hpke_kem_decaps",
+      "source_line": 262,
+      "header_line": 2413,
+      "header_id": "gnunet_crypto_lib.h:FunctionDecl:GNUNET_CRYPTO_hpke_kem_decaps:60944",
+      "signature": "enum GNUNET_GenericReturnValue (const struct GNUNET_CRYPTO_HpkePrivateKey *, const struct GNUNET_CRYPTO_HpkeEncapsulation *, struct GNUNET_ShortHashCode *)",
+      "status": "candidate",
+      "scope_note": "Existing primitives or new source-shaped operation; verification not yet assigned.",
+      "verification": null,
+      "rust_operations": [
+        "exchange::kem_decapsulate"
+      ],
+      "candidate_evidence_scope": "existing primitive implementation/composition; new context proof is not separate full direct function coverage"
+    },
+    {
+      "name": "GNUNET_CRYPTO_eddsa_kem_decaps",
+      "source_line": 301,
+      "header_line": 2526,
+      "header_id": "gnunet_crypto_lib.h:FunctionDecl:GNUNET_CRYPTO_eddsa_kem_decaps:65950",
+      "signature": "enum GNUNET_GenericReturnValue (const struct GNUNET_CRYPTO_EddsaPrivateKey *, const struct GNUNET_CRYPTO_HpkeEncapsulation *, struct GNUNET_ShortHashCode *)",
+      "status": "candidate",
+      "scope_note": "Existing primitives or new source-shaped operation; verification not yet assigned.",
+      "verification": null,
+      "rust_operations": [
+        "exchange::EcdheSecret::from_eddsa_seed",
+        "exchange::kem_decapsulate"
+      ],
+      "candidate_evidence_scope": "existing primitive implementation/composition; new context proof is not separate full direct function coverage"
+    },
+    {
+      "name": "GNUNET_CRYPTO_hpke_elligator_kem_encaps_norand",
+      "source_line": 318,
+      "header_line": 2470,
+      "header_id": "gnunet_crypto_lib.h:FunctionDecl:GNUNET_CRYPTO_hpke_elligator_kem_encaps_norand:63534",
+      "signature": "enum GNUNET_GenericReturnValue (uint8_t, const struct GNUNET_CRYPTO_HpkePublicKey *, struct GNUNET_CRYPTO_HpkeEncapsulation *, const struct GNUNET_CRYPTO_ElligatorEcdhePrivateKey *, struct GNUNET_ShortHashCode *)",
+      "status": "pending",
+      "scope_note": "Official actual Elligator KEM not implemented in this candidate; explicit unsupported, no substitute.",
+      "verification": null,
+      "rust_operations": [],
+      "candidate_evidence_scope": "existing primitive implementation/composition; new context proof is not separate full direct function coverage"
+    },
+    {
+      "name": "GNUNET_CRYPTO_hpke_elligator_kem_encaps",
+      "source_line": 348,
+      "header_line": 2490,
+      "header_id": "gnunet_crypto_lib.h:FunctionDecl:GNUNET_CRYPTO_hpke_elligator_kem_encaps:64448",
+      "signature": "enum GNUNET_GenericReturnValue (const struct GNUNET_CRYPTO_HpkePublicKey *, struct GNUNET_CRYPTO_HpkeEncapsulation *, struct GNUNET_ShortHashCode *)",
+      "status": "pending",
+      "scope_note": "Official actual Elligator KEM not implemented in this candidate; explicit unsupported, no substitute.",
+      "verification": null,
+      "rust_operations": [],
+      "candidate_evidence_scope": "existing primitive implementation/composition; new context proof is not separate full direct function coverage"
+    },
+    {
+      "name": "GNUNET_CRYPTO_hpke_elligator_kem_decaps",
+      "source_line": 368,
+      "header_line": 2508,
+      "header_id": "gnunet_crypto_lib.h:FunctionDecl:GNUNET_CRYPTO_hpke_elligator_kem_decaps:65265",
+      "signature": "enum GNUNET_GenericReturnValue (const struct GNUNET_CRYPTO_HpkePrivateKey *, const struct GNUNET_CRYPTO_HpkeEncapsulation *, struct GNUNET_ShortHashCode *)",
+      "status": "pending",
+      "scope_note": "Official actual Elligator KEM not implemented in this candidate; explicit unsupported, no substitute.",
+      "verification": null,
+      "rust_operations": [],
+      "candidate_evidence_scope": "existing primitive implementation/composition; new context proof is not separate full direct function coverage"
+    },
+    {
+      "name": "GNUNET_CRYPTO_hpke_sender_setup2",
+      "source_line": 534,
+      "header_line": 2595,
+      "header_id": "gnunet_crypto_lib.h:FunctionDecl:GNUNET_CRYPTO_hpke_sender_setup2:68915",
+      "signature": "enum GNUNET_GenericReturnValue (enum GNUNET_CRYPTO_HpkeKem, enum GNUNET_CRYPTO_HpkeMode, struct GNUNET_CRYPTO_HpkePrivateKey *, struct GNUNET_CRYPTO_HpkePrivateKey *, const struct GNUNET_CRYPTO_HpkePublicKey *, const uint8_t *, size_t, const uint8_t *, size_t, const uint8_t *, size_t, struct GNUNET_CRYPTO_HpkeEncapsulation *, struct GNUNET_CRYPTO_HpkeContext *)",
+      "status": "candidate",
+      "scope_note": "Base/PSK for0x0020 implemented candidate; Auth/AuthPsk explicitly rejected upstream; Elligator0x0022 pending.",
+      "verification": null,
+      "rust_operations": [
+        "hpke::sender_setup2"
+      ],
+      "candidate_evidence_scope": "new normal public-context differential"
+    },
+    {
+      "name": "GNUNET_CRYPTO_hpke_sender_setup",
+      "source_line": 592,
+      "header_line": 2566,
+      "header_id": "gnunet_crypto_lib.h:FunctionDecl:GNUNET_CRYPTO_hpke_sender_setup:67584",
+      "signature": "enum GNUNET_GenericReturnValue (const struct GNUNET_CRYPTO_HpkePublicKey *, const uint8_t *, size_t, struct GNUNET_CRYPTO_HpkeEncapsulation *, struct GNUNET_CRYPTO_HpkeContext *)",
+      "status": "candidate",
+      "scope_note": "Existing primitives or new source-shaped operation; verification not yet assigned.",
+      "verification": null,
+      "rust_operations": [
+        "hpke::sender_setup"
+      ],
+      "candidate_evidence_scope": "new normal public-context differential"
+    },
+    {
+      "name": "GNUNET_CRYPTO_hpke_receiver_setup2",
+      "source_line": 615,
+      "header_line": 2631,
+      "header_id": "gnunet_crypto_lib.h:FunctionDecl:GNUNET_CRYPTO_hpke_receiver_setup2:70356",
+      "signature": "enum GNUNET_GenericReturnValue (enum GNUNET_CRYPTO_HpkeKem, enum GNUNET_CRYPTO_HpkeMode, const struct GNUNET_CRYPTO_HpkeEncapsulation *, const struct GNUNET_CRYPTO_HpkePrivateKey *, const struct GNUNET_CRYPTO_HpkePublicKey *, const uint8_t *, size_t, const uint8_t *, size_t, const uint8_t *, size_t, struct GNUNET_CRYPTO_HpkeContext *)",
+      "status": "candidate",
+      "scope_note": "Base/PSK for0x0020 implemented candidate; Auth/AuthPsk explicitly rejected upstream; Elligator0x0022 pending.",
+      "verification": null,
+      "rust_operations": [
+        "hpke::receiver_setup2"
+      ],
+      "candidate_evidence_scope": "new normal public-context differential"
+    },
+    {
+      "name": "GNUNET_CRYPTO_hpke_receiver_setup",
+      "source_line": 663,
+      "header_line": 2660,
+      "header_id": "gnunet_crypto_lib.h:FunctionDecl:GNUNET_CRYPTO_hpke_receiver_setup:71402",
+      "signature": "enum GNUNET_GenericReturnValue (const struct GNUNET_CRYPTO_HpkeEncapsulation *, const struct GNUNET_CRYPTO_HpkePrivateKey *, const uint8_t *, size_t, struct GNUNET_CRYPTO_HpkeContext *)",
+      "status": "candidate",
+      "scope_note": "Existing primitives or new source-shaped operation; verification not yet assigned.",
+      "verification": null,
+      "rust_operations": [
+        "hpke::receiver_setup"
+      ],
+      "candidate_evidence_scope": "new normal public-context differential"
+    },
+    {
+      "name": "GNUNET_CRYPTO_hpke_seal",
+      "source_line": 709,
+      "header_line": 2685,
+      "header_id": "gnunet_crypto_lib.h:FunctionDecl:GNUNET_CRYPTO_hpke_seal:72313",
+      "signature": "enum GNUNET_GenericReturnValue (struct GNUNET_CRYPTO_HpkeContext *, const uint8_t *, size_t, const uint8_t *, size_t, uint8_t *, unsigned long long *)",
+      "status": "candidate",
+      "scope_note": "Existing primitives or new source-shaped operation; verification not yet assigned.",
+      "verification": null,
+      "rust_operations": [
+        "hpke::Context::seal",
+        "hpke::Context::seal_in_place"
+      ],
+      "candidate_evidence_scope": "new normal public-context differential"
+    },
+    {
+      "name": "GNUNET_CRYPTO_hpke_open",
+      "source_line": 740,
+      "header_line": 2739,
+      "header_id": "gnunet_crypto_lib.h:FunctionDecl:GNUNET_CRYPTO_hpke_open:74453",
+      "signature": "enum GNUNET_GenericReturnValue (struct GNUNET_CRYPTO_HpkeContext *, const uint8_t *, size_t, const uint8_t *, size_t, uint8_t *, unsigned long long *)",
+      "status": "candidate",
+      "scope_note": "Existing primitives or new source-shaped operation; verification not yet assigned.",
+      "verification": null,
+      "rust_operations": [
+        "hpke::Context::open",
+        "hpke::Context::open_in_place"
+      ],
+      "candidate_evidence_scope": "new normal public-context differential"
+    },
+    {
+      "name": "GNUNET_CRYPTO_hpke_seal_oneshot",
+      "source_line": 775,
+      "header_line": 2714,
+      "header_id": "gnunet_crypto_lib.h:FunctionDecl:GNUNET_CRYPTO_hpke_seal_oneshot:73421",
+      "signature": "enum GNUNET_GenericReturnValue (const struct GNUNET_CRYPTO_HpkePublicKey *, const uint8_t *, size_t, const uint8_t *, size_t, const uint8_t *, size_t, uint8_t *, unsigned long long *)",
+      "status": "candidate",
+      "scope_note": "Source output enc32+ciphertext, ct_len_p counts ciphertext only; candidate OneshotLengths exposes both values.",
+      "verification": null,
+      "rust_operations": [
+        "hpke::seal_oneshot",
+        "hpke::seal_oneshot_with_ephemeral"
+      ],
+      "candidate_evidence_scope": "new normal public-context differential"
+    },
+    {
+      "name": "GNUNET_CRYPTO_hpke_open_oneshot",
+      "source_line": 805,
+      "header_line": 2765,
+      "header_id": "gnunet_crypto_lib.h:FunctionDecl:GNUNET_CRYPTO_hpke_open_oneshot:75469",
+      "signature": "enum GNUNET_GenericReturnValue (const struct GNUNET_CRYPTO_HpkePrivateKey *, const uint8_t *, size_t, const uint8_t *, size_t, const uint8_t *, size_t, uint8_t *, unsigned long long *)",
+      "status": "candidate",
+      "scope_note": "Source ct_len-32 underflows for shorter input; candidate refuses short framing, unsafe C short path not run.",
+      "verification": null,
+      "rust_operations": [
+        "hpke::open_oneshot"
+      ],
+      "candidate_evidence_scope": "new normal public-context differential"
+    },
+    {
+      "name": "GNUNET_CRYPTO_hpke_pk_to_x25519",
+      "source_line": 836,
+      "header_line": 2396,
+      "header_id": "gnunet_crypto_lib.h:FunctionDecl:GNUNET_CRYPTO_hpke_pk_to_x25519:60296",
+      "signature": "enum GNUNET_GenericReturnValue (const struct GNUNET_CRYPTO_BlindablePublicKey *, struct GNUNET_CRYPTO_HpkePublicKey *)",
+      "status": "candidate",
+      "scope_note": "Existing primitives or new source-shaped operation; verification not yet assigned.",
+      "verification": null,
+      "rust_operations": [
+        "exchange::EcdhePublic::from_edwards"
+      ],
+      "candidate_evidence_scope": "existing primitive implementation/composition; new context proof is not separate full direct function coverage"
+    },
+    {
+      "name": "GNUNET_CRYPTO_hpke_sk_to_x25519",
+      "source_line": 864,
+      "header_line": 2383,
+      "header_id": "gnunet_crypto_lib.h:FunctionDecl:GNUNET_CRYPTO_hpke_sk_to_x25519:59897",
+      "signature": "enum GNUNET_GenericReturnValue (const struct GNUNET_CRYPTO_BlindablePrivateKey *, struct GNUNET_CRYPTO_HpkePrivateKey *)",
+      "status": "candidate",
+      "scope_note": "Existing primitives or new source-shaped operation; verification not yet assigned.",
+      "verification": null,
+      "rust_operations": [
+        "exchange::EcdheSecret::from_bytes (PKEY)",
+        "exchange::EcdheSecret::from_eddsa_seed (EdDSA)"
+      ],
+      "candidate_evidence_scope": "existing primitive implementation/composition; new context proof is not separate full direct function coverage"
+    },
+    {
+      "name": "GNUNET_CRYPTO_hpke_pk_get_length",
+      "source_line": 892,
+      "header_line": 5088,
+      "header_id": "gnunet_crypto_lib.h:FunctionDecl:GNUNET_CRYPTO_hpke_pk_get_length:149797",
+      "signature": "ssize_t (const struct GNUNET_CRYPTO_HpkePublicKey *)",
+      "status": "candidate",
+      "scope_note": "Existing primitives or new source-shaped operation; verification not yet assigned.",
+      "verification": null,
+      "rust_operations": [
+        "exchange::EcdhePublic::hpke_encoded_length"
+      ],
+      "candidate_evidence_scope": "new finite keycodec positives + consuming ownership witnesses"
+    },
+    {
+      "name": "GNUNET_CRYPTO_read_hpke_pk_from_buffer",
+      "source_line": 907,
+      "header_line": 5105,
+      "header_id": "gnunet_crypto_lib.h:FunctionDecl:GNUNET_CRYPTO_read_hpke_pk_from_buffer:150401",
+      "signature": "enum GNUNET_GenericReturnValue (const void *, size_t, struct GNUNET_CRYPTO_HpkePublicKey *, size_t *)",
+      "status": "candidate",
+      "scope_note": "Existing primitives or new source-shaped operation; verification not yet assigned.",
+      "verification": null,
+      "rust_operations": [
+        "exchange::EcdhePublic::decode_hpke"
+      ],
+      "candidate_evidence_scope": "new finite keycodec positives + consuming ownership witnesses"
+    },
+    {
+      "name": "GNUNET_CRYPTO_write_hpke_pk_to_buffer",
+      "source_line": 933,
+      "header_line": 5124,
+      "header_id": "gnunet_crypto_lib.h:FunctionDecl:GNUNET_CRYPTO_write_hpke_pk_to_buffer:151009",
+      "signature": "ssize_t (const struct GNUNET_CRYPTO_HpkePublicKey *, void *, size_t)",
+      "status": "candidate",
+      "scope_note": "Existing primitives or new source-shaped operation; verification not yet assigned.",
+      "verification": null,
+      "rust_operations": [
+        "exchange::EcdhePublic::encode_hpke"
+      ],
+      "candidate_evidence_scope": "new finite keycodec positives + consuming ownership witnesses"
+    },
+    {
+      "name": "GNUNET_CRYPTO_hpke_sk_clear",
+      "source_line": 951,
+      "header_line": 5135,
+      "header_id": "gnunet_crypto_lib.h:FunctionDecl:GNUNET_CRYPTO_hpke_sk_clear:151259",
+      "signature": "void (struct GNUNET_CRYPTO_HpkePrivateKey *)",
+      "status": "candidate",
+      "scope_note": "C explicitly zeros key; Rust consuming clear/Drop erases owned bytes, no post-drop memory read claim.",
+      "verification": null,
+      "rust_operations": [
+        "exchange::EcdheSecret::clear",
+        "Zeroizing Drop"
+      ],
+      "candidate_evidence_scope": "new finite keycodec positives + consuming ownership witnesses"
+    },
+    {
+      "name": "GNUNET_CRYPTO_hpke_sk_create2",
+      "source_line": 965,
+      "header_line": 5149,
+      "header_id": "gnunet_crypto_lib.h:FunctionDecl:GNUNET_CRYPTO_hpke_sk_create2:151763",
+      "signature": "enum GNUNET_GenericReturnValue (enum GNUNET_CRYPTO_HpkeKeyType, const char *, size_t, struct GNUNET_CRYPTO_HpkePrivateKey *)",
+      "status": "candidate",
+      "scope_note": "Existing primitives or new source-shaped operation; verification not yet assigned.",
+      "verification": null,
+      "rust_operations": [
+        "exchange::EcdheSecret::derive_hpke"
+      ],
+      "candidate_evidence_scope": "existing primitive implementation/composition; new context proof is not separate full direct function coverage"
+    },
+    {
+      "name": "GNUNET_CRYPTO_hpke_sk_create",
+      "source_line": 1011,
+      "header_line": 5164,
+      "header_id": "gnunet_crypto_lib.h:FunctionDecl:GNUNET_CRYPTO_hpke_sk_create:152281",
+      "signature": "enum GNUNET_GenericReturnValue (enum GNUNET_CRYPTO_HpkeKeyType, struct GNUNET_CRYPTO_HpkePrivateKey *)",
+      "status": "candidate",
+      "scope_note": "Existing primitives or new source-shaped operation; verification not yet assigned.",
+      "verification": null,
+      "rust_operations": [
+        "exchange::EcdheSecret::generate_hpke"
+      ],
+      "candidate_evidence_scope": "existing primitive implementation/composition; new context proof is not separate full direct function coverage"
+    },
+    {
+      "name": "GNUNET_CRYPTO_hpke_sk_get_length",
+      "source_line": 1027,
+      "header_line": 5178,
+      "header_id": "gnunet_crypto_lib.h:FunctionDecl:GNUNET_CRYPTO_hpke_sk_get_length:152786",
+      "signature": "ssize_t (const struct GNUNET_CRYPTO_HpkePrivateKey *)",
+      "status": "candidate",
+      "scope_note": "Existing primitives or new source-shaped operation; verification not yet assigned.",
+      "verification": null,
+      "rust_operations": [
+        "exchange::EcdheSecret::hpke_encoded_length"
+      ],
+      "candidate_evidence_scope": "new finite keycodec positives + consuming ownership witnesses"
+    },
+    {
+      "name": "GNUNET_CRYPTO_read_hpke_sk_from_buffer",
+      "source_line": 1045,
+      "header_line": 5194,
+      "header_id": "gnunet_crypto_lib.h:FunctionDecl:GNUNET_CRYPTO_read_hpke_sk_from_buffer:153364",
+      "signature": "enum GNUNET_GenericReturnValue (const void *, size_t, struct GNUNET_CRYPTO_HpkePrivateKey *, size_t *)",
+      "status": "candidate",
+      "scope_note": "Existing primitives or new source-shaped operation; verification not yet assigned.",
+      "verification": null,
+      "rust_operations": [
+        "exchange::EcdheSecret::decode_hpke_private"
+      ],
+      "candidate_evidence_scope": "new finite keycodec positives + consuming ownership witnesses"
+    },
+    {
+      "name": "GNUNET_CRYPTO_write_hpke_sk_to_buffer",
+      "source_line": 1072,
+      "header_line": 5214,
+      "header_id": "gnunet_crypto_lib.h:FunctionDecl:GNUNET_CRYPTO_write_hpke_sk_to_buffer:154167",
+      "signature": "ssize_t (const struct GNUNET_CRYPTO_HpkePrivateKey *, void *, size_t)",
+      "status": "candidate",
+      "scope_note": "Existing primitives or new source-shaped operation; verification not yet assigned.",
+      "verification": null,
+      "rust_operations": [
+        "exchange::EcdheSecret::encode_hpke_private"
+      ],
+      "candidate_evidence_scope": "new finite keycodec positives + consuming ownership witnesses"
+    },
+    {
+      "name": "GNUNET_CRYPTO_hpke_sk_get_public",
+      "source_line": 1091,
+      "header_line": 5229,
+      "header_id": "gnunet_crypto_lib.h:FunctionDecl:GNUNET_CRYPTO_hpke_sk_get_public:154688",
+      "signature": "enum GNUNET_GenericReturnValue (const struct GNUNET_CRYPTO_HpkePrivateKey *, struct GNUNET_CRYPTO_HpkePublicKey *)",
+      "status": "candidate",
+      "scope_note": "Existing primitives or new source-shaped operation; verification not yet assigned.",
+      "verification": null,
+      "rust_operations": [
+        "exchange::EcdheSecret::public_key"
+      ],
+      "candidate_evidence_scope": "new finite keycodec positives + consuming ownership witnesses"
+    }
+  ],
+  "declared_modes": {
+    "0": "Base implemented C",
+    "1": "PSK implemented C",
+    "2": "Auth declared, C setup2 rejects",
+    "3": "AuthPSK declared, C setup2 rejects"
+  },
+  "actual_context_suite": {
+    "kem": "0020 hardcoded key_schedule even forElligator",
+    "kdf": "0001 SHA256",
+    "aead": "0003 ChaCha20Poly1305"
+  },
+  "exporter": "ctx.exporter_secret derived and stored; no public Export function exists in pinned header/source",
+  "unknown_kem": "C Base/PSK lacks else rejection and uses uninitialized shared_secret; never execute invalid kem C path; Rust refuses Unsupported",
+  "all_statuses_candidate_not_ledger_credit": true,
+  "internal_functions": [
+    {
+      "name": "labeled_extract",
+      "source_line": 51
+    },
+    {
+      "name": "labeled_expand",
+      "source_line": 94
+    },
+    {
+      "name": "GNUNET_CRYPTO_hpke_labeled_extract_and_expand",
+      "source_line": 128
+    },
+    {
+      "name": "kem_encaps_norand",
+      "source_line": 171
+    },
+    {
+      "name": "verify_psk_inputs",
+      "source_line": 411
+    },
+    {
+      "name": "key_schedule",
+      "source_line": 449
+    },
+    {
+      "name": "increment_seq",
+      "source_line": 679
+    },
+    {
+      "name": "compute_nonce",
+      "source_line": 692
+    }
+  ],
+  "source_supported_context_completeness": "0020 Base/PSK setup/seal/open/oneshot and declared Auth rejections implemented in candidate; verification remains parent-reviewed, not ledger status",
+  "explicit_api_decompositions": [
+    "opaque nonClone/nonDebug context instead of arbitrary mutable C struct fields",
+    "role/sequence/nonce getters, scoped opaque exporter borrow",
+    "explicit entropy instead of hidden C RNG",
+    "OneshotLengths distinguishes actual total bytes and C ciphertext-only result",
+    "safe short input rejection and failed-output erasure",
+    "typed identity key conversions compose existing Rust APIs; no C union ABI bridge claimed"
+  ],
+  "normal_c_profile_limit": "Executed little-endian64 native Meson profile. key_schedule copies one byte from enum Mode; no big-endian C behavioral-equivalence claim. Rust emits the canonical declared mode byte explicitly."
+}

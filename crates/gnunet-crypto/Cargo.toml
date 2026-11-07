@@ -1,0 +1,30 @@
+[package]
+name = "gnunet-crypto"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = []
+pow = ["dep:argon2"]
+alloc = []
+std = ["alloc", "gnunet-types/std"]
+
+[dependencies]
+argon2 = { workspace = true, optional = true }
+gnunet-types.workspace = true
+gnunet-wire.workspace = true
+ed25519-dalek = { workspace = true }
+sha2 = { workspace = true }
+zeroize = { workspace = true }
+curve25519-dalek.workspace = true
+crypto-bigint.workspace = true
+aes.workspace = true
+ctr.workspace = true
+salsa20.workspace = true
+poly1305.workspace = true
+subtle.workspace = true
+
+[lints]
+workspace = true

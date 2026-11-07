@@ -1,0 +1,16 @@
+[package]
+name = "gnunet-nat-server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+gnunet-nat-host = { workspace = true, features = ["program"] }
+gnunet-config.workspace = true
+gnunet-program-host = { workspace = true, features = ["resolver-broker"] }
+gnunet-service-startup.workspace = true
+tokio = { workspace = true, features = ["rt", "net", "time", "signal", "process"] }
+
+[lints]
+workspace = true

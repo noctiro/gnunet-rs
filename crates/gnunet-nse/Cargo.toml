@@ -1,0 +1,18 @@
+[package]
+name = "gnunet-nse"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = []
+
+[dependencies]
+gnunet-types.workspace = true
+gnunet-wire.workspace = true
+gnunet-crypto = { workspace = true, features = ["pow"] }
+libm.workspace = true
+
+[lints]
+workspace = true

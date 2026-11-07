@@ -1,0 +1,17 @@
+action|saturation-across-get|set|73|61|10|0
+action|saturation-across-get|get|73|61|0|0
+action|zero-merged-update|update|73|61|0|1
+empty|zero-call-no-action
+action|replace-update-with-set|set|73|61|9|0
+action|case-sensitive-names|set|73|61|5|1
+action|case-sensitive-names|get|6f74686572|78|0|0
+action|case-sensitive-names|set|73|41|2|0
+action|setter-fifo-position|set|73|61|3|1
+action|setter-fifo-position|set|73|62|2|0
+action|cancel-queued-get|set|73|61|3|1
+action|cancel-queued-get|get|73|62|0|0
+action|negative-minimum|set|73|61|5|1
+action|positive-wrap|set|73|61|0|1
+action|negative-clamp|set|73|61|0|0
+action|get-wildcards|get|||0|0
+disabled|1

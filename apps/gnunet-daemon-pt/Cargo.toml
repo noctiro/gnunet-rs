@@ -1,0 +1,14 @@
+[package]
+name = "gnunet-daemon-pt"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+[target.'cfg(unix)'.dependencies]
+gnunet-pt-host = { workspace = true, features = ["program"] }
+gnunet-config.workspace = true
+gnunet-program-host = { workspace = true, features = ["runtime", "resolver-broker", "service-runtime"] }
+gnunet-service-startup.workspace = true
+tokio = { workspace = true, features = ["rt", "time", "net", "signal"] }
+[lints]
+workspace = true

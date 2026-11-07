@@ -1,0 +1,984 @@
+{
+  "configuration.c": {
+    "source": "/private/tmp/gnunet-upstream-audit-20261026/src/lib/util/configuration.c",
+    "source_sha256": "29177dd0e1ecc68035a9757d9a8479f5f736f5d90622bf00d9ef9aa3fdf4467b",
+    "compile_file": "../../gnunet-upstream-audit-20261026/src/lib/util/configuration.c",
+    "exit_code": 0,
+    "sites": [
+      {
+        "macro": "GNUNET_break",
+        "start_line": 388,
+        "end_line": 388,
+        "source": "GNUNET_break (0)"
+      },
+      {
+        "macro": "LOG",
+        "start_line": 504,
+        "end_line": 506,
+        "source": "LOG (GNUNET_ERROR_TYPE_DEBUG,\n         \"Refusing to parse inline configurations, \"\n         \"not allowed without source filename!\\n\")",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "GNUNET_break",
+        "start_line": 526,
+        "end_line": 526,
+        "source": "GNUNET_break (0)"
+      },
+      {
+        "macro": "LOG",
+        "start_line": 545,
+        "end_line": 547,
+        "source": "LOG (GNUNET_ERROR_TYPE_DEBUG,\n         \"processing config glob '%s'\\n\",\n         inline_path)",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "LOG",
+        "start_line": 662,
+        "end_line": 666,
+        "source": "LOG (GNUNET_ERROR_TYPE_INFO,\n           \"Configuration file '%s' loaded with @inline-secret@ \"\n           \"does not contain section '%s'.\\n\",\n           inline_path,\n           restrict_section)",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "LOG",
+        "start_line": 733,
+        "end_line": 738,
+        "source": "LOG (GNUNET_ERROR_TYPE_WARNING,\n         \"Section '%s' is marked as inaccessible, because the configuration \"\n         \"file that contains the section can't be read.  Attempts to use \"\n         \"option '%s' will fail.\\n\",\n         section,\n         key)",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "LOG",
+        "start_line": 915,
+        "end_line": 918,
+        "source": "LOG (GNUNET_ERROR_TYPE_WARNING,\n             \"Illegal directive in line %u (parsing restricted section %s)\\n\",\n             nr,\n             cfg->restrict_section)",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "LOG",
+        "start_line": 925,
+        "end_line": 927,
+        "source": "LOG (GNUNET_ERROR_TYPE_WARNING,\n             \"Bad directive in line %u\\n\",\n             nr)",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "LOG",
+        "start_line": 981,
+        "end_line": 983,
+        "source": "LOG (GNUNET_ERROR_TYPE_WARNING,\n               \"Bad inline-secret directive in line %u\\n\",\n               nr)",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "LOG",
+        "start_line": 1003,
+        "end_line": 1006,
+        "source": "LOG (GNUNET_ERROR_TYPE_WARNING,\n             \"Unknown or malformed directive '%s' in line %u\\n\",\n             directive,\n             nr)",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "LOG",
+        "start_line": 1032,
+        "end_line": 1034,
+        "source": "LOG (GNUNET_ERROR_TYPE_WARNING,\n             \"Syntax error while deserializing in line %u (option without section)\\n\",\n             nr)",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "LOG",
+        "start_line": 1082,
+        "end_line": 1084,
+        "source": "LOG (GNUNET_ERROR_TYPE_WARNING,\n         \"Syntax error while deserializing in line %u\\n\",\n         nr)",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "LOG",
+        "start_line": 1110,
+        "end_line": 1112,
+        "source": "LOG (GNUNET_ERROR_TYPE_DEBUG,\n       \"Asked to parse config file `%s'\\n\",\n       fn)",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "LOG",
+        "start_line": 1138,
+        "end_line": 1141,
+        "source": "LOG (GNUNET_ERROR_TYPE_ERROR,\n               \"Forbidden direct cyclic configuration import (%s -> %s)\\n\",\n               cf->source_filename,\n               filename)",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "LOG",
+        "start_line": 1144,
+        "end_line": 1148,
+        "source": "LOG (GNUNET_ERROR_TYPE_ERROR,\n               \"Forbidden indirect cyclic configuration import (%s -> ... -> %s -> %s)\\n\",\n               cf->source_filename,\n               parent->source_filename,\n               filename)",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "LOG",
+        "start_line": 1176,
+        "end_line": 1178,
+        "source": "LOG (GNUNET_ERROR_TYPE_WARNING,\n         \"Error while determining the file size of `%s'\\n\",\n         fn)",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "GNUNET_break",
+        "start_line": 1184,
+        "end_line": 1184,
+        "source": "GNUNET_break (0)"
+      },
+      {
+        "macro": "LOG",
+        "start_line": 1195,
+        "end_line": 1197,
+        "source": "LOG (GNUNET_ERROR_TYPE_WARNING,\n         \"Error while reading file `%s'\\n\",\n         fn)",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "LOG",
+        "start_line": 1208,
+        "end_line": 1210,
+        "source": "LOG (GNUNET_ERROR_TYPE_DEBUG,\n       \"Deserializing contents of file `%s'\\n\",\n       fn)",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "GNUNET_log",
+        "start_line": 1217,
+        "end_line": 1219,
+        "source": "GNUNET_log (GNUNET_ERROR_TYPE_ERROR,\n                _ (\"Failed to parse configuration file `%s'\\n\"),\n                fn)",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "GNUNET_log_strerror_file",
+        "start_line": 1746,
+        "end_line": 1748,
+        "source": "GNUNET_log_strerror_file (GNUNET_ERROR_TYPE_WARNING,\n                                \"write\",\n                                tfn)",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "GNUNET_log_strerror_file",
+        "start_line": 1759,
+        "end_line": 1761,
+        "source": "GNUNET_log_strerror_file (GNUNET_ERROR_TYPE_WARNING,\n                                \"fsync\",\n                                tfn)",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "GNUNET_log_strerror_file",
+        "start_line": 1770,
+        "end_line": 1772,
+        "source": "GNUNET_log_strerror_file (GNUNET_ERROR_TYPE_WARNING,\n                                \"close\",\n                                tfn)",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "GNUNET_log_strerror_file",
+        "start_line": 1788,
+        "end_line": 1790,
+        "source": "GNUNET_log_strerror_file (GNUNET_ERROR_TYPE_WARNING,\n                                \"chmod\",\n                                tfn)",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "LOG",
+        "start_line": 1796,
+        "end_line": 1798,
+        "source": "LOG (GNUNET_ERROR_TYPE_ERROR,\n         \"Configuration file `%s' changed while it was being cleaned\\n\",\n         fn)",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "GNUNET_log_strerror_file",
+        "start_line": 1807,
+        "end_line": 1809,
+        "source": "GNUNET_log_strerror_file (GNUNET_ERROR_TYPE_WARNING,\n                              \"rename\",\n                              fn)",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "LOG",
+        "start_line": 1952,
+        "end_line": 1954,
+        "source": "LOG (GNUNET_ERROR_TYPE_ERROR,\n         \"Configuration file `%s' was not parsed with diagnostics enabled\\n\",\n         target)",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "LOG",
+        "start_line": 1961,
+        "end_line": 1963,
+        "source": "LOG (GNUNET_ERROR_TYPE_ERROR,\n         \"Configuration file `%s' changed since it was parsed\\n\",\n         target)",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "LOG",
+        "start_line": 1975,
+        "end_line": 1977,
+        "source": "LOG (GNUNET_ERROR_TYPE_ERROR,\n           \"Configuration file `%s' changed since it was parsed\\n\",\n           target)",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "LOG",
+        "start_line": 2190,
+        "end_line": 2193,
+        "source": "LOG (GNUNET_ERROR_TYPE_WARNING,\n         \"Section '%s' is marked as inaccessible, because a configuration \"\n         \"file that contains the section can't be read.\\n\",\n         section)",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "GNUNET_break",
+        "start_line": 2345,
+        "end_line": 2345,
+        "source": "GNUNET_break (cfg_default->pd == cfg_new->pd)"
+      },
+      {
+        "macro": "LOG",
+        "start_line": 2616,
+        "end_line": 2621,
+        "source": "LOG (GNUNET_ERROR_TYPE_ERROR,\n         _ (\"Configuration value '%s' for '%s'\"\n            \" in section '%s' is not in set of legal choices\\n\"),\n         e->val,\n         option,\n         section)",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "LOG",
+        "start_line": 2719,
+        "end_line": 2721,
+        "source": "LOG (GNUNET_ERROR_TYPE_WARNING,\n         \"Recursive expansion suspected, aborting $-expansion for term `%s'\\n\",\n         orig)",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "LOG",
+        "start_line": 2724,
+        "end_line": 2726,
+        "source": "LOG (GNUNET_ERROR_TYPE_DEBUG,\n       \"Asked to $-expand %s\\n\",\n       orig)",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "LOG",
+        "start_line": 2729,
+        "end_line": 2730,
+        "source": "LOG (GNUNET_ERROR_TYPE_DEBUG,\n         \"Doesn't start with $ - not expanding\\n\")",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "LOG",
+        "start_line": 2754,
+        "end_line": 2756,
+        "source": "LOG (GNUNET_ERROR_TYPE_WARNING,\n             \"Missing closing `}' in option `%s'\\n\",\n             orig)",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "LOG",
+        "start_line": 2801,
+        "end_line": 2805,
+        "source": "LOG (GNUNET_ERROR_TYPE_DEBUG,\n       \"Split into `%s' and `%s' with default %s\\n\",\n       start,\n       post,\n       def)",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "LOG",
+        "start_line": 2825,
+        "end_line": 2828,
+        "source": "LOG (GNUNET_ERROR_TYPE_WARNING,\n           \"Failed to expand `%s' in `%s' as it is neither found in [PATHS] nor defined as an environmental variable\\n\",\n           start,\n           orig)",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "LOG",
+        "start_line": 2894,
+        "end_line": 2895,
+        "source": "LOG (GNUNET_ERROR_TYPE_DEBUG,\n         \"Failed to retrieve filename\\n\")",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "GNUNET_log",
+        "start_line": 3220,
+        "end_line": 3222,
+        "source": "GNUNET_log (GNUNET_ERROR_TYPE_WARNING,\n                  \"Skipping file `%s'\\n\",\n                  filename)",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "GNUNET_break",
+        "start_line": 3298,
+        "end_line": 3298,
+        "source": "GNUNET_break (0)"
+      },
+      {
+        "macro": "GNUNET_break",
+        "start_line": 3323,
+        "end_line": 3323,
+        "source": "GNUNET_break (0)"
+      },
+      {
+        "macro": "LOG",
+        "start_line": 3345,
+        "end_line": 3347,
+        "source": "LOG (GNUNET_ERROR_TYPE_WARNING,\n           \"Failed to load base configuration from '%s'\\n\",\n           filename)",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "LOG",
+        "start_line": 3359,
+        "end_line": 3361,
+        "source": "LOG (GNUNET_ERROR_TYPE_WARNING,\n         \"Failed to load configuration from file '%s'\\n\",\n         filename)",
+        "normal_profile_active": true
+      }
+    ],
+    "actual_policy_lines": [
+      366,
+      388,
+      433,
+      500,
+      506,
+      526,
+      532,
+      547,
+      557,
+      633,
+      666,
+      738,
+      809,
+      918,
+      927,
+      983,
+      1006,
+      1034,
+      1084,
+      1091,
+      1112,
+      1141,
+      1148,
+      1166,
+      1178,
+      1184,
+      1197,
+      1210,
+      1219,
+      1335,
+      1368,
+      1748,
+      1761,
+      1772,
+      1790,
+      1798,
+      1809,
+      1954,
+      1963,
+      1977,
+      2025,
+      2193,
+      2345,
+      2621,
+      2721,
+      2726,
+      2730,
+      2756,
+      2805,
+      2828,
+      2868,
+      2895,
+      2957,
+      3222,
+      3298,
+      3323,
+      3347,
+      3361,
+      3400
+    ]
+  },
+  "disk.c": {
+    "source": "/private/tmp/gnunet-upstream-audit-20261026/src/lib/util/disk.c",
+    "source_sha256": "d68660547e31ed9409f22350a66878b3236655cea1b3541c5674850663b96e9e",
+    "compile_file": "../../gnunet-upstream-audit-20261026/src/lib/util/disk.c",
+    "exit_code": 0,
+    "sites": [
+      {
+        "macro": "LOG_STRERROR_FILE",
+        "start_line": 156,
+        "end_line": 156,
+        "source": "LOG_STRERROR_FILE (GNUNET_ERROR_TYPE_DEBUG, \"lstat64\", fn)",
+        "normal_profile_active": false
+      },
+      {
+        "macro": "LOG_STRERROR_FILE",
+        "start_line": 164,
+        "end_line": 164,
+        "source": "LOG_STRERROR_FILE (GNUNET_ERROR_TYPE_DEBUG, \"lstat\", fn)",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "LOG_STRERROR_FILE",
+        "start_line": 178,
+        "end_line": 178,
+        "source": "LOG_STRERROR_FILE (GNUNET_ERROR_TYPE_DEBUG, \"realpath\", fn)",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "GNUNET_log_strerror_file",
+        "start_line": 348,
+        "end_line": 348,
+        "source": "GNUNET_log_strerror_file (GNUNET_ERROR_TYPE_WARNING, \"chmod\", fn)",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "LOG_STRERROR_FILE",
+        "start_line": 362,
+        "end_line": 362,
+        "source": "LOG_STRERROR_FILE (GNUNET_ERROR_TYPE_ERROR, \"mkdtemp\", fn)",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "GNUNET_log_strerror_file",
+        "start_line": 404,
+        "end_line": 406,
+        "source": "GNUNET_log_strerror_file (GNUNET_ERROR_TYPE_ERROR,\n                                \"renameat2\",\n                                fil)",
+        "normal_profile_active": false
+      },
+      {
+        "macro": "GNUNET_break",
+        "start_line": 407,
+        "end_line": 408,
+        "source": "GNUNET_break (0 ==\n                    close (fd))"
+      },
+      {
+        "macro": "GNUNET_break",
+        "start_line": 411,
+        "end_line": 412,
+        "source": "GNUNET_break (0 ==\n                  close (fd))"
+      },
+      {
+        "macro": "GNUNET_log_strerror_file",
+        "start_line": 428,
+        "end_line": 430,
+        "source": "GNUNET_log_strerror_file (GNUNET_ERROR_TYPE_ERROR,\n                              \"rename\",\n                              fil)",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "LOG_STRERROR_FILE",
+        "start_line": 449,
+        "end_line": 451,
+        "source": "LOG_STRERROR_FILE (GNUNET_ERROR_TYPE_ERROR,\n                       \"mkstemp\",\n                       fn)",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "LOG_STRERROR_FILE",
+        "start_line": 458,
+        "end_line": 460,
+        "source": "LOG_STRERROR_FILE (GNUNET_ERROR_TYPE_WARNING,\n                       \"close\",\n                       fn)",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "LOG_STRERROR_FILE",
+        "start_line": 476,
+        "end_line": 478,
+        "source": "LOG_STRERROR_FILE (GNUNET_ERROR_TYPE_WARNING,\n                         \"stat\",\n                         fil)",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "LOG",
+        "start_line": 483,
+        "end_line": 485,
+        "source": "LOG (GNUNET_ERROR_TYPE_INFO,\n         \"A file already exits with the same name %s\\n\",\n         fil)",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "LOG_STRERROR_FILE",
+        "start_line": 496,
+        "end_line": 498,
+        "source": "LOG_STRERROR_FILE (GNUNET_ERROR_TYPE_WARNING,\n                       \"access\",\n                       fil)",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "LOG_STRERROR_FILE",
+        "start_line": 529,
+        "end_line": 531,
+        "source": "LOG_STRERROR_FILE (GNUNET_ERROR_TYPE_DEBUG,\n                         \"stat\",\n                         rdir)",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "LOG_STRERROR_FILE",
+        "start_line": 545,
+        "end_line": 547,
+        "source": "LOG_STRERROR_FILE (GNUNET_ERROR_TYPE_DEBUG,\n                       \"access\",\n                       rdir)",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "GNUNET_break",
+        "start_line": 584,
+        "end_line": 584,
+        "source": "GNUNET_break (0)"
+      },
+      {
+        "macro": "GNUNET_log",
+        "start_line": 604,
+        "end_line": 606,
+        "source": "GNUNET_log (GNUNET_ERROR_TYPE_ERROR,\n                    \"Creating directory `%s' failed\\n\",\n                    rdir)",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "GNUNET_log",
+        "start_line": 633,
+        "end_line": 635,
+        "source": "GNUNET_log (GNUNET_ERROR_TYPE_ERROR,\n                    \"Creating directory `%s' failed\\n\",\n                    rdir)",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "LOG_STRERROR_FILE",
+        "start_line": 647,
+        "end_line": 649,
+        "source": "LOG_STRERROR_FILE (GNUNET_ERROR_TYPE_ERROR,\n                             \"mkdir\",\n                             rdir)",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "GNUNET_log_strerror_file",
+        "start_line": 803,
+        "end_line": 805,
+        "source": "GNUNET_log_strerror_file (GNUNET_ERROR_TYPE_WARNING,\n                              \"mkstemp\",\n                              fn)",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "GNUNET_log_strerror_file",
+        "start_line": 820,
+        "end_line": 822,
+        "source": "GNUNET_log_strerror_file (GNUNET_ERROR_TYPE_WARNING,\n                              \"mkstemp\",\n                              tmpl)",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "GNUNET_log_strerror_file",
+        "start_line": 830,
+        "end_line": 832,
+        "source": "GNUNET_log_strerror_file (GNUNET_ERROR_TYPE_WARNING,\n                              \"chmod\",\n                              tmpl)",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "GNUNET_log_strerror_file",
+        "start_line": 835,
+        "end_line": 837,
+        "source": "GNUNET_log_strerror_file (GNUNET_ERROR_TYPE_ERROR,\n                                \"unlink\",\n                                tmpl)",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "GNUNET_log_strerror_file",
+        "start_line": 846,
+        "end_line": 848,
+        "source": "GNUNET_log_strerror_file (GNUNET_ERROR_TYPE_WARNING,\n                              \"write\",\n                              tmpl)",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "GNUNET_log_strerror_file",
+        "start_line": 851,
+        "end_line": 853,
+        "source": "GNUNET_log_strerror_file (GNUNET_ERROR_TYPE_ERROR,\n                                \"unlink\",\n                                tmpl)",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "GNUNET_log_strerror_file",
+        "start_line": 863,
+        "end_line": 865,
+        "source": "GNUNET_log_strerror_file (GNUNET_ERROR_TYPE_ERROR,\n                                \"unlink\",\n                                tmpl)",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "GNUNET_log_strerror_file",
+        "start_line": 870,
+        "end_line": 872,
+        "source": "GNUNET_log_strerror_file (GNUNET_ERROR_TYPE_ERROR,\n                              \"unlink\",\n                              tmpl)",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "LOG_STRERROR_FILE",
+        "start_line": 904,
+        "end_line": 906,
+        "source": "LOG_STRERROR_FILE (GNUNET_ERROR_TYPE_WARNING,\n                       \"opendir\",\n                       dname)",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "LOG",
+        "start_line": 1041,
+        "end_line": 1044,
+        "source": "LOG (GNUNET_ERROR_TYPE_DEBUG,\n       \"checking glob '%s' against '%s'\\n\",\n       gc->glob,\n       fn)",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "LOG",
+        "start_line": 1050,
+        "end_line": 1052,
+        "source": "LOG (GNUNET_ERROR_TYPE_DEBUG,\n         \"found glob match '%s'\\n\",\n         filename)",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "LOG",
+        "start_line": 1075,
+        "end_line": 1077,
+        "source": "LOG (GNUNET_ERROR_TYPE_ERROR,\n         \"unsupported glob pattern: '%s'\\n\",\n         glob_pattern)",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "GNUNET_break",
+        "start_line": 1094,
+        "end_line": 1094,
+        "source": "GNUNET_break (0)"
+      },
+      {
+        "macro": "LOG",
+        "start_line": 1095,
+        "end_line": 1096,
+        "source": "LOG (GNUNET_ERROR_TYPE_ERROR,\n         \"glob pattern may only contain '*' in the final path component\\n\")",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "LOG",
+        "start_line": 1107,
+        "end_line": 1110,
+        "source": "LOG (GNUNET_ERROR_TYPE_DEBUG,\n         \"scanning directory '%s' for glob matches on '%s'\\n\",\n         mypat,\n         gc.glob)",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "GNUNET_break",
+        "start_line": 1146,
+        "end_line": 1146,
+        "source": "GNUNET_break (0)"
+      },
+      {
+        "macro": "LOG_STRERROR_FILE",
+        "start_line": 1163,
+        "end_line": 1165,
+        "source": "LOG_STRERROR_FILE (GNUNET_ERROR_TYPE_WARNING,\n                       \"rmdir\",\n                       filename)",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "LOG_STRERROR_FILE",
+        "start_line": 1175,
+        "end_line": 1177,
+        "source": "LOG_STRERROR_FILE (GNUNET_ERROR_TYPE_WARNING,\n                       \"rmdir\",\n                       filename)",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "GNUNET_log_strerror_file",
+        "start_line": 1202,
+        "end_line": 1204,
+        "source": "GNUNET_log_strerror_file (GNUNET_ERROR_TYPE_ERROR,\n                              \"stat\",\n                              src)",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "GNUNET_log_strerror_file",
+        "start_line": 1214,
+        "end_line": 1214,
+        "source": "GNUNET_log_strerror_file (GNUNET_ERROR_TYPE_ERROR, \"open\", src)",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "GNUNET_log_strerror_file",
+        "start_line": 1227,
+        "end_line": 1227,
+        "source": "GNUNET_log_strerror_file (GNUNET_ERROR_TYPE_ERROR, \"open\", dst)",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "GNUNET_break",
+        "start_line": 1246,
+        "end_line": 1247,
+        "source": "GNUNET_break (GNUNET_OK ==\n                GNUNET_DISK_file_close (in))"
+      },
+      {
+        "macro": "GNUNET_break",
+        "start_line": 1248,
+        "end_line": 1249,
+        "source": "GNUNET_break (GNUNET_OK ==\n                GNUNET_DISK_file_close (out))"
+      },
+      {
+        "macro": "GNUNET_break",
+        "start_line": 1253,
+        "end_line": 1254,
+        "source": "GNUNET_break (GNUNET_OK ==\n                GNUNET_DISK_file_close (in))"
+      },
+      {
+        "macro": "GNUNET_break",
+        "start_line": 1255,
+        "end_line": 1256,
+        "source": "GNUNET_break (GNUNET_OK ==\n                GNUNET_DISK_file_close (out))"
+      },
+      {
+        "macro": "LOG",
+        "start_line": 1292,
+        "end_line": 1295,
+        "source": "LOG (GNUNET_ERROR_TYPE_ERROR,\n         _ (\"Cannot obtain information about user `%s': %s\\n\"),\n         user,\n         strerror (errno))",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "LOG_STRERROR_FILE",
+        "start_line": 1300,
+        "end_line": 1300,
+        "source": "LOG_STRERROR_FILE (GNUNET_ERROR_TYPE_WARNING, \"chown\", filename)",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "GNUNET_break",
+        "start_line": 1332,
+        "end_line": 1332,
+        "source": "GNUNET_break (0)"
+      },
+      {
+        "macro": "LOG_STRERROR_FILE",
+        "start_line": 1365,
+        "end_line": 1367,
+        "source": "LOG_STRERROR_FILE (GNUNET_ERROR_TYPE_WARNING,\n                         \"open\",\n                         expfn)",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "LOG_STRERROR_FILE",
+        "start_line": 1369,
+        "end_line": 1371,
+        "source": "LOG_STRERROR_FILE (GNUNET_ERROR_TYPE_DEBUG,\n                         \"open\",\n                         expfn)",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "LOG_STRERROR",
+        "start_line": 1399,
+        "end_line": 1400,
+        "source": "LOG_STRERROR (GNUNET_ERROR_TYPE_WARNING,\n                  \"close\")",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "LOG_STRERROR",
+        "start_line": 1536,
+        "end_line": 1536,
+        "source": "LOG_STRERROR (GNUNET_ERROR_TYPE_ERROR, \"pipe\")",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "LOG_STRERROR",
+        "start_line": 1602,
+        "end_line": 1602,
+        "source": "LOG_STRERROR (GNUNET_ERROR_TYPE_ERROR, \"fcntl\")",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "GNUNET_break",
+        "start_line": 1604,
+        "end_line": 1604,
+        "source": "GNUNET_break (0 == close (p->fd[0]->fd))"
+      },
+      {
+        "macro": "GNUNET_break",
+        "start_line": 1606,
+        "end_line": 1606,
+        "source": "GNUNET_break (0 == close (p->fd[1]->fd))"
+      },
+      {
+        "macro": "GNUNET_break",
+        "start_line": 1713,
+        "end_line": 1713,
+        "source": "GNUNET_break (0)"
+      }
+    ],
+    "actual_policy_lines": [
+      164,
+      178,
+      243,
+      348,
+      362,
+      430,
+      451,
+      460,
+      478,
+      485,
+      498,
+      531,
+      547,
+      584,
+      606,
+      635,
+      649,
+      738,
+      805,
+      822,
+      832,
+      833,
+      837,
+      848,
+      849,
+      853,
+      857,
+      865,
+      872,
+      894,
+      906,
+      1044,
+      1052,
+      1077,
+      1094,
+      1096,
+      1110,
+      1146,
+      1165,
+      1177,
+      1204,
+      1214,
+      1227,
+      1247,
+      1249,
+      1254,
+      1256,
+      1295,
+      1300,
+      1332,
+      1367,
+      1371,
+      1400,
+      1401,
+      1479,
+      1536,
+      1602,
+      1604,
+      1606,
+      1713
+    ]
+  },
+  "common_logging.c": {
+    "source": "/private/tmp/gnunet-upstream-audit-20261026/src/lib/util/common_logging.c",
+    "source_sha256": "4773a6a343f2017f97e19002eb1da5102b23642825487c144ee1da97894b81c2",
+    "compile_file": "../../gnunet-upstream-audit-20261026/src/lib/util/common_logging.c",
+    "exit_code": 0,
+    "sites": [
+      {
+        "macro": "GNUNET_log_strerror_file",
+        "start_line": 418,
+        "end_line": 418,
+        "source": "GNUNET_log_strerror_file (GNUNET_ERROR_TYPE_ERROR, \"open\", fn)",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "GNUNET_break",
+        "start_line": 982,
+        "end_line": 982,
+        "source": "GNUNET_break (ok)"
+      },
+      {
+        "macro": "GNUNET_log",
+        "start_line": 1513,
+        "end_line": 1518,
+        "source": "GNUNET_log (kind,\n              _ (\n                \"Configuration fails to specify option `%s' in section `%s'!\\n\")\n              ,\n              option,\n              section)",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "GNUNET_log",
+        "start_line": 1528,
+        "end_line": 1534,
+        "source": "GNUNET_log (\n    kind,\n    _ (\n      \"Configuration specifies invalid value for option `%s' in section `%s': %s\\n\"),\n    option,\n    section,\n    required)",
+        "normal_profile_active": true
+      }
+    ],
+    "actual_policy_lines": [
+      418,
+      803,
+      872,
+      982,
+      1029,
+      1518,
+      1534
+    ]
+  },
+  "program.c": {
+    "source": "/private/tmp/gnunet-upstream-audit-20261026/src/lib/util/program.c",
+    "source_sha256": "7eff92cd6b31f79ab6f09a1e38ff8fc09abd930f93c96c709bee3ca130318dc9",
+    "compile_file": "../../gnunet-upstream-audit-20261026/src/lib/util/program.c",
+    "exit_code": 0,
+    "sites": [
+      {
+        "macro": "GNUNET_log",
+        "start_line": 286,
+        "end_line": 288,
+        "source": "GNUNET_log (GNUNET_ERROR_TYPE_DEBUG,\n                \"Loading configuration from entry point specified as option (%s)\\n\",\n                cc.cfgfile)",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "GNUNET_log",
+        "start_line": 292,
+        "end_line": 294,
+        "source": "GNUNET_log (GNUNET_ERROR_TYPE_ERROR,\n                  _ (\"Unreadable configuration file `%s', exiting ...\\n\"),\n                  cc.cfgfile)",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "GNUNET_log",
+        "start_line": 304,
+        "end_line": 306,
+        "source": "GNUNET_log (GNUNET_ERROR_TYPE_ERROR,\n                  _ (\"Malformed configuration file `%s', exiting ...\\n\"),\n                  cc.cfgfile)",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "GNUNET_log",
+        "start_line": 319,
+        "end_line": 321,
+        "source": "GNUNET_log (GNUNET_ERROR_TYPE_ERROR,\n                  _ (\"Unreadable configuration file `%s', exiting ...\\n\"),\n                  cfg_fn)",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "GNUNET_log",
+        "start_line": 327,
+        "end_line": 329,
+        "source": "GNUNET_log (GNUNET_ERROR_TYPE_DEBUG,\n                \"Loading configuration from entry point `%s'\\n\",\n                cc.cfgfile)",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "GNUNET_log",
+        "start_line": 334,
+        "end_line": 335,
+        "source": "GNUNET_log (GNUNET_ERROR_TYPE_ERROR,\n                  _ (\"Malformed configuration. Exiting ...\\n\"))",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "GNUNET_break",
+        "start_line": 486,
+        "end_line": 486,
+        "source": "GNUNET_break (0)"
+      },
+      {
+        "macro": "GNUNET_log",
+        "start_line": 500,
+        "end_line": 502,
+        "source": "GNUNET_log (GNUNET_ERROR_TYPE_ERROR,\n                    _ (\"Malformed configuration file `%s', exit ...\\n\"),\n                    opt_cfg_filename)",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "GNUNET_log",
+        "start_line": 515,
+        "end_line": 517,
+        "source": "GNUNET_log (GNUNET_ERROR_TYPE_ERROR,\n                      _ (\"Malformed configuration file `%s', exit ...\\n\"),\n                      cfg_filename)",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "GNUNET_log",
+        "start_line": 528,
+        "end_line": 529,
+        "source": "GNUNET_log (GNUNET_ERROR_TYPE_ERROR,\n                      _ (\"Malformed configuration, exit ...\\n\"))",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "LOG",
+        "start_line": 646,
+        "end_line": 648,
+        "source": "LOG (GNUNET_ERROR_TYPE_DEBUG,\n         \"Launching daemon %s\\n\",\n         hll->daemon_name)",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "LOG",
+        "start_line": 663,
+        "end_line": 664,
+        "source": "LOG (GNUNET_ERROR_TYPE_DEBUG,\n       \"Entering GNUNET_DAEMON_main\\n\")",
+        "normal_profile_active": true
+      },
+      {
+        "macro": "LOG",
+        "start_line": 688,
+        "end_line": 690,
+        "source": "LOG (GNUNET_ERROR_TYPE_DEBUG,\n       \"registering daemon %s\\n\",\n       daemon_name)",
+        "normal_profile_active": true
+      }
+    ],
+    "actual_policy_lines": [
+      183,
+      190,
+      194,
+      225,
+      288,
+      294,
+      306,
+      321,
+      329,
+      335,
+      486,
+      502,
+      517,
+      529,
+      648,
+      664,
+      690,
+      696
+    ]
+  }
+}

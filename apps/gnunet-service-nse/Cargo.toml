@@ -1,0 +1,18 @@
+[package]
+name = "gnunet-service-nse"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+gnunet-ipc-unix.workspace = true
+gnunet-config.workspace = true
+gnunet-program-host = { workspace = true, features = ["service-runtime"] }
+gnunet-nse-host.workspace = true
+gnunet-service-runtime.workspace = true
+gnunet-service-startup.workspace = true
+tokio = { workspace = true, features = ["rt", "signal"] }
+
+[lints]
+workspace = true

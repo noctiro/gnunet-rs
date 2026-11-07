@@ -1,0 +1,16 @@
+[package]
+name = "gnunet-regex-service"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+[features]
+default = []
+alloc = ["gnunet-regex/alloc"]
+[dependencies]
+gnunet-regex.workspace = true
+gnunet-crypto.workspace = true
+gnunet-types.workspace = true
+gnunet-wire.workspace = true
+[lints]
+workspace = true

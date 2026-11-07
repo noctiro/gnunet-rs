@@ -1,0 +1,28 @@
+[package]
+name = "gnunet-session-crypto"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = []
+
+[dependencies]
+gnunet-crypto.workspace = true
+gnunet-types.workspace = true
+curve25519-dalek.workspace = true
+crypto-bigint.workspace = true
+sha2.workspace = true
+zeroize.workspace = true
+subtle.workspace = true
+chacha20.workspace = true
+cipher.workspace = true
+aes.workspace = true
+ctr.workspace = true
+poly1305.workspace = true
+ghash.workspace = true
+polyval.workspace = true
+
+[lints]
+workspace = true

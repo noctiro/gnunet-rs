@@ -1,0 +1,140 @@
+{
+  "status": "passed",
+  "upstream_revision": "346358e26d4dcc2dc4f51bef5d52dca29c7d8165",
+  "original_inputs": {
+    "apps/gnunet-service-statistics/src/activation.rs": "7bf4083ff7ec0581823c2064f8bb1dec2180bd0831abcf3304d4ff128d53134b",
+    "apps/gnunet-service-statistics/src/host.rs": "d0eea77510bdb8c2705ba860705cf536f53884f0071910899ec9f8e52d816339",
+    "apps/gnunet-service-statistics/src/host/listeners.rs": "0f8ba5d7f91107df56a3b38ae6dc53494d50fc5ad4d44f8296ff29407b200f74",
+    "apps/gnunet-service-statistics/examples/activation_probe.rs": "661fa23296c6910ebdd1943c38050aae6fc4092e6c40ec9b8a1269d9972a1f31",
+    "apps/gnunet-service-statistics/tests/activation_process.py": "3ce041125417be203d478de5b7e07be838f2b5ada5a76f943aaa40a4669a329c",
+    "apps/gnunet-service-statistics/tests/activation_abi.c": "7fd0dad7cb6288554970b0ebff740642d5809ed34b364fc3daa9f1697f56a66a",
+    "apps/gnunet-service-statistics/ACTIVATION.md": "3c6abd59af160b8f273f34815095b11dc7d390a4147005935a3091d2f3b535d0"
+  },
+  "upstream_inputs": {
+    "src/lib/util/service.c": "51d9a618682670f23bd6450531e91ca56b0b626bb0ef0d4eb269508a45801dae",
+    "src/lib/util/network.c": "d31a2ee5d52e89bdc212815d1420f9a4527e5a451672f016cd48b3ca661cbefe",
+    "src/lib/util/os_process.c": "fbe432a54155a3c10164c11b0878e29c1c71209a03b4334b9d9de8af1a0cee49"
+  },
+  "native_functions": [
+    {
+      "function": "capture",
+      "definition_index": 0,
+      "body_sha256": "65b43d4016738f0977ceb559fb6febb6929b68ead7e53a7dc2ee29d9f04bfd39",
+      "byte_identical": true
+    },
+    {
+      "function": "duplicate_above_stdio",
+      "definition_index": 0,
+      "body_sha256": "83b498ae61b8927b56e433a522652d9cb7ccb9de5e1c41eaf5660d20e9841b5a",
+      "byte_identical": true
+    },
+    {
+      "function": "restore_stdio",
+      "definition_index": 0,
+      "body_sha256": "250256f164e06bd762ca357b8340f4265a1c7c89a5ed3e735d3c0c6db1003534",
+      "byte_identical": true
+    },
+    {
+      "function": "descriptor_flags",
+      "definition_index": 0,
+      "body_sha256": "526b1c6fe2b678c76173acf9a057e587e472153a6b6cd78f1d0f767d69c67c08",
+      "byte_identical": true
+    },
+    {
+      "function": "set_descriptor_flags",
+      "definition_index": 0,
+      "body_sha256": "7d6119d31fe866bf392537361f47a255c10d5cfc24792b77ef81b1fe083772cb",
+      "byte_identical": true
+    },
+    {
+      "function": "is_listener",
+      "definition_index": 0,
+      "body_sha256": "38a7c52f51d7be4dcb8515ac7f37feda5ed60db618ac83bced8688e23ba65265",
+      "byte_identical": true
+    },
+    {
+      "function": "is_listener",
+      "definition_index": 1,
+      "body_sha256": "1b0f4f31d2ba0000f5f780f1242fd47adb947c6c1d6d68f2229852623cb956c3",
+      "byte_identical": true
+    },
+    {
+      "function": "bind_unix_private",
+      "definition_index": 0,
+      "body_sha256": "b76ec43c595f5923cdf9b7a942c8d6cb904ca20e9c0918cb60fd903185489f42",
+      "byte_identical": true
+    },
+    {
+      "function": "new",
+      "definition_index": 0,
+      "body_sha256": "4e5c2175b9fa19164a3155e45b770a732fb428ae448f5db86682583af5fc43f6",
+      "byte_identical": true
+    },
+    {
+      "function": "drop",
+      "definition_index": 0,
+      "body_sha256": "635bf1e0d2a02f414ea782270fd0498e2b5483d903ff3d16995c1dc7f8699502",
+      "byte_identical": true
+    }
+  ],
+  "native_unsafe_occurrences": 13,
+  "fixture_native_functions": [
+    {
+      "function": "fixture_native_setup",
+      "body_sha256": "13ec08888c6dafd2648f7e312c96b9e3bb301e008c2648a2d61d227d5bf43676",
+      "byte_identical": true
+    },
+    {
+      "function": "flags",
+      "body_sha256": "aecb8e9bc85faf0b54edf02610004a568f03de283e7513a767e82b390acebe1f",
+      "byte_identical": true
+    },
+    {
+      "function": "mask",
+      "body_sha256": "4f17eb834ce4de9b1d05afdfe582d52bb903d1fa0eac4321a7d2c0523e771f93",
+      "byte_identical": true
+    },
+    {
+      "function": "is_null_device",
+      "body_sha256": "8309612970b25b0e9dbc221746c50dcd27a0086fc77dbab112a7945c9ff3202a",
+      "byte_identical": true
+    }
+  ],
+  "pure_path_functions": [
+    {
+      "function": "capture",
+      "body_sha256": "dcfda07aeb27ea2c8ab19eb77c33b3805d21a1d98b6688fa38b13b4fcedefc9b",
+      "byte_identical": true
+    },
+    {
+      "function": "remove",
+      "body_sha256": "486fbc6c0f3c8671518025eeb951eb34bf5c43d3c279f1382fe45b828fc0a5f9",
+      "byte_identical": true
+    },
+    {
+      "function": "drop",
+      "body_sha256": "a3c846d0c0a539fa15e46f4b1d43cb2e6f247151ace1ab531506e1f9b170722a",
+      "byte_identical": true
+    },
+    {
+      "function": "parent",
+      "body_sha256": "91e727d6c0bfc9839bbe0c0cef05531d405f3814a31d1c750b23b05eb1347408",
+      "byte_identical": true
+    },
+    {
+      "function": "private_parents",
+      "body_sha256": "9ba21a6f0236ff7eb50c7893026c920b7f84a8d762f6dd136288cfff60ff09e1",
+      "byte_identical": true
+    }
+  ],
+  "tcp_body_sha256": "610995b00adf8076c898e5e126067a8fbda55156e865e8785ae2e2a3e5217059",
+  "changes": [
+    "Public exposure and documentation only in existing native definitions; safe bind_private wrapper added",
+    "CreatedPath observed constructor and accessor added; original capture/remove/drop/parent/private_parents bodies unchanged",
+    "Bound renamed BoundListeners; explicit section replaces statistics bytes; errors name service; inode construction uses safe helper; binding logic otherwise preserved",
+    "Explicit service_options parses existing AccessPolicy/TOLERANT with caller shutdown mode",
+    "Activation process harness changes package paths and current source input set; native ABI fixture unchanged"
+  ],
+  "fixture_unsafe_occurrences": 9,
+  "review": "M6 extraction baseline, verified against original source before deleting duplicated application modules; hashes preserve migration evidence, not a compiled compatibility implementation."
+}

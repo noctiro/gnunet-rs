@@ -1,0 +1,21 @@
+[package]
+name = "gnunet-reclaim-credentials"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = []
+attributes = ["dep:gnunet-identity", "gnunet-identity/alloc"]
+
+[dependencies]
+gnunet-reclaim.workspace = true
+gnunet-json.workspace = true
+gnunet-types.workspace = true
+gnunet-wire.workspace = true
+zeroize.workspace = true
+gnunet-identity = { workspace = true, optional = true }
+
+[lints]
+workspace = true

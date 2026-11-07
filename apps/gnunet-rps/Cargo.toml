@@ -1,0 +1,22 @@
+[package]
+name = "gnunet-rps-command"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+gnunet-rps-client-host.workspace = true
+gnunet-config.workspace = true
+gnunet-program-host = { workspace = true, features = ["runtime", "resolver-broker"] }
+gnunet-client-host.workspace = true
+gnunet-resolver-broker.workspace = true
+gnunet-service-runtime.workspace = true
+tokio = { workspace = true, features = ["rt", "time", "net", "signal"] }
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "gnunet-rps"
+path = "src/main.rs"

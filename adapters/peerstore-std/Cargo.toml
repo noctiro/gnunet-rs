@@ -1,0 +1,22 @@
+[package]
+name = "gnunet-peerstore-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+gnunet-peerstore.workspace = true
+gnunet-service-runtime.workspace = true
+gnunet-types.workspace = true
+gnunet-wire.workspace = true
+getrandom.workspace = true
+libc.workspace = true
+sha2.workspace = true
+tokio = { workspace = true, features = ["rt", "net", "time", "sync"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["io-util"] }
+
+[lints]
+workspace = true

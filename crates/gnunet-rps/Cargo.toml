@@ -1,0 +1,18 @@
+[package]
+name = "gnunet-rps"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = []
+alloc = ["dep:zeroize"]
+
+[dependencies]
+gnunet-types.workspace = true
+gnunet-wire.workspace = true
+zeroize = { workspace = true, optional = true, features = ["alloc"] }
+
+[lints]
+workspace = true

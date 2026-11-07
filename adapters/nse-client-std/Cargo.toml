@@ -1,0 +1,20 @@
+[package]
+name = "gnunet-nse-client-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+[features]
+default = []
+program = ["dep:gnunet-config", "dep:gnunet-program-host", "dep:gnunet-resolver-broker", "tokio/signal"]
+[dependencies]
+gnunet-client.workspace = true
+gnunet-client-host.workspace = true
+gnunet-service-runtime.workspace = true
+gnunet-types.workspace = true
+gnunet-config = { workspace = true, optional = true }
+gnunet-program-host = { workspace = true, features = ["runtime", "resolver-broker"], optional = true }
+gnunet-resolver-broker = { workspace = true, optional = true }
+tokio = { workspace = true, features = ["rt", "net", "time"] }
+[lints]
+workspace = true

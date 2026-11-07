@@ -1,0 +1,12 @@
+/* Normal unchanged public utility-library primitive caller; not a communicator. */
+#include "platform.h"
+#include "gnunet_util_lib.h"
+static int readhex(const char*s,unsigned char*out){if(strlen(s)!=64)return -1;for(int i=0;i<32;i++){unsigned v;if(1!=sscanf(s+i*2,"%2x",&v))return -1;out[i]=(unsigned char)v;}return 0;}
+static void hex(const void*data,size_t n){const unsigned char*p=data;for(size_t i=0;i<n;i++)printf("%02x",p[i]);}
+int main(void){char mode[2],input[65];unsigned tweak;while(3==scanf("%1s %64s %u",mode,input,&tweak)){unsigned char bytes[32];if(readhex(input,bytes))return 90;
+ if(mode[0]=='D'){struct GNUNET_CRYPTO_ElligatorRepresentative repr;struct GNUNET_CRYPTO_EcdhePublicKey point;bool high;memcpy(repr.r,bytes,32);GNUNET_CRYPTO_ecdhe_elligator_decoding(&point,&high,&repr);printf("{\"point\":\"");hex(&point,32);printf("\",\"high\":%s}\n",high?"true":"false");}
+ else if(mode[0]=='E'){struct GNUNET_CRYPTO_EcdhePublicKey point;struct GNUNET_CRYPTO_ElligatorRepresentative repr;memcpy(point.q_y,bytes,32);bool ok=GNUNET_CRYPTO_ecdhe_elligator_encoding(tweak,&repr,&point);if(ok){printf("{\"representative\":\"");hex(&repr,32);printf("\"}\n");}else printf("{\"error\":true}\n");}
+ else if(mode[0]=='S'){unsigned nonzero=0;for(unsigned i=0;i<32;i++)nonzero|=bytes[i];if(!nonzero)return 93;struct GNUNET_CRYPTO_ElligatorEcdhePrivateKey sk;struct GNUNET_CRYPTO_EcdhePublicKey point;struct GNUNET_CRYPTO_ElligatorRepresentative repr;memcpy(sk.d,bytes,32);if(GNUNET_OK!=GNUNET_CRYPTO_ecdhe_elligator_key_get_public_norand(tweak,&sk,&point,&repr)){printf("{\"error\":true}\n");continue;}printf("{\"point\":\"");hex(&point,32);printf("\",\"representative\":\"");hex(&repr,32);
+ struct GNUNET_CRYPTO_HpkePrivateKey rec;struct GNUNET_CRYPTO_HpkePublicKey pub;memset(&rec,9,sizeof rec);GNUNET_CRYPTO_ecdhe_key_get_public(&rec.ecdhe_key,&pub.ecdhe_key);struct GNUNET_ShortHashCode shared,other;GNUNET_assert(GNUNET_OK==GNUNET_CRYPTO_hpke_elligator_kem_encaps_norand(tweak,&pub,(struct GNUNET_CRYPTO_HpkeEncapsulation*)&repr,&sk,&shared));GNUNET_assert(GNUNET_OK==GNUNET_CRYPTO_hpke_elligator_kem_decaps(&rec,(struct GNUNET_CRYPTO_HpkeEncapsulation*)&repr,&other));GNUNET_assert(0==memcmp(&shared,&other,sizeof shared));unsigned char proof[32];GNUNET_assert(GNUNET_YES==GNUNET_CRYPTO_hkdf_expand(proof,32,&shared,GNUNET_CRYPTO_kdf_arg_string("test-component")));printf("\",\"derived\":\"");hex(proof,32);printf("\"}\n");}
+ else return 91;
+ }return 0;}

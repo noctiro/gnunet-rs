@@ -1,0 +1,12 @@
+[package]
+name = "gnunet-transport-node"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+[dependencies]
+gnunet-transport-runtime.workspace = true
+gnunet-service-startup.workspace = true
+tokio = { workspace = true, features = ["rt", "signal"] }
+[lints]
+workspace = true

@@ -1,0 +1,17 @@
+[package]
+name = "gnunet-testbed-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+gnunet-testbed.workspace = true
+gnunet-config.workspace = true
+gnunet-types.workspace = true
+socket2 = { workspace = true, features = ["all"] }
+libc = { workspace = true, features = ["std"] }
+zeroize = { workspace = true, features = ["alloc"] }
+
+[lints]
+workspace = true

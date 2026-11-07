@@ -1,0 +1,279 @@
+{
+  "abd": {
+    "SDK_backpressured_duplex_source_present": true,
+    "SDK_exact_retained_RX_loss_prefix_source_present": true,
+    "core_SDK_service_CLI_source_chain_present": true,
+    "credential_proof_core_source_present": true,
+    "credential_proof_native_source_present": true,
+    "native_SDK_source_present": true,
+    "native_service_source_present": true,
+    "native_source_present": true,
+    "normal_CLI_source_present": true,
+    "normal_service_source_present": true,
+    "ordinary_five_action_source_present": true,
+    "remaining": [
+      "Required fixed-C singular/plural field-loss and direct zero-leaf proof profiles, actual official interoperability, resource and performance qualification"
+    ],
+    "runtime_verified": false,
+    "shared_DEL_ATTR_text_source_present": true,
+    "whole_capability_implemented": false,
+    "wire_source_present": true
+  },
+  "active_build_review": {
+    "path": "/private/tmp/gnunet-contrib-active-gaps-source-20261102-lz8fmyho/report.json",
+    "sha256": "1478e345c604586da6754cf9990976f48e78ced717e4253e17c7fce8819e4b56"
+  },
+  "consensus": {
+    "DHT_selected_registry_source_present": true,
+    "SDK_drop_retires_original_epoch_source_present": true,
+    "SDK_exact_retained_RX_loss_prefix_source_present": true,
+    "SDK_preconclude_duplex_source_present": true,
+    "absolute_final_membership_tie_source_present": true,
+    "contested_confirmation_payload_exclusion_source_present": true,
+    "core_native_SDK_service_installed": true,
+    "installed_BLOCK24_25_source_present": true,
+    "limited_current_source_review": {
+      "path": "/private/tmp/gnunet-CONSENSUS-grading-final-current-source-review-20261103-hutfw39r/review.json",
+      "sha256": "ab5a22275d4fdcaecf7da8cdd071f1e0b03d347399c07c2dde0dcdb82bb0ddcc"
+    },
+    "limited_current_source_review_is_historical": true,
+    "native_SDK_source_present": true,
+    "native_SET_bridge_source_present": true,
+    "native_SET_ready_and_local_queue_rescan_source_present": true,
+    "native_service_source_present": true,
+    "normal_service_source_present": true,
+    "remaining": [
+      "Required grading/final-result/contested and generic SET producer/strategy profile qualification, with explicitly selected opaque/checked application payload policy",
+      "Official C/mixed-peer required semantics, compatibility profiles and resource/performance qualification"
+    ],
+    "runtime_verified": false,
+    "session_gradecast_core_source_present": true,
+    "source_classification": "Core/native SET bridge/client/normal service are present. Source repairs address final-membership, contested-vote/early-stop grading, SDK duplex/lifetime and a native prepared-SET source-scan stall observed after real successful operations. Required actual normal/mixed-peer semantics and full resource/performance qualification remain open.",
+    "strong_n_minus_f_early_stop_source_present": true,
+    "whole_capability_implemented": false,
+    "wire_source_present": true
+  },
+  "conversation": {
+    "PHONE_record_and_shared_text_source_present": true,
+    "authenticated_ringing_source_present": true,
+    "bounded_effect_scan_source_present": true,
+    "call_core_source_present": true,
+    "conditional_required_profile": "Official audio backend selected; conditional source traversal is not unconditional inactivity",
+    "native_SERVICE_source_present": true,
+    "native_caller_source_present": true,
+    "native_workflow_source_present": true,
+    "normal_command_source_present": true,
+    "ordinary_CLI_source_present": true,
+    "ordinary_SERVICE_source_present": true,
+    "original_instance_domain_source_present": true,
+    "original_native_IO_guard_source_present": true,
+    "phone_registration_recovery_SDK_and_normal_command_source_present": true,
+    "remaining": [
+      "Required original call/source/identity/provider/PHONE routing profiles and any confirmed external semantic gaps",
+      "Actual current-source official interoperability, platform/device/resource/performance qualification"
+    ],
+    "runtime_verified": false,
+    "selected_audio_provider_source_present": true,
+    "selected_workflow_source_chain_present": true,
+    "standard_audio_helpers_source_present": true,
+    "whole_capability_implemented": false,
+    "wire_source_present": true
+  },
+  "current_source_review": {
+    "commits_ahead": 7,
+    "handoff": {
+      "path": "/private/tmp/gnunet-official-target-current-source-review-20261103-f9x4kzme/handoff.json",
+      "sha256": "733df77f687d5008dfd1f9ad64e28fb53c288af9b326436a90be6e92350ff8dc"
+    },
+    "highest_observed_version_tag": "v0.29.1",
+    "historical_receipts_rebound": false,
+    "observed_HEAD": "14698f19848af867f48a04521e274abd55972075",
+    "remaining": "Confirmed MESSENGER transient archive exclusion and Transport positive challenge floor now have source changes with selected static checks. Actual persistent recovery/peer behavior and performance remain unverified. Bounded independent DV selection has no confirmed matching gap; no full current-HEAD behavior qualification follows.",
+    "selected_full_files_compared": 11,
+    "selected_full_files_identical_to_tag": true,
+    "tag_revision": "346358e26d4dcc2dc4f51bef5d52dca29c7d8165",
+    "whole_HEAD_identical_to_tag": false
+  },
+  "existing_canonical_floor": {
+    "not_a_complete_capability_inventory": true,
+    "registry_RPS_assignments_preserved": 14,
+    "unchanged": true,
+    "unknown_lower_bound": 734
+  },
+  "full_code_complete": false,
+  "generic_set": {
+    "SDK_exact_retained_RX_loss_prefix_source_present": true,
+    "UNION_actual_shared_retained_charge_source_present": true,
+    "UNION_fixed_entry_pregrowth_peak_admission_source_present": true,
+    "active_source_work": "Independent generic SET union/intersection core, native SDK, actual CADET host and normal SERVICE are production-integrated with selected static checks. Legal full/SYMMETRIC reciprocal requests retain both original snapshot obligations; complete peer data and actual original output settlement precede local symmetric result completion. Actual official/profile/resource/performance qualification remains open.",
+    "core_source_present": true,
+    "immutable_original_snapshot_full_sends": true,
+    "native_SDK_source_present": true,
+    "native_finite_CPU_owner_sweep_source_present": true,
+    "native_service_source_present": true,
+    "normal_service_source_present": true,
+    "original_deadline_after_peer_close_preserved": true,
+    "passive_delta_DONE_preserves_late_demand_source_present": true,
+    "production_core_SDK_service_installed": true,
+    "reciprocal_full_symmetric_source_present": true,
+    "remaining": [
+      "Actual explicit force-strategy conflict/refusal, empty/empty and required unchanged-C profiles, including its full-transfer Byzantine, missing-local-ADD_REMOTE and concurrent-generation limitations",
+      "Actual unchanged-C and mixed-peer interoperability, required failure/platform/resource and measured performance qualification"
+    ],
+    "runtime_verified": false,
+    "shared_zlib_source_present": true,
+    "source_classification": "Generic SET source is present. Normal CONSENSUS composition exposed and source repairs address concurrent-UNION quota, passive delta premature close and finite native CPU owner-pass gaps. Required actual normal/mixed-peer semantics and full resource/performance qualification remain open; no whole-capability claim.",
+    "whole_capability_implemented": false,
+    "wire_contract": [
+      "Explicit native order and align64=4/8 for Result and Strata C placement; raw copy cookie4 and one exact nested context.",
+      "Old IBF serialization uses three native columns totaling13 bytes/bucket; distinct from SETU. Actual CADET payload bounds are checked.",
+      "Actual active handlers only; no SET_CONCLUDE handler inferred from a numeric registry assignment."
+    ],
+    "wire_source_present": true
+  },
+  "kind": "active-contrib-capability-implementation-scope",
+  "messenger_transient_archive": {
+    "actual_SERVICE_archive_path": true,
+    "ordinary_historical_graph_and_membership_preserved": true,
+    "private_format": "GMSHIS05; v4 refused without migration/reset",
+    "remaining": [
+      "Actual committed worker/crash/restart and official mixed-peer behavior, required platform/resource/performance qualification"
+    ],
+    "runtime_verified": false,
+    "transient_TALK_SUBSCRIPTION_projection_source_present": true,
+    "transient_alias_cleanup_source_present": true,
+    "whole_capability_implemented": false
+  },
+  "official_sources": {
+    "meson.build": "f44d3f64b462451e0dc81d5cf7adc2a2e1a190fe86bec26bd73d7b3482ef60df",
+    "meson.options": "19a52e5546cde875b437ac642307183093f3cc4c8d07f10a80f8dbab2c6ef3e4",
+    "src/contrib/meson.build": "eeb50f90a088c12b8dcf6eaf4db9b97f01d49c975a34b071bee9656f7812867e",
+    "src/contrib/service/meson.build": "da35109c471fd2f4d32a8f6f5955859ac597e3534910ca49f31e74f7682a310c",
+    "src/contrib/service/rps/gnunet-service-rps.c": "68daf3a563ae448b9333aa5fe833f9a847be98e55ab41799e07dd9cb56d8bef5",
+    "src/contrib/service/rps/meson.build": "a6d3519a856da552873693ded20e1955bbca4d6ae128a4c724ef0810d12a77e2",
+    "src/contrib/service/rps/rps.h": "076efde1aec41817a958e7d12fe30c112e0c7d81d7e1cc41e9309e3145428fad",
+    "src/contrib/service/rps/rps_api.c": "856fc3c19b6a32d00731ff7ba7291b1b509c6a5efd5f7a5fc453d4e70973bb44",
+    "src/include/gnunet_applications.h": "516f973423837222d8c41d3262aba8e8b932eeadfd376943f2be699d8c5e352b",
+    "src/include/gnunet_rps_service.h": "bd033b1d0c472d955579423b500b52b52d9466d93f920e21a6cc81a073cb5307",
+    "src/include/meson.build": "b58668b20a362f5f9fb2a04436d00973b3e439774238f25f770b13a86087b0bb",
+    "src/meson.build": "0e3a6fef60723d4dff49b5c531f087cfad574536b2d3de255c72ede139843769"
+  },
+  "other_contrib": "Generic SET, RPS, both SCALARPRODUCT profiles, CONSENSUS, ABD and conditional CONVERSATION have selected production core/native/host/ordinary source chains with static checks. Their required external semantics and actual official/platform/resource/performance qualification remain open. SECRETSHARING has threshold math, original native caller, existing-share781 owner, ordinary781 SERVICE with actual782 output, original Round1 and local-only signed Round2 validation. The normal service also has a real singleton780→783 source path; general sound compatible FAIR, qualified multi-participant DKG and full generation remain required. Conditional QR PNG/camera scanning and the shared URI dispatcher are now production source entries; the obsolete private URI dispatch files were deleted. Source/build declarations confer no whole capability, runtime or whole GNUnet credit.",
+  "qr": {
+    "conditional_required_profile": "Official installed gnunet-qr when zbar is available; image/camera scanning is an actual function beyond text URI dispatch",
+    "configured_command_contract": "Both URI and QR tokenize only trusted configured command text with the existing parser, append the validated original URI as one opaque argument, and add no implicit --. This supports the official default namestore -u argument; there is no legacy literal-executable compatibility branch.",
+    "normal_PROGRAM_source_present": true,
+    "remaining": [
+      "Actual selected libpng/ZBar ABI and image/camera/handler execution, original cancellation/cleanup and device/resource/performance qualification"
+    ],
+    "runtime_verified": false,
+    "scan_frontdoor_source_present": true,
+    "shared_URI_dispatch_refactor_pending": false,
+    "shared_URI_dispatch_source_present": true,
+    "source_stage": "/private/tmp/gnunet-QR-native-frontdoor-source-20261103-p4telans",
+    "whole_capability_implemented": false
+  },
+  "reference_revision": "346358e26d4dcc2dc4f51bef5d52dca29c7d8165",
+  "rps": {
+    "discovered_gap": "Prior Rust production source had only registered RPS numeric assignments;no implemented RPS frame/API/sampler/native service path.",
+    "implemented_here": [
+      "No-allocation borrowed normal official RPS peer and client codecs,including exact source ABI reply-count profiles.",
+      "Bounded independent Brahms/min-wise sampler and service/subgroup core with explicit entropy/ranking ports, generation ownership, original effects and peer/group retirement barriers.",
+      "Actual native client MQ and stream-to-sampler sample demand, view/stream/seed/subgroup cancellation and source loss lifecycle.",
+      "Actual CADET service reactor with bounded IPC/native queues and original partial/whole-write/receive-credit/physical-retirement handling.",
+      "Normal service configuration, startup, listeners, actual CORE/PEERSTORE/NSE discovery/estimates, explicit Resolver and independent shutdown; normal CLI and isolated SDK features."
+    ],
+    "remaining": [
+      "Actual unchanged official C/Rust RPS IPC, CADET and mixed-peer interoperability, including cancellation/reconnect/group and peer retirement.",
+      "Required statistical sampling quality and network/mixing behavior, failure and resource profiles.",
+      "Measured allocation, resident memory, CPU, latency and throughput on equivalent workloads."
+    ],
+    "runtime_verified": false,
+    "source_implementation_present": true,
+    "upstream_status": "Default source build traversal declares installed library,normal service,normal CLI,configuration and public header;actual RPS C build/runtime has not been performed.",
+    "whole_capability_implemented": false,
+    "wire_contract": [
+      "Normal peer950–953,client954/956–957/1130–1135;malicious955 remains registered/default-disabled anddoes not create a normal handler.",
+      "Client request-N is local sampling of the biased1134stream;no invented request-N/result/ACK/END wire messages.",
+      "Main CADET port is hash512(exact b\"rps\",noNUL),not the unused31337macro.",
+      "Subgroup ID is hkdf_gnunet(out64,salt=b\"rps\",sharedbytes,no context),not hash512(shared).",
+      "C reply-count u64 declaration uses actual32bit htonl/ntohl assignment;explicit source ABI profile is required."
+    ]
+  },
+  "scalarproduct": {
+    "ECC_core_source_present": true,
+    "ECC_final_input_local_work_core_source_present": true,
+    "Paillier_final_input_local_work_core_source_present": true,
+    "Paillier_native_service_source_present": true,
+    "Paillier_normal_service_source_present": true,
+    "Paillier_primitive_source_present": true,
+    "Paillier_session_math_source_present": true,
+    "default_ECC_core_SDK_service_CLI_source_chain_present": true,
+    "default_ECC_native_service_source_present": true,
+    "default_ECC_normal_service_source_present": true,
+    "native_SDK_source_present": true,
+    "normal_CLI_source_present": true,
+    "normal_frames": 12,
+    "production_core_SDK_service_CLI_installed": true,
+    "remaining": [
+      "Remaining ECC empty-intersection, other identity/native-byte-order and actual unchanged-C peer-service interoperability profiles; fixed-C Paillier multipart/count profiles",
+      "Required platform/failure/resource and measured performance qualification"
+    ],
+    "runtime_verified": false,
+    "shared_native_final_input_retirement_source_present": true,
+    "whole_capability_implemented": false,
+    "wire_contract": [
+      "IPC640/641/642/643/649; ECC650/651/652; installed alternate Paillier644/645/647/648.",
+      "ECC Alice count2*npoints, Bob2; Paillier Bob2+2*n initially and2*n later; original source order retained.",
+      "Original product GCRYMPI_FMT_STD bytes, independent signed range and raw status remain preserved; codec does not validate cryptography or complete a session."
+    ],
+    "wire_source_present": true
+  },
+  "schema": 1,
+  "scope_contract": "All externally required current official capabilities remain the objective. The prior34normal-subsystem+8foundation entry map is a lower-bound navigation subset,not a rule excluding active official contrib. No old private protocol or C internal implementation is required.",
+  "secretsharing": {
+    "Round1_Round2_metadata_preallocation_admission_source_present": true,
+    "Round2_candidate_scope": "Original subgroup-checked coefficient allocation, actual locally checked scalar, signed source observation and original indices transfer together without reparsing or cloning. Candidate/aggregate mathematical input only; no general FAIR, authenticated dealer qualification, final783 or full DKG authority.",
+    "Round2_checked_coefficients_original_allocation_transferred": true,
+    "Round2_validation_work_allocation_preclaims_remaining_owner_budget": true,
+    "SDK_backpressured_duplex_source_present": true,
+    "SDK_exact_retained_RX_loss_prefix_source_present": true,
+    "actual_782_output_source_present": true,
+    "actual_Round2_local_validation_source_present": true,
+    "actual_native_Round1_source_present": true,
+    "aggregate_local_share_original_point_checked": true,
+    "aggregate_math_scope": "Caller-selected distinct dealer set; each local scalar matches original polynomial commitments before modular sum and coefficient products. Existing owned Horner derives sigmas at retained original points, and material preserves exact local roster position. Arithmetic consistency only, no FAIR/transcript/source/dealer qualification or general final783 authority.",
+    "aggregate_original_index_roster_and_local_position_preserved": true,
+    "fair_equation_check_source_present": true,
+    "general_Generate780_available": false,
+    "general_fair_proof_producer_present": false,
+    "multi_dealer_aggregate_math_source_present": true,
+    "native_781_SERVICE_source_present": true,
+    "native_781_decryption_owner_source_present": true,
+    "native_SDK_source_present": true,
+    "normal_SERVICE_source_present": true,
+    "normal_singleton_reuses_aggregate_math": true,
+    "original_deadline_clock_across_validation_stages_preserved": true,
+    "owned_original_polynomial_source_present": true,
+    "owned_original_roster_source_present": true,
+    "remaining": [
+      "Compatible sound general FAIR production and qualification; exact equations and local decrypted candidates confer no knowledge/range/global fairness authority",
+      "Qualified multi-participant DKG/final783 Share production and the complete normal multi-participant780 generation service workflow",
+      "Required fixed-C threshold/indices/legacy-peer-PILS/routing/two-round session-window profiles, actual official interoperability/resources/performance"
+    ],
+    "runtime_verified": false,
+    "signed_partial_decryption_source_present": true,
+    "singleton_783_output_source_present": true,
+    "singleton_Generate780_source_present": true,
+    "singleton_profile": "Threshold1; empty peers or exactly the actual verified local PILS peer; normalized roster has one participant at original index0. Fresh original nonzero scalar and actual g^scalar; exact430-byte standard783. Original start/deadline, whole output, physical retirement and secret erasure remain with the admitted owner; no remote FAIR, qualified multi-participant DKG or runtime acceptance is inferred.",
+    "stage_transcript_original_bounds_clock_preserved": true,
+    "threshold_combine_source_present": true,
+    "threshold_group_math_source_present": true,
+    "threshold_group_native_workflow_scope": "Existing standard Share781 with threshold above one: normal SERVICE owner, actual PILS/CONSENSUS, signed and DLEQ-verified distinct original partials, threshold combine and real782 output. This consumes an existing Share; it does not establish qualified DKG/final783, general Generate780 or runtime/whole-capability completion.",
+    "threshold_group_native_workflow_source_present": true,
+    "whole_capability_implemented": false,
+    "wire_source_present": true
+  },
+  "status": "production-source-integrated-selected-static-checks-passed",
+  "whole_goal_complete": false
+}

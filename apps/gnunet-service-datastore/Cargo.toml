@@ -1,0 +1,18 @@
+[package]
+name = "gnunet-service-datastore"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+gnunet-program-host = { workspace = true, features = ["service-runtime"] }
+gnunet-config.workspace = true
+gnunet-datastore.workspace = true
+gnunet-datastore-host = { workspace = true, features = ["server"] }
+gnunet-service-runtime.workspace = true
+gnunet-service-startup.workspace = true
+tokio = { workspace = true, features = ["rt", "signal"] }
+
+[lints]
+workspace = true

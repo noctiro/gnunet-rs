@@ -1,0 +1,14 @@
+[package]
+name = "gnunet-dns-client-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+[dependencies]
+gnunet-client-host.workspace = true
+gnunet-service-runtime.workspace = true
+gnunet-types.workspace = true
+gnunet-wire.workspace = true
+tokio = { workspace = true, features = ["rt", "net", "time"] }
+[lints]
+workspace = true

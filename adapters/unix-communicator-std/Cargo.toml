@@ -1,0 +1,25 @@
+[package]
+name = "gnunet-unix-communicator-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+[target.'cfg(unix)'.dependencies]
+gnunet-unix-communicator.workspace = true
+gnunet-wire.workspace = true
+gnunet-types.workspace = true
+gnunet-client.workspace = true
+gnunet-client-host.workspace = true
+gnunet-service-runtime.workspace = true
+gnunet-pils.workspace = true
+gnunet-pils-host = { workspace = true, features = ["client"] }
+gnunet-hello.workspace = true
+zeroize = { workspace = true, features = ["alloc"] }
+tokio = { workspace = true, features = ["rt", "net", "time", "io-util"] }
+nix = { workspace = true, features = ["socket", "uio"] }
+libc.workspace = true
+[target.'cfg(unix)'.dev-dependencies]
+gnunet-crypto.workspace = true
+
+[lints]
+workspace = true

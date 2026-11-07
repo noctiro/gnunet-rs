@@ -1,0 +1,18 @@
+[package]
+name = "gnunet-oidc-crypto-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+# Exact new backend approved by Root. Native/asm AWS-LC primitives, no libgnunet FFI.
+aws-lc-rs = { version = "=1.19.0", default-features = false, features = ["alloc", "non-fips", "ring-io"] }
+gnunet-types.workspace = true
+gnunet-json.workspace = true
+gnunet-crypto.workspace = true
+gnunet-rest = { workspace = true, features = ["oidc"] }
+zeroize.workspace = true
+
+[lints]
+workspace = true

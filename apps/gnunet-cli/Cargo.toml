@@ -1,0 +1,32 @@
+[package]
+name = "gnunet-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = []
+
+[dependencies]
+gnunet = { path = "../../crates/gnunet", default-features = false, features = ["official-ipc", "official-fs-network", "fs-compression", "official-cadet-client", "official-peerstore-client", "official-transport-observation", "official-vpn-client", "official-regex-client", "official-identity-client", "official-namestore-client", "official-reclaim-client", "official-did-client", "reclaim-credentials", "revocation", "official-revocation-client", "gnsrecord-text"] }
+serde_json = { workspace = true, features = ["std"] }
+tokio = { workspace = true, features = ["rt", "net", "time", "fs", "signal", "sync"] }
+zeroize.workspace = true
+
+# The continuous consumer uses the same original configured native statistics
+# owner/Clock/Resolver as services; one Runtime is created only for this command.
+[target.'cfg(unix)'.dependencies]
+gnunet-ipc-unix.workspace = true
+gnunet-client.workspace = true
+gnunet-client-host.workspace = true
+gnunet-config.workspace = true
+gnunet-program-host = { workspace = true, features = ["resolver-broker"] }
+gnunet-resolver-broker.workspace = true
+gnunet-service-runtime.workspace = true
+gnunet-service-startup.workspace = true
+gnunet-types.workspace = true
+nix = { workspace = true, features = ["poll", "fs"] }

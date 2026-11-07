@@ -1,0 +1,12 @@
+{
+  "kind": "normal-C-public-GNUNET-CRYPTO-pow-hash-vectors",
+  "source_revision": "346358e26d4dcc2dc4f51bef5d52dca29c7d8165",
+  "source_file": "src/lib/util/crypto_pow.c",
+  "observer_source_sha256": "5e4e825950d38369873978d533048537afa347324b53e5beea5b681870b95281",
+  "prepared_receipt": "/private/tmp/gnunet-crypto-pow-extraction-20261028/prepared-c-v2/prepared.json",
+  "prepared_sha256": "e6f3b5bb0e784b1e820eb25275161f1600bbb327a3585f0a6f9d3e745877e1b8",
+  "vectors": 12,
+  "input_origin": "existing BLOCK compare.py corpus pow-0..pow-4096, unchanged salt/input bytes",
+  "vector_file_sha256": "6d392941d07d2641574918d33eeb26f3ea6f1befb1d9bc7110a8c4729dc3875f",
+  "scope": "Argon2id primitive only; no NSE/REV proof or service acceptance"
+}

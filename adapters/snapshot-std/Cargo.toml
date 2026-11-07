@@ -1,0 +1,20 @@
+[package]
+name = "gnunet-snapshot-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+gnunet-crypto.workspace = true
+gnunet-types.workspace = true
+libc.workspace = true
+nix = { workspace = true, features = ["user"] }
+zeroize = { workspace = true, features = ["alloc"] }
+tokio = { workspace = true, features = ["sync"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+gnunet-native.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,16 @@
+[package]
+name = "gnunet-gns-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+gnunet-gns-client-host.workspace = true
+gnunet-identity-client-host.workspace = true
+gnunet-config.workspace = true
+gnunet-types.workspace = true
+tokio = { workspace = true, features = ["time"] }
+
+[lints]
+workspace = true

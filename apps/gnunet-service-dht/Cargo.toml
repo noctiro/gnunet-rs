@@ -1,0 +1,24 @@
+[package]
+name = "gnunet-service-dht"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+gnunet-block.workspace = true
+gnunet-client-host.workspace = true
+gnunet-config.workspace = true
+gnunet-crypto.workspace = true
+gnunet-dht-service-host.workspace = true
+gnunet-pils.workspace = true
+gnunet-program-host = { workspace = true, features = ["service-runtime"] }
+gnunet-resolver-broker.workspace = true
+gnunet-service-runtime.workspace = true
+gnunet-service-startup.workspace = true
+gnunet-types.workspace = true
+tokio = { workspace = true, features = ["rt", "net", "signal", "time"] }
+getrandom.workspace = true
+
+[lints]
+workspace = true

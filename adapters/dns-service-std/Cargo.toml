@@ -1,0 +1,22 @@
+[package]
+name = "gnunet-dns-service-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+gnunet-dns-interception = { workspace = true, features = ["alloc"] }
+gnunet-dnsstub-host.workspace = true
+gnunet-service-runtime.workspace = true
+gnunet-tun-host.workspace = true
+gnunet-types.workspace = true
+gnunet-wire.workspace = true
+gnunet-vpn.workspace = true
+nix = { workspace = true, features = ["user", "signal", "process"] }
+tokio = { workspace = true, features = ["rt", "net", "time", "process", "io-util", "signal"] }
+libc = { workspace = true, features = ["std"] }
+zeroize = { workspace = true, features = ["alloc"] }
+
+[lints]
+workspace = true

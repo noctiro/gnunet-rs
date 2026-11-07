@@ -1,0 +1,29 @@
+[package]
+name = "gnunet-gns-nss-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+build = "build.rs"
+
+[lib]
+name = "nss_gns"
+crate-type = ["rlib", "cdylib"]
+
+[dependencies]
+gnunet-types.workspace = true
+gnunet-config.workspace = true
+gnunet-client-host.workspace = true
+gnunet-gns-host.workspace = true
+gnunet-gns-client-host.workspace = true
+gnunet-identity-client-host.workspace = true
+gnunet-resolver-broker.workspace = true
+gnunet-program-host = { workspace = true, features = ["service-runtime"] }
+gnunet-service-runtime.workspace = true
+gnunet-dns.workspace = true
+gnunet-idna.workspace = true
+libc = { workspace = true, features = ["std"] }
+tokio = { workspace = true, features = ["rt", "net", "time"] }
+
+[lints]
+workspace = true

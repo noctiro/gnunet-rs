@@ -1,0 +1,285 @@
+[workspace]
+members = ["crates/*", "adapters/*", "apps/*", "tools/xtask"]
+exclude = ["tests/embedded/noalloc"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99.1"
+license = "MPL-2.0"
+
+[workspace.lints.rust]
+future_incompatible = { level = "deny", priority = -1 }
+let_underscore_drop = "deny"
+let_underscore_lock = "deny"
+missing_docs = "deny"
+non_ascii_idents = "deny"
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"
+unfulfilled_lint_expectations = "deny"
+unused_must_use = "deny"
+warnings = "deny"
+
+[workspace.lints.clippy]
+allow_attributes = "deny"
+allow_attributes_without_reason = "deny"
+await_holding_lock = "deny"
+await_holding_refcell_ref = "deny"
+dbg_macro = "deny"
+expect_used = "deny"
+exit = "deny"
+let_underscore_future = "deny"
+let_underscore_lock = "deny"
+let_underscore_must_use = "deny"
+let_unit_value = "deny"
+mem_forget = "deny"
+missing_safety_doc = "deny"
+panic = "deny"
+panic_in_result_fn = "deny"
+print_stderr = "deny"
+print_stdout = "deny"
+redundant_clone = "deny"
+todo = "deny"
+undocumented_unsafe_blocks = "deny"
+unimplemented = "deny"
+unreachable = "deny"
+unused_result_ok = "deny"
+unwrap_used = "deny"
+
+[workspace.lints.rustdoc]
+broken_intra_doc_links = "deny"
+invalid_html_tags = "deny"
+
+[workspace.dependencies]
+gnunet-extractor-host = { path = "adapters/extractor-std", default-features = false }
+gnunet-secretsharing-host = { path = "adapters/secretsharing-std", default-features = false }
+gnunet-uri-host = { path = "adapters/uri-std", default-features = false }
+gnunet-qr-host = { path = "adapters/qr-std", default-features = false }
+gnunet-bcd-host = { path = "adapters/bcd-std", default-features = false }
+gnunet-secretsharing-keygen-host = { path = "adapters/secretsharing-keygen-std", default-features = false }
+gnunet-conversation-host = { path = "adapters/conversation-std", default-features = false }
+gnunet-conversation-audio-host = { path = "adapters/conversation-audio-std", default-features = false }
+gnunet-conversation-client-host = { path = "adapters/conversation-client-std", default-features = false }
+gnunet-secretsharing-decrypt-host = { path = "adapters/secretsharing-decrypt-std", default-features = false }
+gnunet-scalarproduct-client-host = { path = "adapters/scalarproduct-client-std", default-features = false }
+num-bigint = { version = "=0.4.8", default-features = false }
+gnunet-compression = { path = "crates/gnunet-compression", default-features = false }
+gnunet-paillier = { path = "crates/gnunet-paillier", default-features = false }
+gnunet-abd-host = { path = "adapters/abd-std", default-features = false }
+gnunet-abd-client-host = { path = "adapters/abd-client-std", default-features = false }
+gnunet-abd = { path = "crates/gnunet-abd", default-features = false }
+gnunet-conversation = { path = "crates/gnunet-conversation", default-features = false }
+gnunet-secretsharing-client-host = { path = "adapters/secretsharing-client-std", default-features = false }
+gnunet-secretsharing = { path = "crates/gnunet-secretsharing", default-features = false }
+gnunet-consensus-host = { path = "adapters/consensus-std", default-features = false }
+gnunet-consensus-client-host = { path = "adapters/consensus-client-std", default-features = false }
+gnunet-consensus = { path = "crates/gnunet-consensus", default-features = false }
+gnunet-scalarproduct-paillier = { path = "crates/gnunet-scalarproduct-paillier", default-features = false }
+gnunet-scalarproduct-host = { path = "adapters/scalarproduct-std", default-features = false }
+gnunet-scalarproduct = { path = "crates/gnunet-scalarproduct", default-features = false }
+gnunet-set = { path = "crates/gnunet-set", default-features = false }
+gnunet-set-host = { path = "adapters/set-std", default-features = false }
+gnunet-set-client-host = { path = "adapters/set-client-std", default-features = false }
+gnunet-rps = { path = "crates/gnunet-rps", default-features = false }
+gnunet-rps-host = { path = "adapters/rps-std", default-features = false }
+gnunet-rps-client-host = { path = "adapters/rps-client-std", default-features = false }
+gnunet-gns-nss-host = { path = "adapters/gns-nss-std", default-features = false }
+gnunet-gns-proxy-host = { path = "adapters/gns-proxy-std", default-features = false }
+webpki = { package = "rustls-webpki", version = "=0.103.16", default-features = false, features = ["std"] }
+x509-parser = { version = "=0.18.1", default-features = false }
+yasna = { version = "=0.6.0", default-features = false }
+rcgen = { version = "=0.14.10", default-features = false, features = ["aws_lc_rs", "zeroize"] }
+base64ct = { version = "=1.8.3", default-features = false, features = ["alloc"] }
+aws-lc-rs = { version = "=1.19.0", default-features = false, features = ["non-fips", "alloc"] }
+gnunet-dht-service-host = { path = "adapters/dht-std", default-features = false }
+gnunet-transport-application-host = { path = "adapters/transport-application-std", default-features = false }
+time = { version = "=0.3.55", default-features = false }
+gnunet-quic-communicator-host = { path = "adapters/quic-communicator-std", default-features = false }
+gnunet-transport-quic = { path = "crates/gnunet-transport-quic", default-features = false }
+gnunet-transport-dv-bridge-host = { path = "adapters/transport-dv-bridge-std", default-features = false }
+gnunet-transport-dv-runtime-host = { path = "adapters/transport-dv-runtime-std", default-features = false }
+gnunet-transport-dv-store-host = { path = "adapters/transport-dv-store-std", default-features = false }
+gnunet-transport-dv-crypto = { path = "crates/gnunet-transport-dv-crypto", default-features = false }
+gnunet-transport-dv-crypto-host = { path = "adapters/transport-dv-crypto-std", default-features = false }
+gnunet-unix-communicator = { path = "crates/gnunet-unix-communicator", default-features = false }
+gnunet-unix-communicator-host = { path = "adapters/unix-communicator-std", default-features = false }
+gnunet-peer-tools-host = { path = "adapters/peer-tools-std", default-features = false }
+gnunet-transport-service-host = { path = "adapters/transport-service-std", default-features = false }
+gnunet-nse-client-host = { path = "adapters/nse-client-std", default-features = false }
+gnunet-dns-tools-host = { path = "adapters/dns-tools-std", default-features = false }
+gnunet-dns-interception = { path = "crates/gnunet-dns-interception", default-features = false }
+gnunet-dns-service-host = { path = "adapters/dns-service-std", default-features = false }
+gnunet-http-host = { path = "adapters/http-std", default-features = false }
+gnunet-hostlist = { path = "crates/gnunet-hostlist", default-features = false }
+gnunet-hostlist-host = { path = "adapters/hostlist-std", default-features = false }
+hyper = { version = "=1.12.0", default-features = false, features = ["client", "server", "http1"] }
+hyper-util = { version = "=0.1.21", default-features = false, features = ["tokio"] }
+http-body-util = { version = "=0.1.5", default-features = false }
+bytes = { version = "=1.12.1", default-features = false }
+tokio-rustls = { version = "=0.26.6", default-features = false, features = ["aws_lc_rs", "tls12"] }
+rustls = { version = "=0.23.46", default-features = false, features = ["std", "aws_lc_rs", "tls12"] }
+webpki-roots = { version = "=1.0.11", default-features = false }
+url = { version = "=2.5.8", default-features = false, features = ["std"] }
+gnunet-zonemaster = { path = "crates/gnunet-zonemaster", default-features = false }
+gnunet-zonemaster-host = { path = "adapters/zonemaster-std", default-features = false }
+gnunet-pt-host = { path = "adapters/pt-std", default-features = false }
+gnunet-testbed = { path = "crates/gnunet-testbed", default-features = false }
+gnunet-testbed-host = { path = "adapters/testbed-std", default-features = false }
+gnunet-pt = { path = "crates/gnunet-pt", default-features = false }
+gnunet-dns-client-host = { path = "adapters/dns-client-std", default-features = false }
+gnunet-nat-test-host = { path = "adapters/nat-test-std", default-features = false }
+gnunet-nat-burst-host = { path = "adapters/nat-burst-std", default-features = false }
+gnunet-nat-client-host = { path = "adapters/nat-client-std", default-features = false }
+gnunet-nat = { path = "crates/gnunet-nat", default-features = false }
+gnunet-nat-host = { path = "adapters/nat-std", default-features = false }
+gnunet-nat-helper-host = { path = "adapters/nat-helper-std", default-features = false }
+quick-xml = { version = "=0.42.0", default-features = false }
+unicode-normalization = { version = "=0.1.25", default-features = false }
+gnunet-revocation = { path = "crates/gnunet-revocation", default-features = false }
+gnunet-did = { path = "crates/gnunet-did", default-features = false }
+gnunet-did-host = { path = "adapters/did-std", default-features = false }
+gnunet-namestore = { path = "crates/gnunet-namestore", default-features = false }
+gnunet-namestore-client-host = { path = "adapters/namestore-client-std", default-features = false }
+gnunet-namestore-host = { path = "adapters/namestore-std", default-features = false }
+gnunet-json = { path = "crates/gnunet-json", default-features = false }
+gnunet-reclaim = { path = "crates/gnunet-reclaim", default-features = false }
+gnunet-reclaim-host = { path = "adapters/reclaim-std", default-features = false }
+gnunet-rest = { path = "crates/gnunet-rest", default-features = false }
+gnunet-rest-host = { path = "adapters/rest-std", default-features = false }
+gnunet-oidc-crypto-host = { path = "adapters/oidc-crypto-std", default-features = false }
+gnunet-messenger-host = { path = "adapters/messenger-api-std", default-features = false }
+gnunet-messenger-service-host = { path = "adapters/messenger-std", default-features = false }
+gnunet-revocation-client-host = { path = "adapters/revocation-client-std", default-features = false }
+gnunet-revocation-host = { path = "adapters/revocation-std", default-features = false }
+gnunet-topology = { path = "crates/gnunet-topology", default-features = false }
+gnunet-topology-host = { path = "adapters/topology-std", default-features = false }
+gnunet-reclaim-credentials = { path = "crates/gnunet-reclaim-credentials", default-features = false }
+gnunet-reclaim-client-host = { path = "adapters/reclaim-client-std", default-features = false }
+gnunet-messenger = { path = "crates/gnunet-messenger", default-features = false }
+gnunet-messenger-core = { path = "crates/gnunet-messenger-core", default-features = false }
+gnunet-messenger-client-host = { path = "adapters/messenger-client-std", default-features = false }
+gnunet-datacache = { path = "crates/gnunet-datacache", default-features = false }
+gnunet-namecache = { path = "crates/gnunet-namecache", default-features = false }
+gnunet-namecache-client-host = { path = "adapters/namecache-client-std", default-features = false }
+gnunet-namecache-host = { path = "adapters/namecache-std", default-features = false }
+gnunet-identity = { path = "crates/gnunet-identity", default-features = false }
+gnunet-identity-client-host = { path = "adapters/identity-client-std", default-features = false }
+gnunet-identity-host = { path = "adapters/identity-std", default-features = false }
+gnunet-snapshot-host = { path = "adapters/snapshot-std", default-features = false }
+gnunet-regex = { path = "crates/gnunet-regex", default-features = false }
+gnunet-regex-service = { path = "crates/gnunet-regex-service", default-features = false }
+gnunet-regex-server-host = { path = "adapters/regex-std", default-features = false }
+gnunet-regex-program-host = { path = "adapters/regex-program-std", default-features = false }
+gnunet-regex-client-host = { path = "adapters/regex-client-std", default-features = false }
+gnunet-vpn-host = { path = "adapters/vpn-std", default-features = false }
+gnunet-exit-host = { path = "adapters/exit-std", default-features = false }
+gnunet-vpn = { path = "crates/gnunet-vpn", default-features = false }
+gnunet-exit = { path = "crates/gnunet-exit", default-features = false }
+gnunet-tun-host = { path = "adapters/tun-std", default-features = false }
+gnunet-tun-helper-host = { path = "adapters/tun-helper-std", default-features = false }
+gnunet-vpn-client-host = { path = "adapters/vpn-client-std", default-features = false }
+gnunet-seti-host = { path = "adapters/seti-std", default-features = false }
+gnunet-setu-host = { path = "adapters/setu-std", default-features = false }
+gnunet-seti = { path = "crates/gnunet-seti", default-features = false }
+gnunet-setu = { path = "crates/gnunet-setu", default-features = false }
+gnunet-setu-client-host = { path = "adapters/setu-client-std", default-features = false }
+gnunet-seti-client-host = { path = "adapters/seti-client-std", default-features = false }
+gnunet-peerstore = { path = "crates/gnunet-peerstore", default-features = false }
+gnunet-peerstore-host = { path = "adapters/peerstore-std", default-features = false }
+gnunet-peerstore-client-host = { path = "adapters/peerstore-client-std", default-features = false }
+gnunet-cadet = { path = "crates/gnunet-cadet", default-features = false }
+gnunet-cadet-host = { path = "adapters/cadet-std", default-features = false }
+gnunet-datastore = { path = "crates/gnunet-datastore", default-features = false }
+gnunet-datastore-host = { path = "adapters/datastore-std", default-features = false }
+gnunet-fs-host = { path = "adapters/fs-std", default-features = false }
+gnunet-fs-codec = { path = "crates/gnunet-fs-codec", default-features = false }
+miniz_oxide = { version = "=0.9.1", default-features = false }
+gnunet-fs = { path = "crates/gnunet-fs", default-features = false }
+gnunet-gns = { path = "crates/gnunet-gns", default-features = false }
+gnunet-gns-client-host = { path = "adapters/gns-client-std", default-features = false }
+gnunet-gns-host = { path = "adapters/gns-api-std", default-features = false }
+gnunet-gns-service-host = { path = "adapters/gns-service-std", default-features = false }
+gnunet-dns2gns-host = { path = "adapters/dns2gns-std", default-features = false }
+gnunet-tcp-communicator-runtime = { path = "adapters/tcp-runtime-std", default-features = false }
+gnunet-tcp-replay-host = { path = "adapters/tcp-replay-std", default-features = false }
+gnunet-transport-runtime = { path = "adapters/transport-runtime-std", default-features = false }
+gnunet-dht-client = { path = "crates/gnunet-dht-client", default-features = false }
+gnunet-dht-client-host = { path = "adapters/dht-client-std", default-features = false }
+gnunet-dht = { path = "crates/gnunet-dht", default-features = false }
+gnunet-nse-host = { path = "adapters/nse-std", default-features = false }
+gnunet-core-client-host = { path = "adapters/core-client-std", default-features = false }
+gnunet-nse = { path = "crates/gnunet-nse", default-features = false }
+libm = { version = "=0.2.16", default-features = false }
+gnunet-client-host = { path = "adapters/client-std", default-features = false }
+gnunet-core-host = { path = "adapters/core-std", default-features = false }
+gnunet-transport = { path = "crates/gnunet-transport", default-features = false }
+gnunet-transport-host = { path = "adapters/transport-std", default-features = false }
+gnunet-pils = { path = "crates/gnunet-pils", default-features = false }
+gnunet-pils-host = { path = "adapters/pils-std", default-features = false }
+gnunet-core = { path = "crates/gnunet-core", default-features = false }
+gnunet-program-host = { path = "adapters/program-std", default-features = false }
+gnunet-block = { path = "crates/gnunet-block", default-features = false }
+gnunet-ipc-unix = { path = "adapters/ipc-unix", default-features = false }
+gnunet-udp-communicator-host = { path = "adapters/udp-communicator-std", default-features = false }
+gnunet-udp-communicator-core = { path = "crates/gnunet-udp-communicator-core", default-features = false }
+gnunet-tcp-communicator-core = { path = "crates/gnunet-tcp-communicator-core", default-features = false }
+gnunet-tcp-communicator-host = { path = "adapters/tcp-communicator-std", default-features = false }
+gnunet-resolver-broker = { path = "adapters/resolver-broker-std", default-features = false }
+gnunet-types = { path = "crates/gnunet-types", default-features = false }
+gnunet-arm-core = { path = "crates/gnunet-arm-core", default-features = false }
+gnunet-arm-service-core = { path = "crates/gnunet-arm-service-core", default-features = false }
+gnunet-session-crypto = { path = "crates/gnunet-session-crypto", default-features = false }
+gnunet-resources = { path = "crates/gnunet-resources", default-features = false }
+gnunet-wire = { path = "crates/gnunet-wire", default-features = false }
+gnunet-crypto = { path = "crates/gnunet-crypto", default-features = false }
+gnunet-client = { path = "crates/gnunet-client", default-features = false }
+gnunet-gnsrecord = { path = "crates/gnunet-gnsrecord", default-features = false }
+gnunet-gnsrecord-text = { path = "crates/gnunet-gnsrecord-text", default-features = false }
+gnunet-zoneimport-core = { path = "crates/gnunet-zoneimport-core", default-features = false }
+gnunet-zoneimport-host = { path = "adapters/zoneimport-std", default-features = false }
+gnunet-gnscrypto = { path = "crates/gnunet-gnscrypto", default-features = false }
+gnunet-hello = { path = "crates/gnunet-hello", default-features = false }
+gnunet-dns = { path = "crates/gnunet-dns", default-features = false }
+gnunet-idna = { path = "crates/gnunet-idna", default-features = false }
+gnunet-resolver-service-core = { path = "crates/gnunet-resolver-service-core", default-features = false }
+gnunet-dnsstub = { path = "crates/gnunet-dnsstub", default-features = false }
+gnunet-statistics = { path = "crates/gnunet-statistics", default-features = false }
+gnunet-config = { path = "adapters/config-std", default-features = false }
+gnunet-native = { path = "adapters/native-std", default-features = false }
+gnunet-dnsstub-host = { path = "adapters/dns-std", default-features = false }
+gnunet-resolver-host = { path = "adapters/resolver-std", default-features = false }
+gnunet-arm-host = { path = "adapters/arm-std", default-features = false }
+gnunet-arm-service-host = { path = "adapters/arm-service-std", default-features = false }
+gnunet-statistics-store = { path = "adapters/statistics-store", default-features = false }
+gnunet-service-runtime = { path = "adapters/service-runtime", default-features = false }
+gnunet-service-startup = { path = "adapters/service-startup", default-features = false }
+
+ed25519-dalek = { version = "=3.0.0", default-features = false, features = ["zeroize"] }
+curve25519-dalek = { version = "=5.0.0", default-features = false, features = ["zeroize"] }
+crypto-bigint = { version = "=0.7.9", default-features = false, features = ["zeroize"] }
+aes = { version = "=0.9.3", default-features = false, features = ["zeroize"] }
+ctr = { version = "=0.10.1", default-features = false, features = ["zeroize"] }
+salsa20 = { version = "=0.11.0", default-features = false, features = ["zeroize"] }
+chacha20 = { version = "=0.10.2", default-features = false, features = ["cipher", "zeroize"] }
+cipher = { version = "=0.5.2", default-features = false, features = ["zeroize", "stream-wrapper"] }
+poly1305 = { version = "=0.9.1", default-features = false, features = ["zeroize"] }
+ghash = { version = "=0.6.0", default-features = false, features = ["zeroize"] }
+polyval = { version = "=0.7.3", default-features = false, features = ["zeroize", "hazmat"] }
+subtle = { version = "=2.6.1", default-features = false }
+serde_json = { version = "=1.0.154", default-features = false }
+sha2 = { version = "=0.11.1", default-features = false, features = ["zeroize"] }
+tokio = { version = "=1.54.1", default-features = false }
+socket2 = { version = "=0.6.5", default-features = false }
+getrandom = { version = "=0.4.3", default-features = false }
+libc = { version = "=0.2.191", default-features = false }
+uzers = { version = "=0.12.2", default-features = false }
+nix = { version = "=0.31.3", default-features = false, features = ["fs"] }
+zeroize = { version = "=1.9.1", default-features = false, features = ["derive"] }
+
+argon2 = { version = "=0.6.0", default-features = false, features = ["zeroize"] }
+
+[profile.release]
+overflow-checks = true
+lto = "thin"
+codegen-units = 1

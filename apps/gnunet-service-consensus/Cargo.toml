@@ -1,0 +1,24 @@
+[package]
+name = "gnunet-service-consensus"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+gnunet-consensus = { workspace = true, features = ["alloc"] }
+gnunet-consensus-host.workspace = true
+gnunet-client-host.workspace = true
+gnunet-set-client-host.workspace = true
+gnunet-pils-host = { workspace = true, features = ["client"] }
+gnunet-config.workspace = true
+gnunet-program-host = { workspace = true, features = ["service-runtime"] }
+gnunet-resolver-broker.workspace = true
+gnunet-service-runtime.workspace = true
+gnunet-service-startup.workspace = true
+gnunet-types.workspace = true
+gnunet-wire.workspace = true
+tokio = { workspace = true, features = ["rt", "signal", "time"] }
+
+[lints]
+workspace = true

@@ -1,0 +1,40 @@
+#!/usr/bin/env python3
+"""Fresh unchanged official TCP/TRANSPORT/CORE build; no production C FFI."""
+import argparse,hashlib,importlib.util,json,os,shutil,sys,time
+from pathlib import Path
+sys.dont_write_bytecode=True
+def sha(p):return hashlib.sha256(Path(p).read_bytes()).hexdigest()
+def main():
+ p=argparse.ArgumentParser()
+ for key in ['repository','source','reference','output','prefix']:p.add_argument('--'+key,type=Path,required=True)
+ a=p.parse_args();repo,source,reference,out,prefix=[getattr(a,k).resolve()for k in ['repository','source','reference','output','prefix']]
+ for target in [out,prefix]:
+  if target.exists()or any(target==x or target.is_relative_to(x)or x.is_relative_to(target)for x in [repo,source,reference.parent]):raise ValueError('outputs must be new disjoint external paths')
+ if out.is_relative_to(prefix)or prefix.is_relative_to(out):raise ValueError('build and prefix overlap')
+ out.mkdir(mode=0o700);build=out/'build';recipe=json.loads(reference.read_text());helper=repo/'tools/reference/build_reference.py';spec=importlib.util.spec_from_file_location('normal_build',helper);module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+ before=module.source_state(source)
+ if recipe['upstream']!=before or recipe['status']!='passed':raise ValueError('normal prerequisite recipe/state mismatch')
+ normal_inputs={str(reference):sha(reference),str(helper):sha(helper)};commands=[];env=os.environ.copy();env.update(recipe['build_environment']);setup=next(row['argv']for row in recipe['commands']if row['name']=='meson-setup');meson=Path(setup[0]);env['PATH']=str(meson.parent)+os.pathsep+env['PATH'];setup=[str(meson),'setup',str(build),str(source),'--prefix='+str(prefix),*setup[5:]]
+ try:
+  for name,argv in [('meson-version',[str(meson),'--version']),('compiler-version',['cc','--version']),('meson-setup',setup),('meson-build',[str(meson),'compile','-C',str(build),'-j','1','gnunet-communicator-tcp','gnunet-service-transport','gnunet-service-core'])]:
+   row=module.run_logged(out,name,argv,env);commands.append(row)
+   if row['exit_code']!=0:raise RuntimeError(name+' failed')
+  prefix.mkdir(mode=0o700);(prefix/'lib').mkdir();destination=prefix/'lib/gnunet/libexec';destination.mkdir(parents=True);artifacts={}
+  for name,relative in [('communicator','src/service/transport/gnunet-communicator-tcp'),('transport','src/service/transport/gnunet-service-transport'),('core','src/service/core/gnunet-service-core')]:
+   src=build/relative;dst=destination/src.name;shutil.copy2(src,dst)
+   if sha(src)!=sha(dst):raise ValueError('staged executable differs from actual normal build')
+   artifacts[name]={'built_path':str(src),'path':str(dst),'sha256':sha(dst)}
+  libraries=[]
+  for src in sorted(build.rglob('*.dylib')):
+   if not src.is_file():continue # Meson also creates dangling aliases for targets not selected.
+   dst=prefix/'lib'/src.name
+   if dst.exists():
+    if sha(src)!=sha(dst):raise ValueError('ambiguous normal library name')
+    continue
+   shutil.copy2(src,dst,follow_symlinks=False);libraries.append({'path':str(dst),'built_path':str(src),'symlink':dst.is_symlink()})
+  for row in libraries:row['sha256']=sha(Path(row['path']))
+  after=module.source_state(source)
+  if before!=after or any(sha(p)!=value for p,value in normal_inputs.items()):raise ValueError('source or builder changed during actual normal build')
+  result={'kind':'unmodified-official-c-tcp-communicator-reference-build','status':'passed','source':str(source),'upstream':before,'source_unchanged':True,'build':str(build),'prefix':str(prefix),'build_environment':recipe['build_environment'],'runtime_environment':{'DYLD_LIBRARY_PATH':str(prefix/'lib'),'LD_LIBRARY_PATH':str(prefix/'lib'),'GNUNET_PREFIX':str(prefix)},'artifacts':artifacts,'libraries':libraries,'generated_config':{'path':str(build/'gnunet_private_config.h'),'sha256':sha(build/'gnunet_private_config.h')},'compile_commands':{'path':str(build/'compile_commands.json'),'sha256':sha(build/'compile_commands.json')},'commands':commands,'builder_sha256':sha(Path(__file__)),'inputs':normal_inputs,'scope':'Actual normal unchanged C build only, no communicator/peer execution or full subsystem acceptance.'};(out/'build-result.json').write_text(json.dumps(result,indent=2)+'\n');print(json.dumps({'status':'passed','receipt':str(out/'build-result.json'),'artifacts':list(artifacts)}))
+ except BaseException as e:(out/'failure.json').write_text(json.dumps({'error':str(e),'commands':commands},indent=2)+'\n');raise
+if __name__=='__main__':main()

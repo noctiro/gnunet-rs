@@ -1,0 +1,29 @@
+[package]
+name = "gnunet-hostlist-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+[target.'cfg(unix)'.dependencies]
+gnunet-hostlist = { workspace = true, features = ["alloc"] }
+gnunet-types.workspace = true
+gnunet-wire.workspace = true
+gnunet-hello.workspace = true
+gnunet-client.workspace = true
+gnunet-client-host.workspace = true
+gnunet-http-host.workspace = true
+gnunet-core-client-host.workspace = true
+gnunet-peerstore-client-host.workspace = true
+gnunet-service-runtime.workspace = true
+gnunet-snapshot-host.workspace = true
+gnunet-config.workspace = true
+gnunet-native.workspace = true
+tokio = { workspace = true, features = ["rt", "net", "time", "io-util", "sync"] }
+zeroize = { workspace = true, features = ["alloc"] }
+hyper = { workspace = true, features = ["client", "server", "http1"] }
+hyper-util = { workspace = true, features = ["tokio"] }
+http-body-util.workspace = true
+bytes.workspace = true
+url.workspace = true
+[lints]
+workspace = true

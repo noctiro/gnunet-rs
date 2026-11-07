@@ -1,0 +1,17 @@
+[package]
+name = "gnunet-statistics-store"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = []
+
+[dependencies]
+gnunet-types.workspace = true
+gnunet-wire.workspace = true
+gnunet-statistics = { workspace = true, features = ["alloc"] }
+
+[lints]
+workspace = true

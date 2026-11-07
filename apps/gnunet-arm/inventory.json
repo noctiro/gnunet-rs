@@ -1,0 +1,204 @@
+{
+  "revision": "346358e26d4dcc2dc4f51bef5d52dca29c7d8165",
+  "source_inputs": {
+    "src/cli/arm/gnunet-arm.c": "dd0718e13650635466b120b2476c358b08f9bbdbdb572c2ce33c8ec1b7ba6a40",
+    "src/lib/util/program.c": "7eff92cd6b31f79ab6f09a1e38ff8fc09abd930f93c96c709bee3ca130318dc9",
+    "src/lib/util/getopt.c": "eff8580742b2b9338caac5ee481fe1bda9e34b06c77010fddb1882e53c23b009",
+    "src/lib/util/getopt_helpers.c": "0bce2ec0172f3f0af9644b6a687b9bfe715ae02564d5ec9d2923a4869f46b7d1",
+    "src/lib/util/strings.c": "15559d5fda3c0254cda47cd88c5b09af758f19e085a99f228996dd94e6eaf4e9",
+    "src/lib/util/disk.c": "d68660547e31ed9409f22350a66878b3236655cea1b3541c5674850663b96e9e",
+    "src/include/gnunet_arm_service.h": "f407a4abc309f95e927bf590cc865c5c46054cff29edf598ac952ce33e4175e0",
+    "src/include/gnunet_program_lib.h": "d065ac19cee6ef0fda6004aac56c21afc839d23a4188089f03e89599f5430e5f",
+    "src/include/gnunet_getopt_lib.h": "221b712eda242ce82e5c1c272350d32ed32273d4b5ddd6ff7fb50c0fcb099726",
+    "src/lib/util/scheduler.c": "94eb50311400ee289fc1257b94897e2ced1b36aec8cdeff5774b10ec215172da"
+  },
+  "CLI_definition_count": 16,
+  "CLI_definitions": [
+    {
+      "name": "delete_files",
+      "source_line": 151,
+      "definition_sha256": "d3426047abfbf4fba070c8066b92e31af7858608176c97d177f94c418c91d082"
+    },
+    {
+      "name": "shutdown_task",
+      "source_line": 180,
+      "definition_sha256": "e4e279bdc3bdd5faac24ab150f120ab142bdeba255edce173c8a1f053ecb837a"
+    },
+    {
+      "name": "req_string",
+      "source_line": 223,
+      "definition_sha256": "3b61fbebf51b9b1993fab9689661fe4be54ecf6b9c481c81ab27e4d6d32ef7c4"
+    },
+    {
+      "name": "ret_string",
+      "source_line": 244,
+      "definition_sha256": "d3b2e9981ad17f241791ac2c252a6ccbba2a371b02b2e398869955183550a6e2"
+    },
+    {
+      "name": "arm_is_running",
+      "source_line": 291,
+      "definition_sha256": "26400dd0ebc2dfeb640b39042ef8822da73176ad54a73b20ce0e810c8459a980"
+    },
+    {
+      "name": "conn_status",
+      "source_line": 318,
+      "definition_sha256": "dfd41aa892388b6f45f154353b4dfaf6157a662f7a8921c8b6b5f0fd8db94c29"
+    },
+    {
+      "name": "start_callback",
+      "source_line": 348,
+      "definition_sha256": "942c38012fb6a30ded3cad77310513345df3f7bbe03a9702e8c755c87e780563"
+    },
+    {
+      "name": "stop_callback",
+      "source_line": 391,
+      "definition_sha256": "3335272d13b3cbea2b669248666734fd25ce2a632ef4633c41765695225d6d60"
+    },
+    {
+      "name": "init_callback",
+      "source_line": 448,
+      "definition_sha256": "f394d4fae6fb676375b947d228c8573cd0607ca535b93cc6fbf76db67d1b69c4"
+    },
+    {
+      "name": "term_callback",
+      "source_line": 495,
+      "definition_sha256": "65fe3ddb39d3a6189d699b468697e362fab34c7be6034bf9abcde4f361f60dd1"
+    },
+    {
+      "name": "list_callback",
+      "source_line": 548,
+      "definition_sha256": "d6b962352679978775b19279d2e59ce997a42b650471d600696bb2eb69ffda90"
+    },
+    {
+      "name": "action_loop",
+      "source_line": 746,
+      "definition_sha256": "38c1071f07616ee0ef30ee878ff2dbd930c15d6a04167ed7d9da1e7e71bd9a76"
+    },
+    {
+      "name": "srv_status",
+      "source_line": 897,
+      "definition_sha256": "fedc27bbfa2685d248148cf66150ea633c8ba5c6bf83a988a53094a6d881ae41"
+    },
+    {
+      "name": "timeout_task_cb",
+      "source_line": 948,
+      "definition_sha256": "b7f1aaf758857ab016007e78ac9f4bccec256fe72eae462e7c1489f95047808b"
+    },
+    {
+      "name": "run",
+      "source_line": 966,
+      "definition_sha256": "c9f3fe30c5ca60948d27082c47f475e3f17a29c21eb8991a7374a20929c16f7d"
+    },
+    {
+      "name": "main",
+      "source_line": 1019,
+      "definition_sha256": "df0acae44cf801da1dd7911d04f407868d3b40a48165ecb61f5129c7269c2e15"
+    }
+  ],
+  "CLI_specific_option_count": 13,
+  "CLI_specific_options": [
+    {
+      "processor": "flag",
+      "short": "e",
+      "long": "end"
+    },
+    {
+      "processor": "string",
+      "short": "i",
+      "long": "init"
+    },
+    {
+      "processor": "string",
+      "short": "k",
+      "long": "kill"
+    },
+    {
+      "processor": "flag",
+      "short": "a",
+      "long": "all"
+    },
+    {
+      "processor": "flag",
+      "short": "s",
+      "long": "start"
+    },
+    {
+      "processor": "flag",
+      "short": "r",
+      "long": "restart"
+    },
+    {
+      "processor": "flag",
+      "short": "d",
+      "long": "delete"
+    },
+    {
+      "processor": "flag",
+      "short": "m",
+      "long": "monitor"
+    },
+    {
+      "processor": "flag",
+      "short": "q",
+      "long": "quiet"
+    },
+    {
+      "processor": "relative_time",
+      "short": "T",
+      "long": "timeout"
+    },
+    {
+      "processor": "flag",
+      "short": "I",
+      "long": "info"
+    },
+    {
+      "processor": "flag",
+      "short": "O",
+      "long": "no-stdout"
+    },
+    {
+      "processor": "flag",
+      "short": "E",
+      "long": "no-stderr"
+    }
+  ],
+  "PROGRAM_inherited_options": [
+    "c/config",
+    "h/help (exclusive)",
+    "L/log",
+    "l/logfile",
+    "v/version (exclusive)"
+  ],
+  "verification": "Source-bound finite CLI runner tools/verify.py; 32 defined-safe argv profiles; malformed relative time is Rust-only; no owner promotion",
+  "pending": [
+    "Complete generic PROGRAM/logging: timestamp/component/PID/severity prefix, force-log/full levels, malformed config diagnostics, locale/catalogs, resolver startup and time speedup are not implemented/proven as a common layer.",
+    "Native helper installation/deployment and non-colocated discovery variants; the standalone forwarding helper must not duplicate the existing host helper when merged.",
+    "Native ABI layouts beyond actually validated U64Align8; explicit embedding ArmAbi is required rather than pointer-width inference.",
+    "Embedding arbitrary concurrent signal ownership/restoration; Tokio process-global signal registrations persist beyond runtime::run.",
+    "Safe literal handling of percent-bearing disconnected kill names differs from the unsafe C second-format-string branch; no undefined C experiment is performed.",
+    "Non-UTF8 file creation is rejected by this actual APFS profile; successful native service names are tested as raw bytes, full error Display parity remains pending.",
+    "Finite candidate evidence does not complete ARM service/testing APIs or all GNUnet functionality."
+  ],
+  "explicit_safe_differences": [
+    {
+      "source_function": "term_callback",
+      "source_line": 515,
+      "condition": "Disconnected callback with percent conversions embedded in native term bytes",
+      "C_behavior": "User term is embedded by asprintf into a second fprintf format string; extra conversions can cause UB/format injection.",
+      "Rust_behavior": "Term is always written as literal bytes, never a format string.",
+      "normal_C_UB_experiment_executed": false,
+      "required_kill_operation_retained": true,
+      "Rust_test": "disconnected_kill_name_percent_bytes_are_data_never_a_second_format_string"
+    },
+    {
+      "source_function": "GNUNET_STRINGS_fancy_time_to_relative via set_relative_time",
+      "source_line": 259,
+      "condition": "convert_with_table returns GNUNET_SYSERR for malformed relative time",
+      "C_behavior": "Local val is uninitialized; convert_with_table error returns before writing it, then fancy_time_to_relative reads val unconditionally. No defined failure output exists.",
+      "Rust_behavior": "Reject malformed relative-time input with exit255 and the documented diagnostic, without publishing a fabricated duration.",
+      "future_C_malformed_relative_time_experiment_permitted": false,
+      "Rust_only_test": "malformed_relative_time_is_rejected_safely_without_running_undefined_c_path"
+    }
+  ]
+}

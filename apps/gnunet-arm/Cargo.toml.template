@@ -1,0 +1,58 @@
+[package]
+name="gnunet-arm-cli"
+version="0.1.0"
+edition="2024"
+rust-version="1.99.1"
+license="MPL-2.0"
+[workspace]
+[features]
+default=[]
+[dependencies]
+gnunet-arm-host={path="@REPOSITORY@/adapters/arm-std",default-features=false}
+gnunet-arm-core={path="@REPOSITORY@/crates/gnunet-arm-core",default-features=false}
+gnunet-config={path="@REPOSITORY@/adapters/config-std",default-features=false}
+gnunet-ipc-unix={path="@REPOSITORY@/adapters/ipc-unix",default-features=false}
+gnunet-types={path="@REPOSITORY@/crates/gnunet-types",default-features=false}
+tokio={version="=1.54.1",default-features=false,features=["rt","net","time","io-util","signal","sync"]}
+
+[lints.rust]
+future_incompatible = { level = "deny", priority = -1 }
+let_underscore_drop = "deny"
+let_underscore_lock = "deny"
+missing_docs = "deny"
+non_ascii_idents = "deny"
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"
+unfulfilled_lint_expectations = "deny"
+unused_must_use = "deny"
+warnings = "deny"
+
+[lints.clippy]
+allow_attributes = "deny"
+allow_attributes_without_reason = "deny"
+await_holding_lock = "deny"
+await_holding_refcell_ref = "deny"
+dbg_macro = "deny"
+expect_used = "deny"
+exit = "deny"
+let_underscore_future = "deny"
+let_underscore_lock = "deny"
+let_underscore_must_use = "deny"
+let_unit_value = "deny"
+mem_forget = "deny"
+missing_safety_doc = "deny"
+panic = "deny"
+panic_in_result_fn = "deny"
+print_stderr = "deny"
+print_stdout = "deny"
+redundant_clone = "deny"
+todo = "deny"
+undocumented_unsafe_blocks = "deny"
+unimplemented = "deny"
+unreachable = "deny"
+unused_result_ok = "deny"
+unwrap_used = "deny"
+
+[lints.rustdoc]
+broken_intra_doc_links = "deny"
+invalid_html_tags = "deny"

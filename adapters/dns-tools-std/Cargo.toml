@@ -1,0 +1,18 @@
+[package]
+name = "gnunet-dns-tools-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+[dependencies]
+gnunet-dns.workspace = true
+gnunet-dns-client-host.workspace = true
+gnunet-client-host.workspace = true
+gnunet-config.workspace = true
+gnunet-program-host = { workspace = true, features = ["resolver-broker"] }
+gnunet-resolver-broker.workspace = true
+gnunet-service-runtime.workspace = true
+tokio = { workspace = true, features = ["rt", "net", "time", "signal"] }
+zeroize = { workspace = true, features = ["alloc"] }
+[lints]
+workspace = true

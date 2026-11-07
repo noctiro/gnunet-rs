@@ -1,0 +1,25 @@
+[package]
+name = "gnunet-resolver-command"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+gnunet-program-host = { workspace = true, features = ["resolver-broker"] }
+gnunet-client-host.workspace = true
+gnunet-config.workspace = true
+gnunet-resolver-broker.workspace = true
+gnunet-service-runtime.workspace = true
+gnunet-service-startup.workspace = true
+gnunet-types.workspace = true
+nix = { workspace = true, features = ["poll"] }
+zeroize = { workspace = true, features = ["alloc"] }
+tokio = { workspace = true, features = ["rt", "net", "time", "signal"] }
+
+[[bin]]
+name = "gnunet-resolver"
+path = "src/main.rs"
+
+[lints]
+workspace = true

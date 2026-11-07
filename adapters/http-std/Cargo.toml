@@ -1,0 +1,25 @@
+[package]
+name = "gnunet-http-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+gnunet-types.workspace = true
+gnunet-client-host.workspace = true
+gnunet-service-runtime.workspace = true
+gnunet-native.workspace = true
+tokio = { workspace = true, features = ["rt", "net", "time", "io-util", "sync"] }
+zeroize = { workspace = true, features = ["alloc"] }
+hyper = { workspace = true, features = ["client", "http1"] }
+hyper-util = { workspace = true, features = ["tokio"] }
+http-body-util.workspace = true
+bytes.workspace = true
+tokio-rustls.workspace = true
+rustls.workspace = true
+webpki-roots.workspace = true
+url.workspace = true
+
+[lints]
+workspace = true

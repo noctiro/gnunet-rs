@@ -1,0 +1,162 @@
+{
+  "schema": 1,
+  "upstream_revision": "346358e26d4dcc2dc4f51bef5d52dca29c7d8165",
+  "tag": "v0.29.1",
+  "source_sha256": {
+    "src/lib/util/resolver_api.c": "2960034fb97c64c6465d1837d0c0a5fe608ca70d74607d72682022bf2e06ac60",
+    "src/lib/util/client.c": "95866e26472825549cb0f88d65768cca110d9ca53a5f37ca9d3e0d7266ec9062",
+    "src/lib/util/program.c": "7eff92cd6b31f79ab6f09a1e38ff8fc09abd930f93c96c709bee3ca130318dc9",
+    "src/include/gnunet_resolver_service.h": "9fc00ec687e2889da30576c34e3804178d7003b8692f50dc31659b12268362b9",
+    "src/include/gnunet_time_lib.h": "314e4c1a3b537ecb0fc05c4473a055f0f1ca976236999c0e679ab72926e575d0",
+    "src/lib/util/resolver.h": "1d6ec12f363ef56d97e06268f9d0a7d87eb268c5f47dd3319807ff9146afe144"
+  },
+  "public_functions": [
+    {
+      "name": "GNUNET_RESOLVER_connect",
+      "source": "resolver_api.c:258-265",
+      "rust": "Context::connect/connect_live",
+      "representation_review": "Replace selected cfg identity and reset1ms only; existing MQ/old cfg identity/attempt/TX/RX/requests unaffected; no wake.",
+      "implementation_status": "candidate_in_progress",
+      "verification": null
+    },
+    {
+      "name": "GNUNET_RESOLVER_disconnect",
+      "source": "resolver_api.c:271-304",
+      "rust": "Driver::disconnect",
+      "representation_review": "Actual synchronous physical close; requires queued remote requests canceled/completed. Independent numeric tasks remain.",
+      "implementation_status": "candidate_in_progress",
+      "verification": null
+    },
+    {
+      "name": "GNUNET_RESOLVER_ip_get",
+      "source": "resolver_api.c:940-1028",
+      "rust": "Context::ip_get",
+      "representation_review": "Original admission deadline; async numeric and loopback fast paths; current cfg check for remote; one shared FIFO/MQ.",
+      "implementation_status": "candidate_in_progress",
+      "verification": null
+    },
+    {
+      "name": "GNUNET_RESOLVER_hostname_get",
+      "source": "resolver_api.c:1084-1149",
+      "rust": "Context::hostname_get",
+      "representation_review": "Cfg check before even no-resolve numeric mode, typed address preserves family/raw bytes and eliminates sockaddr padding/length invalidity.",
+      "implementation_status": "candidate_in_progress",
+      "verification": null
+    },
+    {
+      "name": "GNUNET_RESOLVER_hostname_resolve",
+      "source": "resolver_api.c:1236-1263",
+      "rust": "Context::hostname_resolve",
+      "representation_review": "Audited native gethostname only, then exact shared forward path; no host DNS/FQDN substitution.",
+      "implementation_status": "candidate_in_progress",
+      "verification": null
+    },
+    {
+      "name": "GNUNET_RESOLVER_local_fqdn_get",
+      "source": "resolver_api.c:1159-1230",
+      "rust": "local_fqdn_get -> gnunet-native",
+      "representation_review": "Audited normal HAVE_GETADDRINFO source profile; owned raw OsString with Drop; may consult native NSS/DNS and is never used by ordinary query path.",
+      "implementation_status": "candidate_in_progress",
+      "verification": null
+    },
+    {
+      "name": "GNUNET_RESOLVER_request_cancel",
+      "source": "resolver_api.c:1277-1306",
+      "rust": "Context::request_cancel/Query::cancel/Drop",
+      "representation_review": "Original owner/generation token; unsent free, submitted drain tombstone, no cancel wire or synthetic terminal; completed token stale.",
+      "implementation_status": "candidate_in_progress",
+      "verification": null
+    }
+  ],
+  "public_surfaces": [
+    {
+      "name": "GNUNET_RESOLVER_AddressCallback",
+      "rust": "Reply::Address(IpAddr), Reply::Complete",
+      "review": "Native AF/zero port/raw4/16 address preserved by typed value; sockaddr padding and addrlen are representation metadata."
+    },
+    {
+      "name": "GNUNET_RESOLVER_HostnameCallback",
+      "rust": "Delivery::reply -> Reply::Hostname/Complete",
+      "review": "Exact raw C-string prefix borrowed for callback-duration guard; Numeric fallback represented explicitly by address."
+    },
+    {
+      "name": "GNUNET_RESOLVER_RequestHandle",
+      "rust": "Query/Token with original-owner Arc identity + core generation",
+      "review": "Stale/foreign authority rejected; no raw-pointer ABI; terminal tokens invalidated safely."
+    }
+  ],
+  "behavior_inventory": {
+    "globals": [
+      "resolver_cfg is independent of CLIENT service cfg; borrowed identity must survive old MQ after selection replacement",
+      "one shared mq, req_head/tail FIFO, opaque native-endian last_request_id; numeric tasks also consume IDs",
+      "backoff starts1ms, reconnect schedules current then doubles max900s; connect resets value without rescheduling existing r_task",
+      "s_task idle shutdown after1ms, canceled on new remote request; shutdown resets1ms; explicit disconnect does not reset"
+    ],
+    "fifo": [
+      "Only head is submitted; submitted/canceled head blocks queued tail",
+      "Timeout can remove a head while its MQ envelope is still unsent; next head is then copied to same real MQ queue",
+      "Sent cancel suppresses every callback and waits for END/error/idle; no cancel protocol message",
+      "END of canceled request reclaims head then processes next; error removes canceled head then retries next",
+      "Queued requests have their own admission timeout, can expire before transmission; no restart of original deadlines"
+    ],
+    "responses": [
+      "Any known queued/submitted/canceled remote ID can be matched; no extra head-only or requested-AF filter",
+      "Forward payload only4/16 bytes; reverse last byte NUL required, visible value ends at first NUL, arbitrary non-UTF8 preserved",
+      "Empty8-byte response is END; reverse with no successful name first reports numeric fallback then finalNULL unless canceled in fallback",
+      "Malformed identified response terminates only that request and retires MQ; unknown ID retires MQ and retries original head unchanged",
+      "Unregistered message types ignored by MQ; short registered type5 is MQ error",
+      "Already received reverse-name state survives reconnect, suppresses later numeric fallback"
+    ],
+    "fast": [
+      "Forward numeric and localhost/ip6-localnet bypass cfg check and remain deferred even timeout0",
+      "Any-family loopback order isV6 thenV4; numeric preserves detected family",
+      "Reverse numeric requires current cfg; native sockaddr invalid lengths/family cannot be represented by typed IpAddr",
+      "Numeric tasks are not in remote DLL and survive explicit disconnect"
+    ],
+    "configuration": [
+      "check_config only tests UNIXPATH presence or numeric/known-loopback HOSTNAME, not full CLIENT endpoint validity",
+      "New Resolver MQ validates current selected cfg and caches TCP then; Unix retry rereads that MQ's original cfg identity",
+      "Changing selected cfg does not replace existing MQ/attempt; old store mutation can change only subsequent Unix attempts",
+      "PROGRAM scheduled main starts SPEEDUP, registers shutdown-stop, selects resolver before user main; direct mode selects before main without SPEEDUP; original C cleanup destroys cfg without clearing selected pointer"
+    ],
+    "client": [
+      "CLIENT caches service TCP PORT/HOSTNAME per MQ, reads UNIXPATH every even/no-TCP physical attempt",
+      "CLIENT lookup uses independent shared resolver_cfg, never service cstate->cfg",
+      "Every TCP address creates independent5s probe; first success cancels other probes but DOES NOT cancel dns_active",
+      "A connected service stream retains DNS subscription until actual END/timeout or destruction; later addresses ignored if sock exists",
+      "Native lookup returningNULL leaves CLIENT without probes/dns_active and does not itself call connect_fail_continuation; preserve/resolve this explicit profile branch rather than fabricate an END"
+    ],
+    "clock": [
+      "Context samples one explicit source clock at original admission; original deadline addition saturatesMAX",
+      "Driver registers clock revision changes and recalculates original logical deadlines; backwards adjustments allowed",
+      "Drive budget remains real Tokio time, independent of source speedup",
+      "Default monotonic profile and explicit PROGRAM clock adapter are distinct; actual clock/profile proof remains required"
+    ],
+    "ownership": [
+      "Only one driver; cloned contexts share core and MQ, no query-private socket",
+      "One callback Delivery lease blocks next callback/timer effect until return; caller can cancel/reconfigure via Context during callback",
+      "Name bytes copied into a preallocated reusable scratch lease before input buffer reuse; no UTF8 conversion",
+      "Bounded remote MQ credits reserved before admission cover live requests and expired orphan envelopes; queue cannot lose a marked submission or starve transport under full credit",
+      "Driver drop closes sockets and reports owner loss; it emits no fabricated public DNS terminal"
+    ]
+  },
+  "not_yet_resolved": [
+    "Formal constructor/callsite integration is still required and inventoried in INTEGRATION.json: remove query-private ResolverQuery defaults and pass one process SharedResolution/Driver through PROGRAM and all service hosts. This is required implementation work, not compatibility exception.",
+    "Full source-bound final portable verification is pending. Earlier actual C/R receipts are explicitly historical per receipt source/tool/binary snapshots.",
+    "Malformed/short type5 full adapter matrix, partial receive canceled-wait and every raw reverse timeout/callback branch still need additional host/source coverage before whole Resolver owner acceptance. The pure-core copied regression set has been rerun without claiming adapter proof.",
+    "C cancellation inside deferred fast callbacks can free then reuse rh; forbidden/UAF use is not executed or implemented. Safe Rust callback leases and generation checks are required and tested independently.",
+    "C opaque ID counter consumes failed remote cfg admission; safe bounded Rust rejection remains atomic and does not consume. No numerical ID equality is claimed for rejected-input profiles.",
+    "PROGRAM SharedClock adapter lives in official_config separate staging; composed actual PROGRAM+shared generic CLIENT/ARM/STATISTICS acceptance still required.",
+    "Native FQDN profile delegates audited existing gnunet-native helper; no actual local_fqdn call is executed in these broker probes because it may trigger system DNS. Other platform compile profiles remain explicit."
+  ],
+  "owner_promotion": false,
+  "verification": null,
+  "candidate_witnesses": {
+    "literal_public_C_R": "/private/tmp/gnunet-shared-resolver-paired-trial2-20261027/result.json",
+    "generic_CLIENT_retained_DNS": "/private/tmp/gnunet-shared-client-retained-pair2-20261027/result.json",
+    "normal_C_daemon_local_hosts": "/private/tmp/gnunet-shared-resolver-normal-service-trial1-20261027/result.json",
+    "selected_cfg_readpoints": "/private/tmp/gnunet-shared-resolver-config-pair1-20261027/result.json",
+    "orphan_reconnect_component": "/private/tmp/gnunet-shared-resolver-orphan-component1-20261027/result.json",
+    "warning": "Historical source/binary/tool hashes only; no owner evidence promotion. Fresh portable wrapper will bind a new complete closure."
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "evidence_schema_sha256": "9261212841e36218b7495f88d12934a2da6b6ecf537912112833629245829d2b",
+  "kind": "reviewed-external-release-stage1-lock",
+  "legacy_draft_lock_sha256": "27b765155fc9f77bf58b13dae7f46108d402dae599cb053cc2c33210cbb9a50a",
+  "reference_revision": "346358e26d4dcc2dc4f51bef5d52dca29c7d8165",
+  "requirements_sha256": "b8ca033719d1b7526b6019b3a07b752a639c5db5d4e53aa005c81524b262330e",
+  "review": "Stage1 imports original partial requirements and preserves unknown complete external capability inventory. No implementation or release credit.",
+  "schema": 1,
+  "source_index_sha256": "16491122ceb5635244b9bd339fba93d1f27475e8fb5bd1362104193da91151df"
+}

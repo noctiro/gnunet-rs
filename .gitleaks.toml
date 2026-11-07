@@ -1,0 +1,28 @@
+title = "gnunet-rs"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Pinned source-file digests in protocol and API inventories"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''(?:inventory|official-profile|discovery|node-path|active-contrib-capabilities)\.json$''']
+regexTarget = "line"
+regexes = ['''^\s*"(?:[^"\r\n]+\.(?:c|h)|API\.rs\.txt)":\s*"[a-f0-9]{64}",?\s*$''']
+
+[[allowlists]]
+description = "Published NIST AES-256-GCM vector keys; provider-specific rules still apply"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''(?:^|/)crates/gnunet-session-crypto/reference/gcm-nist-selected\.json$''']
+regexTarget = "line"
+regexes = ['''^\s*"Key":\s*"[a-f0-9]{64}",?\s*$''']
+
+[[allowlists]]
+description = "Public deterministic DHT fixture peer-key digest"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''(?:^|/)crates/gnunet-dht/tests/fixtures/normal-c/observations\.json$''']
+regexTarget = "line"
+regexes = ['''^\s*"peer_key":\s*"3d94eea49c580aef816935762be049559d6d1440dede12e6a125f1841fff8e6fa9d71862a3e5746b571be3d187b0041046f52ebd850c7cbd5fde8ee38473b649",?\s*$''']

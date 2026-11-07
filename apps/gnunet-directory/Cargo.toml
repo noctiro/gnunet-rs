@@ -1,0 +1,24 @@
+[package]
+name = "gnunet-directory-command"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "gnunet-directory"
+path = "src/main.rs"
+
+[target.'cfg(unix)'.dependencies]
+gnunet-program-host = { workspace = true, features = ["service-runtime"] }
+gnunet-config.workspace = true
+gnunet-service-runtime.workspace = true
+gnunet-service-startup.workspace = true
+gnunet-fs.workspace = true
+gnunet-fs-codec.workspace = true
+gnunet-types.workspace = true
+libc.workspace = true
+tokio = { workspace = true, features = ["rt", "time", "signal"] }
+
+[lints]
+workspace = true

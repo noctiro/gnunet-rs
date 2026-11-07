@@ -1,0 +1,17 @@
+[package]
+name = "gnunet-transport-dv-crypto"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+[features]
+default = []
+[dependencies]
+gnunet-transport.workspace = true
+gnunet-session-crypto.workspace = true
+gnunet-crypto.workspace = true
+gnunet-types.workspace = true
+gnunet-wire.workspace = true
+zeroize.workspace = true
+[lints]
+workspace = true

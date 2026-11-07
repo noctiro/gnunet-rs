@@ -1,0 +1,17 @@
+[package]
+name = "gnunet-hostlist"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+[features]
+default = []
+alloc = ["dep:zeroize"]
+std = ["alloc", "gnunet-types/std"]
+[dependencies]
+gnunet-types.workspace = true
+gnunet-wire.workspace = true
+gnunet-hello.workspace = true
+zeroize = { workspace = true, features = ["alloc"], optional = true }
+[lints]
+workspace = true

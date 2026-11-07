@@ -1,0 +1,33 @@
+[package]
+name = "gnunet-abd-command"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+gnunet-abd = { workspace = true, features = ["alloc"] }
+gnunet-abd-client-host.workspace = true
+gnunet-identity.workspace = true
+gnunet-identity-client-host.workspace = true
+gnunet-namestore-client-host.workspace = true
+gnunet-gnsrecord.workspace = true
+gnunet-gnsrecord-text.workspace = true
+gnunet-idna.workspace = true
+gnunet-wire.workspace = true
+gnunet-types.workspace = true
+gnunet-config.workspace = true
+gnunet-program-host = { workspace = true, features = ["runtime", "resolver-broker"] }
+gnunet-client-host.workspace = true
+gnunet-resolver-broker.workspace = true
+gnunet-service-runtime.workspace = true
+tokio = { workspace = true, features = ["rt", "time", "net", "signal"] }
+zeroize = { workspace = true, features = ["alloc"] }
+subtle.workspace = true
+
+[[bin]]
+name = "gnunet-abd"
+path = "src/main.rs"
+
+[lints]
+workspace = true

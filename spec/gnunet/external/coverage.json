@@ -1,0 +1,518 @@
+{
+  "schema": 1,
+  "kind": "external-owner-coverage-draft",
+  "reference_revision": "346358e26d4dcc2dc4f51bef5d52dca29c7d8165",
+  "complete_semantic_inventory": false,
+  "owners": [
+    {
+      "id": "util",
+      "kind": "subsystem",
+      "required": true,
+      "semantic_inventory": "pending",
+      "node_path_operations": []
+    },
+    {
+      "id": "statistics",
+      "kind": "subsystem",
+      "required": true,
+      "semantic_inventory": "pending",
+      "node_path_operations": []
+    },
+    {
+      "id": "testbed",
+      "kind": "subsystem",
+      "required": true,
+      "semantic_inventory": "pending",
+      "node_path_operations": []
+    },
+    {
+      "id": "arm",
+      "kind": "subsystem",
+      "required": true,
+      "semantic_inventory": "pending",
+      "node_path_operations": []
+    },
+    {
+      "id": "peerstore",
+      "kind": "subsystem",
+      "required": true,
+      "semantic_inventory": "partial-node-path",
+      "node_path_operations": [
+        "startup.peerstore-history",
+        "startup.peerstore-hello"
+      ]
+    },
+    {
+      "id": "nat",
+      "kind": "subsystem",
+      "required": true,
+      "semantic_inventory": "pending",
+      "node_path_operations": []
+    },
+    {
+      "id": "nat-auto",
+      "kind": "subsystem",
+      "required": true,
+      "semantic_inventory": "pending",
+      "node_path_operations": []
+    },
+    {
+      "id": "pils",
+      "kind": "subsystem",
+      "required": true,
+      "semantic_inventory": "partial-node-path",
+      "node_path_operations": [
+        "startup.pils-address-identity",
+        "startup.identity-key-material"
+      ]
+    },
+    {
+      "id": "transport",
+      "kind": "subsystem",
+      "required": true,
+      "semantic_inventory": "partial-node-path",
+      "node_path_operations": [
+        "transport.core-start",
+        "transport.core-flow",
+        "transport.communicator-registration",
+        "transport.queue-lifecycle",
+        "transport.communicator-io",
+        "transport.virtual-link-control",
+        "transport.address-validation",
+        "transport.fragmentation",
+        "transport.reliability",
+        "transport.backchannel",
+        "transport.dv-discovery",
+        "transport.dv-data",
+        "transport.application-suggestion",
+        "transport.monitor-links",
+        "transport.nat-burst",
+        "tcp.handshake-stream",
+        "tcp.record-rekey",
+        "tcp.nat-probe",
+        "communicator.udp",
+        "communicator.other-current"
+      ]
+    },
+    {
+      "id": "core",
+      "kind": "subsystem",
+      "required": true,
+      "semantic_inventory": "partial-node-path",
+      "node_path_operations": [
+        "core.init-loopback",
+        "core.peer-notify-barrier",
+        "core.send-permit",
+        "core.traffic-subscriptions",
+        "core.monitor",
+        "core.cake-handshake",
+        "core.cake-records",
+        "core.key-update-liveness"
+      ]
+    },
+    {
+      "id": "nse",
+      "kind": "subsystem",
+      "required": true,
+      "semantic_inventory": "pending",
+      "node_path_operations": []
+    },
+    {
+      "id": "hostlist",
+      "kind": "subsystem",
+      "required": true,
+      "semantic_inventory": "pending",
+      "node_path_operations": []
+    },
+    {
+      "id": "topology",
+      "kind": "subsystem",
+      "required": true,
+      "semantic_inventory": "pending",
+      "node_path_operations": []
+    },
+    {
+      "id": "dns",
+      "kind": "subsystem",
+      "required": true,
+      "semantic_inventory": "pending",
+      "node_path_operations": []
+    },
+    {
+      "id": "identity",
+      "kind": "subsystem",
+      "required": true,
+      "semantic_inventory": "pending",
+      "node_path_operations": []
+    },
+    {
+      "id": "namecache",
+      "kind": "subsystem",
+      "required": true,
+      "semantic_inventory": "pending",
+      "node_path_operations": []
+    },
+    {
+      "id": "namestore",
+      "kind": "subsystem",
+      "required": true,
+      "semantic_inventory": "pending",
+      "node_path_operations": []
+    },
+    {
+      "id": "datacache",
+      "kind": "subsystem",
+      "required": true,
+      "semantic_inventory": "pending",
+      "node_path_operations": []
+    },
+    {
+      "id": "datastore",
+      "kind": "subsystem",
+      "required": true,
+      "semantic_inventory": "pending",
+      "node_path_operations": []
+    },
+    {
+      "id": "dht",
+      "kind": "subsystem",
+      "required": true,
+      "semantic_inventory": "pending",
+      "node_path_operations": []
+    },
+    {
+      "id": "cadet",
+      "kind": "subsystem",
+      "required": true,
+      "semantic_inventory": "pending",
+      "node_path_operations": []
+    },
+    {
+      "id": "seti",
+      "kind": "subsystem",
+      "required": true,
+      "semantic_inventory": "pending",
+      "node_path_operations": []
+    },
+    {
+      "id": "setu",
+      "kind": "subsystem",
+      "required": true,
+      "semantic_inventory": "pending",
+      "node_path_operations": []
+    },
+    {
+      "id": "regex",
+      "kind": "subsystem",
+      "required": true,
+      "semantic_inventory": "pending",
+      "node_path_operations": []
+    },
+    {
+      "id": "revocation",
+      "kind": "subsystem",
+      "required": true,
+      "semantic_inventory": "pending",
+      "node_path_operations": []
+    },
+    {
+      "id": "vpn",
+      "kind": "subsystem",
+      "required": true,
+      "semantic_inventory": "pending",
+      "node_path_operations": []
+    },
+    {
+      "id": "gns",
+      "kind": "subsystem",
+      "required": true,
+      "semantic_inventory": "pending",
+      "node_path_operations": []
+    },
+    {
+      "id": "zonemaster",
+      "kind": "subsystem",
+      "required": true,
+      "semantic_inventory": "pending",
+      "node_path_operations": []
+    },
+    {
+      "id": "fs",
+      "kind": "subsystem",
+      "required": true,
+      "semantic_inventory": "pending",
+      "node_path_operations": []
+    },
+    {
+      "id": "exit",
+      "kind": "subsystem",
+      "required": true,
+      "semantic_inventory": "pending",
+      "node_path_operations": []
+    },
+    {
+      "id": "pt",
+      "kind": "subsystem",
+      "required": true,
+      "semantic_inventory": "pending",
+      "node_path_operations": []
+    },
+    {
+      "id": "reclaim",
+      "kind": "subsystem",
+      "required": true,
+      "semantic_inventory": "pending",
+      "node_path_operations": []
+    },
+    {
+      "id": "messenger",
+      "kind": "subsystem",
+      "required": true,
+      "semantic_inventory": "pending",
+      "node_path_operations": []
+    },
+    {
+      "id": "rest",
+      "kind": "subsystem",
+      "required": true,
+      "semantic_inventory": "pending",
+      "node_path_operations": []
+    },
+    {
+      "id": "wire",
+      "kind": "foundation",
+      "required": true,
+      "semantic_inventory": "pending",
+      "node_path_operations": []
+    },
+    {
+      "id": "crypto",
+      "kind": "foundation",
+      "required": true,
+      "semantic_inventory": "pending",
+      "node_path_operations": []
+    },
+    {
+      "id": "hello",
+      "kind": "foundation",
+      "required": true,
+      "semantic_inventory": "pending",
+      "node_path_operations": []
+    },
+    {
+      "id": "block",
+      "kind": "foundation",
+      "required": true,
+      "semantic_inventory": "pending",
+      "node_path_operations": []
+    },
+    {
+      "id": "gnsrecord",
+      "kind": "foundation",
+      "required": true,
+      "semantic_inventory": "pending",
+      "node_path_operations": []
+    },
+    {
+      "id": "service-runtime",
+      "kind": "foundation",
+      "required": true,
+      "semantic_inventory": "partial-node-path",
+      "node_path_operations": [
+        "startup.service-activation",
+        "startup.pils-address-identity",
+        "startup.identity-key-material",
+        "startup.nat-addresses"
+      ]
+    },
+    {
+      "id": "storage-contracts",
+      "kind": "foundation",
+      "required": true,
+      "semantic_inventory": "partial-node-path",
+      "node_path_operations": [
+        "startup.peerstore-history",
+        "startup.peerstore-hello"
+      ]
+    },
+    {
+      "id": "reference-harness",
+      "kind": "foundation",
+      "required": true,
+      "semantic_inventory": "pending",
+      "node_path_operations": []
+    }
+  ],
+  "nonregistry_obligations": [
+    {
+      "id": "transport.unframed-initial-exchanges",
+      "owners": [
+        "transport",
+        "core",
+        "pils"
+      ],
+      "boundary": "network-wire",
+      "required": true,
+      "contract": "Initial stream exchanges, identities, key material and record boundaries include bytes without GNUNET_MessageHeader. Registry discovery cannot define their complete formats or state transitions.",
+      "required_cases": [
+        "Inventory each required communicator initial/rekey/authentication exchange from official source and standards",
+        "Normal C/Rust both roles, malformed and partial exchanges, reconnect and key ownership"
+      ],
+      "source_examples": [
+        "src/service/transport/gnunet-communicator-tcp.c"
+      ],
+      "semantic_review": "pending"
+    },
+    {
+      "id": "transport.third-party-protocols",
+      "owners": [
+        "transport",
+        "nat",
+        "pils"
+      ],
+      "boundary": "network-wire",
+      "required": true,
+      "contract": "QUIC/HTTP3 and other required communicator protocols retain their third-party negotiation, identity, stream/datagram and error contracts even where their C files have no registry token. Current compiled/supported variants still require explicit semantic review.",
+      "required_cases": [
+        "Review required variants and version/cipher/ALPN/stream profiles against actual official builds",
+        "Real C/Rust endpoints with identity, framing, loss, MTU, connection failure and recovery cases"
+      ],
+      "source_examples": [
+        "src/service/transport/gnunet-communicator-http3.c",
+        "src/service/transport/gnunet-communicator-quic.c"
+      ],
+      "semantic_review": "pending"
+    },
+    {
+      "id": "rest.routes-json-http",
+      "owners": [
+        "rest",
+        "identity",
+        "reclaim",
+        "gns",
+        "namestore"
+      ],
+      "boundary": "externally-observable-semantics",
+      "required": true,
+      "contract": "Official REST routes, methods, JSON fields, statuses and observable operation lifetime are external contracts. Zero registry-message tokens does not make an HTTP service unnecessary.",
+      "required_cases": [
+        "Inventory all supported plugins/routes/methods/schemas and error/status contracts",
+        "Actual valid, malformed, cancelled and concurrent operations through the required Rust service and official counterparts"
+      ],
+      "source_examples": [
+        "src/service/rest/identity_plugin.c"
+      ],
+      "semantic_review": "pending"
+    },
+    {
+      "id": "dns-and-tunnel-packets",
+      "owners": [
+        "dns",
+        "gns",
+        "vpn",
+        "exit",
+        "pt"
+      ],
+      "boundary": "network-wire",
+      "required": true,
+      "contract": "DNS and IP/UDP/TCP tunnel packet formats and protocol-visible forwarding/resolution behavior require their own external matrix; they are not exhausted by GNUnet message assignments.",
+      "required_cases": [
+        "Review standard packet encodings, checksums, names, limits, queries and response matching",
+        "Required mixed-node resolution/forwarding, malformed/fragment/loss and cleanup profiles"
+      ],
+      "source_examples": [
+        "src/lib/util/dnsparser.c",
+        "src/service/vpn/gnunet-service-vpn.c"
+      ],
+      "semantic_review": "pending"
+    },
+    {
+      "id": "public-artifacts-and-identifiers",
+      "owners": [
+        "hello",
+        "gnsrecord",
+        "gns",
+        "identity",
+        "fs",
+        "reclaim"
+      ],
+      "boundary": "externally-observable-semantics",
+      "required": true,
+      "contract": "HELLO/URI/zone/record/key and other supported public artifacts preserve official encodings, signatures and interpretation. Internal database layout and Rust object shape remain implementation choices.",
+      "required_cases": [
+        "Complete artifact/schema/version inventory with official byte/signature vectors",
+        "Official-to-Rust and Rust-to-official artifact acceptance, malformed inputs and identity/expiry binding"
+      ],
+      "source_examples": [
+        "src/cli/hello/gnunet-hello.c",
+        "src/lib/util/uri.c"
+      ],
+      "semantic_review": "pending"
+    },
+    {
+      "id": "cryptographic-domain-contracts",
+      "owners": [
+        "crypto",
+        "core",
+        "pils",
+        "gnsrecord",
+        "gns"
+      ],
+      "boundary": "network-wire",
+      "required": true,
+      "contract": "Wire-relevant signature purpose/coverage, KDF labels, authentication, replay rules and key updates require explicit version/profile contracts, including visible specification/reference discrepancies. This does not require a matching Rust function for every C crypto helper.",
+      "required_cases": [
+        "Complete domain/encoding/algorithm and relevant profile inventory",
+        "Actual unchanged official C verification/decryption/handshake acceptance in both directions and negative/replay/key-update cases"
+      ],
+      "source_examples": [
+        "src/lib/util/crypto_ecc.c",
+        "src/include/gnunet_signatures.h"
+      ],
+      "semantic_review": "pending"
+    },
+    {
+      "id": "configuration-service-lifecycle",
+      "owners": [
+        "util",
+        "arm",
+        "service-runtime"
+      ],
+      "boundary": "externally-observable-semantics",
+      "required": true,
+      "contract": "Supported configuration/activation/listener/permission/shutdown behavior that affects service access remains external; Rust scheduling, internal queue shape and C select/FD_SETSIZE choices need not match.",
+      "required_cases": [
+        "Review promised configuration and process/service lifecycle contracts",
+        "Actual startup, readiness, access refusal, shutdown, cancellation, reconnect and restart behavior"
+      ],
+      "source_examples": [
+        "src/lib/util/configuration.c",
+        "src/lib/util/service.c"
+      ],
+      "semantic_review": "pending"
+    },
+    {
+      "id": "storage-processing-and-recovery",
+      "owners": [
+        "storage-contracts",
+        "statistics",
+        "peerstore",
+        "datastore",
+        "namecache",
+        "namestore"
+      ],
+      "boundary": "externally-observable-semantics",
+      "required": true,
+      "contract": "Preserve official observable storage, processing acknowledgement, ambiguous commit and recovery rules, and supported public interchange artifacts. Internal Rust database containers may differ.",
+      "required_cases": [
+        "Inventory each required service acknowledgement/commit/restart contract",
+        "Real failure/restart/unknown-commit tests distinguish transmission, processing, and durable state"
+      ],
+      "source_examples": [
+        "src/service/statistics/gnunet-service-statistics.c",
+        "src/service/peerstore/peerstore_api.c"
+      ],
+      "semantic_review": "pending"
+    }
+  ]
+}

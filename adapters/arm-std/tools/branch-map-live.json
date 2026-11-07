@@ -1,0 +1,136 @@
+{
+  "schema": 1,
+  "status": "reviewable additional witnesses; no API/owner verification promotion",
+  "production_handoff": "M9 baseline cd7835f...; exact source patch manifest is separately retained by Root",
+  "required_fresh_integrated_proof": "tools/live_verify.py plus the Root process/M8 verifier after final M10 source freeze",
+  "branches": [
+    {
+      "criterion": "GNUNET_ARM_disconnect.waiter-reclaim",
+      "rust_tests": [
+        "canceled_and_disconnected_stop_waiters_reclaim_all_slots_without_callback_or_null_call"
+      ],
+      "facts": "A LIST barrier establishes STOPPING was processed. Explicit callback disconnect physically closes the original stream and releases operation/waiter capacity; canceled callback is suppressed.",
+      "C_scope": "Source-derived safe reclamation; C's separate waiter leak is not copied. Not a C paired execution of a leaked/canceled callback."
+    },
+    {
+      "criterion": "GNUNET_ARM_operation_cancel.arm-stop-tombstone",
+      "rust_tests": [
+        "canceled_and_disconnected_stop_waiters_reclaim_all_slots_without_callback_or_null_call"
+      ],
+      "facts": "After genuine STOPPING and cancellation, physical EOF cannot invoke the canceled callback; all slots are reusable.",
+      "C_scope": "C can call its NULL result_cont in this case. This undefined path is not executed as a reference or classified matched."
+    },
+    {
+      "criterion": "GNUNET_ARM_operation_cancel.stale-owner",
+      "rust_tests": [
+        "maximum_name_and_capacity_rejection_are_atomic_and_stale_generation_cannot_cancel_reused_slot",
+        "foreign_owner_scope_cannot_cancel_an_original_operation_even_before_socket_io"
+      ],
+      "facts": "Canceled admission still transmits its original wire frame; generation reuse and an independent owner namespace cannot cancel the surviving original callback/resource.",
+      "C_scope": "Generational Rust identity is an explicit safe API representation, not a C raw-pointer ABI claim."
+    },
+    {
+      "criterion": "GNUNET_ARM_request_service_list.pool-bounds",
+      "rust_tests": [
+        "malformed_list_rows_indices_nuls_prefix_and_result_retire_exact_original_mq"
+      ],
+      "facts": "Short record arrays, first/second-row name/binary indices and missing NULs reject the entire graph before any callback; original MQ retires without partial row delivery.",
+      "C_scope": "Native check/handler source behavior reviewed. This is an actual Rust socket negative matrix; fresh normal C malformed-client counterpart is not claimed."
+    },
+    {
+      "criterion": "GNUNET_ARM_request_service_list.wrong-kind",
+      "rust_tests": [
+        "wrong_kind_unknown_ids_and_unregistered_frames_preserve_live_original_operation"
+      ],
+      "facts": "Known operation with wrong registered callback kind is silently retired; unknown/stale IDs and unregistered message types do not consume a separate surviving original operation.",
+      "C_scope": "Source-derived native callback-kind behavior; additional normal C wrong-kind actor trace remains uncollected."
+    },
+    {
+      "criterion": "GNUNET_ARM_request_service_list.capacity-atomic",
+      "rust_tests": [
+        "maximum_name_and_capacity_rejection_are_atomic_and_stale_generation_cannot_cancel_reused_slot",
+        "valid_wire_reply_over_declared_host_rx_capacity_retires_mq_without_partial_callback"
+      ],
+      "facts": "Failed request admission preserves next wire ID/queue. An otherwise valid wire reply above explicit host RX capacity closes the actual MQ and reports failure rather than successful/truncated data.",
+      "C_scope": "Caller resource limits are explicit Rust decomposition; no claim of identical C allocator failure behavior."
+    },
+    {
+      "criterion": "GNUNET_ARM_request_service_start.native-command",
+      "rust_tests": [
+        "live_configuration_is_sampled_when_local_setup_begins_and_never_replays_created_child"
+      ],
+      "normal_C_tool": "tools/command_compare.py",
+      "facts": "36 actual paired parent/target executions compare exact native argument bytes, balanced quote/backslash quirks, UTF8, PREFIX and OPTIONS dollar expansion, CONFIG filename expansion, relative libexec and late exec failure. Local live setup samples current configuration once; it does not repeat a created child.",
+      "C_scope": "Malformed C commands with known allocation/NULL UB are excluded from execution and not classified as defined equivalence. Global libexec/SUID cache behavior is separately proven by Root's source-bound 20-profile path proof; process-wide cache mutation is not invented here."
+    },
+    {
+      "criterion": "GNUNET_ARM_request_service_start.daemon-rule",
+      "normal_C_tool": "tools/command_compare.py",
+      "facts": "WEAKRANDOM absent/YES/mixed-case/NO/invalid and HOSTFILE absent/empty/present compare actual target argv. -d is absent only for valid YES and no HOSTFILE.",
+      "C_scope": "An observed -d argument is not proof of daemonization or successful target service readiness."
+    },
+    {
+      "criterion": "GNUNET_ARM_request_service_start.check-before-spawn",
+      "rust_tests": [
+        "missing_binary_nonexecutable_and_late_exec_failure_are_distinct"
+      ],
+      "normal_C_tool": "tools/command_compare.py",
+      "facts": "First PATH regular file wins even if nonexecutable; directories are skipped in PATH, direct executable-directory access passes then exec fails; missing PATH, ./prefix, nonexec and missing interpreter preserve admission versus actual child exit distinctions.",
+      "C_scope": "Actual normal C returns STARTING on admitted child whose exec later exits1; helper creation does not certify target exec."
+    },
+    {
+      "criterion": "GNUNET_ARM_request_service_start.readable-eof-deadline",
+      "rust_tests": [
+        "actual_fixture_readiness_eof_is_starting_and_child_is_reaped",
+        "actual_sixty_second_signal_deadline_keeps_starting_without_readiness"
+      ],
+      "normal_C_tool": "tools/command_compare.py:ready-byte-before-eof",
+      "facts": "Actual byte42 wakes callback while target waits for callback ACK; target EOF/natural exit occurs afterwards. EOF uses stored outcome. The original 60-second actual child-alive witness exists in M8 and must be rerun for the final M10 closure.",
+      "C_scope": "No readiness/timeout outcome is synthesized. The new byte profile is actual paired C/R; the historical long witness is not relabeled current."
+    },
+    {
+      "criterion": "GNUNET_ARM_request_service_stop.two-waiters",
+      "rust_tests": [
+        "two_stop_waiters_keep_each_original_operation_through_replacement_and_real_eof"
+      ],
+      "facts": "First original waiter receives NotKnown on replacement; second original waiter receives Stopped only after physical EOF, with no slot leak or duplicate callback.",
+      "C_scope": "C mixes the new function pointer with the previous closure in replacement; Rust preserves each original logical owner. No C mismatched-closure/undefined execution is claimed matched."
+    },
+    {
+      "criterion": "GNUNET_ARM_request_service_stop.name-and-boundaries",
+      "rust_tests": [
+        "maximum_name_and_capacity_rejection_are_atomic_and_stale_generation_cannot_cancel_reused_slot",
+        "canceled_and_disconnected_stop_waiters_reclaim_all_slots_without_callback_or_null_call"
+      ],
+      "normal_C_tool": "tools/daemon_compare.py",
+      "facts": "Exact 65535-byte frames are accepted, larger request fails atomically; case-insensitive effective arm and first-NUL C string prefix are preserved. Normal daemon STOP spelling is observed rather than normalized away.",
+      "C_scope": "Maximum-byte and embedded-NUL cases are Rust boundary witnesses correlated to native strlen semantics, not additional normal C oversized-input runs."
+    },
+    {
+      "criterion": "GNUNET_ARM_monitor_start.unavailable",
+      "rust_tests": [
+        "invalid_initial_configuration_reports_each_original_unavailable_once",
+        "actual_monitor_cfg_update_then_eof_reports_one_unavailable_and_restore_does_not_retry"
+      ],
+      "normal_C_tool": "tools/configuration_observe.py",
+      "facts": "Current config removal followed by actual EOF causes one Unavailable; restoring configuration in that callback does not invent a retry. The normal C public monitor has the corresponding one-status/one-unavailable/no-timer trace.",
+      "C_scope": "C-only mutable observation and direct Rust live test remain distinct receipts, neither is called a fabricated paired daemon trace."
+    },
+    {
+      "criterion": "GNUNET_ARM_monitor_start.partial-cancel",
+      "rust_tests": [
+        "monitor_canceled_partial_rx_recovers_exact_callback_then_stop_closes_original_stream",
+        "live_update_does_not_retarget_or_wake_an_original_polled_connection_attempt"
+      ],
+      "facts": "Canceling drive with a two-byte header preserves original RX; remainder yields one exact raw status/name callback. Stop inside callback closes the original physical owner while the borrowed payload remains valid for that callback. Replacing config cannot redirect an already-polled connection attempt.",
+      "C_scope": "Rust async future cancellation has no direct C callback API counterpart; native wire/callback behavior is separately paired in the original public API suite."
+    }
+  ],
+  "still_pending": [
+    "Full shared process-global PROGRAM Resolver broker and all internal live retry sampling.",
+    "Fresh integrated M10 source/dependency/lock/settings proof for these new witnesses.",
+    "Normal C wrong-kind/malformed-client negative traces are not present; literal peer Rust tests do not fabricate that evidence.",
+    "Complete ARM daemon/CLI/testing acceptance remains separate."
+  ],
+  "verification": null
+}

@@ -1,0 +1,13 @@
+[package]
+name = "gnunet-arm-service-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+gnunet-arm-core.workspace = true
+gnunet-types.workspace = true
+
+[lints]
+workspace = true

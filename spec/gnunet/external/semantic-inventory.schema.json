@@ -1,0 +1,296 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "cases": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "contract": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "evidence_slots": {
+            "const": []
+          },
+          "id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "operation": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "profile_candidates": {
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "minItems": 1,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "profile_direction_review": {
+            "const": "pending"
+          },
+          "review_state": {
+            "const": "draft"
+          }
+        },
+        "required": [
+          "id",
+          "operation",
+          "contract",
+          "review_state",
+          "profile_direction_review",
+          "profile_candidates",
+          "evidence_slots"
+        ],
+        "type": "object"
+      },
+      "minItems": 1,
+      "type": "array"
+    },
+    "kind": {
+      "const": "external-semantic-inventory-draft"
+    },
+    "operations": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "case_ids": {
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "minItems": 1,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "condition": {
+            "type": "string"
+          },
+          "contract": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "necessity": {
+            "enum": [
+              "always",
+              "selected-external-boundary"
+            ]
+          },
+          "owner": {
+            "const": "fs"
+          },
+          "review_state": {
+            "const": "draft"
+          },
+          "source_refs": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "anchor": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "end_line": {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "path": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "sha256": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "start_line": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "path",
+                "sha256",
+                "start_line",
+                "end_line",
+                "anchor"
+              ],
+              "type": "object"
+            },
+            "minItems": 1,
+            "type": "array"
+          },
+          "title": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "owner",
+          "title",
+          "contract",
+          "review_state",
+          "necessity",
+          "condition",
+          "source_refs",
+          "case_ids"
+        ],
+        "type": "object"
+      },
+      "minItems": 1,
+      "type": "array"
+    },
+    "owner": {
+      "const": "fs"
+    },
+    "owner_review_complete": {
+      "const": false
+    },
+    "pending_surveys": {
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "minItems": 1,
+      "type": "array",
+      "uniqueItems": true
+    },
+    "profiles": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "candidate_directions": {
+            "items": {
+              "enum": [
+                "C-to-Rust",
+                "Rust-to-C",
+                "mixed",
+                "negative",
+                "recovery",
+                "artifact",
+                "oracle"
+              ]
+            },
+            "minItems": 1,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "required_operations": {
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "minItems": 1,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "review_state": {
+            "const": "draft"
+          },
+          "scope": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "scope",
+          "review_state",
+          "candidate_directions",
+          "required_operations"
+        ],
+        "type": "object"
+      },
+      "minItems": 1,
+      "type": "array"
+    },
+    "reference_revision": {
+      "const": "346358e26d4dcc2dc4f51bef5d52dca29c7d8165"
+    },
+    "registry_classifications": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "number": {
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "operations": {
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "minItems": 1,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "proposed_boundary": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "review_state": {
+            "const": "draft"
+          },
+          "unknown_obligation": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "number",
+          "review_state",
+          "proposed_boundary",
+          "operations",
+          "unknown_obligation"
+        ],
+        "type": "object"
+      },
+      "minItems": 1,
+      "type": "array"
+    },
+    "review_state": {
+      "const": "draft"
+    },
+    "schema": {
+      "const": 1
+    },
+    "scope": {
+      "minLength": 1,
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema",
+    "kind",
+    "owner",
+    "reference_revision",
+    "review_state",
+    "owner_review_complete",
+    "operations",
+    "cases",
+    "profiles",
+    "registry_classifications",
+    "pending_surveys",
+    "scope"
+  ],
+  "title": "Pending external semantic inventory extension, independent of implementation evidence",
+  "type": "object"
+}

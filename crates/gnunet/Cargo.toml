@@ -1,0 +1,349 @@
+[package]
+name = "gnunet"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+transport-quic = ["dep:gnunet-transport-quic"]
+official-quic-communicator = ["std", "transport-quic", "dep:gnunet-quic-communicator-host"]
+official-http3-communicator = ["official-quic-communicator", "gnunet-quic-communicator-host/h3-profile"]
+official-quic-program = ["official-quic-communicator", "gnunet-quic-communicator-host/program"]
+official-http3-program = ["official-http3-communicator", "gnunet-quic-communicator-host/program"]
+official-transport-dv-bridge = ["std", "official-transport", "official-transport-dv-runtime", "dep:gnunet-transport-dv-bridge-host"]
+official-transport-dv-runtime = ["std", "official-transport-dv-crypto", "official-transport-dv-store", "dep:gnunet-transport-dv-runtime-host"]
+official-transport-dv-store = ["std", "transport-dv-crypto", "dep:gnunet-transport-dv-store-host"]
+official-transport-server = ["std", "dep:gnunet-transport-service-host"]
+official-transport-program = ["official-transport-server", "gnunet-transport-service-host/program"]
+transport-dv-crypto = ["dep:gnunet-transport-dv-crypto"]
+official-transport-dv-crypto = ["std", "transport-dv-crypto", "dep:gnunet-transport-dv-crypto-host"]
+unix-communicator = ["dep:gnunet-unix-communicator"]
+official-unix-communicator = ["std", "unix-communicator", "dep:gnunet-unix-communicator-host"]
+official-nse-client = ["std", "dep:gnunet-nse-client-host"]
+zonemaster-alloc = ["dep:gnunet-zonemaster", "gnunet-zonemaster/alloc"]
+official-zonemaster = ["std", "zonemaster-alloc", "dep:gnunet-zonemaster-host"]
+official-dns-tools = ["std", "dep:gnunet-dns-tools-host"]
+dns-interception = ["dep:gnunet-dns-interception"]
+dns-interception-alloc = ["dns-interception", "gnunet-dns-interception/alloc"]
+official-dns-server = ["std", "dns-interception-alloc", "dep:gnunet-dns-service-host"]
+hostlist = ["dep:gnunet-hostlist"]
+hostlist-alloc = ["hostlist", "gnunet-hostlist/alloc"]
+official-hostlist = ["std", "dep:gnunet-hostlist-host"]
+official-pt = ["std", "dep:gnunet-pt-host"]
+testbed = ["dep:gnunet-testbed"]
+official-testbed = ["std", "dep:gnunet-testbed-host"]
+pt = ["dep:gnunet-pt"]
+pt-alloc = ["pt", "alloc", "gnunet-pt/alloc"]
+official-dns-client = ["std", "dep:gnunet-dns-client-host"]
+official-nat-test = ["std", "dep:gnunet-nat-test-host"]
+official-nat-burst = ["std", "dep:gnunet-nat-burst-host"]
+official-nat-client = ["std", "dep:gnunet-nat-client-host"]
+nat = ["dep:gnunet-nat"]
+nat-alloc = ["nat", "gnunet-nat/alloc"]
+official-nat = ["std", "dep:gnunet-nat-host"]
+revocation = ["dep:gnunet-revocation"]
+official-revocation-client = ["std", "dep:gnunet-revocation-client-host"]
+official-revocation-server = ["std", "revocation", "dep:gnunet-revocation-host"]
+topology = ["dep:gnunet-topology"]
+topology-alloc = ["topology", "gnunet-topology/alloc"]
+official-topology = ["std", "dep:gnunet-topology-host"]
+did = ["dep:gnunet-did", "json"]
+official-did-client = ["std", "dep:gnunet-did-host"]
+namestore = ["dep:gnunet-namestore"]
+namestore-alloc = ["namestore", "alloc", "gnunet-namestore/alloc"]
+official-namestore-client = ["std", "dep:gnunet-namestore-client-host"]
+official-namestore-server = ["std", "namestore-alloc", "dep:gnunet-namestore-host"]
+gnsrecord-text = ["dep:gnunet-gnsrecord-text"]
+zoneimport = ["dep:gnunet-zoneimport-core"]
+zoneimport-alloc = ["zoneimport", "alloc", "gnunet-zoneimport-core/alloc"]
+official-zoneimport = ["std", "zoneimport-alloc", "dep:gnunet-zoneimport-host"]
+json = ["dep:gnunet-json"]
+reclaim = ["dep:gnunet-reclaim"]
+rest = ["dep:gnunet-rest", "json"]
+rest-oidc = ["rest", "gnunet-rest/oidc"]
+official-rest-server = ["std", "rest", "gnsrecord-text", "dep:gnunet-rest-host"]
+official-rest-oidc = ["official-rest-server", "rest-oidc", "gnunet-rest-host/oidc", "dep:gnunet-oidc-crypto-host"]
+official-reclaim-server = ["std", "reclaim-alloc", "reclaim-credentials", "dep:gnunet-reclaim-host"]
+official-reclaim-client = ["std", "dep:gnunet-reclaim-client-host"]
+messenger = ["dep:gnunet-messenger"]
+messenger-state = ["messenger", "dep:gnunet-messenger-core"]
+messenger-state-alloc = ["messenger-state", "alloc", "gnunet-messenger-core/alloc"]
+official-messenger-client = ["std", "dep:gnunet-messenger-client-host"]
+official-messenger-api = ["std", "dep:gnunet-messenger-host"]
+official-messenger-server = ["std", "dep:gnunet-messenger-service-host"]
+reclaim-alloc = ["reclaim", "alloc", "gnunet-reclaim/alloc"]
+reclaim-credentials = ["reclaim", "dep:gnunet-reclaim-credentials"]
+reclaim-credential-attributes = ["reclaim-credentials", "alloc", "gnunet-reclaim-credentials/attributes"]
+datacache = ["dep:gnunet-datacache"]
+datacache-alloc = ["datacache", "alloc", "gnunet-datacache/alloc"]
+namecache = ["dep:gnunet-namecache"]
+namecache-alloc = ["namecache", "alloc", "gnunet-namecache/alloc"]
+official-namecache-client = ["std", "dep:gnunet-namecache-client-host"]
+official-namecache-server = ["std", "namecache-alloc", "dep:gnunet-namecache-host"]
+identity = ["dep:gnunet-identity"]
+identity-alloc = ["identity", "alloc", "gnunet-identity/alloc"]
+official-identity-client = ["std", "dep:gnunet-identity-client-host"]
+official-identity-server = ["std", "identity-alloc", "dep:gnunet-identity-host"]
+regex = ["dep:gnunet-regex"]
+regex-service = ["regex", "dep:gnunet-regex-service"]
+regex-service-alloc = ["regex-service", "alloc", "gnunet-regex-service/alloc"]
+official-regex-server = ["std", "regex-service-alloc", "dep:gnunet-regex-server-host"]
+official-regex-service = ["official-regex-server", "dep:gnunet-regex-program-host"]
+regex-alloc = ["regex", "alloc", "gnunet-regex/alloc"]
+official-regex-client = ["std", "dep:gnunet-regex-client-host"]
+default = []
+official-vpn-server = ["std", "dep:gnunet-vpn-host"]
+official-exit = ["std", "exit-alloc", "official-cadet-client", "official-tun", "dep:gnunet-exit-host"]
+exit = ["dep:gnunet-exit"]
+exit-alloc = ["alloc", "exit", "gnunet-exit/alloc"]
+official-tun = ["std", "dep:gnunet-tun-host"]
+official-vpn-client = ["std", "dep:gnunet-vpn-client-host"]
+fs-codec = ["dep:gnunet-fs-codec"]
+rps = ["dep:gnunet-rps"]
+rps-alloc = ["rps", "gnunet-rps/alloc"]
+official-rps-client = ["std", "dep:gnunet-rps-client-host"]
+official-rps-server = ["std", "rps-alloc", "official-cadet-client", "dep:gnunet-rps-host"]
+paillier = ["dep:gnunet-paillier"]
+abd = ["dep:gnunet-abd"]
+abd-alloc = ["abd", "gnunet-abd/alloc"]
+official-abd-server = ["std", "abd-alloc", "dep:gnunet-abd-host"]
+official-abd-client = ["std", "dep:gnunet-abd-client-host"]
+official-consensus-server = ["std", "consensus-alloc", "dep:gnunet-consensus-host"]
+official-consensus-client = ["std", "dep:gnunet-consensus-client-host"]
+conversation = ["dep:gnunet-conversation"]
+conversation-alloc = ["conversation", "gnunet-conversation/alloc"]
+official-conversation-server = ["std", "conversation-alloc", "dep:gnunet-conversation-host"]
+official-conversation-audio = ["std", "dep:gnunet-conversation-audio-host"]
+official-conversation-client = ["std", "dep:gnunet-conversation-client-host"]
+official-secretsharing-keygen = ["std", "secretsharing-alloc", "dep:gnunet-secretsharing-keygen-host"]
+official-secretsharing-server = ["std", "secretsharing-alloc", "dep:gnunet-secretsharing-host"]
+official-uri-dispatch = ["std", "dep:gnunet-uri-host"]
+official-qr = ["std", "dep:gnunet-qr-host"]
+official-secretsharing-decrypt = ["std", "secretsharing-alloc", "dep:gnunet-secretsharing-decrypt-host"]
+official-secretsharing-client = ["std", "dep:gnunet-secretsharing-client-host"]
+secretsharing = ["dep:gnunet-secretsharing"]
+secretsharing-alloc = ["secretsharing", "gnunet-secretsharing/alloc"]
+consensus = ["dep:gnunet-consensus"]
+consensus-alloc = ["consensus", "gnunet-consensus/alloc"]
+scalarproduct-paillier = ["dep:gnunet-scalarproduct-paillier"]
+scalarproduct-paillier-alloc = ["scalarproduct-paillier", "gnunet-scalarproduct-paillier/alloc"]
+scalarproduct = ["dep:gnunet-scalarproduct"]
+scalarproduct-alloc = ["scalarproduct", "gnunet-scalarproduct/alloc"]
+set = ["dep:gnunet-set"]
+set-alloc = ["set", "gnunet-set/alloc"]
+official-set-server = ["std", "set-alloc", "official-cadet-client", "dep:gnunet-set-host"]
+setu = ["dep:gnunet-setu"]
+setu-alloc = ["alloc", "setu", "gnunet-setu/alloc"]
+setu-zlib = ["setu-alloc", "gnunet-setu/zlib"]
+official-scalarproduct-client = ["std", "dep:gnunet-scalarproduct-client-host"]
+official-scalarproduct-server = ["std", "scalarproduct-alloc", "official-cadet-client", "official-seti-client", "dep:gnunet-scalarproduct-host"]
+official-set-client = ["std", "dep:gnunet-set-client-host"]
+official-setu-client = ["std", "dep:gnunet-setu-client-host"]
+official-setu-server = ["std", "setu-zlib", "official-cadet-client", "dep:gnunet-setu-host"]
+fs-compression = ["alloc", "fs-codec", "gnunet-fs-codec/alloc"]
+alloc = ["gnunet-gns/alloc", "gnunet-types/alloc", "gnunet-resources/alloc", "gnunet-transport/alloc", "gnunet-udp-communicator-core/alloc", "gnunet-messenger-core?/alloc"]
+std = ["alloc", "gnunet-types/std", "gnunet-resources/std", "gnunet-messenger-core?/std"]
+official-fs = ["std", "dep:gnunet-fs-host"]
+official-fs-extraction = ["official-fs", "gnunet-fs-host/extraction"]
+official-fs-client = ["official-fs", "official-client", "gnunet-fs-host/service"]
+official-datastore = ["std", "dep:gnunet-datastore-host"]
+official-datastore-server = ["official-datastore", "gnunet-datastore-host/server"]
+official-fs-network = ["official-fs-client", "official-datastore", "gnunet-fs-host/network"]
+official-fs-auto-share = ["official-fs-network", "gnunet-fs-host/auto-share"]
+official-fs-server = ["official-fs-network", "official-cadet-client", "gnunet-fs-host/server"]
+official-nse = ["std", "dep:gnunet-nse-host"]
+official-core-client = ["std", "dep:gnunet-core-client-host"]
+official-cadet-client = ["std", "dep:gnunet-cadet-host"]
+official-cadet-server = ["std", "dep:gnunet-cadet-host"]
+official-dht-client = ["std", "dep:gnunet-dht-client-host"]
+official-gns-client = ["std", "dep:gnunet-gns-client-host"]
+official-core = ["official-client", "official-service", "dep:gnunet-core-host"]
+official-transport = ["official-service", "dep:gnunet-transport-host"]
+official-transport-observation = ["std", "dep:gnunet-transport-application-host"]
+official-pils = ["std", "dep:gnunet-pils-host"]
+official-pils-client = ["official-pils", "official-client", "gnunet-pils-host/client"]
+official-pils-server = ["official-pils", "gnunet-pils-host/service"]
+official-peerstore-client = ["std", "dep:gnunet-peerstore-client-host"]
+official-seti-client = ["std", "dep:gnunet-seti-client-host"]
+official-seti-server = ["std", "official-cadet-client", "dep:gnunet-seti-host"]
+official-peerstore-server = ["std", "dep:gnunet-peerstore-host"]
+official-tcp = ["official-service", "dep:gnunet-tcp-communicator-host"]
+official-client = ["std", "dep:gnunet-client-host", "dep:gnunet-resolver-broker"]
+official-ipc = ["official-client", "dep:gnunet-ipc-unix"]
+official-config = ["std", "dep:gnunet-config"]
+official-dns = ["std", "dep:gnunet-dnsstub-host"]
+official-resolver = ["std", "dep:gnunet-resolver-host"]
+official-arm = ["official-client", "official-service", "dep:gnunet-arm-host", "dep:gnunet-arm-service-host"]
+official-arm-server = ["std", "dep:gnunet-arm-service-host", "gnunet-arm-service-host/service"]
+official-service = ["std", "dep:gnunet-service-startup", "dep:gnunet-service-runtime"]
+official-program = ["official-config", "official-client", "official-service", "dep:gnunet-program-host", "gnunet-program-host/runtime", "gnunet-program-host/resolver-broker", "gnunet-program-host/service-runtime"]
+statistics-store = ["std", "dep:gnunet-statistics-store"]
+
+[dependencies]
+gnunet-secretsharing-host = { workspace = true, optional = true }
+gnunet-uri-host = { workspace = true, optional = true }
+gnunet-qr-host = { workspace = true, optional = true }
+gnunet-secretsharing-keygen-host = { workspace = true, optional = true }
+gnunet-conversation-host = { workspace = true, optional = true }
+gnunet-conversation-audio-host = { workspace = true, optional = true }
+gnunet-conversation-client-host = { workspace = true, optional = true }
+gnunet-secretsharing-decrypt-host = { workspace = true, optional = true }
+gnunet-conversation = { workspace = true, optional = true }
+gnunet-secretsharing = { workspace = true, optional = true }
+gnunet-transport-quic = { workspace = true, optional = true }
+gnunet-transport-dv-crypto = { workspace = true, optional = true }
+gnunet-unix-communicator = { workspace = true, optional = true }
+gnunet-zonemaster = { workspace = true, optional = true }
+gnunet-dns-interception = { workspace = true, optional = true }
+gnunet-hostlist = { workspace = true, optional = true }
+gnunet-testbed = { workspace = true, optional = true }
+gnunet-pt = { workspace = true, optional = true }
+gnunet-nat = { workspace = true, optional = true }
+gnunet-nat-host = { workspace = true, optional = true }
+gnunet-revocation = { workspace = true, optional = true }
+gnunet-did = { workspace = true, optional = true }
+gnunet-did-host = { workspace = true, optional = true }
+gnunet-namestore = { workspace = true, optional = true }
+gnunet-json = { workspace = true, optional = true }
+gnunet-reclaim = { workspace = true, optional = true }
+gnunet-reclaim-host = { workspace = true, optional = true }
+gnunet-rest = { workspace = true, optional = true }
+gnunet-rest-host = { workspace = true, optional = true }
+gnunet-oidc-crypto-host = { workspace = true, optional = true }
+gnunet-messenger-host = { workspace = true, optional = true }
+gnunet-messenger-service-host = { workspace = true, optional = true }
+gnunet-revocation-client-host = { workspace = true, optional = true }
+gnunet-revocation-host = { workspace = true, optional = true }
+gnunet-topology = { workspace = true, optional = true }
+gnunet-topology-host = { workspace = true, optional = true }
+gnunet-reclaim-credentials = { workspace = true, optional = true }
+gnunet-messenger = { workspace = true, optional = true }
+gnunet-messenger-core = { workspace = true, optional = true }
+gnunet-messenger-client-host = { workspace = true, optional = true }
+gnunet-datacache = { workspace = true, optional = true }
+gnunet-namecache = { workspace = true, optional = true }
+gnunet-identity = { workspace = true, optional = true }
+gnunet-regex = { workspace = true, optional = true }
+gnunet-regex-service = { workspace = true, optional = true }
+gnunet-regex-server-host = { workspace = true, optional = true }
+gnunet-regex-program-host = { workspace = true, optional = true }
+gnunet-vpn.workspace = true
+gnunet-exit = { workspace = true, optional = true }
+gnunet-seti.workspace = true
+gnunet-paillier = { workspace = true, optional = true }
+gnunet-abd = { workspace = true, optional = true }
+gnunet-consensus = { workspace = true, optional = true }
+gnunet-scalarproduct-paillier = { workspace = true, optional = true }
+gnunet-scalarproduct = { workspace = true, optional = true }
+gnunet-set = { workspace = true, optional = true }
+gnunet-rps = { workspace = true, optional = true }
+gnunet-setu = { workspace = true, optional = true }
+gnunet-cadet.workspace = true
+gnunet-fs-codec = { workspace = true, optional = true }
+gnunet-fs.workspace = true
+gnunet-datastore.workspace = true
+gnunet-nse.workspace = true
+gnunet-block.workspace = true
+gnunet-types.workspace = true
+gnunet-arm-core.workspace = true
+gnunet-arm-service-core.workspace = true
+gnunet-resources.workspace = true
+gnunet-wire.workspace = true
+gnunet-crypto.workspace = true
+gnunet-session-crypto.workspace = true
+gnunet-tcp-communicator-core.workspace = true
+gnunet-udp-communicator-core.workspace = true
+gnunet-client.workspace = true
+gnunet-core.workspace = true
+gnunet-pils.workspace = true
+gnunet-peerstore.workspace = true
+gnunet-transport.workspace = true
+gnunet-gnsrecord.workspace = true
+gnunet-gnsrecord-text = { workspace = true, optional = true }
+gnunet-zoneimport-core = { workspace = true, optional = true }
+gnunet-zoneimport-host = { workspace = true, optional = true }
+gnunet-gnscrypto.workspace = true
+gnunet-gns.workspace = true
+gnunet-hello.workspace = true
+gnunet-dns.workspace = true
+gnunet-idna.workspace = true
+gnunet-resolver-service-core.workspace = true
+gnunet-dnsstub.workspace = true
+gnunet-statistics.workspace = true
+gnunet-config = { workspace = true, optional = true }
+gnunet-dnsstub-host = { workspace = true, optional = true }
+gnunet-statistics-store = { workspace = true, optional = true }
+gnunet-resolver-broker = { workspace = true, optional = true }
+gnunet-resolver-host = { workspace = true, optional = true }
+
+[target.'cfg(unix)'.dependencies]
+gnunet-secretsharing-client-host = { workspace = true, optional = true }
+gnunet-abd-host = { workspace = true, optional = true }
+gnunet-consensus-host = { workspace = true, optional = true }
+gnunet-abd-client-host = { workspace = true, optional = true }
+gnunet-consensus-client-host = { workspace = true, optional = true }
+gnunet-scalarproduct-host = { workspace = true, optional = true }
+gnunet-scalarproduct-client-host = { workspace = true, optional = true }
+gnunet-set-client-host = { workspace = true, optional = true }
+gnunet-quic-communicator-host = { workspace = true, optional = true }
+gnunet-transport-dv-bridge-host = { workspace = true, optional = true }
+gnunet-transport-dv-runtime-host = { workspace = true, optional = true }
+gnunet-transport-dv-store-host = { workspace = true, optional = true }
+gnunet-transport-service-host = { workspace = true, optional = true }
+gnunet-transport-dv-crypto-host = { workspace = true, optional = true }
+gnunet-unix-communicator-host = { workspace = true, optional = true }
+gnunet-nse-client-host = { workspace = true, optional = true }
+gnunet-zonemaster-host = { workspace = true, optional = true }
+gnunet-dns-tools-host = { workspace = true, optional = true }
+gnunet-dns-service-host = { workspace = true, optional = true }
+gnunet-hostlist-host = { workspace = true, optional = true }
+gnunet-pt-host = { workspace = true, optional = true }
+gnunet-testbed-host = { workspace = true, optional = true }
+gnunet-dns-client-host = { workspace = true, optional = true }
+gnunet-nat-test-host = { workspace = true, optional = true }
+gnunet-nat-burst-host = { workspace = true, optional = true }
+gnunet-nat-client-host = { workspace = true, optional = true }
+gnunet-reclaim-client-host = { workspace = true, optional = true }
+gnunet-namestore-client-host = { workspace = true, optional = true }
+gnunet-namestore-host = { workspace = true, optional = true }
+gnunet-namecache-client-host = { workspace = true, optional = true }
+gnunet-namecache-host = { workspace = true, optional = true }
+gnunet-identity-client-host = { workspace = true, optional = true }
+gnunet-identity-host = { workspace = true, optional = true }
+gnunet-regex-client-host = { workspace = true, optional = true }
+gnunet-vpn-host = { workspace = true, optional = true }
+gnunet-exit-host = { workspace = true, optional = true }
+gnunet-tun-host = { workspace = true, optional = true }
+gnunet-vpn-client-host = { workspace = true, optional = true }
+gnunet-seti-host = { workspace = true, optional = true }
+gnunet-set-host = { workspace = true, optional = true }
+gnunet-rps-host = { workspace = true, optional = true }
+gnunet-rps-client-host = { workspace = true, optional = true }
+gnunet-setu-host = { workspace = true, optional = true }
+gnunet-setu-client-host = { workspace = true, optional = true }
+gnunet-cadet-host = { workspace = true, optional = true }
+gnunet-datastore-host = { workspace = true, optional = true }
+gnunet-fs-host = { workspace = true, optional = true }
+gnunet-nse-host = { workspace = true, optional = true }
+gnunet-core-client-host = { workspace = true, optional = true }
+gnunet-dht-client-host = { workspace = true, optional = true }
+gnunet-gns-client-host = { workspace = true, optional = true }
+gnunet-client-host = { workspace = true, optional = true }
+gnunet-core-host = { workspace = true, optional = true }
+gnunet-transport-host = { workspace = true, optional = true }
+gnunet-transport-application-host = { workspace = true, optional = true }
+gnunet-pils-host = { workspace = true, optional = true }
+gnunet-peerstore-host = { workspace = true, optional = true }
+gnunet-peerstore-client-host = { workspace = true, optional = true }
+gnunet-seti-client-host = { workspace = true, optional = true }
+gnunet-program-host = { workspace = true, optional = true }
+gnunet-tcp-communicator-host = { workspace = true, optional = true }
+gnunet-ipc-unix = { path = "../../adapters/ipc-unix", optional = true }
+gnunet-service-startup = { workspace = true, optional = true }
+gnunet-service-runtime = { workspace = true, optional = true }
+gnunet-arm-host = { workspace = true, optional = true }
+gnunet-arm-service-host = { workspace = true, optional = true }

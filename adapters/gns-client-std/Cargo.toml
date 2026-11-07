@@ -1,0 +1,20 @@
+[package]
+name = "gnunet-gns-client-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+[features]
+default = []
+[dependencies]
+gnunet-client.workspace = true
+gnunet-client-host.workspace = true
+gnunet-service-runtime.workspace = true
+gnunet-gnsrecord.workspace = true
+gnunet-types.workspace = true
+tokio = { workspace = true, features = ["net", "time", "rt"] }
+[dev-dependencies]
+gnunet-config.workspace = true
+tokio = { workspace = true, features = ["io-util", "sync", "macros"] }
+[lints]
+workspace = true

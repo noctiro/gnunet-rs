@@ -1,0 +1,36 @@
+[package]
+name = "gnunet-arm-service-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+autoexamples = false
+
+[features]
+default = []
+service = ["dep:gnunet-program-host", "dep:gnunet-service-startup"]
+
+[dependencies]
+gnunet-program-host = { workspace = true, optional = true, features = ["service-runtime"] }
+gnunet-service-startup = { workspace = true, optional = true }
+
+gnunet-config.workspace = true
+gnunet-arm-service-core.workspace = true
+gnunet-arm-core.workspace = true
+gnunet-service-runtime.workspace = true
+gnunet-native.workspace = true
+tokio = { workspace = true, features = ["rt", "net", "time", "io-util", "signal"] }
+socket2.workspace = true
+nix = { workspace = true, features = ["poll"] }
+libc.workspace = true
+
+[[bin]]
+name = "gnunet-arm-listener-child-fixture"
+path = "examples/listener_child.rs"
+
+[[bin]]
+name = "gnunet-arm-reactor-daemon-fixture"
+path = "examples/reactor_daemon.rs"
+
+[lints]
+workspace = true

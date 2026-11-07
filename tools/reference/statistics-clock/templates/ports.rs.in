@@ -1,0 +1,61 @@
+//! Tool-only type bindings. No protocol, endpoint or scheduling decisions live here.
+use crate::{connection::Connection, resolution};
+use gnunet_config::Configuration;
+use std::{
+    future::Future,
+    io,
+    path::PathBuf,
+    pin::Pin,
+    sync::Arc,
+    task::{Context, Poll},
+    time::Duration,
+};
+pub struct EndpointSource(client_host_real::EndpointSource);
+impl EndpointSource {
+    pub fn unix(path: PathBuf) -> Self {
+        Self(client_host_real::EndpointSource::unix(path))
+    }
+    pub fn configuration(
+        config: Configuration,
+        service: &'static [u8],
+        resolution: resolution::SharedResolution,
+    ) -> Self {
+        Self(client_host_real::EndpointSource::configuration(
+            config, service, resolution,
+        ))
+    }
+    pub fn live(
+        config: client_host_real::LiveConfiguration,
+        service: &'static [u8],
+        resolution: resolution::SharedResolution,
+    ) -> Self {
+        Self(client_host_real::EndpointSource::live(
+            config, service, resolution,
+        ))
+    }
+    pub fn clock(&self) -> Arc<dyn runtime_real::clock::RuntimeClock> {
+        self.0.clock()
+    }
+    pub fn timer(&self, duration: Duration) -> io::Result<resolution::ResolutionTimer> {
+        self.0.timer(duration)
+    }
+    pub fn resolve(&self) -> Result<Endpoint, client_host_real::ConnectError> {
+        self.0.resolve().map(Endpoint)
+    }
+}
+#[derive(Clone)]
+pub struct Endpoint(client_host_real::Endpoint);
+impl Endpoint {
+    pub fn attempt(&self, round: u64) -> ConnectionAttempt {
+        ConnectionAttempt(self.0.attempt(round))
+    }
+}
+pub struct ConnectionAttempt(client_host_real::ConnectionAttempt);
+impl Future for ConnectionAttempt {
+    type Output = io::Result<Connection>;
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        Pin::new(&mut self.get_mut().0)
+            .poll(cx)
+            .map(|result| result.map(Connection::Native))
+    }
+}

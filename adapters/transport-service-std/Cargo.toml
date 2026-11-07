@@ -1,0 +1,37 @@
+[package]
+name = "gnunet-transport-service-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+[features]
+default = []
+program = ["dep:gnunet-program-host", "dep:gnunet-service-startup", "dep:gnunet-ipc-unix", "dep:gnunet-client", "tokio/signal"]
+[dependencies]
+gnunet-snapshot-host.workspace = true
+gnunet-transport = { workspace = true, features = ["alloc"] }
+gnunet-transport-host.workspace = true
+gnunet-transport-dv-runtime-host.workspace = true
+gnunet-transport-dv-bridge-host.workspace = true
+gnunet-transport-dv-store-host.workspace = true
+gnunet-transport-dv-crypto.workspace = true
+gnunet-client-host.workspace = true
+gnunet-crypto.workspace = true
+gnunet-hello.workspace = true
+gnunet-pils = { workspace = true, features = ["alloc"] }
+gnunet-pils-host = { workspace = true, features = ["client"] }
+gnunet-peerstore-client-host.workspace = true
+gnunet-nat-client-host.workspace = true
+gnunet-config.workspace = true
+gnunet-wire.workspace = true
+gnunet-types.workspace = true
+gnunet-resolver-broker.workspace = true
+gnunet-service-runtime.workspace = true
+gnunet-program-host = { workspace = true, features = ["runtime", "resolver-broker", "service-runtime"], optional = true }
+gnunet-service-startup = { workspace = true, optional = true }
+gnunet-ipc-unix = { workspace = true, optional = true }
+gnunet-client = { workspace = true, optional = true }
+zeroize = { workspace = true, features = ["alloc"] }
+tokio = { workspace = true, features = ["rt", "net", "time", "sync"] }
+[lints]
+workspace = true

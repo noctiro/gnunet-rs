@@ -1,0 +1,21 @@
+[package]
+name = "gnunet-namestore"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = []
+alloc = ["gnunet-types/alloc", "zeroize/alloc"]
+
+[dependencies]
+gnunet-gnsrecord.workspace = true
+gnunet-idna.workspace = true
+gnunet-identity.workspace = true
+gnunet-types.workspace = true
+gnunet-wire.workspace = true
+zeroize.workspace = true
+
+[lints]
+workspace = true

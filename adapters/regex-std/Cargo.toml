@@ -1,0 +1,21 @@
+[package]
+name = "gnunet-regex-server-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+gnunet-dht-client-host.workspace = true
+gnunet-regex-service = { workspace = true, features = ["alloc"] }
+gnunet-service-runtime.workspace = true
+gnunet-types.workspace = true
+gnunet-regex.workspace = true
+gnunet-crypto.workspace = true
+gnunet-pils.workspace = true
+gnunet-pils-host = { workspace = true, features = ["client"] }
+gnunet-wire.workspace = true
+tokio = { workspace = true, features = ["rt", "net", "time"] }
+
+[lints]
+workspace = true

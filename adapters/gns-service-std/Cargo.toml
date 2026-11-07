@@ -1,0 +1,31 @@
+[package]
+name = "gnunet-gns-service-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+[features]
+default = []
+[dependencies]
+aws-lc-rs.workspace = true
+gnunet-gns = { workspace = true, features = ["alloc"] }
+gnunet-types.workspace = true
+gnunet-client.workspace = true
+gnunet-gnsrecord.workspace = true
+gnunet-native.workspace = true
+gnunet-block.workspace = true
+gnunet-client-host.workspace = true
+gnunet-dht-client-host.workspace = true
+gnunet-namecache-client-host.workspace = true
+gnunet-revocation-client-host.workspace = true
+gnunet-service-runtime.workspace = true
+gnunet-wire.workspace = true
+gnunet-dns.workspace = true
+gnunet-dns-client-host.workspace = true
+gnunet-config.workspace = true
+gnunet-idna.workspace = true
+gnunet-resolver-broker.workspace = true
+getrandom.workspace = true
+tokio = { workspace = true, features = ["time", "net", "io-util"] }
+[lints]
+workspace = true

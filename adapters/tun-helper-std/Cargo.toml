@@ -1,0 +1,15 @@
+[package]
+name = "gnunet-tun-helper-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc.workspace = true
+gnunet-native.workspace = true
+gnunet-wire.workspace = true
+gnunet-types.workspace = true
+
+[lints]
+workspace = true

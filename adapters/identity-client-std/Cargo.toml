@@ -1,0 +1,19 @@
+[package]
+name = "gnunet-identity-client-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+[dependencies]
+gnunet-client-host.workspace = true
+gnunet-crypto.workspace = true
+gnunet-identity.workspace = true
+gnunet-service-runtime.workspace = true
+gnunet-types.workspace = true
+gnunet-wire.workspace = true
+zeroize = { workspace = true, features = ["alloc"] }
+tokio = { workspace = true, features = ["rt", "net", "time"] }
+[dev-dependencies]
+tokio = { workspace = true, features = ["io-util", "sync"] }
+[lints]
+workspace = true

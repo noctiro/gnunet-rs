@@ -1,0 +1,925 @@
+{
+  "kind": "independent-source-selected-first-statistics-acceptance-matrix",
+  "base_map": {
+    "path": "/private/tmp/gnunet-STATISTICS-configured-commands-reference-integration-20261102-9qwhjgum/source-inputs.json",
+    "sha256": "9d472a05b9b1e7cda1b421c2cb66c1d3aa9aead17dd1bed58c779b05f8238726"
+  },
+  "official_revision": "346358e26d4dcc2dc4f51bef5d52dca29c7d8165",
+  "sources": {
+    "H": {
+      "path": "tools/reference/statistics_daemons.py",
+      "sha256": "d665cd263133bdea7959f3c6933087e297f3724c390b83c71a434b59c980505b",
+      "candidate_path": "/private/tmp/gnunet-STATISTICS-transient-observation-forward-20261102-lL0iUsNU/candidate/tools/reference/statistics_daemons.py"
+    },
+    "F": {
+      "path": "tools/reference/source_fingerprint.py",
+      "sha256": "9f5687050adae03115740f9b206d07583772bd8b0478aa61ab50b660b067f7c2"
+    },
+    "B": {
+      "path": "tools/reference/build_reference.py",
+      "sha256": "14c1302cdadc957598f21b779a4142dcbe0c25ac10dc316d41799494cca99526"
+    },
+    "M": {
+      "path": "apps/gnunet-cli/src/main.rs",
+      "sha256": "288b1df81d688982efd7380d6cf44a5b1d058d5d85e70d57b235d2571a4b3b76"
+    },
+    "P": {
+      "path": "apps/gnunet-cli/src/statistics_watch/mod.rs",
+      "sha256": "391bea9e7a1027c6a3a0e654ee8a212c5e15f2327d7863d391fd52bd0cb0bbf8"
+    },
+    "Q": {
+      "path": "apps/gnunet-cli/src/statistics_watch/finite.rs",
+      "sha256": "f5900a265b449980eda6bc3dc451f6e4af12c1088121699fa8cdd13f86237aee"
+    },
+    "O": {
+      "path": "apps/gnunet-cli/src/statistics_watch/output.rs",
+      "sha256": "1d7dbef9f82c7c2bf8561a9eb5b237496d5d83c0a93a9b6e906c82a6ac292cde"
+    },
+    "S": {
+      "path": "apps/gnunet-service-statistics/src/main.rs",
+      "sha256": "bd708fa4a35f4b8720cf4402ed4e4893b39488706af2a4ddbc49530507277032"
+    },
+    "R": {
+      "path": "apps/gnunet-service-statistics/src/host.rs",
+      "sha256": "073416284aa0f4fc03824e7382d55118c2cb89d5c49204cfc0b1c1f732ea84cc"
+    },
+    "T": {
+      "path": "apps/gnunet-service-statistics/src/control.rs",
+      "sha256": "ed5a3d8dc6cefd823786234fc7160fafae90360be83b91652c49a115c21624ba"
+    },
+    "C": {
+      "path": "apps/gnunet-service-statistics/src/settings.rs",
+      "sha256": "d76890db368c289e1c354bc7263137c6446410b44313cbaf676c755067b8875e"
+    }
+  },
+  "status_rule": "All selected observations/controls are prepared only; no function/import/script/product/build/fingerprint has run in this review. not_selected is a harness coverage absence, not a confirmed Rust code gap.",
+  "observations": [
+    {
+      "id": "ABS.R-C",
+      "capability": "Persistent absolute mutation received by C",
+      "direction": "Rust CLI SET -> C daemon; C/Rust GET observe C state",
+      "status": "prepared",
+      "role": "acceptance",
+      "selected_calls": "Rust SET counter=41 persistent, later counter=99 persistent; native Rust SET must exit0 with exact statistics_set_confirmed.",
+      "asserted_observation": "Rust GET counter=41/value+persistent and C GET=41; counter99 later survives C graceful restart and cross-load.",
+      "limits": "Only small nonzero absolute values and one ASCII selector; confirmation is processing, not disk durability.",
+      "source_refs": [
+        {
+          "source": "H",
+          "anchor": "rust_set(harness, active[\"rust_client\"], c_socket, COUNTER, 41",
+          "lines": [
+            519
+          ]
+        },
+        {
+          "source": "H",
+          "anchor": "rust_set(harness, active[\"rust_client\"], c_socket, COUNTER, 99",
+          "lines": [
+            526
+          ]
+        },
+        {
+          "source": "H",
+          "anchor": "def rust_set(",
+          "lines": [
+            432
+          ]
+        },
+        {
+          "source": "Q",
+          "anchor": "current.destroy(true)?",
+          "lines": [
+            180
+          ]
+        },
+        {
+          "source": "Q",
+          "anchor": "receipt.outcome != DestroyOutcome::ProcessingConfirmed",
+          "lines": [
+            213
+          ]
+        }
+      ]
+    },
+    {
+      "id": "ABS.C-R",
+      "capability": "Persistent absolute mutation received by Rust",
+      "direction": "C CLI SET -> Rust daemon; C/Rust GET observe Rust state",
+      "status": "prepared",
+      "role": "acceptance",
+      "selected_calls": "C SET counter=55 persistent; later C SET transient=7 nonpersistent, immediately followed by Rust GET7/nonpersistent before stopping.",
+      "asserted_observation": "C SET normal exit0; Rust GET counter55/value+persistent and C GET55 establish the persistent mutation took effect.",
+      "limits": "C SET helper checks normal CLI exit0; subsequent GETs establish value application. Only small values and fixed ASCII selectors are selected; C SET does not expose an independent raw confirmation receipt.",
+      "source_refs": [
+        {
+          "source": "H",
+          "anchor": "c_set(harness, active[\"c_client\"], r_conf, COUNTER, 55",
+          "lines": [
+            556
+          ]
+        },
+        {
+          "source": "H",
+          "anchor": "c_set(harness, active[\"c_client\"], r_conf, TRANSIENT, 7",
+          "lines": [
+            571
+          ]
+        },
+        {
+          "source": "H",
+          "anchor": "def c_set(",
+          "lines": [
+            447
+          ]
+        },
+        {
+          "source": "H",
+          "anchor": "rust_get(harness, active[\"rust_client\"], r_socket, COUNTER, 55",
+          "lines": [
+            557
+          ]
+        }
+      ]
+    },
+    {
+      "id": "GET.SELECTED",
+      "capability": "Selected VALUE/END in both interoperability directions",
+      "direction": "Rust GET -> C daemon and C GET -> Rust daemon; same-implementation GETs provide cross-checks",
+      "status": "prepared",
+      "role": "acceptance",
+      "selected_calls": "GET exact subsystem rust-c-interop/name counter, with values41/57/99/55/48 at selected stages.",
+      "asserted_observation": "Rust output must be one exact statistics_end count1 plus a statistics_value with int value, displayed/raw-byte selector and requested bool persistence. C -q output must equal the expected decimal.",
+      "limits": "No UID assertion, wildcard/multiple-row GET, arbitrary bytes/UTF-8 names or large frame; only selected zero/one-row outputs. C GET helper does not expose a separate END/count receipt.",
+      "source_refs": [
+        {
+          "source": "H",
+          "anchor": "def rust_get(",
+          "lines": [
+            419
+          ]
+        },
+        {
+          "source": "H",
+          "anchor": "-exact-end\"",
+          "lines": [
+            425
+          ]
+        },
+        {
+          "source": "H",
+          "anchor": "-value\", row.get(\"event\")",
+          "lines": [
+            427
+          ]
+        },
+        {
+          "source": "H",
+          "anchor": "def c_get(",
+          "lines": [
+            442
+          ]
+        },
+        {
+          "source": "H",
+          "anchor": "rust_get(harness, active[\"rust_client\"], c_socket, COUNTER, 57",
+          "lines": [
+            525
+          ]
+        },
+        {
+          "source": "H",
+          "anchor": "c_get(harness, active[\"c_client\"], r_conf, COUNTER, 55",
+          "lines": [
+            558,
+            561
+          ]
+        },
+        {
+          "source": "Q",
+          "anchor": "Event::GetComplete(completion)",
+          "lines": [
+            66
+          ]
+        },
+        {
+          "source": "O",
+          "anchor": "pub fn stage_get(",
+          "lines": [
+            100
+          ]
+        }
+      ]
+    },
+    {
+      "id": "WATCH.C-R",
+      "capability": "Initial and changed numeric WATCH notifications",
+      "direction": "C WATCH client -> Rust daemon; Rust SETs change the observed Rust state",
+      "status": "prepared",
+      "role": "acceptance",
+      "selected_calls": "Ordinary C -q -w -s rust-c-interop -n counter starts after counter55 exists; then Rust absolute57 and relative-9.",
+      "asserted_observation": "Actual PTY lines55,57,48 in order and exactly that complete retained output; WATCH child must stop with normal zero exit.",
+      "limits": "Rust WATCH -> C is absent. Only numeric output is checked; UID/persistence flag semantics, irrelevant-selector suppression, same-value suppression, re-registration and live reconnect are not selected.",
+      "source_refs": [
+        {
+          "source": "H",
+          "anchor": "harness.start(\"c-watch-rust-service\"",
+          "lines": [
+            562
+          ]
+        },
+        {
+          "source": "H",
+          "anchor": "harness.watch_value(watcher, 55)",
+          "lines": [
+            563
+          ]
+        },
+        {
+          "source": "H",
+          "anchor": "harness.watch_value(watcher, 57)",
+          "lines": [
+            565
+          ]
+        },
+        {
+          "source": "H",
+          "anchor": "harness.watch_value(watcher, 48)",
+          "lines": [
+            567
+          ]
+        },
+        {
+          "source": "H",
+          "anchor": "c-watch-exact-notifications",
+          "lines": [
+            569
+          ]
+        },
+        {
+          "source": "H",
+          "anchor": "def watch_value(",
+          "lines": [
+            312
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REL.R-R.OBS-C",
+      "capability": "One negative relative arithmetic transition with external C observer",
+      "direction": "Rust SET -9 -> Rust daemon; C WATCH/C GET observe48",
+      "status": "prepared",
+      "role": "acceptance",
+      "selected_calls": "Rust relative persistent -9 after the same Rust daemon stores57.",
+      "asserted_observation": "Rust actual SET processing-confirmed output; C WATCH48 and C GET48.",
+      "limits": "This is not cross-implementation relative SET: neither Rust-relative -> C daemon nor C-relative -> Rust daemon is selected. No zero/no-op, positive delta, overflow/underflow or saturation edge.",
+      "source_refs": [
+        {
+          "source": "H",
+          "anchor": "rust_set(harness, active[\"rust_client\"], r_socket, COUNTER, -9",
+          "lines": [
+            566
+          ]
+        },
+        {
+          "source": "H",
+          "anchor": "harness.watch_value(watcher, 48)",
+          "lines": [
+            567
+          ]
+        },
+        {
+          "source": "H",
+          "anchor": "c_get(harness, active[\"c_client\"], r_conf, COUNTER, 48)",
+          "lines": [
+            570,
+            579
+          ]
+        },
+        {
+          "source": "Q",
+          "anchor": "Mutation::Relative(delta)",
+          "lines": [
+            171
+          ]
+        }
+      ]
+    },
+    {
+      "id": "PERSIST.RESTART",
+      "capability": "Selected persistent value survives real graceful restart",
+      "direction": "C save -> new C daemon; Rust save -> new Rust daemon",
+      "status": "prepared",
+      "role": "acceptance",
+      "selected_calls": "Normal service SIGTERM/wait0, read the actual persistent SET stream; restart ordinary daemon with same configured DATABASE.",
+      "asserted_observation": "C restart returns99/persistent via Rust GET. Rust restart returns48 via both clients and persistent via Rust GET. Generic dump framing accepts only complete type168/flags2 SET records and a matching selected counter.",
+      "limits": "No crash/power-loss or injected I/O failure; no claim of atomic durable commit from SET confirmation. Rust socket absence is asserted; C socket removal itself is not explicitly asserted.",
+      "source_refs": [
+        {
+          "source": "H",
+          "anchor": "harness.finish(c_server)",
+          "lines": [
+            529
+          ]
+        },
+        {
+          "source": "H",
+          "anchor": "c-dump-official-set-stream",
+          "lines": [
+            531
+          ]
+        },
+        {
+          "source": "H",
+          "anchor": "harness.start(\"c-service-restart\"",
+          "lines": [
+            533
+          ]
+        },
+        {
+          "source": "H",
+          "anchor": "rust_get(harness, active[\"rust_client\"], c_socket, COUNTER, 99",
+          "lines": [
+            535
+          ]
+        },
+        {
+          "source": "H",
+          "anchor": "rust-dump-official-set-stream",
+          "lines": [
+            576
+          ]
+        },
+        {
+          "source": "H",
+          "anchor": "rust_restart = start_rust(1)",
+          "lines": [
+            578
+          ]
+        },
+        {
+          "source": "H",
+          "anchor": "rust-first-socket-cleanup",
+          "lines": [
+            574
+          ]
+        },
+        {
+          "source": "H",
+          "anchor": "rust-restart-socket-cleanup",
+          "lines": [
+            583
+          ]
+        },
+        {
+          "source": "H",
+          "anchor": "def read_dump(",
+          "lines": [
+            49
+          ]
+        },
+        {
+          "source": "R",
+          "anchor": "let saved = store.as_ref().map",
+          "lines": [
+            148
+          ]
+        }
+      ]
+    },
+    {
+      "id": "TRANSIENT.BEFORE-AFTER",
+      "capability": "Selected nonpersistent value exists before stop and disappears after real restart",
+      "direction": "Rust SET -> C; C SET -> Rust; Rust GET after each new daemon",
+      "status": "prepared",
+      "role": "acceptance",
+      "selected_calls": "Rust SET transient7 on C -> normal C GET7; C SET transient7 on Rust -> Rust GET7/persistent=false; then stop/restart each service and Rust GET transient.",
+      "asserted_observation": "Actual pre-stop value7 in each service, plus exact post-restart statistics_end count0. Rust pre-stop GET also requires persistent=false.",
+      "limits": "Prepared source only; no runtime result. This rules out merely ignoring the selected transient mutation if actually passed, but does not cover crash retention, all persistence-bit transitions or storage failures.",
+      "source_refs": [
+        {
+          "source": "H",
+          "anchor": "rust_set(harness, active[\"rust_client\"], c_socket, TRANSIENT, 7)",
+          "lines": [
+            527
+          ]
+        },
+        {
+          "source": "H",
+          "anchor": "c_set(harness, active[\"c_client\"], r_conf, TRANSIENT, 7)",
+          "lines": [
+            571
+          ]
+        },
+        {
+          "source": "H",
+          "anchor": "rust_get(harness, active[\"rust_client\"], c_socket, TRANSIENT, None)",
+          "lines": [
+            536
+          ]
+        },
+        {
+          "source": "H",
+          "anchor": "rust_get(harness, active[\"rust_client\"], r_socket, TRANSIENT, None)",
+          "lines": [
+            581
+          ]
+        },
+        {
+          "source": "H",
+          "anchor": "rust-empty-",
+          "lines": [
+            423
+          ]
+        },
+        {
+          "source": "H",
+          "anchor": "c_get(harness, active[\"c_client\"], c_conf, TRANSIENT, 7)",
+          "lines": [
+            528
+          ]
+        },
+        {
+          "source": "H",
+          "anchor": "rust_get(harness, active[\"rust_client\"], r_socket, TRANSIENT, 7, False)",
+          "lines": [
+            572
+          ]
+        }
+      ]
+    },
+    {
+      "id": "PERSIST.CROSS",
+      "capability": "Both directions of real normal persistent-format loading",
+      "direction": "Rust saved file -> C daemon; C saved file -> Rust daemon",
+      "status": "prepared",
+      "role": "acceptance",
+      "selected_calls": "Copy the real normal-shutdown dump to a fresh private DATABASE path; start the opposite ordinary daemon and query with both clients.",
+      "asserted_observation": "Rust-produced dump yields48 on C; C-produced dump yields99 on Rust; Rust GET also checks selected persistent=true; normal exit0.",
+      "limits": "Positive selected-file compatibility only; no corrupt/truncated file, missing authoritative history, I/O failure, crash recovery, binary-private layout equivalence or whole-database exact-content claim.",
+      "source_refs": [
+        {
+          "source": "H",
+          "anchor": "shutil.copy2(r_dump, cross_c_dump)",
+          "lines": [
+            587
+          ]
+        },
+        {
+          "source": "H",
+          "anchor": "harness.start(\"c-service-load-rust-dump\"",
+          "lines": [
+            589
+          ]
+        },
+        {
+          "source": "H",
+          "anchor": "c_get(harness, active[\"c_client\"], cross_c_conf, COUNTER, 48)",
+          "lines": [
+            591
+          ]
+        },
+        {
+          "source": "H",
+          "anchor": "shutil.copy2(c_dump, cross_r_dump)",
+          "lines": [
+            595
+          ]
+        },
+        {
+          "source": "H",
+          "anchor": "cross_r = start_rust(\"load-c-dump\"",
+          "lines": [
+            597
+          ]
+        },
+        {
+          "source": "H",
+          "anchor": "c_get(harness, active[\"c_client\"], cross_r_conf, COUNTER, 99)",
+          "lines": [
+            598
+          ]
+        }
+      ]
+    },
+    {
+      "id": "MALFORMED.SESSION",
+      "capability": "Bad Unix session closes while separate healthy request still works",
+      "direction": "Raw socket peer -> C daemon and raw socket peer -> Rust daemon",
+      "status": "prepared",
+      "role": "acceptance",
+      "selected_calls": "Only undersized-header and partial-eof literal frames, each followed by SHUT_WR; later independent C GET on same service.",
+      "asserted_observation": "Bad peer observes EOF/reset within its socket bound; healthy C GET still returns41 on C or55 on Rust.",
+      "limits": "Raw probes are not ordinary C/Rust-client direction credit. They do not cover all malformed messages, queue/resource limits, concurrent pressure, stalled partial frames or authenticated ACL denial.",
+      "source_refs": [
+        {
+          "source": "H",
+          "anchor": "def malformed(",
+          "lines": [
+            335
+          ]
+        },
+        {
+          "source": "H",
+          "anchor": "harness.malformed(\"c-service\"",
+          "lines": [
+            522
+          ]
+        },
+        {
+          "source": "H",
+          "anchor": "harness.malformed(\"rust-service\"",
+          "lines": [
+            559
+          ]
+        },
+        {
+          "source": "H",
+          "anchor": "c_get(harness, active[\"c_client\"], c_conf, COUNTER, 41)",
+          "lines": [
+            521,
+            523
+          ]
+        },
+        {
+          "source": "H",
+          "anchor": "c_get(harness, active[\"c_client\"], r_conf, COUNTER, 55)",
+          "lines": [
+            558,
+            561
+          ]
+        }
+      ]
+    },
+    {
+      "id": "UNKNOWN.DIAG",
+      "capability": "Explicit unknown-type difference, isolated from normal acceptance",
+      "direction": "Raw unknown type -> separate C diagnostic daemon; raw unknown type -> Rust daemon",
+      "status": "prepared",
+      "role": "diagnostic",
+      "selected_calls": "C expects read timeout then observed soft-shutdown timeout and explicit owned SIGKILL; Rust expects EOF/reset.",
+      "asserted_observation": "All these probes/checks and intentional C kill are placed in diagnostics, not normal passing acceptance observations.",
+      "limits": "A source-prepared known variance is not matching behavior or full conformance. No inference that a forced kill was graceful shutdown.",
+      "source_refs": [
+        {
+          "source": "H",
+          "anchor": "def unknown_type(",
+          "lines": [
+            354
+          ]
+        },
+        {
+          "source": "H",
+          "anchor": "def reference_unknown_shutdown(",
+          "lines": [
+            377
+          ]
+        },
+        {
+          "source": "H",
+          "anchor": "harness.start(\"c-service-known-invalid-message-variance\"",
+          "lines": [
+            542
+          ]
+        },
+        {
+          "source": "H",
+          "anchor": "harness.unknown_type(\"c-service\"",
+          "lines": [
+            544
+          ]
+        },
+        {
+          "source": "H",
+          "anchor": "harness.unknown_type(\"rust-service\"",
+          "lines": [
+            560
+          ]
+        }
+      ]
+    }
+  ],
+  "prepared_controls": [
+    {
+      "id": "CTRL.PROVENANCE",
+      "capability": "Normal participants and source stability binding",
+      "direction": "Official C normal Meson targets; normal Rust CLI/service binaries supplied by Root",
+      "status": "prepared",
+      "role": "control",
+      "selected_calls": "Fixed successful C build receipt; validate source_state/all staged executable/library/default hashes; snapshot four binaries; full Rust source/spec fingerprints before/after.",
+      "asserted_observation": "If run succeeds, receipt/source/snapshot identity and no during-run source/participant change are observed.",
+      "limits": "No source_state/fingerprints/build/harness ran in this review. Hashing tracked test/source bytes is not running those tests. Rust hashes do not independently prove source-to-binary build provenance; Root needs the fresh normal-bin build receipt. full_c_statistics_daemon means actual C program selected/ready, not all owner capabilities passed.",
+      "source_refs": [
+        {
+          "source": "B",
+          "anchor": "def source_state(",
+          "lines": [
+            37
+          ]
+        },
+        {
+          "source": "B",
+          "anchor": "\"gnunet-statistics\", \"gnunet-service-statistics\"",
+          "lines": [
+            154
+          ]
+        },
+        {
+          "source": "F",
+          "anchor": "SOURCE_DIRS = ",
+          "lines": [
+            11
+          ]
+        },
+        {
+          "source": "F",
+          "anchor": "def fingerprints(",
+          "lines": [
+            45
+          ]
+        },
+        {
+          "source": "H",
+          "anchor": "original_state = source_state(",
+          "lines": [
+            476
+          ]
+        },
+        {
+          "source": "H",
+          "anchor": "before = fingerprints(ROOT)",
+          "lines": [
+            482
+          ]
+        },
+        {
+          "source": "H",
+          "anchor": "participants_unchanged",
+          "lines": [
+            604,
+            609
+          ]
+        },
+        {
+          "source": "H",
+          "anchor": "report[\"full_c_statistics_daemon\"] = True",
+          "lines": [
+            518
+          ]
+        }
+      ]
+    },
+    {
+      "id": "CTRL.UNIX",
+      "capability": "Private configured Unix profile",
+      "direction": "Same local user, private foreground services/CLI processes",
+      "status": "prepared",
+      "role": "control",
+      "selected_calls": "Private 0700 runtime/XDG directories, fixed UNIXPATH/DATABASE, PORT0, UNIX_MATCH_UID=YES/GID=NO, disabled forwarding/on-demand activation.",
+      "asserted_observation": "C service uses socket connection readiness. Rust service additionally requires actual flushed initialized persistence READY. Ordinary -c/-L and SIGTERM/real wait0 are selected.",
+      "limits": "Same-UID success only; no TCP/ACL denial matrix, inherited activation, ARM, daemon detach, real configured Rust CLI endpoint \"-\", config reload or disabled profile. Readiness of a process/socket is not owner-wide correctness.",
+      "source_refs": [
+        {
+          "source": "H",
+          "anchor": "def config(",
+          "lines": [
+            399
+          ]
+        },
+        {
+          "source": "H",
+          "anchor": "owned.chmod(0o700)",
+          "lines": [
+            505
+          ]
+        },
+        {
+          "source": "H",
+          "anchor": "harness.ready(c_server, c_socket)",
+          "lines": [
+            517
+          ]
+        },
+        {
+          "source": "H",
+          "anchor": "def start_rust(",
+          "lines": [
+            550
+          ]
+        },
+        {
+          "source": "R",
+          "anchor": "READY statistics wire=0.29.1",
+          "lines": [
+            120
+          ]
+        },
+        {
+          "source": "P",
+          "anchor": "if args[0] != b\"-\"",
+          "lines": [
+            171
+          ]
+        },
+        {
+          "source": "S",
+          "anchor": "let selected = match service::prepare(",
+          "lines": [
+            91
+          ]
+        }
+      ]
+    },
+    {
+      "id": "CTRL.FAILURE-GUARDS",
+      "capability": "Finite waits and honest lifecycle reporting",
+      "direction": "Harness -> selected owned children",
+      "status": "prepared",
+      "role": "control",
+      "selected_calls": "Command/readiness/WATCH/socket/shutdown bounds; nonzero/timeout fails; diagnostics separate; owned cleanup/report failure accounting.",
+      "asserted_observation": "These are selected protective code paths, not fault-injection executions in this task or a new helper re-audit.",
+      "limits": "No timeout/interruption/signal/wait/PTY/digest/disk failure has been injected. No guarantee under SIGKILL/host death; source audit and prepared guards are not runtime observations.",
+      "source_refs": [
+        {
+          "source": "H",
+          "anchor": "def command(",
+          "lines": [
+            93
+          ]
+        },
+        {
+          "source": "H",
+          "anchor": "def ready(",
+          "lines": [
+            284
+          ]
+        },
+        {
+          "source": "H",
+          "anchor": "def watch_value(",
+          "lines": [
+            312
+          ]
+        },
+        {
+          "source": "H",
+          "anchor": "def finish(",
+          "lines": [
+            185
+          ]
+        },
+        {
+          "source": "H",
+          "anchor": "report[\"cleanup_errors\"] = cleanup_errors",
+          "lines": [
+            639
+          ]
+        }
+      ]
+    }
+  ],
+  "not_selected": [
+    {
+      "id": "WATCH.R-C",
+      "capability": "Rust native WATCH -> official C daemon",
+      "absence": "No Rust statistics watch child is launched; only the C watcher exists."
+    },
+    {
+      "id": "REL.CROSS",
+      "capability": "Both cross-implementation relative SET directions",
+      "absence": "Only Rust relative -9 -> Rust daemon is selected, with C numeric observer."
+    },
+    {
+      "id": "SET.EDGES",
+      "capability": "Relative zero/no-op, positive/overflow/underflow edges, zero/max absolute, persistence-bit edge transitions on Rust",
+      "absence": "No corresponding mutation/expected output selected. Source-present noop is not exercised."
+    },
+    {
+      "id": "GET.STREAM",
+      "capability": "Wildcard/multiple-subsystem/name/many-row GET, UID and opaque-name semantics",
+      "absence": "Only fixed ASCII selector and exact zero/one row results. UID is emitted but unasserted; no multirow limit/output resource case."
+    },
+    {
+      "id": "WATCH.LIFETIME",
+      "capability": "Rust/C WATCH cancellation, same-value/filter isolation, recreation and source reconnect",
+      "absence": "Only C WATCH is SIGTERM-stopped before Rust service restart; no Rust watcher, cross-epoch subscription or queued-output cancellation case."
+    },
+    {
+      "id": "IPC.FAILURES",
+      "capability": "Original GET cancellation/late END, SET unknown result/no replay, live connection retry/recovery",
+      "absence": "Each finite CLI is separate and completes before planned daemon shutdown; no causal loss/unknown result is induced."
+    },
+    {
+      "id": "CONFIG.CLIENT",
+      "capability": "Configured Rust CLI endpoint \"-\", disabled config and live endpoint/config selection changes",
+      "absence": "All Rust harness GET/SET use explicit Unix path. Services/C CLI use -c; this does not exercise the distinct Rust configured endpoint form."
+    },
+    {
+      "id": "TCP.ACL",
+      "capability": "TCP IPv4/IPv6, remote/Unix credential acceptance and denial profiles",
+      "absence": "PORT0/private Unix/same UID; ACL strings are configuration, not network/denial observations."
+    },
+    {
+      "id": "ACTIVATION",
+      "capability": "ARM/on-demand activation, inherited listeners/readiness, parent-control and daemon detach",
+      "absence": "Foreground direct children only; START_ON_DEMAND=NO and disabled forwarding; no ARM/inherited-parent actor launched."
+    },
+    {
+      "id": "PERSIST.FAILURES",
+      "capability": "Crash/power-loss durability, corrupt/missing-history recovery, save/fsync/read-only/full-disk failures",
+      "absence": "Only graceful healthy save/restart and positive cross-load. No injected storage/crash fault; SET ACK is not durable-save proof."
+    },
+    {
+      "id": "RESOURCES",
+      "capability": "Queue/frame/client/storage capacities, slow stdout/consumer, starvation, sustained memory/performance",
+      "absence": "Small selected counters and short output; capacity/deadline code exists but no boundary/pressure/performance observation."
+    },
+    {
+      "id": "PLATFORMS",
+      "capability": "All supported platform/profile behavior",
+      "absence": "Prepared harness requires one actual Unix host with PTY/signals. Static macOS/GNU-Linux checks and cross binaries do not count as runs on both platforms."
+    }
+  ],
+  "scope_limits": [
+    "Does not replace A's complete external semantic candidate/inventory.",
+    "No legacy catalogue, fixed passing count, formal gate or new release credit.",
+    "No helper cleanup re-audit/refactor; only existing selected lifecycle guards are located.",
+    "No actual dump/private-key/fixture payload read; named production/tool source and SHA only."
+  ],
+  "runtime_verified": false,
+  "behavior_verified": false,
+  "owner_complete": false,
+  "whole_goal_complete": false,
+  "predecessor_matrix": {
+    "path": "/private/tmp/gnunet-STATISTICS-first-run-capability-matrix-20261102-xbTW5L6V/matrix.json",
+    "sha256": "06801716e92a356122c01dde31775c229e310f427223459d9b74e4244af1fa50"
+  },
+  "source_overlay": {
+    "status": "installed-source-only; selected observations remain unexecuted",
+    "paths": [
+      {
+        "path": "tools/reference/statistics_daemons.py",
+        "operation": "modify",
+        "before_sha256": "e2f14ac69a3a409d728cb4af91f1d8be38975143d3e322c90d01758cd02ed83e",
+        "after_sha256": "d665cd263133bdea7959f3c6933087e297f3724c390b83c71a434b59c980505b"
+      }
+    ]
+  },
+  "relative_C_producer_profile": {
+    "status": "not_selected",
+    "ordinary_cli_can_express_relative": false,
+    "normal_cli_reason": "The only value positional parses %llu and reaches GNUNET_STATISTICS_set. -r is remote, not relative; no option/update branch exists.",
+    "official_revision": "346358e26d4dcc2dc4f51bef5d52dca29c7d8165",
+    "official_refs": [
+      {
+        "path": "src/cli/statistics/gnunet-statistics.c",
+        "sha256": "fa9e185a751e39c4c9e59c17dea163cb97b5ec8c62efd674e27b7d78e8e2943b",
+        "ranges": [
+          [
+            527,
+            560
+          ],
+          [
+            716,
+            736
+          ],
+          [
+            817,
+            865
+          ]
+        ]
+      },
+      {
+        "path": "src/include/gnunet_statistics_service.h",
+        "sha256": "a5a1dcf63bdb909d7cababe47aeda2c9442ee1464d4d497323f9b049935f65ec",
+        "ranges": [
+          [
+            209,
+            222
+          ]
+        ]
+      }
+    ],
+    "future_role": "A real external C public-API caller using the unmodified GNUNET_STATISTICS_create/update/destroy and normal library/configuration against the ordinary daemon. No private wire, invented CLI flag or fake producer.",
+    "no_new_runtime_scope": true
+  },
+  "current_resource_source_overlay": {
+    "service_host": {
+      "path": "apps/gnunet-service-statistics/src/host.rs",
+      "sha256": "073416284aa0f4fc03824e7382d55118c2cb89d5c49204cfc0b1c1f732ea84cc",
+      "anchor": "type Core = AllocatedStatistics",
+      "lines": [
+        21
+      ]
+    },
+    "settings": {
+      "path": "apps/gnunet-service-statistics/src/settings.rs",
+      "sha256": "d76890db368c289e1c354bc7263137c6446410b44313cbaf676c755067b8875e",
+      "anchor": "pub(crate) fn read(",
+      "lines": [
+        77
+      ]
+    },
+    "qualification": "Prepared first-run roles remain unchanged. Any execution must build/bind actual normal binaries to current source and use a fresh result directory. This resource source/static change supplies no observation or runtime success."
+  }
+}

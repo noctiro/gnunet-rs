@@ -1,0 +1,22 @@
+[package]
+name = "gnunet-rest"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = []
+oidc = ["dep:gnunet-reclaim", "dep:gnunet-crypto", "dep:zeroize"]
+
+[dependencies]
+gnunet-reclaim = { workspace = true, optional = true }
+gnunet-crypto = { workspace = true, optional = true }
+zeroize = { workspace = true, optional = true }
+gnunet-types.workspace = true
+gnunet-wire.workspace = true
+gnunet-gnsrecord.workspace = true
+gnunet-json.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,19 @@
+[package]
+name = "gnunet-transport-dv-bridge-host"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+gnunet-transport = { workspace = true, features = ["alloc"] }
+gnunet-transport-host.workspace = true
+gnunet-transport-dv-runtime-host.workspace = true
+gnunet-transport-dv-store-host.workspace = true
+gnunet-types.workspace = true
+gnunet-service-runtime.workspace = true
+gnunet-crypto.workspace = true
+tokio = { workspace = true, features = ["time"] }
+
+[lints]
+workspace = true

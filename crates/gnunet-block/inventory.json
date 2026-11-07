@@ -1,0 +1,309 @@
+{
+  "schema": 1,
+  "revision": "346358e26d4dcc2dc4f51bef5d52dca29c7d8165",
+  "tag": "v0.29.1",
+  "source_sha256": {
+    "src/contrib/service/consensus/plugin_block_consensus.c": "0a2ec3ae3d77eca4c4db8a1d52deb94bfbd6130e2839ac5343dfad2e8185a892",
+    "src/contrib/service/set/plugin_block_set_test.c": "0537dea165e6589cf2d0d0f85a6922cbaab6903f5f03469a40838bfd4d0f16d4",
+    "src/include/block_dns.h": "e6619cd781c6335746da5926b7ade3b18e85725d473f208150640b0324564f77",
+    "src/include/block_fs.h": "b48abe48ba3113bdeec40a57d4787bb42345770534baa6f4c81ba78c154cc338",
+    "src/include/block_regex.h": "673c3204e4a37c73ab92c21ac4c164c2a6405a6903527e1f52c259538ca1bf00",
+    "src/include/gnunet_block_group_lib.h": "d121fc1bcbe8b3ee320ec1b4fac5f13d281b6f0b3efe1017d831065f3e5e53e1",
+    "src/include/gnunet_block_lib.h": "d8833a02e7048d045fd56f080f7c07192560d0cbc191e32a5a0dbb5a0cfbc6dd",
+    "src/include/gnunet_block_plugin.h": "d1ff75c8dd37114ca42d6831a86174cadd083f7d18b8ac30132aa3a55ed1c7a3",
+    "src/include/gnunet_crypto_lib.h": "da243a272eb2d84e604d23dcce1ecd72852442e1e40ff0dae2ba6957df9d4294",
+    "src/include/gnunet_dht_block_types.h": "52f522da22d7a9a4cee4ce26c52567c0509866b495fa581c9c945804e0c63fa3",
+    "src/include/gnunet_gnsrecord_lib.h": "e1dc92421834cb22dab480118df4df97034ee969bd70987ab7cac3cee4527864",
+    "src/include/gnunet_signatures.h": "bb546c9f1af6f09664a8c09d75543bd78fa3f4a4ccd17cce5bff9f4c4a5eea90",
+    "src/lib/block/bg_bf.c": "4c0b3b3043b8db7c247984a39ed585ca97a95f2b322ddedb699a7625cc3a3c06",
+    "src/lib/block/block.c": "3348751ada609126ecf48e007e540df53a18707972f6eae2ad3144634eade29e",
+    "src/lib/block/meson.build": "a2750f02d2abcb4bc2221fedfd9a880d5b46f2861e71917d5ad46e1fc03086c1",
+    "src/lib/gnsrecord/gnsrecord_pow.c": "8238e0c7dfa16e376cebc29e02a45f6b9e2ac019cf409fd2f2ea54807f818829",
+    "src/lib/util/container_bloomfilter.c": "ee8a5d43268cecf8bfdebc0dd413c72759d294ffbe09ca43c52086ba9589b935",
+    "src/lib/util/crypto_pow.c": "e524cbf19b9ee05d6d11d4a10e896a29ca4f2846dd3a04faa43f3861f598f679",
+    "src/plugin/block/meson.build": "e1c36cb67e0b9b5da0f9e2747ae7e62087d0fcae53434213b2e6284b79822268",
+    "src/plugin/block/plugin_block_template.c": "c0d6c9ec91579ec4a10432345adb455c185a8b23e121b15d23fdf01112ce5b75",
+    "src/plugin/block/plugin_block_test.c": "71d3b48f6a9bf4d8a3a4b2639031fc522faffc2cbc84575d3fc39fec612f47a1",
+    "src/plugin/dht/meson.build": "4ec9babe99de5638f9b032108b1754fe3d80c55433bd05a2c813f4f2413ac176",
+    "src/plugin/dht/plugin_block_dht.c": "90cb09e3c6dd4b17ecdcf6580a1d060ee09186b59b17a257ed69296d0c37ac4e",
+    "src/plugin/dns/meson.build": "04a2d57268a19130adb07b46c74632c62d741d49e89a91a5f0cbda56584bce72",
+    "src/plugin/dns/plugin_block_dns.c": "174e38e5d0a916f9854f3c7fe1a081a70003552b162931c5ebbd10f12e3c7576",
+    "src/plugin/fs/meson.build": "8387a40e424dbe7fe4c75c46615299d7a2cad80091d1c955ea71d71ba7848e44",
+    "src/plugin/fs/plugin_block_fs.c": "5fbb347fe05fb488e47cbdeae3802f2f2159cd552177a036588b8e732ff9601d",
+    "src/plugin/gns/meson.build": "7a0d8d45a8e1a9da60d0fecb75350fa12366bb50c51ba4a6c8460c198831fae1",
+    "src/plugin/gns/plugin_block_gns.c": "acc60da27a9688ef82f44ca4a21be8bfde10a2256eadd10c189ac024b31ed4a7",
+    "src/plugin/meson.build": "4fec37e24c6d0ca3fa77637b946500dd7e59e61d7533dfa850854745ed58ae18",
+    "src/plugin/regex/meson.build": "4b04a5fa802f69f1c41a1d9d2bda11d21d569043bcc69f89f38f129c4522a117",
+    "src/plugin/regex/plugin_block_regex.c": "4a2eda14ee5ecff959f0b3e2988d6a224e2555337fbd32d123fad2c95db4c107",
+    "src/plugin/regex/regex_block_lib.c": "e46224a3f2b2110b002a2107a14f97321bffe5f699b1e55400fd74e1be3c798d",
+    "src/plugin/regex/regex_block_lib.h": "45dfd1bacc013ed91f23ff00c148be0f2747fa0cd71a520a2838af293ae92a42",
+    "src/plugin/revocation/meson.build": "d453ca11a691a73e0338d5813f4b3fa6aea5774e5f360d227a19e664ffc2313a",
+    "src/plugin/revocation/plugin_block_revocation.c": "af0aea7da9f3d8caee09e95ff3046fad3ca4a0a0bf17e91f41c010afb9318c0f",
+    "src/plugin/seti/meson.build": "ee51a5c827d1acfac4bb4b96cda2384d181d1466eea3f12db5183742a80ccada",
+    "src/plugin/seti/plugin_block_seti_test.c": "27d56280d61da3dff6a246c55e385f8706f96388bad6c42148cd2b536106949f",
+    "src/plugin/setu/meson.build": "328db317bdf0d18842907dfc74c69317a2ee14f37d134352d5e7807889ea1a77",
+    "src/plugin/setu/plugin_block_setu_test.c": "819b121e7fabce8cddec87437f796d5ca94c12971a25731f880ab225b7e40d80",
+    "src/service/revocation/revocation.h": "9138fa4bd486609c35a9cf7db94e09cfc5614eb79990ece2e687d4f9bfd686e8"
+  },
+  "public_functions": [
+    {
+      "name": "GNUNET_BLOCK_mingle_hash",
+      "implementation": "candidate-implemented",
+      "verification": null,
+      "rust_item": "bloom::mingle_hash"
+    },
+    {
+      "name": "GNUNET_BLOCK_context_create",
+      "implementation": "candidate-implemented",
+      "verification": null,
+      "rust_item": "plugins::Context::new; callbacks::CallbackContext::new"
+    },
+    {
+      "name": "GNUNET_BLOCK_context_destroy",
+      "implementation": "candidate-implemented",
+      "verification": null,
+      "rust_item": "Rust Drop of owning CallbackContext/plugin array"
+    },
+    {
+      "name": "GNUNET_BLOCK_group_create",
+      "implementation": "candidate-implemented",
+      "verification": null,
+      "rust_item": "plugins::Context::create_group; callbacks::CallbackContext::create_group"
+    },
+    {
+      "name": "GNUNET_BLOCK_group_serialize",
+      "implementation": "candidate-implemented",
+      "verification": null,
+      "rust_item": "group_serialize; GroupState::serialize_into"
+    },
+    {
+      "name": "GNUNET_BLOCK_group_destroy",
+      "implementation": "candidate-implemented",
+      "verification": null,
+      "rust_item": "group_destroy; Rust Drop"
+    },
+    {
+      "name": "GNUNET_BLOCK_check_reply",
+      "implementation": "candidate-implemented",
+      "verification": null,
+      "rust_item": "Context::check_reply; CallbackContext::check_reply"
+    },
+    {
+      "name": "GNUNET_BLOCK_check_query",
+      "implementation": "candidate-implemented",
+      "verification": null,
+      "rust_item": "Context::check_query; CallbackContext::check_query"
+    },
+    {
+      "name": "GNUNET_BLOCK_check_block",
+      "implementation": "candidate-implemented",
+      "verification": null,
+      "rust_item": "Context::check_block; CallbackContext::check_block"
+    },
+    {
+      "name": "GNUNET_BLOCK_get_key",
+      "implementation": "candidate-implemented",
+      "verification": null,
+      "rust_item": "Context::get_key; CallbackContext::get_key"
+    },
+    {
+      "name": "GNUNET_BLOCK_group_set_seen",
+      "implementation": "candidate-implemented",
+      "verification": null,
+      "rust_item": "group_set_seen; MarkSeen"
+    },
+    {
+      "name": "GNUNET_BLOCK_group_merge",
+      "implementation": "candidate-implemented",
+      "verification": null,
+      "rust_item": "group_merge; MergeOutcome"
+    },
+    {
+      "name": "GNUNET_BLOCK_GROUP_compute_bloomfilter_size",
+      "implementation": "candidate-implemented",
+      "verification": null,
+      "rust_item": "bloom::compute_size"
+    },
+    {
+      "name": "GNUNET_BLOCK_GROUP_bf_create",
+      "implementation": "candidate-implemented",
+      "verification": null,
+      "rust_item": "bloom::BloomGroup::new"
+    },
+    {
+      "name": "GNUNET_BLOCK_GROUP_bf_test_and_set",
+      "implementation": "candidate-implemented",
+      "verification": null,
+      "rust_item": "BloomGroup::test_and_set; bloom::test_and_set(None)"
+    }
+  ],
+  "plugins": [
+    {
+      "name": "test",
+      "source": "src/plugin/block/plugin_block_test.c",
+      "types": [
+        8
+      ],
+      "group": "Bloom16",
+      "installed_by_current_Meson": true,
+      "implementation": "candidate-implemented",
+      "verification": null,
+      "rust_item": "plugins::Plugin and Context independent callbacks"
+    },
+    {
+      "name": "dht",
+      "source": "src/plugin/dht/plugin_block_dht.c",
+      "types": [
+        13
+      ],
+      "group": "Bloom16",
+      "installed_by_current_Meson": true,
+      "implementation": "candidate-implemented",
+      "verification": null,
+      "rust_item": "plugins::Plugin and Context independent callbacks"
+    },
+    {
+      "name": "fs",
+      "source": "src/plugin/fs/plugin_block_fs.c",
+      "types": [
+        1,
+        2,
+        9
+      ],
+      "group": "Bloom16",
+      "installed_by_current_Meson": true,
+      "implementation": "candidate-implemented",
+      "verification": null,
+      "rust_item": "plugins::Plugin and Context independent callbacks"
+    },
+    {
+      "name": "gns",
+      "source": "src/plugin/gns/plugin_block_gns.c",
+      "types": [
+        11
+      ],
+      "group": "Bloom16",
+      "installed_by_current_Meson": true,
+      "implementation": "candidate-implemented",
+      "verification": null,
+      "rust_item": "plugins::Plugin and Context independent callbacks"
+    },
+    {
+      "name": "dns",
+      "source": "src/plugin/dns/plugin_block_dns.c",
+      "types": [
+        10
+      ],
+      "group": "Bloom16",
+      "installed_by_current_Meson": true,
+      "implementation": "candidate-implemented",
+      "verification": null,
+      "rust_item": "plugins::Plugin and Context independent callbacks"
+    },
+    {
+      "name": "regex",
+      "source": "src/plugin/regex/plugin_block_regex.c",
+      "types": [
+        22,
+        23
+      ],
+      "group": "Bloom16",
+      "installed_by_current_Meson": true,
+      "implementation": "candidate-implemented",
+      "verification": null,
+      "rust_item": "plugins::Plugin and Context independent callbacks"
+    },
+    {
+      "name": "revocation",
+      "source": "src/plugin/revocation/plugin_block_revocation.c",
+      "types": [
+        12
+      ],
+      "group": null,
+      "installed_by_current_Meson": true,
+      "implementation": "candidate-implemented",
+      "verification": null,
+      "rust_item": "plugins::Plugin and Context independent callbacks"
+    },
+    {
+      "name": "seti_test",
+      "source": "src/plugin/seti/plugin_block_seti_test.c",
+      "types": [
+        26
+      ],
+      "group": null,
+      "installed_by_current_Meson": true,
+      "implementation": "candidate-implemented",
+      "verification": null,
+      "rust_item": "plugins::Plugin and Context independent callbacks"
+    },
+    {
+      "name": "setu_test",
+      "source": "src/plugin/setu/plugin_block_setu_test.c",
+      "types": [
+        27
+      ],
+      "group": null,
+      "installed_by_current_Meson": true,
+      "implementation": "candidate-implemented",
+      "verification": null,
+      "rust_item": "plugins::Plugin and Context independent callbacks"
+    }
+  ],
+  "inactive_scope": [
+    {
+      "name": "template",
+      "source": "src/plugin/block/plugin_block_template.c",
+      "status": "built, install=false; sample plugin not an installed default"
+    },
+    {
+      "name": "SET_TEST24",
+      "source": "src/contrib/service/set/plugin_block_set_test.c",
+      "status": "contrib; not current src/plugin Meson chain"
+    },
+    {
+      "name": "CONSENSUS_ELEMENT25",
+      "source": "src/contrib/service/consensus/plugin_block_consensus.c",
+      "status": "contrib; not current src/plugin Meson chain"
+    }
+  ],
+  "surface_scope": [
+    "GNUNET_BLOCK_ReplyEvaluationResult five values -1..3",
+    "GNUNET_BLOCK_Context lifecycle/plugin-first dispatch/ANY wildcard check",
+    "GNUNET_BLOCK_Group struct type/nullable callbacks/opaque state",
+    "GroupMarkSeen/Merge/Serialize/Destroy callbacks",
+    "GroupCreate varargs translated to typed group sizing options",
+    "QueryEvaluation/BlockEvaluation/ReplyEvaluation/GetKey callbacks",
+    "GNUNET_BLOCK_PluginFunctions declared types0-sentinel, optional create_group, required operations",
+    "GNUNET_BLOCK_Type all17 declarations; only12 types in installed default plugins"
+  ],
+  "known_behavior_obligations": [
+    "mingle exact64hash+native-u32 bytes, no network-order substitution",
+    "serialized nonce native32; malformed raw<4 rejects; length mismatch discards bits but retains nonce",
+    "compute_size uint32 multiplication wrap then /4, entry_count>32768 early cap, min8/max32768",
+    "container hash words32BE modulo bytes*8, SHA512 every16rounds, LSB bit numbering",
+    "k0/size0 yields group with NULL container: serializationSYSERR/testduplicate/markno-op; group NULL returnsnotduplicate",
+    "Bloom merge nonce+storedsize equality only; k/type not compared; merge2 always consumed except leftmissing merge callback SYSERR retains2",
+    "check_reply preconditions are independent from check_block/key; do not add automatic validation or expiry",
+    "SETI invalidblock returnsSYSERR, SETU invalidblockNO; neither hasgroup/key",
+    "REV plugin onlyloadedifWORKBITS/EPOCH_DURATION present; number narrowsunsigned32",
+    "REV Argon2id13 t3,m1024KiB,p1,out64,salt16,GnsRevocationPow exactly16bytes/noNUL;32sortedBEu64 nonces and averageleadingzeros; callerUTC/time saturation"
+  ],
+  "no_owner_promotion": true,
+  "new_registry_dependencies": {
+    "authorized": "Root explicit Argon2 allowance; no Root locks modified",
+    "argon2": "=0.6.0 default-features=false features=[zeroize]",
+    "additional_transitives": [
+      "blake2 =0.11.0",
+      "base64ct =1.8.3"
+    ],
+    "PoW": "fixed Argon2id13,t3,1024KiB,lanes1,out64,salt16; caller [Block] length1024; no allocation/default password-hash/getrandom"
+  },
+  "implementation_note": "Candidate implementation mapping only. verification stays null; owner acceptance and independent public-surface review are pending.",
+  "shared_primitive": {
+    "module": "gnunet_crypto::pow",
+    "feature": "gnunet-crypto/pow",
+    "BLOCK_export": "gnunet_block::pow re-exports the same implementation",
+    "direct_argon2_dependency": false
+  }
+}

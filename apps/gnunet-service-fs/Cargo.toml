@@ -1,0 +1,29 @@
+[package]
+name = "gnunet-service-fs"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+getrandom.workspace = true
+gnunet-core-client-host.workspace = true
+gnunet-cadet-host.workspace = true
+gnunet-config.workspace = true
+gnunet-client.workspace = true
+gnunet-client-host.workspace = true
+gnunet-datastore-host.workspace = true
+gnunet-dht-client-host.workspace = true
+gnunet-fs.workspace = true
+gnunet-fs-host = { workspace = true, features = ["server"] }
+gnunet-program-host = { workspace = true, features = ["runtime", "service-runtime"] }
+gnunet-pils.workspace = true
+gnunet-pils-host = { workspace = true, features = ["client"] }
+gnunet-resolver-broker.workspace = true
+gnunet-service-runtime.workspace = true
+gnunet-service-startup.workspace = true
+gnunet-types.workspace = true
+tokio = { workspace = true, features = ["rt", "signal"] }
+
+[lints]
+workspace = true

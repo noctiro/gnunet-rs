@@ -1,0 +1,14 @@
+[package]
+name="canonical-accept-probe"
+version.workspace=true
+edition.workspace=true
+rust-version.workspace=true
+license.workspace=true
+[dependencies]
+gnunet-service-runtime={path="../../../../adapters/service-runtime",default-features=false}
+tokio={workspace=true,features=["rt","net","time","io-util"]}
+socket2={workspace=true,features=["all"]}
+nix.workspace=true
+libc.workspace=true
+[lints]
+workspace=true

@@ -1,0 +1,20 @@
+[package]
+name = "gnunet-conversation"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = []
+alloc = ["dep:gnunet-crypto", "dep:gnunet-identity", "dep:zeroize"]
+
+[dependencies]
+gnunet-types.workspace = true
+gnunet-wire.workspace = true
+gnunet-crypto = { workspace = true, optional = true }
+gnunet-identity = { workspace = true, optional = true }
+zeroize = { workspace = true, optional = true }
+
+[lints]
+workspace = true

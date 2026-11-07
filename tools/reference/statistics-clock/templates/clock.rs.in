@@ -1,0 +1,295 @@
+#![forbid(unsafe_code)]
+use gnunet_client::{
+    statistics::Selector,
+    statistics_handle::{
+        ConnectionEpoch, DestroyOutcome, Inbound, Outbound, OutboundKind, StatisticsHandle,
+    },
+};
+use gnunet_types::{Error, AbsoluteTime};
+type Handle<'owner> = StatisticsHandle<'owner, 8, 64, 4, 16, 8>;
+const END: &[u8] = b"\0\x04\0\xab";
+const CONFIRM: &[u8] = b"\0\x04\0\xaf";
+fn new<'owner>(instance: &'owner mut gnunet_client::statistics_handle::Instance) -> Handle<'owner> {
+    Handle::new(instance, b"s", true).unwrap().unwrap()
+}
+fn selector(name: &[u8]) -> Selector<'_> {
+    Selector {
+        subsystem: b"s",
+        name,
+    }
+}
+fn take<'owner>(h: &mut Handle<'owner>, e: ConnectionEpoch<'owner>) -> Outbound<'owner> {
+    h.next_request(e, &mut [0; 128]).unwrap().unwrap()
+}
+fn sent<'owner>(h: &mut Handle<'owner>, e: ConnectionEpoch<'owner>) -> Outbound<'owner> {
+    let out = take(h, e);
+    h.on_frame_written(e, out.transmit).unwrap();
+    out
+}
+#[test]
+fn create_is_lazy_and_owner_retry_doubles_caps_then_only_end_resets() {
+    let mut statistics_instance_1 = gnunet_client::statistics_handle::Instance::new();
+    let mut h = new(&mut statistics_instance_1);
+    assert!(h.connection_epoch().is_none());
+    assert!(!h.connection_needed(AbsoluteTime::from_micros(0)));
+    assert!(h.next_wakeup().is_none());
+    h.get(selector(b"a")).unwrap();
+    let mut now = 0;
+    for i in 0..32 {
+        h.connection_unavailable(AbsoluteTime::from_micros(now)).unwrap();
+        let deadline = h.next_wakeup().unwrap().as_micros();
+        let expected = 1000u64.saturating_mul(1u64 << i).min(900_000_000);
+        assert_eq!(deadline - now, expected);
+        assert!(!h.connection_needed(AbsoluteTime::from_micros(deadline - 1)));
+        assert!(h.connection_needed(AbsoluteTime::from_micros(deadline)));
+        println!("backoff|{i}|{}|{deadline}", deadline - now);
+        now = deadline;
+    }
+    let e = h.begin_connection(AbsoluteTime::from_micros(now)).unwrap();
+    let get = sent(&mut h, e);
+    assert!(matches!(get.kind, OutboundKind::Get(_)));
+    let value = b"\0\x14\0\xaa\0\0\0\x07\0\0\0\0\0\0\0\x09s\0a\0";
+    assert!(matches!(
+        h.receive(e, value, AbsoluteTime::from_micros(now)),
+        Ok(Inbound::GetValue { .. })
+    ));
+    assert!(h.take_completion().is_none());
+    assert_eq!(h.receive(e, END, AbsoluteTime::from_micros(now)), Ok(Inbound::None));
+    assert_eq!(h.take_completion().unwrap().result, Ok(()));
+    h.connection_lost(e, Error::Io, AbsoluteTime::from_micros(now)).unwrap();
+    assert_eq!(h.next_wakeup().unwrap().as_micros() - now, 1000);
+    println!("end-reset|1000|1|1");
+}
+#[test]
+fn create_socket_start_and_write_progress_do_not_reset_owner_backoff() {
+    for progress in 0..3 {
+        let mut statistics_instance_2 = gnunet_client::statistics_handle::Instance::new();
+        let mut h = new(&mut statistics_instance_2);
+        h.set(b"a", 1, false).unwrap();
+        h.connection_unavailable(AbsoluteTime::from_micros(0)).unwrap();
+        h.connection_unavailable(AbsoluteTime::from_micros(1000)).unwrap();
+        let e = h.begin_connection(AbsoluteTime::from_micros(3000)).unwrap();
+        let out = take(&mut h, e);
+        if progress == 1 {
+            h.on_first_send_attempt(e, out.transmit).unwrap();
+        }
+        if progress == 2 {
+            h.on_frame_written(e, out.transmit).unwrap();
+        }
+        h.connection_lost(e, Error::Io, AbsoluteTime::from_micros(4000)).unwrap();
+        assert_eq!(h.next_wakeup(), Some(AbsoluteTime::from_micros(8000)));
+    }
+}
+#[test]
+fn sync_destroy_no_mq_empty_or_only_inflight_is_immediate() {
+    for kind in 0..3 {
+        let mut statistics_instance_3 = gnunet_client::statistics_handle::Instance::new();
+        let mut h = new(&mut statistics_instance_3);
+        if kind != 0 {
+            h.set(b"a", 1, false).unwrap();
+            let e = h.begin_connection(AbsoluteTime::from_micros(0)).unwrap();
+            let out = take(&mut h, e);
+            if kind == 1 {
+                h.on_frame_written(e, out.transmit).unwrap();
+            } else {
+                h.on_first_send_attempt(e, out.transmit).unwrap();
+            }
+        }
+        assert_eq!(h.mq_nontransmitted_length(), 0);
+        h.begin_destroy(true, AbsoluteTime::from_micros(1)).unwrap();
+        assert!(h.is_closed());
+        assert!(h.next_wakeup().is_none());
+        assert_eq!(
+            h.take_destroy_report().unwrap().outcome,
+            DestroyOutcome::Discarded
+        );
+    }
+}
+fn deferred<'owner>(
+    instance: &'owner mut gnunet_client::statistics_handle::Instance,
+) -> (
+    Handle<'owner>,
+    ConnectionEpoch<'owner>,
+    Outbound<'owner>,
+    AbsoluteTime,
+) {
+    let mut h = new(instance);
+    h.get(selector(b"a")).unwrap();
+    let mut now = 0;
+    for _ in 0..5 {
+        h.connection_unavailable(AbsoluteTime::from_micros(now)).unwrap();
+        now = h.next_wakeup().unwrap().as_micros();
+    }
+    let e = h.begin_connection(AbsoluteTime::from_micros(now)).unwrap();
+    let out = take(&mut h, e);
+    h.set(b"b", 7, true).unwrap();
+    h.get(selector(b"c")).unwrap();
+    h.watch(selector(b"d")).unwrap();
+    assert_eq!(h.pending_actions(), 3);
+    h.begin_destroy(true, AbsoluteTime::from_micros(now + 100)).unwrap();
+    assert_eq!(h.pending_actions(), 1);
+    let deadline = h.next_wakeup().unwrap();
+    assert_eq!(deadline, AbsoluteTime::from_micros(now + 100 + 160000));
+    (h, e, out, deadline)
+}
+fn end_drain<'owner>(
+    h: &mut Handle<'owner>,
+    e: ConnectionEpoch<'owner>,
+    get: Outbound<'owner>,
+    deadline: AbsoluteTime,
+) {
+    h.on_frame_written(e, get.transmit).unwrap();
+    assert_eq!(
+        h.receive(e, END, AbsoluteTime::from_micros(deadline.as_micros() - 159900)),
+        Ok(Inbound::None)
+    );
+    assert_eq!(h.take_completion().unwrap().result, Ok(()));
+    assert_eq!(h.next_wakeup(), Some(deadline));
+    let mutation = sent(h, e);
+    assert!(matches!(
+        mutation.kind,
+        OutboundKind::Mutation {
+            persistent: true,
+            ..
+        }
+    ));
+    assert_eq!(h.next_wakeup(), Some(deadline));
+    let disconnect = sent(h, e);
+    assert_eq!(disconnect.kind, OutboundKind::Disconnect);
+    assert_eq!(h.next_wakeup(), Some(deadline));
+}
+#[test]
+fn deferred_destroy_uses_one_captured_deadline_despite_end_and_progress() {
+    let mut statistics_instance_4 = gnunet_client::statistics_handle::Instance::new();
+    let (mut h, e, get, deadline) = deferred(&mut statistics_instance_4);
+    end_drain(&mut h, e, get, deadline);
+    h.tick(AbsoluteTime::from_micros(deadline.as_micros() - 1)).unwrap();
+    assert!(!h.is_closed());
+    h.tick(deadline).unwrap();
+    assert!(h.is_closed());
+    let report = h.take_destroy_report().unwrap();
+    assert_eq!(report.outcome, DestroyOutcome::Deadline);
+    assert_eq!(report.unconfirmed_mutations, 1);
+    assert_eq!(report.unconfirmed_persistent_mutations, 1);
+    assert!(h.next_wakeup().is_none());
+}
+#[test]
+fn exact_confirmation_cancels_captured_deadline_without_durability_claim() {
+    let mut statistics_instance_5 = gnunet_client::statistics_handle::Instance::new();
+    let (mut h, e, get, deadline) = deferred(&mut statistics_instance_5);
+    end_drain(&mut h, e, get, deadline);
+    assert_eq!(
+        h.receive(e, CONFIRM, AbsoluteTime::from_micros(deadline.as_micros() - 1)),
+        Ok(Inbound::None)
+    );
+    // The source schedules add_now cleanup after canceling the old deadline.
+    // Receiving confirmation alone must not execute that separate ready task.
+    assert!(!h.is_closed());
+    assert!(h.ready_destroy_pending());
+    assert_eq!(h.next_wakeup(), Some(AbsoluteTime::from_micros(0)));
+    assert_eq!(h.destruction_deadline(), Some(deadline));
+    assert!(h.take_destroy_report().is_none());
+    // A rollback cannot suspend a task that already entered the ready queue.
+    h.tick(AbsoluteTime::from_micros(0)).unwrap();
+    assert!(h.is_closed());
+    assert!(h.next_wakeup().is_none());
+    let report = h.take_destroy_report().unwrap();
+    assert_eq!(report.outcome, DestroyOutcome::ProcessingConfirmed);
+    assert_eq!(report.unconfirmed_mutations, 0);
+}
+#[test]
+fn connection_loss_cancels_captured_deadline_and_reports_unconfirmed() {
+    let mut statistics_instance_6 = gnunet_client::statistics_handle::Instance::new();
+    let (mut h, e, get, deadline) = deferred(&mut statistics_instance_6);
+    end_drain(&mut h, e, get, deadline);
+    h.connection_lost(e, Error::Io, AbsoluteTime::from_micros(deadline.as_micros() - 1))
+        .unwrap();
+    assert!(h.is_closed());
+    assert!(h.next_wakeup().is_none());
+    let report = h.take_destroy_report().unwrap();
+    assert_eq!(report.outcome, DestroyOutcome::ConnectionLost);
+    assert_eq!(report.unconfirmed_mutations, 1);
+}
+#[test]
+fn destroy_absolute_overflow_saturates_forever_without_losing_original_owners() {
+    let mut instance = gnunet_client::statistics_handle::Instance::new();
+    let mut h = new(&mut instance);
+    let original = h.get(selector(b"a")).unwrap();
+    let e = h.begin_connection(AbsoluteTime::from_micros(0)).unwrap();
+    let get = take(&mut h, e);
+    let pending = h.get(selector(b"b")).unwrap();
+    h.set(b"c", 1, true).unwrap();
+    let watch = h.watch(selector(b"d")).unwrap();
+    let now = AbsoluteTime::from_micros(u64::MAX - 100);
+    h.begin_destroy(true, now).unwrap();
+    assert!(h.is_destroying());
+    assert_eq!(h.destruction_deadline(), Some(AbsoluteTime::from_micros(u64::MAX)));
+    assert_eq!(h.next_wakeup(), Some(AbsoluteTime::from_micros(u64::MAX)));
+    println!(
+        "normalized-clock-overflow|{}",
+        h.destruction_deadline().unwrap().as_micros()
+    );
+    assert_eq!(h.active_get(), Some(original));
+    assert!(!h.owns_get(pending));
+    // Logical watch ownership lasts until final cleanup, after its queued
+    // registration action has already been discarded.
+    assert!(h.owns_watch(watch));
+    assert_eq!(h.pending_actions(), 1);
+    h.tick(AbsoluteTime::from_micros(u64::MAX)).unwrap();
+    assert!(!h.is_closed()); // FOREVER is never a ready finite deadline.
+    h.on_frame_written(e, get.transmit).unwrap();
+    assert_eq!(h.receive(e, END, now), Ok(Inbound::None));
+    assert_eq!(h.take_completion().unwrap().get, original);
+    assert!(matches!(
+        sent(&mut h, e).kind,
+        OutboundKind::Mutation { .. }
+    ));
+    assert_eq!(sent(&mut h, e).kind, OutboundKind::Disconnect);
+    assert_eq!(h.receive(e, CONFIRM, now), Ok(Inbound::None));
+    assert!(h.ready_destroy_pending());
+    h.finalize_ready_destroy().unwrap();
+    assert!(h.is_closed());
+    assert!(!h.owns_watch(watch));
+    assert_eq!(
+        h.take_destroy_report().unwrap().outcome,
+        DestroyOutcome::ProcessingConfirmed
+    );
+}
+
+#[test]
+fn value_and_watch_callbacks_do_not_reset_owner_backoff() {
+    for watch in [false, true] {
+        let mut statistics_instance_8 = gnunet_client::statistics_handle::Instance::new();
+        let mut h = new(&mut statistics_instance_8);
+        if watch {
+            h.watch(selector(b"a")).unwrap();
+        } else {
+            h.get(selector(b"a")).unwrap();
+        }
+        let mut now = 0;
+        for _ in 0..5 {
+            h.connection_unavailable(AbsoluteTime::from_micros(now)).unwrap();
+            now = h.next_wakeup().unwrap().as_micros();
+        }
+        let e = h.begin_connection(AbsoluteTime::from_micros(now)).unwrap();
+        let out = sent(&mut h, e);
+        if watch {
+            assert!(matches!(out.kind, OutboundKind::Watch { .. }));
+            let row = b"\0\x18\0\xad\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\x09";
+            assert!(matches!(
+                h.receive(e, row, AbsoluteTime::from_micros(now + 1)),
+                Ok(Inbound::WatchValue { .. })
+            ));
+        } else {
+            let row = b"\0\x14\0\xaa\0\0\0\x07\0\0\0\0\0\0\0\x09s\0a\0";
+            let Ok(Inbound::GetValue { get, .. }) = h.receive(e, row, AbsoluteTime::from_micros(now + 1)) else {
+                panic!("actual value must dispatch");
+            };
+            h.get_value_result(get, gnunet_client::statistics_handle::GetFlow::Continue)
+                .unwrap();
+        }
+        h.connection_lost(e, Error::Io, AbsoluteTime::from_micros(now + 2))
+            .unwrap();
+        assert_eq!(h.next_wakeup(), Some(AbsoluteTime::from_micros(now + 2 + 32000)));
+    }
+}

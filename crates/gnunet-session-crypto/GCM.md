@@ -1,0 +1,35 @@
+# Fixed-source UDP AES256-GCM
+
+This adds a no_std/no_alloc Rust primitive and explicit UDP payload/prefix helpers. It does not implement the whole UDP communicator. Production calls no C, OS service, socket, RNG, or allocator. The upstream profile is GNUnet v0.29.1, commit 346358e26d4dcc2dc4f51bef5d52dca29c7d8165. `src/service/transport/gnunet-communicator-udp.c` SHA256 is 2e8b3085910489bcd5ce81994133ce5fee89c3b8cf37065f09efec9a61f43cd7.
+
+The source defines AES_KEY_SIZE=(256/8), AES_IV_SIZE=(96/8), GCM_TAG_SIZE=(128/8): key32, nonce12, tag16.
+
+## Implemented boundaries
+
+`gcm::Aes256Gcm` uses existing AES and mature RustCrypto GHASH. J0 is nonce12||BE32(1); the tag mask uses J0; data starts at inc32(J0)=2. Only the low32 counter bits increment. Separate padded GHASH domains cover AAD and ciphertext, followed by BE64 bit lengths. Full16-byte tags use constant-time equality. Authentication failure erases precisely the mutable plaintext range before returning error; capacity/format/length refusals leave output unchanged. The data bound is 2^36-32 bytes (2^32-2 blocks including a partial block), AAD bound is floor((2^64-1)/8). Synthetic length checks do not scan giant buffers or assert enormous-buffer equality with C.
+
+`udp::DatagramKey` derives key/nonce/KID from master and serialBE32 via the corrected source-compatible helpers. Its body methods always use empty AAD, matching the communicator (no gcry_cipher_authenticate calls). CMAC here is the source's master-wide64-byte HKDF acknowledgement marker, not AES-CMAC or a payload MAC. KID and enc are public prefixes outside GCM; they must not be silently added to AAD.
+
+BOX is KID32||tag16||ciphertext, with nonzero serial and body length>0. An explicit expected-KID check models cache routing separately from tag verification. InitialKX is enc32||tag16||ciphertext, serial0, plaintext begins with an opaque UDPConfirmation of104 bytes. The source first obtains its master through Elligator and then checks the purpose signature over sender/receiver/enc/time. This implementation only encrypts/decrypts an already prepared body and selected master: successful initial payload decryption does not authenticate enc or peer identity. A literal test deliberately changes enc while retaining the selected master and demonstrates this boundary.
+
+No serial allocator, ACK credit, replay/key-cache consumption, rekey state, expiration timer, peer lifecycle, address/NAT handling, MTU admission, random padding, or UDP transport is provided. Buffers may test a65,535-byte body plus prefix; this is a crypto/layout buffer test, not a claim that such a packet can be sent on UDP. Initial Elligator0x0022 and confirmation-owner integration remain pending. General nonce/tag widths and other suites are outside this profile.
+
+## Reference checks
+
+`tools/gcm_verify.py` is an offline Python3.9 verifier. It builds fresh Rust candidates in an explicit output target, checks test names, default tests/docs, strict Clippy, docs, thumbv6m, and forces the software POLYVAL backend. It invokes the existing maintained secret-ownership tool (14 old trait refusals) and4 new exact E0277 refusals for Aes256Gcm/DatagramKey Clone/Debug, with positive controls and Cargo-JSON-selected rlib hashes.
+
+Fifty literal NIST CAVP GCMVS vectors cover all25 IV96/tag128 PTlen/AADlen shapes (first and last Count each). Their input was downloaded from the primary pyca/cryptography test-corpus mirror; the direct NIST ZIP returned HTTP403. Source URL, original3182939-byte SHA256, selected source line/Count/shape and full literal values are retained in `reference/gcm-nist-selected.json`; no direct NIST download is claimed. The selected JSON is pinned by the verifier. The same literal ciphertext/tag values are checked independently against normal gcrypt C output and Rust output.
+
+`tools/udp_gcm_source.py` validates the complete fixed source hash, then extracts the original three macros, get_iv_key, get_kid, calculate_cmac, setup_cipher, try_decrypt and five original struct definitions. C function bodies remain unchanged. The normal gcrypt/util/statistics libraries are the unchanged ones from the historical normal Meson receipt, including its generated private configuration. try_decrypt's error accounting calls normal GNUNET_STATISTICS_update with the official legal disabled NULL handle; there is no shim, service process, or RNG interposition. The helper uses the normal UDP translation unit's compiler/include profile and records body/header/compiler/library hashes. O0/O2 refer to two helpers against the same normally built libraries, not two optimization builds of the entire communicator.
+
+Each optimization profile has299 output rows:140 raw GCM encryptions (including50 literals),6 raw opens,147 source UDP encryptions,5 source UDP opens, and1 layout metadata row. Rust independently checks keys/nonce12/KID/CMAC/tag/ciphertext/prefix/plaintext; normal C then opens287 ciphertexts actually generated by Rust. Key/nonce/AAD/ciphertext/tag/master/serial errors are exercised. Eight mutated normal-C output controls must fail the named Rust comparator (key, nonce, KID, CMAC, ciphertext, tag, prefix, missing row). No fabricated success counts or failed C plaintext are accepted.
+
+Normal native layout observed: InitialKX48, UDPConfirmation104 (time offset96), UDPAck72 (cmac offset8), UDPBox48 (tag offset32), GNUNET_ShortHashCode32. These are sizeof/offsetof observations, not a blanket ABI promise for untested platforms.
+
+Run from the repository using an installed toolchain and existing normal reference:
+
+```sh
+python3 tools/gcm_verify.py --repository /path/to/gnunet-rs --source /path/to/pinned/gnunet --reference /path/to/normal/build-result.json --deps-prefix /path/to/normal/deps --output /fresh/separate/output --toolchain 1.99.1
+```
+
+The verifier binds source/library/tool/manifests before and after, rediscovering file sets; checks full tracked C source against the historical normal receipt and private-config hash; checks normal library receipt hashes and recursive runtime dependency closure; validates exact approved cached crate archives and every expanded archive file before/after; records toolchain, Cargo graph, no-alloc features, generated inputs, selected rlib and artifact hashes. integration still owns Cargo lock/policy/RustSec review.

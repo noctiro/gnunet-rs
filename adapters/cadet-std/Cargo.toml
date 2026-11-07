@@ -1,0 +1,28 @@
+[package]
+name = "gnunet-cadet-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+gnunet-crypto.workspace = true
+libc.workspace = true
+gnunet-cadet.workspace = true
+gnunet-core-client-host.workspace = true
+gnunet-pils.workspace = true
+gnunet-pils-host = { workspace = true, features = ["client"] }
+gnunet-client-host.workspace = true
+gnunet-service-runtime.workspace = true
+gnunet-types.workspace = true
+gnunet-wire.workspace = true
+tokio = { workspace = true, features = ["rt", "net", "time"] }
+
+[dev-dependencies]
+gnunet-session-crypto.workspace = true
+zeroize = { workspace = true, features = ["alloc"] }
+gnunet-fs.workspace = true
+tokio = { workspace = true, features = ["io-util", "sync"] }
+
+[lints]
+workspace = true

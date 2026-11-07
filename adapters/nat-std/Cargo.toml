@@ -1,0 +1,31 @@
+[package]
+name = "gnunet-nat-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = []
+program = ["dep:gnunet-program-host", "dep:gnunet-resolver-broker", "dep:gnunet-service-startup"]
+
+[dependencies]
+gnunet-nat = { workspace = true, features = ["alloc"] }
+gnunet-wire.workspace = true
+gnunet-types.workspace = true
+gnunet-native.workspace = true
+gnunet-config.workspace = true
+gnunet-client-host.workspace = true
+gnunet-http-host.workspace = true
+gnunet-service-runtime.workspace = true
+gnunet-program-host = { workspace = true, features = ["resolver-broker"], optional = true }
+gnunet-resolver-broker = { workspace = true, optional = true }
+gnunet-service-startup = { workspace = true, optional = true }
+tokio = { workspace = true, features = ["rt", "net", "time", "io-util", "process", "signal"] }
+getrandom.workspace = true
+socket2 = { workspace = true, features = ["all"] }
+
+quick-xml.workspace = true
+
+[lints]
+workspace = true

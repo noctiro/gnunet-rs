@@ -1,0 +1,17 @@
+[package]
+name = "gnunet-service-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+gnunet-config.workspace = true
+gnunet-program-host = { workspace = true, features = ["service-runtime"] }
+gnunet-service-startup.workspace = true
+gnunet-core-host = { path = "../../adapters/core-std" }
+gnunet-service-runtime.workspace = true
+tokio = { workspace = true, features = ["rt", "signal"] }
+
+[lints]
+workspace = true

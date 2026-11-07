@@ -1,0 +1,28 @@
+[package]
+name = "gnunet-tcp-communicator-runtime"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+[dependencies]
+gnunet-tcp-replay-host.workspace = true
+gnunet-native.workspace = true
+gnunet-nat-client-host.workspace = true
+gnunet-pils.workspace = true
+gnunet-pils-host = { workspace = true, features = ["client"] }
+gnunet-client-host.workspace = true
+gnunet-resolver-broker.workspace = true
+gnunet-config.workspace = true
+gnunet-tcp-communicator-core.workspace = true
+gnunet-tcp-communicator-host.workspace = true
+gnunet-service-runtime.workspace = true
+gnunet-crypto.workspace = true
+gnunet-types.workspace = true
+socket2.workspace = true
+libc.workspace = true
+getrandom.workspace = true
+tokio = { workspace = true, features = ["net", "rt", "io-util", "time"] }
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "time"] }
+[lints]
+workspace = true

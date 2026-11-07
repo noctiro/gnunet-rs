@@ -1,0 +1,217 @@
+{
+  "scope": "28 actual required BLOCK API/surface criteria from current Root catalog. Mapping only, not owner evidence, no verification promotion. Broader behavior obligations include all installed plugins/17 constants and resource/native profile cases in DESIGN/inventory.",
+  "required_criteria_projection_sha256": "93dbb85db40cda83f63d0a992d36cb58a87fbb931cdfbd3dc6a1322423134cc5",
+  "required_count": 28,
+  "criteria": [
+    {
+      "criterion": "api-surface.callback.TypedefDecl.GNUNET_BLOCK_BlockEvaluationFunction",
+      "candidate_items": "PluginFunctions::check_block; Context::check_block",
+      "implementation": "candidate-implemented",
+      "verification": null,
+      "review": "Independent source/public-group review plus final fresh witness integration required; no function-count acceptance."
+    },
+    {
+      "criterion": "api-surface.callback.TypedefDecl.GNUNET_BLOCK_GetKeyFunction",
+      "candidate_items": "PluginFunctions::get_key; KeyResult",
+      "implementation": "candidate-implemented",
+      "verification": null,
+      "review": "Independent source/public-group review plus final fresh witness integration required; no function-count acceptance."
+    },
+    {
+      "criterion": "api-surface.callback.TypedefDecl.GNUNET_BLOCK_GroupCreateFunction",
+      "candidate_items": "PluginFunctions::Creation<'a>; create_group; Group<'a>",
+      "implementation": "candidate-implemented",
+      "verification": null,
+      "review": "Independent source/public-group review plus final fresh witness integration required; no function-count acceptance."
+    },
+    {
+      "criterion": "api-surface.callback.TypedefDecl.GNUNET_BLOCK_GroupDestroyFunction",
+      "candidate_items": "group_destroy; Rust Drop",
+      "implementation": "candidate-implemented",
+      "verification": null,
+      "review": "Independent source/public-group review plus final fresh witness integration required; no function-count acceptance."
+    },
+    {
+      "criterion": "api-surface.callback.TypedefDecl.GNUNET_BLOCK_GroupMarkSeenFunction",
+      "candidate_items": "GroupState::mark_seen; MarkSeen; group_set_seen",
+      "implementation": "candidate-implemented",
+      "verification": null,
+      "review": "Independent source/public-group review plus final fresh witness integration required; no function-count acceptance."
+    },
+    {
+      "criterion": "api-surface.callback.TypedefDecl.GNUNET_BLOCK_GroupMergeFunction",
+      "candidate_items": "GroupState::merge_from; group_merge; MergeOutcome",
+      "implementation": "candidate-implemented",
+      "verification": null,
+      "review": "Independent source/public-group review plus final fresh witness integration required; no function-count acceptance."
+    },
+    {
+      "criterion": "api-surface.callback.TypedefDecl.GNUNET_BLOCK_GroupSerializeFunction",
+      "candidate_items": "GroupState::serialize_into; group_serialize",
+      "implementation": "candidate-implemented",
+      "verification": null,
+      "review": "Independent source/public-group review plus final fresh witness integration required; no function-count acceptance."
+    },
+    {
+      "criterion": "api-surface.callback.TypedefDecl.GNUNET_BLOCK_QueryEvaluationFunction",
+      "candidate_items": "PluginFunctions::check_query; CallbackContext::check_query retaining Option<&[u8]>",
+      "implementation": "candidate-implemented",
+      "verification": null,
+      "review": "Independent source/public-group review plus final fresh witness integration required; no function-count acceptance."
+    },
+    {
+      "criterion": "api-surface.callback.TypedefDecl.GNUNET_BLOCK_ReplyEvaluationFunction",
+      "candidate_items": "PluginFunctions::check_reply; Reply retaining nullable xquery",
+      "implementation": "candidate-implemented",
+      "verification": null,
+      "review": "Independent source/public-group review plus final fresh witness integration required; no function-count acceptance."
+    },
+    {
+      "criterion": "api-surface.type.EnumDecl.GNUNET_BLOCK_ReplyEvaluationResult",
+      "candidate_items": "ReplyEvaluation repr(i32), all five values",
+      "implementation": "candidate-implemented",
+      "verification": null,
+      "review": "Independent source/public-group review plus final fresh witness integration required; no function-count acceptance."
+    },
+    {
+      "criterion": "api-surface.type.RecordDecl.GNUNET_BLOCK_Context",
+      "candidate_items": "plugins::Context borrowed builtins; CallbackContext owned custom registry",
+      "implementation": "candidate-implemented",
+      "verification": null,
+      "review": "Independent source/public-group review plus final fresh witness integration required; no function-count acceptance."
+    },
+    {
+      "criterion": "api-surface.type.RecordDecl.GNUNET_BLOCK_Group",
+      "candidate_items": "GroupState; BloomGroup; associated typed group/Drop",
+      "implementation": "candidate-implemented",
+      "verification": null,
+      "review": "Independent source/public-group review plus final fresh witness integration required; no function-count acceptance."
+    },
+    {
+      "criterion": "api-surface.type.RecordDecl.GNUNET_BLOCK_PluginFunctions",
+      "candidate_items": "PluginFunctions associated creation/group and all required callbacks; builtin implementation",
+      "implementation": "candidate-implemented",
+      "verification": null,
+      "review": "Independent source/public-group review plus final fresh witness integration required; no function-count acceptance."
+    },
+    {
+      "criterion": "api.GNUNET_BLOCK_GROUP_bf_create",
+      "candidate_items": "bloom::BloomGroup::new",
+      "implementation": "candidate-implemented",
+      "verification": null,
+      "review": "Independent source/public-group review plus final fresh witness integration required; no function-count acceptance."
+    },
+    {
+      "criterion": "api.GNUNET_BLOCK_GROUP_bf_test_and_set",
+      "candidate_items": "BloomGroup::test_and_set; bloom::test_and_set(None)",
+      "implementation": "candidate-implemented",
+      "verification": null,
+      "review": "Independent source/public-group review plus final fresh witness integration required; no function-count acceptance."
+    },
+    {
+      "criterion": "api.GNUNET_BLOCK_GROUP_compute_bloomfilter_size",
+      "candidate_items": "bloom::compute_size",
+      "implementation": "candidate-implemented",
+      "verification": null,
+      "review": "Independent source/public-group review plus final fresh witness integration required; no function-count acceptance."
+    },
+    {
+      "criterion": "api.GNUNET_BLOCK_check_block",
+      "candidate_items": "Context::check_block; CallbackContext::check_block",
+      "implementation": "candidate-implemented",
+      "verification": null,
+      "review": "Independent source/public-group review plus final fresh witness integration required; no function-count acceptance."
+    },
+    {
+      "criterion": "api.GNUNET_BLOCK_check_query",
+      "candidate_items": "Context::check_query; CallbackContext::check_query",
+      "implementation": "candidate-implemented",
+      "verification": null,
+      "review": "Independent source/public-group review plus final fresh witness integration required; no function-count acceptance."
+    },
+    {
+      "criterion": "api.GNUNET_BLOCK_check_reply",
+      "candidate_items": "Context::check_reply; CallbackContext::check_reply",
+      "implementation": "candidate-implemented",
+      "verification": null,
+      "review": "Independent source/public-group review plus final fresh witness integration required; no function-count acceptance."
+    },
+    {
+      "criterion": "api.GNUNET_BLOCK_context_create",
+      "candidate_items": "plugins::Context::new; callbacks::CallbackContext::new",
+      "implementation": "candidate-implemented",
+      "verification": null,
+      "review": "Independent source/public-group review plus final fresh witness integration required; no function-count acceptance."
+    },
+    {
+      "criterion": "api.GNUNET_BLOCK_context_destroy",
+      "candidate_items": "Rust Drop of owning CallbackContext/plugin array",
+      "implementation": "candidate-implemented",
+      "verification": null,
+      "review": "Independent source/public-group review plus final fresh witness integration required; no function-count acceptance."
+    },
+    {
+      "criterion": "api.GNUNET_BLOCK_get_key",
+      "candidate_items": "Context::get_key; CallbackContext::get_key",
+      "implementation": "candidate-implemented",
+      "verification": null,
+      "review": "Independent source/public-group review plus final fresh witness integration required; no function-count acceptance."
+    },
+    {
+      "criterion": "api.GNUNET_BLOCK_group_create",
+      "candidate_items": "plugins::Context::create_group; callbacks::CallbackContext::create_group",
+      "implementation": "candidate-implemented",
+      "verification": null,
+      "review": "Independent source/public-group review plus final fresh witness integration required; no function-count acceptance."
+    },
+    {
+      "criterion": "api.GNUNET_BLOCK_group_destroy",
+      "candidate_items": "group_destroy; Rust Drop",
+      "implementation": "candidate-implemented",
+      "verification": null,
+      "review": "Independent source/public-group review plus final fresh witness integration required; no function-count acceptance."
+    },
+    {
+      "criterion": "api.GNUNET_BLOCK_group_merge",
+      "candidate_items": "group_merge; MergeOutcome",
+      "implementation": "candidate-implemented",
+      "verification": null,
+      "review": "Independent source/public-group review plus final fresh witness integration required; no function-count acceptance."
+    },
+    {
+      "criterion": "api.GNUNET_BLOCK_group_serialize",
+      "candidate_items": "group_serialize; GroupState::serialize_into",
+      "implementation": "candidate-implemented",
+      "verification": null,
+      "review": "Independent source/public-group review plus final fresh witness integration required; no function-count acceptance."
+    },
+    {
+      "criterion": "api.GNUNET_BLOCK_group_set_seen",
+      "candidate_items": "group_set_seen; MarkSeen",
+      "implementation": "candidate-implemented",
+      "verification": null,
+      "review": "Independent source/public-group review plus final fresh witness integration required; no function-count acceptance."
+    },
+    {
+      "criterion": "api.GNUNET_BLOCK_mingle_hash",
+      "candidate_items": "bloom::mingle_hash",
+      "implementation": "candidate-implemented",
+      "verification": null,
+      "review": "Independent source/public-group review plus final fresh witness integration required; no function-count acceptance."
+    }
+  ],
+  "witness_sources": {
+    "public_native_core": "tools/compare.py actual normal C public APIs; distinct source-defined safe errors remain in Rust tests",
+    "plugins_and_crypto": "tools/signed_compare.py actual normal/conditional C and Rust block construction, independent validation/key/reply/group stages and configuration readpoints",
+    "custom_callback_nullable_query": "tests/callbacks.rs; header/source review only for custom C NULL callback, not a claimed normal installed plugin behavior difference",
+    "creation_lifetime": "tests/creation_lifetimes.rs actual positive compile+run and four E0505 negatives; tests/ui/borrowed.rs",
+    "resource": "tests/core.rs; tests/plugins.rs; revocation unit boundaries",
+    "ownership_review": "external independent source review; final manifest binds its immutable receipt separately"
+  },
+  "unclaimed": [
+    "C shared-library ABI plugin compatibility",
+    "Cross-architecture native big-endian C runtime",
+    "DHT/FS/GNS/DNS/REGEX/REVOCATION subsystem services",
+    "Owner verified/completed state"
+  ]
+}

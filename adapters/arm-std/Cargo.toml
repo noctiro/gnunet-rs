@@ -1,0 +1,30 @@
+[package]
+name = "gnunet-arm-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = []
+
+[dependencies]
+gnunet-arm-core = { path = "../../crates/gnunet-arm-core" }
+gnunet-types = { path = "../../crates/gnunet-types" }
+gnunet-wire = { path = "../../crates/gnunet-wire" }
+gnunet-client = { path = "../../crates/gnunet-client" }
+gnunet-config = { path = "../config-std" }
+gnunet-client-host.workspace = true
+gnunet-service-startup = { path = "../service-startup" }
+gnunet-service-runtime.workspace = true
+tokio = { workspace = true, features = ["rt", "net", "time", "io-util", "signal", "sync"] }
+nix = { workspace = true, features = ["process", "signal"] }
+libc.workspace = true
+
+[dev-dependencies]
+gnunet-resolver-broker.workspace = true
+socket2.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
+
+[lints]
+workspace = true

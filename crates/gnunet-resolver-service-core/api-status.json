@@ -1,0 +1,823 @@
+{
+  "schema": 1,
+  "scope": "Exact45 source-derived IDs, pure implementation/evidence map; not an installed daemon or C/Rust service verification",
+  "baseline_inventory": "/private/tmp/gnunet-resolver-daemon-design-20261026/inventory.json",
+  "baseline_inventory_sha256": "175c6f550d87c871f0c94934dc357096ef9d2004934f8dd83428a10542ffc6e1",
+  "upstream": {
+    "revision": "346358e26d4dcc2dc4f51bef5d52dca29c7d8165",
+    "tag": "v0.29.1",
+    "daemon_path": "src/service/util/gnunet-service-resolver.c",
+    "daemon_lines": 1385
+  },
+  "feature_count": 45,
+  "features": [
+    {
+      "id": "resolver.service.wire.framing",
+      "requirement": "Exactly request4/fixed16 and response5/fixed8; no new cancel/status/handshake fields",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:987..1096",
+      "group": "daemon",
+      "status": "core_implemented_host_pending",
+      "verification": null,
+      "implementation": [
+        "gnunet-client::resolver::{Request,Response}",
+        "owner::Output::encode"
+      ],
+      "test_references": [
+        "workspace:crates/gnunet-client/tests/resolver.rs::normal_c_daemon_wire_trace_has_native_family_and_opaque_id",
+        "workspace:crates/gnunet-client/tests/resolver.rs::maximum_65535_frame_is_legal_but_65536_is_rejected_atomically",
+        "tests/lifecycle.rs::forged_raw_output_length_is_rejected_before_any_frame_byte_changes"
+      ],
+      "assertion": "Literal request4/response5 bytes and unchanged destination on oversized/short output; final borrowed Raw slice eliminates independent forged length.",
+      "remaining": "Run normal C public client against the future Rust daemon process; no candidate IPC host exists."
+    },
+    {
+      "id": "resolver.service.wire.native-family",
+      "requirement": "Native AF profile in BE32; Any/V4/V6 forward; V4/V6 reverse exact4/16 bytes",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:987..1096",
+      "group": "daemon",
+      "status": "core_implemented_host_pending",
+      "verification": null,
+      "implementation": [
+        "gnunet-client::resolver::Request::{decode,forward,reverse}",
+        "owner::Resolver::request"
+      ],
+      "test_references": [
+        "workspace:crates/gnunet-client/tests/resolver.rs::normal_c_daemon_wire_trace_has_native_family_and_opaque_id",
+        "workspace:crates/gnunet-client/tests/resolver.rs::codec_rejects_wrong_types_truncation_family_and_name_without_partial_writes",
+        "tests/lifecycle.rs::v6_and_ptr_generate_correct_questions_and_reverse_payload_is_native_name"
+      ],
+      "assertion": "Darwin/Linux AF profiles, Any/V4/V6 typed selection, reverse4/16-byte question and payload.",
+      "remaining": "Actual service profile selects the correct native AF before decoding raw IPC."
+    },
+    {
+      "id": "resolver.service.wire.direction",
+      "requirement": "Direction0 forward; all nonzero values reverse",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:995..1024,1043..1094",
+      "group": "daemon",
+      "status": "core_implemented_host_pending",
+      "verification": null,
+      "implementation": [
+        "gnunet-client::resolver::Request::decode"
+      ],
+      "test_references": [
+        "workspace:crates/gnunet-client/tests/resolver.rs::reverse_nonzero_direction_and_embedded_c_string_nul_are_retained"
+      ],
+      "assertion": "Literal nonzero direction7 uses reverse semantics; no invented reverse enum on the wire.",
+      "remaining": "Raw IPC service integration pending."
+    },
+    {
+      "id": "resolver.service.wire.opaque-id",
+      "requirement": "Echo four native client-ID bytes unchanged, never DNS ID",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:1045,507..533",
+      "group": "daemon",
+      "status": "core_implemented_host_pending",
+      "verification": null,
+      "implementation": [
+        "owner::{Active,Output::encode}",
+        "owner::Resolver::request"
+      ],
+      "test_references": [
+        "tests/lifecycle.rs::forward_query_literal_wire_echo_all_sections_order_and_owned_packet_storage",
+        "tests/lifecycle.rs::duplicate_wire_ids_are_independent_and_eof_only_cancels_original_client"
+      ],
+      "assertion": "Four opaque ID bytes are copied unchanged; duplicate WireIds still own distinct LookupIds and EOF authority.",
+      "remaining": "Actual framed transport output pending."
+    },
+    {
+      "id": "resolver.service.wire.cstring",
+      "requirement": "Final NUL required; forward effective name ends at first interior NUL",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:998,1050",
+      "group": "daemon",
+      "status": "core_implemented_host_pending",
+      "verification": null,
+      "implementation": [
+        "gnunet-client::resolver::Request::decode",
+        "owner::State::process"
+      ],
+      "test_references": [
+        "workspace:crates/gnunet-client/tests/resolver.rs::reverse_nonzero_direction_and_embedded_c_string_nul_are_retained",
+        "workspace:crates/gnunet-client/tests/resolver.rs::codec_rejects_wrong_types_truncation_family_and_name_without_partial_writes",
+        "tests/files.rs::original_native_prefix_and_exact_search_limits"
+      ],
+      "assertion": "Decode requires final NUL and effective native text ends at interior NUL; malformed construction is atomic.",
+      "remaining": "Service raw-frame dispatch pending."
+    },
+    {
+      "id": "resolver.service.wire.malformed",
+      "requirement": "Invalid known request/session closes safely; unsupported forward AF must not C-assert the Rust process",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:987..1025,1080..1083",
+      "group": "daemon",
+      "status": "core_implemented_host_pending",
+      "verification": null,
+      "implementation": [
+        "gnunet-client::resolver::Request::decode",
+        "owner::Resolver::disconnect"
+      ],
+      "test_references": [
+        "workspace:crates/gnunet-client/tests/resolver.rs::codec_rejects_wrong_types_truncation_family_and_name_without_partial_writes",
+        "tests/lifecycle.rs::long_name_drops_only_original_client_and_long_search_falls_back_without_copy_error"
+      ],
+      "assertion": "Existing safe codec refuses invalid family/size/type; core semantic drop revokes only original client.",
+      "remaining": "Host must map decode failure to closing that physical session; not yet implemented for Resolver."
+    },
+    {
+      "id": "resolver.service.wire.concurrent",
+      "requirement": "Continue input before processing; separate lookup generations support concurrent/pipelined and duplicate opaque IDs",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:1046,910..929",
+      "group": "daemon",
+      "status": "core_implemented_host_pending",
+      "verification": null,
+      "implementation": [
+        "owner::{ClientId,LookupId,Active}",
+        "owner::Resolver::request"
+      ],
+      "test_references": [
+        "tests/lifecycle.rs::duplicate_wire_ids_are_independent_and_eof_only_cancels_original_client",
+        "tests/lifecycle.rs::eof_four_actual_stub_associations_revokes_client_immediately_with_e2_and_reuse_is_safe"
+      ],
+      "assertion": "Multiple requests including duplicate opaque IDs retain separate lookup/stub/client generations.",
+      "remaining": "Host read/dispatch concurrency and per-client real TX backpressure pending."
+    },
+    {
+      "id": "resolver.service.wire.results",
+      "requirement": "A/AAAA raw payload; PTR final-NUL; END empty; no numeric fallback/status at daemon",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:459..533",
+      "group": "daemon",
+      "status": "core_implemented_host_pending",
+      "verification": null,
+      "implementation": [
+        "owner::{Payload,Output::encode}",
+        "owner::State::cached"
+      ],
+      "test_references": [
+        "tests/lifecycle.rs::forward_query_literal_wire_echo_all_sections_order_and_owned_packet_storage",
+        "tests/lifecycle.rs::v6_and_ptr_generate_correct_questions_and_reverse_payload_is_native_name",
+        "tests/lifecycle.rs::hosts_hit_precedes_service_name_255_limit_and_unknown_raw_address_is_not_repaired"
+      ],
+      "assertion": "Raw A/AAAA bytes are not silently repaired; PTR adds one NUL; END has no payload/status.",
+      "remaining": "Normal C client/Rust daemon interoperability pending."
+    },
+    {
+      "id": "resolver.service.config.defaults",
+      "requirement": "Official resolver service defaults, native generic listener/ACL/activation settings",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:1267..1298,1349..1361",
+      "group": "daemon",
+      "status": "host_pending",
+      "verification": null,
+      "implementation": [],
+      "test_references": [],
+      "assertion": "No private daemon keys introduced; pure core does not pretend to load listeners or configuration.",
+      "remaining": "Instantiate official resolver.conf/default generic service settings via shared Activation/BoundListeners/service_options; app and actual process tests required."
+    },
+    {
+      "id": "resolver.service.config.machine-files",
+      "requirement": "Read hosts/resolv.conf at startup only; no private config keys, reload or NSS replacement",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:320..385,1205..1298",
+      "group": "daemon",
+      "status": "core_implemented_host_pending",
+      "verification": null,
+      "implementation": [
+        "files::{HostsFile,ResolverFile}",
+        "owner::Resolver::load_machine_files"
+      ],
+      "test_references": [
+        "tests/files.rs::resolver_exact_prefix_suffix_first_search_and_final_line_rules",
+        "tests/files.rs::hosts_last_hash_raw_alias_cr_and_only_space_tab_tokenization",
+        "tests/lifecycle.rs::hosts_hit_precedes_service_name_255_limit_and_unknown_raw_address_is_not_repaired"
+      ],
+      "assertion": "Caller-supplied machine-file bytes become cache/search at startup; parsing performs no file or NSS work.",
+      "remaining": "Host must open literal hosts/resolv.conf once at startup and supply bytes; owned test-file seam must not add production private override keys."
+    },
+    {
+      "id": "resolver.service.config.absence",
+      "requirement": "Missing files/no upstream retains service; packed lookup still reaches original30s timeout",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:1276..1298,910..930",
+      "group": "daemon",
+      "status": "core_implemented_host_pending",
+      "verification": null,
+      "implementation": [
+        "owner::Resolver::{load_machine_files,query_unavailable,tick}"
+      ],
+      "test_references": [
+        "tests/lifecycle.rs::no_server_waits_full_deadline_and_unknown_or_malformed_dns_is_nonterminal"
+      ],
+      "assertion": "No upstream admission emits no early END, remains active until original30s.",
+      "remaining": "Actual missing-file and no-server process survival pending."
+    },
+    {
+      "id": "resolver.service.config.resolv-lines",
+      "requirement": "Exact prefixes; retain suffix whitespace/comments/CR; first search line; ignore unterminated final line",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:285..309,362..381",
+      "group": "daemon",
+      "status": "core_implemented_host_pending",
+      "verification": null,
+      "implementation": [
+        "files::{Lines,ResolverFile}",
+        "owner::Resolver::load_machine_files"
+      ],
+      "test_references": [
+        "tests/files.rs::resolver_exact_prefix_suffix_first_search_and_final_line_rules",
+        "tests/files.rs::embedded_nul_stops_strchr_line_scanning_without_reading_beyond_input"
+      ],
+      "assertion": "Untrimmed exact-prefix suffix, first whole search, final unterminated line/NUL termination proven by literal bytes.",
+      "remaining": "Native file read errors/logging remain host work."
+    },
+    {
+      "id": "resolver.service.config.server-order",
+      "requirement": "Literal port53 IP list added in file order, then stub head-insert determines first destination",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:1288..1295",
+      "group": "daemon",
+      "status": "core_implemented_host_pending",
+      "verification": null,
+      "implementation": [
+        "files::ResolverFile"
+      ],
+      "test_references": [
+        "tests/files.rs::resolver_exact_prefix_suffix_first_search_and_final_line_rules"
+      ],
+      "assertion": "Parser yields exact nameserver suffixes in file order, without converting failures to success.",
+      "remaining": "Host must apply DNSSTUB add_dns_ip in that order at port53, preserving head-insertion destination order; paired host tests pending."
+    },
+    {
+      "id": "resolver.service.hosts.tokens",
+      "requirement": "Last# comment cut, leading isspace, space/tab tokens, raw aliases, numeric first token",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:1162..1198",
+      "group": "daemon",
+      "status": "core_implemented_host_pending",
+      "verification": null,
+      "implementation": [
+        "files::{HostsFile,token}"
+      ],
+      "test_references": [
+        "tests/files.rs::hosts_last_hash_raw_alias_cr_and_only_space_tab_tokenization",
+        "tests/files.rs::leading_c_vertical_tab_is_whitespace_even_though_not_rust_ascii_whitespace"
+      ],
+      "assertion": "Last# truncation, leading C whitespace including VT, alias CR and space/tab-only delimiters checked literally.",
+      "remaining": "Native locale/profile beyond explicit ASCII/C whitespace is not inferred."
+    },
+    {
+      "id": "resolver.service.hosts.precedence",
+      "requirement": "Each alias independent prepended forever entry; first exact name only, no family aggregation/PTR synthesis",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:608..615,1130..1152",
+      "group": "daemon",
+      "status": "core_implemented_host_pending",
+      "verification": null,
+      "implementation": [
+        "cache::Cache::{load_hosts,lookup}"
+      ],
+      "test_references": [
+        "tests/cache.rs::hosts_last_alias_wins_wrong_family_blocks_dynamic_bucket_and_no_ptr_is_synthesized"
+      ],
+      "assertion": "Each alias separate/head-prepended/forever; last occurrence wins, no PTR synthesis.",
+      "remaining": "None in pure cache; startup file I/O remains separate."
+    },
+    {
+      "id": "resolver.service.hosts.wrong-family",
+      "requirement": "First matching hosts entry of wrong requested type causes DNS path, not next hosts/dynamic aggregation",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:608..630,638..662",
+      "group": "daemon",
+      "status": "core_implemented_host_pending",
+      "verification": null,
+      "implementation": [
+        "cache::Cache::lookup"
+      ],
+      "test_references": [
+        "tests/cache.rs::hosts_last_alias_wins_wrong_family_blocks_dynamic_bucket_and_no_ptr_is_synthesized"
+      ],
+      "assertion": "First exact hosts alias blocks later hosts and dynamic cache even when requested type differs.",
+      "remaining": "None in pure cache."
+    },
+    {
+      "id": "resolver.service.names.search",
+      "requirement": "Original cache first; append one complete search string only no-dot and sum<=253; else original<255 or drop client",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:943..976",
+      "group": "daemon",
+      "status": "core_implemented_host_pending",
+      "verification": null,
+      "implementation": [
+        "owner::State::{process,expanded}",
+        "lookup::{expand,reverse_name}"
+      ],
+      "test_references": [
+        "tests/files.rs::original_native_prefix_and_exact_search_limits",
+        "tests/lifecycle.rs::long_name_drops_only_original_client_and_long_search_falls_back_without_copy_error",
+        "tests/lifecycle.rs::hosts_hit_precedes_service_name_255_limit_and_unknown_raw_address_is_not_repaired"
+      ],
+      "assertion": "Cache precedes255-byte drop; no-dot single entire search sum<=253; long search falls back without copying/rejection.",
+      "remaining": "Production IDNA capability and startup search binding still require host integration."
+    },
+    {
+      "id": "resolver.service.cache.key",
+      "requirement": "Bucket insertion strcasecmp; bucket lookup and direct record.name strcmp; preserve asymmetric case",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:609..624,656,721..728",
+      "group": "daemon",
+      "status": "core_implemented_host_pending",
+      "verification": null,
+      "implementation": [
+        "cache::Cache::{insert,lookup,matches}"
+      ],
+      "test_references": [
+        "tests/cache.rs::bucket_insertion_ignores_ascii_case_while_lookup_and_owner_remain_exact"
+      ],
+      "assertion": "Insertion ASCII case-insensitive; lookup query and direct owner exact case; asymmetric behavior deliberately retained.",
+      "remaining": "Non-ASCII native locale strcasecmp is not promoted beyond supplied native-byte profile."
+    },
+    {
+      "id": "resolver.service.cache.sections",
+      "requirement": "Cache all answers then authority then additional under queried name, not record own names",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:804..810,708..739",
+      "group": "daemon",
+      "status": "core_implemented_host_pending",
+      "verification": null,
+      "implementation": [
+        "owner::Resolver::dns_result",
+        "cache::Cache::insert"
+      ],
+      "test_references": [
+        "tests/lifecycle.rs::forward_query_literal_wire_echo_all_sections_order_and_owned_packet_storage",
+        "tests/cache.rs::section_prepend_keeps_duplicates_class_and_reverse_section_order"
+      ],
+      "assertion": "All answer/authority/additional projected under original queried-name bucket; caller parse buffers can be overwritten.",
+      "remaining": "Full native IDNA parsing dependency evidence and real UDP/IPC composition pending."
+    },
+    {
+      "id": "resolver.service.cache.order",
+      "requirement": "Prepend each record; additional reversed then authority reversed then answers reversed; retain duplicates/class/unknown data",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:638..658,734..738",
+      "group": "daemon",
+      "status": "core_implemented_host_pending",
+      "verification": null,
+      "implementation": [
+        "owner::Resolver::dns_result",
+        "cache::Cache::{insert,lookup}"
+      ],
+      "test_references": [
+        "tests/cache.rs::section_prepend_keeps_duplicates_class_and_reverse_section_order",
+        "tests/cache.rs::unsupported_records_survive_without_becoming_address_or_negative_results",
+        "tests/pooled.rs::complete_65500_byte_record_is_copied_into_modest_aggregate_pool_without_per_record_width_product"
+      ],
+      "assertion": "Reverse section insertion, duplicates and class preserved; unknown65500-byte RDATA retained without repair.",
+      "remaining": "None in bounded pure cache; resource capacities remain explicit."
+    },
+    {
+      "id": "resolver.service.cache.expiry",
+      "requirement": "Explicit UTC strict now>expiry; equality valid; remove empty visited buckets",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:545..566,617..625",
+      "group": "daemon",
+      "status": "core_implemented_host_pending",
+      "verification": null,
+      "implementation": [
+        "cache::Cache::lookup"
+      ],
+      "test_references": [
+        "tests/cache.rs::ttl_equality_is_valid_expiry_prunes_visited_buckets_only",
+        "tests/lifecycle.rs::packet_arena_input_can_be_reused_and_utc_expiry_equality_remains_valid",
+        "tests/pooled.rs::queued_output_survives_cache_expiry_and_old_tickets_cannot_release_replacement_payload"
+      ],
+      "assertion": "UTC equality valid, only strictgreater expires; visited bucket pruning cannot corrupt independently pinned output bytes.",
+      "remaining": "Host must supply UTC separately from monotonic lookup deadlines."
+    },
+    {
+      "id": "resolver.service.cache.lru",
+      "requirement": "Dynamic bucket hit moves to head even if no eventual matching row; hosts separate",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:632..637",
+      "group": "daemon",
+      "status": "core_implemented_host_pending",
+      "verification": null,
+      "implementation": [
+        "cache::Cache::{lookup,begin_batch}"
+      ],
+      "test_references": [
+        "tests/cache.rs::source_1025_bucket_overshoot_and_lru_hit_even_wrong_type_are_exact"
+      ],
+      "assertion": "Bucket hit promotes even wrong requested type; hosts separate.",
+      "remaining": "None in pure cache."
+    },
+    {
+      "id": "resolver.service.cache.limit",
+      "requirement": "Evict tail only while bucket_count>1024 before next nonempty batch; temporary1025 allowed; records not counted",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:795..810",
+      "group": "daemon",
+      "status": "core_implemented_host_pending",
+      "verification": null,
+      "implementation": [
+        "cache::Cache::begin_batch"
+      ],
+      "test_references": [
+        "tests/cache.rs::source_1025_bucket_overshoot_and_lru_hit_even_wrong_type_are_exact",
+        "src/owner.rs::tests::queued_output_pin_survives_1025_bucket_lru_eviction_and_pool_compaction"
+      ],
+      "assertion": "1025 temporary buckets, next nonempty batch evicts actual oldest; queued output pin survives eviction+compaction.",
+      "remaining": "Host profile must supply>=1025bucket slots to support upstream threshold; smaller profiles reject explicitly."
+    },
+    {
+      "id": "resolver.service.cache.no-negative",
+      "requirement": "No negative cache, pending request coalescing or record deduplication",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:775..793,734..735,910..929",
+      "group": "daemon",
+      "status": "core_implemented_host_pending",
+      "verification": null,
+      "implementation": [
+        "owner::Resolver::{request,dns_result}",
+        "cache::Cache::insert"
+      ],
+      "test_references": [
+        "tests/lifecycle.rs::first_any_zero_records_ends_without_aaaa_or_negative_cache",
+        "tests/lifecycle.rs::duplicate_wire_ids_are_independent_and_eof_only_cancels_original_client",
+        "tests/cache.rs::section_prepend_keeps_duplicates_class_and_reverse_section_order"
+      ],
+      "assertion": "Empty answers do not allocate negative entries; pending duplicate IDs not coalesced; duplicate records retained.",
+      "remaining": "None in pure state."
+    },
+    {
+      "id": "resolver.service.cname.order",
+      "requirement": "Before any direct reply, any encountered CNAME redirects before owner-name check",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:648..657",
+      "group": "daemon",
+      "status": "core_implemented_host_pending",
+      "verification": null,
+      "implementation": [
+        "cache::Cache::lookup",
+        "owner::State::{process,complete_cache}"
+      ],
+      "test_references": [
+        "tests/cache.rs::cname_precedes_owner_filter_only_until_first_direct_row",
+        "tests/lifecycle.rs::cname_ignores_record_owner_for_redirect_restarts_deadline_and_retires_old_generation"
+      ],
+      "assertion": "First encountered CNAME before owner filter redirects until a direct row already emitted.",
+      "remaining": "None in pure bounded state."
+    },
+    {
+      "id": "resolver.service.cname.lifecycle",
+      "requirement": "Iterative safe cycle/hop policy; new target lookup starts fresh30s timer; distinguish explicit Rust resource divergence",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:648..654,910..924",
+      "group": "daemon",
+      "status": "core_implemented_host_pending",
+      "verification": null,
+      "implementation": [
+        "owner::State::{process,complete_cache,start}"
+      ],
+      "test_references": [
+        "tests/lifecycle.rs::cname_ignores_record_owner_for_redirect_restarts_deadline_and_retires_old_generation",
+        "tests/lifecycle.rs::bounded_cname_cycle_rejects_without_partial_cache_or_result_success"
+      ],
+      "assertion": "Redirect allocates fresh lookup generation and30s deadline; explicit bounded Rust hop/cycle refusal is atomic.",
+      "remaining": "Explicit policy difference: upstream recursive unbounded behavior is not reproduced; CNAME bound is reported resource error, never fake END."
+    },
+    {
+      "id": "resolver.service.dns.query",
+      "requirement": "One IN question/RD; type A/AAAA/PTR; unbiased DNS ID0..65534 BE16",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:678..704,896..902",
+      "group": "daemon",
+      "status": "core_implemented_host_pending",
+      "verification": null,
+      "implementation": [
+        "owner::State::{draw,pack,start}",
+        "lookup::reverse_name"
+      ],
+      "test_references": [
+        "tests/lifecycle.rs::forward_query_literal_wire_echo_all_sections_order_and_owned_packet_storage",
+        "tests/lifecycle.rs::v6_and_ptr_generate_correct_questions_and_reverse_payload_is_native_name",
+        "tests/lifecycle.rs::capability_entropy_clock_record_capacity_failures_leave_entire_owner_unchanged"
+      ],
+      "assertion": "Actual gnunet_dns packet packs one IN/RD question A/AAAA/PTR, big-endian ID; bound65535 passed to entropy and out-of-range rejected.",
+      "remaining": "Uniform OS randomness is an explicit host port; core does not claim to generate entropy."
+    },
+    {
+      "id": "resolver.service.dns.transport-family",
+      "requirement": "DNS record query family independent from configured V4/V6 upstream transport",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:898..902,1288..1295",
+      "group": "daemon",
+      "status": "core_implemented_host_pending",
+      "verification": null,
+      "implementation": [
+        "owner::State::pack",
+        "owner::StartQuery"
+      ],
+      "test_references": [
+        "tests/lifecycle.rs::v6_and_ptr_generate_correct_questions_and_reverse_payload_is_native_name"
+      ],
+      "assertion": "Question kind does not encode/select DNS transport family; core emits packet independently.",
+      "remaining": "Pair real V4 and V6 configured DNSSTUB sockets with A/AAAA questions in Resolver host tests."
+    },
+    {
+      "id": "resolver.service.dns.id-filter",
+      "requirement": "Ignore malformed/wrong-ID DNS responses while keeping request and original deadline; do not add QR/rcode/question validation claims",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:759..774",
+      "group": "daemon",
+      "status": "core_implemented_host_pending",
+      "verification": null,
+      "implementation": [
+        "owner::Resolver::{malformed_dns,dns_result}",
+        "owner::State::authority"
+      ],
+      "test_references": [
+        "tests/lifecycle.rs::no_server_waits_full_deadline_and_unknown_or_malformed_dns_is_nonterminal"
+      ],
+      "assertion": "WrongID/malformed response retains exact live lookup/deadline; no QR/rcode/question checks are silently added.",
+      "remaining": "Host must feed parse failure as malformed_dns only for original stub/lookup; actual UDP integration pending."
+    },
+    {
+      "id": "resolver.service.dns.empty",
+      "requirement": "Zero total RR tries cache/END and terminates immediately, even first Any A phase",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:775..793",
+      "group": "daemon",
+      "status": "core_implemented_host_pending",
+      "verification": null,
+      "implementation": [
+        "owner::Resolver::dns_result",
+        "owner::State::complete_cache"
+      ],
+      "test_references": [
+        "tests/lifecycle.rs::first_any_zero_records_ends_without_aaaa_or_negative_cache",
+        "tests/lifecycle.rs::any_a_then_aaaa_keeps_deadline_and_defers_a_until_empty_second_response"
+      ],
+      "assertion": "First zeroRR Any ends without AAAA; second zeroRR falls through to cached A rows andEND.",
+      "remaining": "None in pure state."
+    },
+    {
+      "id": "resolver.service.dns.any-sequence",
+      "requirement": "Any A first, then AAAA only after nonempty response; newID and exact cancel/admit; cachedA not emitted yet",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:898..901,812..837",
+      "group": "daemon",
+      "status": "core_implemented_host_pending",
+      "verification": null,
+      "implementation": [
+        "owner::Resolver::dns_result"
+      ],
+      "test_references": [
+        "tests/lifecycle.rs::any_a_then_aaaa_keeps_deadline_and_defers_a_until_empty_second_response",
+        "tests/lifecycle.rs::nonempty_aaaa_yields_newest_v6_before_old_v4_and_any_cname_waits_for_second_phase"
+      ],
+      "assertion": "Nonempty first A caches withoutemit, oldtoken cancellation precedes newAAAA admission, new DNSID sameLookup.",
+      "remaining": "Actual host effect driver must preserve cancellation-before-admission order."
+    },
+    {
+      "id": "resolver.service.dns.any-deadline",
+      "requirement": "A and AAAA keep original single30s deadline; AAAA timeout emits END only even when A remains cached",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:916..917,812..837,862..870",
+      "group": "daemon",
+      "status": "core_implemented_host_pending",
+      "verification": null,
+      "implementation": [
+        "owner::Resolver::{dns_result,tick}"
+      ],
+      "test_references": [
+        "tests/lifecycle.rs::any_a_then_aaaa_keeps_deadline_and_defers_a_until_empty_second_response",
+        "tests/lifecycle.rs::any_aaaa_timeout_never_emits_cached_a_but_later_cache_request_can"
+      ],
+      "assertion": "A/AAAA same original deadline; AAAAtimeoutENDonly, A remains usable by a later request.",
+      "remaining": "Actual timer/scheduler seam pending."
+    },
+    {
+      "id": "resolver.service.dns.any-pack-failure",
+      "requirement": "If AAAA pack fails, fall through to cached rows/END; first query pack failure immediate END without lookup",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:821..849,902..908,970..974",
+      "group": "daemon",
+      "status": "core_implemented_host_pending",
+      "verification": null,
+      "implementation": [
+        "owner::Resolver::dns_result",
+        "owner::State::{content,start}"
+      ],
+      "test_references": [
+        "tests/lifecycle.rs::malformed_query_content_ends_but_aaaa_pack_failure_returns_previously_cached_a",
+        "tests/lifecycle.rs::any_second_phase_capability_failure_keeps_original_a_owner_and_cache_unmodified"
+      ],
+      "assertion": "Content failure AAAA returnscachedA; capability/entropy failure keeps old owner andcache atomically, never fake success.",
+      "remaining": "Native IDNA error classification must remain explicit when host composes backend."
+    },
+    {
+      "id": "resolver.service.dns.result-cache",
+      "requirement": "After ordinary result or second phase, try cache then END when no matching supported records",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:841..851",
+      "group": "daemon",
+      "status": "core_implemented_host_pending",
+      "verification": null,
+      "implementation": [
+        "owner::State::complete_cache"
+      ],
+      "test_references": [
+        "tests/lifecycle.rs::forward_query_literal_wire_echo_all_sections_order_and_owned_packet_storage",
+        "tests/lifecycle.rs::nonempty_aaaa_yields_newest_v6_before_old_v4_and_any_cname_waits_for_second_phase",
+        "tests/cache.rs::unsupported_records_survive_without_becoming_address_or_negative_results"
+      ],
+      "assertion": "Supported rows then one END; unknown or wrong-owner/type data cached without becoming results.",
+      "remaining": "None in pure state."
+    },
+    {
+      "id": "resolver.service.dns.timeout",
+      "requirement": "Original30s deadline emits one END, then cancels token/timer and frees lookup; no DNS timeout in stub layer",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:256..271,862..870,916..924",
+      "group": "daemon",
+      "status": "core_implemented_host_pending",
+      "verification": null,
+      "implementation": [
+        "owner::Resolver::{tick,next_wakeup}",
+        "owner::State::retire"
+      ],
+      "test_references": [
+        "tests/lifecycle.rs::same_deadline_many_lookups_make_bounded_progress_after_draining_e2",
+        "tests/lifecycle.rs::no_server_waits_full_deadline_and_unknown_or_malformed_dns_is_nonterminal"
+      ],
+      "assertion": "Each due call one earliest timeout; exact30s emitsEND and reservedcancel, E2 manylookup work makes drain/retry progress.",
+      "remaining": "Host timer uses explicit monotonic epoch and loops same due time after effect draining; no OS clock proof claimed."
+    },
+    {
+      "id": "resolver.service.dns.no-server",
+      "requirement": "No-server stub admission failure leaves active lookup to original30s timer, no fabricated immediate result",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:918..924,1281..1286",
+      "group": "daemon",
+      "status": "core_implemented_host_pending",
+      "verification": null,
+      "implementation": [
+        "owner::Resolver::query_unavailable"
+      ],
+      "test_references": [
+        "tests/lifecycle.rs::no_server_waits_full_deadline_and_unknown_or_malformed_dns_is_nonterminal"
+      ],
+      "assertion": "Real pure stub no-server resolve refusal is reported only afterStart lease; keepslookup to30s.",
+      "remaining": "Host OS error handling must not convert send failure into immediate lookup failure."
+    },
+    {
+      "id": "resolver.service.dns.eviction",
+      "requirement": "Explicitly consume evicted stub generation; old lookup retains deadline but cannot later cancel a replacement slot owner",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:759..766,256..269,918..924",
+      "group": "daemon",
+      "status": "core_implemented_host_pending",
+      "verification": null,
+      "implementation": [
+        "owner::Resolver::{query_admitted,stub_evicted}",
+        "owner::State::detach"
+      ],
+      "test_references": [
+        "tests/lifecycle.rs::stub_eviction_detaches_old_timeout_so_it_cannot_cancel_new_slot_owner"
+      ],
+      "assertion": "Actual pure DNSSTUB eviction token detaches only old association; old timerEND cannot cancel replacement.",
+      "remaining": "Intentional source-safety difference from C raw RequestSocket alias; host must consume Admission.evicted explicitly."
+    },
+    {
+      "id": "resolver.service.lifetime.eof",
+      "requirement": "Client disconnect cancels all its lookups/token/timers only; shared cache and other clients remain",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:1329..1343,256..271",
+      "group": "daemon",
+      "status": "core_implemented_host_pending",
+      "verification": null,
+      "implementation": [
+        "owner::Resolver::disconnect",
+        "owner::State::disconnect"
+      ],
+      "test_references": [
+        "tests/lifecycle.rs::duplicate_wire_ids_are_independent_and_eof_only_cancels_original_client",
+        "tests/lifecycle.rs::eof_four_actual_stub_associations_revokes_client_immediately_with_e2_and_reuse_is_safe",
+        "tests/pooled.rs::queued_output_survives_cache_expiry_and_old_tickets_cannot_release_replacement_payload"
+      ],
+      "assertion": "EOF revokes all oldclient lookup/outputauthority immediately, L reservedcancels survive E2, otherclient/sharedcache stay.",
+      "remaining": "Host actual EOF must call disconnect and drain real stub cancels/close TX before reusing physical session."
+    },
+    {
+      "id": "resolver.service.lifetime.no-cancel-frame",
+      "requirement": "Client public request_cancel is not a daemon request; EOF or actual completion retires backend work",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:1349..1361",
+      "group": "daemon",
+      "status": "core_implemented_host_pending",
+      "verification": null,
+      "implementation": [
+        "gnunet-client::resolver::Client",
+        "owner::Effect"
+      ],
+      "test_references": [
+        "workspace:crates/gnunet-client/tests/resolver.rs::fifo_submission_cancel_drain_and_next_head_do_not_invent_cancel_frames"
+      ],
+      "assertion": "No daemon cancel wire type exists; publicclient cancellation drains or closes; pureeffects are local operations only.",
+      "remaining": "Actual public C request_cancel\u2192Rustdaemon endpoint proof pending."
+    },
+    {
+      "id": "resolver.service.lifetime.generations",
+      "requirement": "Bind delayed DNS/output effects to original ClientId/LookupId/StubRequestId, not reused opaque ID or raw slot pointer",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:100..154,256..271,1329..1343",
+      "group": "daemon",
+      "status": "core_implemented_host_pending",
+      "verification": null,
+      "implementation": [
+        "owner::{ClientId,LookupId,EffectTicket}",
+        "pool::BlobId"
+      ],
+      "test_references": [
+        "tests/lifecycle.rs::client_lookup_and_effect_admission_refusals_preserve_all_original_generations",
+        "tests/lifecycle.rs::actual_admission_cannot_be_reported_before_start_effect_was_emitted",
+        "tests/pooled.rs::resetting_same_buffers_requires_new_epoch_and_old_ticket_cannot_release_new_effect",
+        "tests/pooled.rs::wrong_pair_staging_is_rejected_before_either_owner_or_scratch_is_copied",
+        "tests/pooled.rs::queued_output_survives_cache_expiry_and_old_tickets_cannot_release_replacement_payload"
+      ],
+      "assertion": "Crosspair/old epoch/admissionbeforeStart/oldticket cannot alter replacement; ticket pin lasts until local copy+release; positive+exact-code negative compiletests.",
+      "remaining": "Host must persist currentticket/buffers across canceled drive and never reuse caller epoch on reset."
+    },
+    {
+      "id": "resolver.service.shutdown.default",
+      "requirement": "Resolver macro NONE uses generic immediate drop, unlike STATISTICS soft drain",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:1105..1117,1349..1353",
+      "group": "daemon",
+      "status": "core_implemented_host_pending",
+      "verification": null,
+      "implementation": [
+        "owner::Resolver::shutdown"
+      ],
+      "test_references": [
+        "tests/lifecycle.rs::immediate_default_and_explicit_soft_follow_client_lifetime_not_lookup_count"
+      ],
+      "assertion": "Immediate shutdown invalidatesowner and producesStop rather than stats-style softflush.",
+      "remaining": "Resolverapp must select official NONE and actually close all physical sessions/stub sockets."
+    },
+    {
+      "id": "resolver.service.shutdown.explicit-soft",
+      "requirement": "Optional reusable Soft stops accept and waits non-monitor clients, not just active lookup count; not default daemon policy",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:1349..1353",
+      "group": "daemon",
+      "status": "core_implemented_host_pending",
+      "verification": null,
+      "implementation": [
+        "owner::Resolver::{begin_soft_shutdown,connect,disconnect}"
+      ],
+      "test_references": [
+        "tests/lifecycle.rs::immediate_default_and_explicit_soft_follow_client_lifetime_not_lookup_count"
+      ],
+      "assertion": "Optional reusableSoft rejects newclients and waits connected clients, not justlookupcount.",
+      "remaining": "If host exposesoptionalSoft, stopaccept and physicalclient close must match; not defaultdaemon."
+    },
+    {
+      "id": "resolver.service.shutdown.cleanup",
+      "requirement": "All lookups/cache/hosts/stub sockets/search ownership reclaimed once; no late callback/durability claim",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:1105..1117",
+      "group": "daemon",
+      "status": "core_implemented_host_pending",
+      "verification": null,
+      "implementation": [
+        "owner::State::shutdown",
+        "cache::Cache::clear",
+        "pool::BytePool::clear"
+      ],
+      "test_references": [
+        "tests/lifecycle.rs::immediate_default_and_explicit_soft_follow_client_lifetime_not_lookup_count",
+        "tests/pooled.rs::safe_fullwidth_host_profile_construction_uses_vectors_and_small_control_structs",
+        "tests/pooled.rs::queued_output_survives_cache_expiry_and_old_tickets_cannot_release_replacement_payload"
+      ],
+      "assertion": "Stop supersedes individualcancels after freeing all logicalleases; releasedStop hasno lateeffect; outputpins revoked onEOF.",
+      "remaining": "Host Stop/Drop must actually stop DNSSTUB/close sockets+session/TX owners; not proven by logicalclear."
+    },
+    {
+      "id": "resolver.service.profile.dnsparser",
+      "requirement": "Complete native name/IDNA profile and full section/typed/unknown-record ownership are required dependency evidence",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:695..696,759,737",
+      "group": "daemon",
+      "status": "core_implemented_host_pending",
+      "verification": null,
+      "implementation": [
+        "cache::Cache::project",
+        "owner::Evaluation",
+        "gnunet-dns::{Packet,Name,Idna}"
+      ],
+      "test_references": [
+        "tests/lifecycle.rs::packet_arena_input_can_be_reused_and_utc_expiry_equality_remains_valid",
+        "tests/pooled.rs::complete_65500_byte_record_is_copied_into_modest_aggregate_pool_without_per_record_width_product",
+        "tests/lifecycle.rs::any_second_phase_capability_failure_keeps_original_a_owner_and_cache_unmodified"
+      ],
+      "assertion": "Actual parserRecord/typedRDATA/owner copy lifetime verified; ASCII fixture explicitrejects nonASCII; unavailableIDNA atomically fails.",
+      "remaining": "Full official native IDNA backend dependency is supplied by root and must be integrated+proved; candidate ASCIIfixture is never a backend successstub."
+    },
+    {
+      "id": "resolver.service.profile.scope",
+      "requirement": "Resolver service distinct from DNS interception/TUN/helper; no DNS_EXIT or route/admin dependency introduced",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:27..30,1267..1298",
+      "group": "daemon",
+      "status": "core_implemented_host_pending",
+      "verification": null,
+      "implementation": [
+        "src/lib.rs",
+        "Cargo.toml"
+      ],
+      "test_references": [],
+      "assertion": "No allocator/std/FFI/socket/system DNS/privateprotocol in pure production. MetadataJSON binds exact no-default local dependencies and thumbv6m check.",
+      "remaining": "Resolverhost remains separate from DNS interception/TUN/admin helper; none introduced."
+    }
+  ],
+  "status_promotion": false,
+  "normal_c_or_network_executed_in_this_candidate": false,
+  "source_profile_differences": [
+    "Explicit finite CNAME work bound with atomic resource refusal, rather than unbounded C recursion",
+    "Generational original stub association detaches evicted token, rather than aliasing a reused C RequestSocket",
+    "Fallible bounded capacity and explicit capability failures never fabricate successful result"
+  ],
+  "historical_c_only_evidence": [
+    {
+      "path": "/private/tmp/gnunet-resolver-full-design-20261026/probe-results3/result.json",
+      "sha256": "bd36222fcc9983706b9a761f991b7ff03f02aafb17aa614f20bc9cab0ea3c21e",
+      "scope": "Historical normal C local/no-IP20cases; no Rust daemon proof"
+    },
+    {
+      "path": "/private/tmp/gnunet-resolver-full-design-20261026/timeout-observation.json",
+      "sha256": "06f0fd7548e5ba795415d335c378c78b522a9ce18f74d10e773fd4ec49dfedc3",
+      "scope": "Actual C30.001672s deadline/END; no new timing run in this audit"
+    }
+  ]
+}

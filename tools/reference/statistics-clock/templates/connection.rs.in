@@ -1,0 +1,42 @@
+//! Only the finite physical I/O return capability is replaced for IO tests.
+//! Native attempts and all endpoint/Resolver decisions retain the actual owner.
+use std::{
+    io,
+    pin::Pin,
+    task::{Context, Poll},
+};
+use tokio::io::{AsyncRead, ReadBuf};
+pub enum Connection {
+    Native(runtime_real::connection::Connection),
+    #[cfg(test)]
+    Scripted(crate::stream::Stream),
+}
+impl Connection {
+    pub(crate) fn poll_write_ready(&self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        match self {
+            Self::Native(c) => c.poll_write_ready(cx),
+            #[cfg(test)]
+            Self::Scripted(c) => c.poll_write_ready(cx),
+        }
+    }
+    pub(crate) fn try_write(&self, bytes: &[u8]) -> io::Result<usize> {
+        match self {
+            Self::Native(c) => c.try_write(bytes),
+            #[cfg(test)]
+            Self::Scripted(c) => c.try_write(bytes),
+        }
+    }
+}
+impl AsyncRead for Connection {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        match self.get_mut() {
+            Self::Native(c) => Pin::new(c).poll_read(cx, buf),
+            #[cfg(test)]
+            Self::Scripted(c) => Pin::new(c).poll_read(cx, buf),
+        }
+    }
+}

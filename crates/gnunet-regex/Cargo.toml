@@ -1,0 +1,20 @@
+[package]
+name = "gnunet-regex"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+[features]
+default = []
+alloc = []
+[dependencies]
+gnunet-types.workspace = true
+gnunet-crypto.workspace = true
+[dev-dependencies]
+gnunet-block.workspace = true
+[lints]
+workspace = true
+
+[[example]]
+name = "state_artifacts"
+required-features = ["alloc"]

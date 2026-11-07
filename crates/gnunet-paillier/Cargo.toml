@@ -1,0 +1,15 @@
+[package]
+name = "gnunet-paillier"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+[features]
+default = []
+[dependencies]
+crypto-bigint.workspace = true
+zeroize.workspace = true
+gnunet-crypto.workspace = true
+gnunet-types.workspace = true
+[lints]
+workspace = true

@@ -1,0 +1,18 @@
+[package]
+name = "gnunet-setu"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+[features]
+default = []
+alloc = []
+zlib = ["alloc", "dep:gnunet-compression", "gnunet-compression/alloc"]
+[dependencies]
+gnunet-types.workspace = true
+gnunet-wire.workspace = true
+gnunet-crypto.workspace = true
+libm.workspace = true
+gnunet-compression = { workspace = true, optional = true }
+[lints]
+workspace = true

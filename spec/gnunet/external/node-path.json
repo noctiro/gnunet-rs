@@ -1,0 +1,2456 @@
+{
+  "schema": 1,
+  "kind": "external-node-path-contract-draft",
+  "awards_implementation_or_verification_credit": false,
+  "scope": "Complete discovered CORE/TRANSPORT/COMMUNICATOR registry and current runtime message surface plus explicit external state obligations for the next node path; no C helper function/ABI classification requirement. Other GNUnet subsystems remain in Root overall scope.",
+  "owners": [
+    "additional-communicators",
+    "core-host",
+    "core-peer",
+    "node-composition",
+    "registry-research",
+    "tcp-communicator",
+    "transport-service",
+    "udp-communicator"
+  ],
+  "messages": [
+    {
+      "id": "TRANSPORT_XU_MESSAGE",
+      "number": 55,
+      "boundary": "reference-only",
+      "owner": "registry-research",
+      "required": false,
+      "disposition": "no-current-runtime-reference",
+      "source_references": [],
+      "note": "Registry assignment retained; no imaginary active layout or obligation inferred from a historic name."
+    },
+    {
+      "id": "TRANSPORT_UDP_MESSAGE",
+      "number": 56,
+      "boundary": "reference-only",
+      "owner": "registry-research",
+      "required": false,
+      "disposition": "no-current-runtime-reference",
+      "source_references": [],
+      "note": "Registry assignment retained; no imaginary active layout or obligation inferred from a historic name."
+    },
+    {
+      "id": "TRANSPORT_UDP_ACK",
+      "number": 57,
+      "boundary": "reference-only",
+      "owner": "registry-research",
+      "required": false,
+      "disposition": "no-current-runtime-reference",
+      "source_references": [],
+      "note": "Registry assignment retained; no imaginary active layout or obligation inferred from a historic name."
+    },
+    {
+      "id": "TRANSPORT_TCP_NAT_PROBE",
+      "number": 60,
+      "boundary": "network-wire",
+      "owner": "tcp-communicator",
+      "required": true,
+      "disposition": "active-external",
+      "source_references": [
+        {
+          "path": "src/service/transport/gnunet-communicator-tcp.c",
+          "line": 3478
+        }
+      ],
+      "note": "External sender/handler token discovered; fields, state and evidence are separate obligations."
+    },
+    {
+      "id": "TRANSPORT_TCP_WELCOME",
+      "number": 61,
+      "boundary": "reference-only",
+      "owner": "registry-research",
+      "required": false,
+      "disposition": "no-current-runtime-reference",
+      "source_references": [],
+      "note": "Registry assignment retained; no imaginary active layout or obligation inferred from a historic name."
+    },
+    {
+      "id": "TRANSPORT_ATS",
+      "number": 62,
+      "boundary": "reference-only",
+      "owner": "registry-research",
+      "required": false,
+      "disposition": "no-current-runtime-reference",
+      "source_references": [],
+      "note": "Registry assignment retained; no imaginary active layout or obligation inferred from a historic name."
+    },
+    {
+      "id": "CORE_INIT",
+      "number": 64,
+      "boundary": "service-ipc",
+      "owner": "core-host",
+      "required": true,
+      "disposition": "active-external",
+      "source_references": [
+        {
+          "path": "src/service/core/core_api.c",
+          "line": 673
+        },
+        {
+          "path": "src/service/core/gnunet-service-core.c",
+          "line": 1148
+        }
+      ],
+      "note": "External sender/handler token discovered; fields, state and evidence are separate obligations."
+    },
+    {
+      "id": "CORE_INIT_REPLY",
+      "number": 65,
+      "boundary": "service-ipc",
+      "owner": "core-host",
+      "required": true,
+      "disposition": "active-external",
+      "source_references": [
+        {
+          "path": "src/service/core/core_api.c",
+          "line": 640
+        },
+        {
+          "path": "src/service/core/gnunet-service-core.c",
+          "line": 368
+        }
+      ],
+      "note": "External sender/handler token discovered; fields, state and evidence are separate obligations."
+    },
+    {
+      "id": "CORE_NOTIFY_CONNECT",
+      "number": 67,
+      "boundary": "service-ipc",
+      "owner": "core-host",
+      "required": true,
+      "disposition": "active-external",
+      "source_references": [
+        {
+          "path": "src/service/core/core_api.c",
+          "line": 644
+        },
+        {
+          "path": "src/service/core/gnunet-service-core.c",
+          "line": 850
+        }
+      ],
+      "note": "External sender/handler token discovered; fields, state and evidence are separate obligations."
+    },
+    {
+      "id": "CORE_NOTIFY_DISCONNECT",
+      "number": 68,
+      "boundary": "service-ipc",
+      "owner": "core-host",
+      "required": true,
+      "disposition": "active-external",
+      "source_references": [
+        {
+          "path": "src/service/core/core_api.c",
+          "line": 648
+        },
+        {
+          "path": "src/service/core/gnunet-service-core.c",
+          "line": 827
+        }
+      ],
+      "note": "External sender/handler token discovered; fields, state and evidence are separate obligations."
+    },
+    {
+      "id": "CORE_NOTIFY_STATUS_CHANGE",
+      "number": 69,
+      "boundary": "reference-only",
+      "owner": "registry-research",
+      "required": false,
+      "disposition": "no-current-runtime-reference",
+      "source_references": [],
+      "note": "Registry assignment retained; no imaginary active layout or obligation inferred from a historic name."
+    },
+    {
+      "id": "CORE_NOTIFY_INBOUND",
+      "number": 70,
+      "boundary": "service-ipc",
+      "owner": "core-host",
+      "required": true,
+      "disposition": "active-external",
+      "source_references": [
+        {
+          "path": "src/service/core/core_api.c",
+          "line": 652
+        },
+        {
+          "path": "src/service/core/gnunet-service-core.c",
+          "line": 1007
+        }
+      ],
+      "note": "External sender/handler token discovered; fields, state and evidence are separate obligations."
+    },
+    {
+      "id": "CORE_NOTIFY_OUTBOUND",
+      "number": 71,
+      "boundary": "service-ipc",
+      "owner": "core-host",
+      "required": true,
+      "disposition": "active-external",
+      "source_references": [
+        {
+          "path": "src/service/core/gnunet-service-core.c",
+          "line": 1009
+        }
+      ],
+      "note": "External sender/handler token discovered; fields, state and evidence are separate obligations."
+    },
+    {
+      "id": "CORE_SEND_REQUEST",
+      "number": 74,
+      "boundary": "service-ipc",
+      "owner": "core-host",
+      "required": true,
+      "disposition": "active-external",
+      "source_references": [
+        {
+          "path": "src/service/core/core_api.c",
+          "line": 300
+        },
+        {
+          "path": "src/service/core/gnunet-service-core.c",
+          "line": 1156
+        }
+      ],
+      "note": "External sender/handler token discovered; fields, state and evidence are separate obligations."
+    },
+    {
+      "id": "CORE_SEND_READY",
+      "number": 75,
+      "boundary": "service-ipc",
+      "owner": "core-host",
+      "required": true,
+      "disposition": "active-external",
+      "source_references": [
+        {
+          "path": "src/service/core/core_api.c",
+          "line": 656
+        },
+        {
+          "path": "src/service/core/gnunet-service-core.c",
+          "line": 446
+        }
+      ],
+      "note": "External sender/handler token discovered; fields, state and evidence are separate obligations."
+    },
+    {
+      "id": "CORE_SEND",
+      "number": 76,
+      "boundary": "service-ipc",
+      "owner": "core-host",
+      "required": true,
+      "disposition": "active-external",
+      "source_references": [
+        {
+          "path": "src/service/core/core_api.c",
+          "line": 308
+        },
+        {
+          "path": "src/service/core/gnunet-service-core.c",
+          "line": 1160
+        }
+      ],
+      "note": "External sender/handler token discovered; fields, state and evidence are separate obligations."
+    },
+    {
+      "id": "CORE_MONITOR_PEERS",
+      "number": 78,
+      "boundary": "service-ipc",
+      "owner": "core-host",
+      "required": true,
+      "disposition": "active-external",
+      "source_references": [
+        {
+          "path": "src/service/core/core_api_monitor_peers.c",
+          "line": 136
+        },
+        {
+          "path": "src/service/core/gnunet-service-core.c",
+          "line": 1152
+        }
+      ],
+      "note": "External sender/handler token discovered; fields, state and evidence are separate obligations."
+    },
+    {
+      "id": "CORE_MONITOR_NOTIFY",
+      "number": 79,
+      "boundary": "service-ipc",
+      "owner": "core-host",
+      "required": true,
+      "disposition": "active-external",
+      "source_references": [
+        {
+          "path": "src/service/core/core_api_monitor_peers.c",
+          "line": 116
+        },
+        {
+          "path": "src/service/core/gnunet-service-core_kx.c",
+          "line": 673
+        },
+        {
+          "path": "src/service/core/gnunet-service-core_kx.c",
+          "line": 3712
+        },
+        {
+          "path": "src/service/core/gnunet-service-core_kx.c",
+          "line": 3718
+        }
+      ],
+      "note": "External sender/handler token discovered; fields, state and evidence are separate obligations."
+    },
+    {
+      "id": "CORE_INITIATOR_HELLO",
+      "number": 80,
+      "boundary": "network-wire",
+      "owner": "core-peer",
+      "required": true,
+      "disposition": "active-external",
+      "source_references": [
+        {
+          "path": "src/service/core/gnunet-service-core_kx.c",
+          "line": 3289
+        },
+        {
+          "path": "src/service/core/gnunet-service-core_kx.c",
+          "line": 3544
+        }
+      ],
+      "note": "External sender/handler token discovered; fields, state and evidence are separate obligations."
+    },
+    {
+      "id": "CORE_RESPONDER_HELLO",
+      "number": 81,
+      "boundary": "network-wire",
+      "owner": "core-peer",
+      "required": true,
+      "disposition": "active-external",
+      "source_references": [
+        {
+          "path": "src/service/core/gnunet-service-core_kx.c",
+          "line": 1550
+        },
+        {
+          "path": "src/service/core/gnunet-service-core_kx.c",
+          "line": 3552
+        }
+      ],
+      "note": "External sender/handler token discovered; fields, state and evidence are separate obligations."
+    },
+    {
+      "id": "CORE_INITIATOR_DONE",
+      "number": 82,
+      "boundary": "network-wire",
+      "owner": "core-peer",
+      "required": true,
+      "disposition": "active-external",
+      "source_references": [
+        {
+          "path": "src/service/core/gnunet-service-core_kx.c",
+          "line": 2247
+        },
+        {
+          "path": "src/service/core/gnunet-service-core_kx.c",
+          "line": 3548
+        }
+      ],
+      "note": "External sender/handler token discovered; fields, state and evidence are separate obligations."
+    },
+    {
+      "id": "CORE_ENCRYPTED_MESSAGE_CAKE",
+      "number": 83,
+      "boundary": "network-wire",
+      "owner": "core-peer",
+      "required": true,
+      "disposition": "active-external",
+      "source_references": [
+        {
+          "path": "src/service/core/gnunet-service-core_kx.c",
+          "line": 3478
+        },
+        {
+          "path": "src/service/core/gnunet-service-core_kx.c",
+          "line": 3556
+        }
+      ],
+      "note": "External sender/handler token discovered; fields, state and evidence are separate obligations."
+    },
+    {
+      "id": "CORE_HEARTBEAT",
+      "number": 84,
+      "boundary": "network-wire",
+      "owner": "core-peer",
+      "required": true,
+      "disposition": "active-external",
+      "source_references": [
+        {
+          "path": "src/service/core/gnunet-service-core_kx.c",
+          "line": 738
+        },
+        {
+          "path": "src/service/core/gnunet-service-core_kx.c",
+          "line": 2906
+        }
+      ],
+      "note": "External sender/handler token discovered; fields, state and evidence are separate obligations."
+    },
+    {
+      "id": "CORE_ACK",
+      "number": 85,
+      "boundary": "network-wire",
+      "owner": "core-peer",
+      "required": true,
+      "disposition": "active-external",
+      "source_references": [
+        {
+          "path": "src/service/core/gnunet-service-core_kx.c",
+          "line": 2311
+        },
+        {
+          "path": "src/service/core/gnunet-service-core_kx.c",
+          "line": 2642
+        },
+        {
+          "path": "src/service/core/gnunet-service-core_kx.c",
+          "line": 2761
+        },
+        {
+          "path": "src/service/core/gnunet-service-core_kx.c",
+          "line": 2811
+        },
+        {
+          "path": "src/service/core/gnunet-service-core_kx.c",
+          "line": 2877
+        },
+        {
+          "path": "src/service/core/gnunet-service-core_kx.c",
+          "line": 2900
+        }
+      ],
+      "note": "External sender/handler token discovered; fields, state and evidence are separate obligations."
+    },
+    {
+      "id": "TRANSPORT_START",
+      "number": 360,
+      "boundary": "service-ipc",
+      "owner": "transport-service",
+      "required": true,
+      "disposition": "active-external",
+      "source_references": [
+        {
+          "path": "src/service/transport/gnunet-service-transport.c",
+          "line": 16063
+        },
+        {
+          "path": "src/service/transport/transport_api_core.c",
+          "line": 649
+        }
+      ],
+      "note": "External sender/handler token discovered; fields, state and evidence are separate obligations."
+    },
+    {
+      "id": "TRANSPORT_CONNECT",
+      "number": 361,
+      "boundary": "service-ipc",
+      "owner": "transport-service",
+      "required": true,
+      "disposition": "active-external",
+      "source_references": [
+        {
+          "path": "src/service/transport/gnunet-service-transport.c",
+          "line": 4334
+        },
+        {
+          "path": "src/service/transport/transport_api_core.c",
+          "line": 621
+        }
+      ],
+      "note": "External sender/handler token discovered; fields, state and evidence are separate obligations."
+    },
+    {
+      "id": "TRANSPORT_DISCONNECT",
+      "number": 362,
+      "boundary": "service-ipc",
+      "owner": "transport-service",
+      "required": true,
+      "disposition": "active-external",
+      "source_references": [
+        {
+          "path": "src/service/transport/gnunet-service-transport.c",
+          "line": 4044
+        },
+        {
+          "path": "src/service/transport/transport_api_core.c",
+          "line": 625
+        }
+      ],
+      "note": "External sender/handler token discovered; fields, state and evidence are separate obligations."
+    },
+    {
+      "id": "TRANSPORT_SEND",
+      "number": 363,
+      "boundary": "service-ipc",
+      "owner": "transport-service",
+      "required": true,
+      "disposition": "active-external",
+      "source_references": [
+        {
+          "path": "src/service/transport/gnunet-service-transport.c",
+          "line": 16067
+        },
+        {
+          "path": "src/service/transport/transport_api_core.c",
+          "line": 335
+        }
+      ],
+      "note": "External sender/handler token discovered; fields, state and evidence are separate obligations."
+    },
+    {
+      "id": "TRANSPORT_SEND_OK",
+      "number": 364,
+      "boundary": "service-ipc",
+      "owner": "transport-service",
+      "required": true,
+      "disposition": "active-external",
+      "source_references": [
+        {
+          "path": "src/service/transport/gnunet-service-transport.c",
+          "line": 3764
+        },
+        {
+          "path": "src/service/transport/transport_api_core.c",
+          "line": 629
+        }
+      ],
+      "note": "External sender/handler token discovered; fields, state and evidence are separate obligations."
+    },
+    {
+      "id": "TRANSPORT_RECV",
+      "number": 365,
+      "boundary": "service-ipc",
+      "owner": "transport-service",
+      "required": true,
+      "disposition": "active-external",
+      "source_references": [
+        {
+          "path": "src/service/transport/gnunet-service-transport.c",
+          "line": 7391
+        },
+        {
+          "path": "src/service/transport/transport_api_core.c",
+          "line": 633
+        }
+      ],
+      "note": "External sender/handler token discovered; fields, state and evidence are separate obligations."
+    },
+    {
+      "id": "TRANSPORT_RECV_OK",
+      "number": 366,
+      "boundary": "service-ipc",
+      "owner": "transport-service",
+      "required": true,
+      "disposition": "active-external",
+      "source_references": [
+        {
+          "path": "src/service/transport/gnunet-service-transport.c",
+          "line": 16071
+        },
+        {
+          "path": "src/service/transport/transport_api_core.c",
+          "line": 764
+        }
+      ],
+      "note": "External sender/handler token discovered; fields, state and evidence are separate obligations."
+    },
+    {
+      "id": "TRANSPORT_SET_QUOTA",
+      "number": 366,
+      "boundary": "reference-only",
+      "owner": "registry-research",
+      "required": false,
+      "disposition": "no-current-runtime-reference",
+      "source_references": [],
+      "note": "Registry assignment retained; no imaginary active layout or obligation inferred from a historic name."
+    },
+    {
+      "id": "TRANSPORT_ADDRESS_TO_STRING",
+      "number": 367,
+      "boundary": "reference-only",
+      "owner": "registry-research",
+      "required": false,
+      "disposition": "no-current-runtime-reference",
+      "source_references": [],
+      "note": "Registry assignment retained; no imaginary active layout or obligation inferred from a historic name."
+    },
+    {
+      "id": "TRANSPORT_ADDRESS_TO_STRING_REPLY",
+      "number": 368,
+      "boundary": "reference-only",
+      "owner": "registry-research",
+      "required": false,
+      "disposition": "no-current-runtime-reference",
+      "source_references": [],
+      "note": "Registry assignment retained; no imaginary active layout or obligation inferred from a historic name."
+    },
+    {
+      "id": "TRANSPORT_BLACKLIST_INIT",
+      "number": 369,
+      "boundary": "reference-only",
+      "owner": "registry-research",
+      "required": false,
+      "disposition": "no-current-runtime-reference",
+      "source_references": [],
+      "note": "Registry assignment retained; no imaginary active layout or obligation inferred from a historic name."
+    },
+    {
+      "id": "TRANSPORT_BLACKLIST_QUERY",
+      "number": 370,
+      "boundary": "reference-only",
+      "owner": "registry-research",
+      "required": false,
+      "disposition": "no-current-runtime-reference",
+      "source_references": [],
+      "note": "Registry assignment retained; no imaginary active layout or obligation inferred from a historic name."
+    },
+    {
+      "id": "TRANSPORT_BLACKLIST_REPLY",
+      "number": 371,
+      "boundary": "reference-only",
+      "owner": "registry-research",
+      "required": false,
+      "disposition": "no-current-runtime-reference",
+      "source_references": [],
+      "note": "Registry assignment retained; no imaginary active layout or obligation inferred from a historic name."
+    },
+    {
+      "id": "TRANSPORT_PING",
+      "number": 372,
+      "boundary": "reference-only",
+      "owner": "registry-research",
+      "required": false,
+      "disposition": "no-current-runtime-reference",
+      "source_references": [],
+      "note": "Registry assignment retained; no imaginary active layout or obligation inferred from a historic name."
+    },
+    {
+      "id": "TRANSPORT_PONG",
+      "number": 373,
+      "boundary": "reference-only",
+      "owner": "registry-research",
+      "required": false,
+      "disposition": "no-current-runtime-reference",
+      "source_references": [],
+      "note": "Registry assignment retained; no imaginary active layout or obligation inferred from a historic name."
+    },
+    {
+      "id": "TRANSPORT_SESSION_SYN",
+      "number": 375,
+      "boundary": "reference-only",
+      "owner": "registry-research",
+      "required": false,
+      "disposition": "no-current-runtime-reference",
+      "source_references": [],
+      "note": "Registry assignment retained; no imaginary active layout or obligation inferred from a historic name."
+    },
+    {
+      "id": "TRANSPORT_SESSION_SYN_ACK",
+      "number": 376,
+      "boundary": "reference-only",
+      "owner": "registry-research",
+      "required": false,
+      "disposition": "no-current-runtime-reference",
+      "source_references": [],
+      "note": "Registry assignment retained; no imaginary active layout or obligation inferred from a historic name."
+    },
+    {
+      "id": "TRANSPORT_SESSION_ACK",
+      "number": 377,
+      "boundary": "reference-only",
+      "owner": "registry-research",
+      "required": false,
+      "disposition": "no-current-runtime-reference",
+      "source_references": [],
+      "note": "Registry assignment retained; no imaginary active layout or obligation inferred from a historic name."
+    },
+    {
+      "id": "TRANSPORT_SESSION_DISCONNECT",
+      "number": 378,
+      "boundary": "reference-only",
+      "owner": "registry-research",
+      "required": false,
+      "disposition": "no-current-runtime-reference",
+      "source_references": [],
+      "note": "Registry assignment retained; no imaginary active layout or obligation inferred from a historic name."
+    },
+    {
+      "id": "TRANSPORT_SESSION_QUOTA",
+      "number": 379,
+      "boundary": "reference-only",
+      "owner": "registry-research",
+      "required": false,
+      "disposition": "no-current-runtime-reference",
+      "source_references": [],
+      "note": "Registry assignment retained; no imaginary active layout or obligation inferred from a historic name."
+    },
+    {
+      "id": "TRANSPORT_MONITOR_PEER_REQUEST",
+      "number": 380,
+      "boundary": "reference-only",
+      "owner": "registry-research",
+      "required": false,
+      "disposition": "no-current-runtime-reference",
+      "source_references": [],
+      "note": "Registry assignment retained; no imaginary active layout or obligation inferred from a historic name."
+    },
+    {
+      "id": "TRANSPORT_SESSION_KEEPALIVE",
+      "number": 381,
+      "boundary": "reference-only",
+      "owner": "registry-research",
+      "required": false,
+      "disposition": "no-current-runtime-reference",
+      "source_references": [],
+      "note": "Registry assignment retained; no imaginary active layout or obligation inferred from a historic name."
+    },
+    {
+      "id": "TRANSPORT_SESSION_KEEPALIVE_RESPONSE",
+      "number": 382,
+      "boundary": "reference-only",
+      "owner": "registry-research",
+      "required": false,
+      "disposition": "no-current-runtime-reference",
+      "source_references": [],
+      "note": "Registry assignment retained; no imaginary active layout or obligation inferred from a historic name."
+    },
+    {
+      "id": "TRANSPORT_MONITOR_PEER_RESPONSE",
+      "number": 383,
+      "boundary": "reference-only",
+      "owner": "registry-research",
+      "required": false,
+      "disposition": "no-current-runtime-reference",
+      "source_references": [],
+      "note": "Registry assignment retained; no imaginary active layout or obligation inferred from a historic name."
+    },
+    {
+      "id": "TRANSPORT_BROADCAST_BEACON",
+      "number": 384,
+      "boundary": "reference-only",
+      "owner": "registry-research",
+      "required": false,
+      "disposition": "no-current-runtime-reference",
+      "source_references": [],
+      "note": "Registry assignment retained; no imaginary active layout or obligation inferred from a historic name."
+    },
+    {
+      "id": "TRANSPORT_TRAFFIC_METRIC",
+      "number": 385,
+      "boundary": "reference-only",
+      "owner": "registry-research",
+      "required": false,
+      "disposition": "no-current-runtime-reference",
+      "source_references": [],
+      "note": "Registry assignment retained; no imaginary active layout or obligation inferred from a historic name."
+    },
+    {
+      "id": "TRANSPORT_MONITOR_PLUGIN_START",
+      "number": 388,
+      "boundary": "reference-only",
+      "owner": "registry-research",
+      "required": false,
+      "disposition": "no-current-runtime-reference",
+      "source_references": [],
+      "note": "Registry assignment retained; no imaginary active layout or obligation inferred from a historic name."
+    },
+    {
+      "id": "TRANSPORT_MONITOR_PLUGIN_EVENT",
+      "number": 389,
+      "boundary": "reference-only",
+      "owner": "registry-research",
+      "required": false,
+      "disposition": "no-current-runtime-reference",
+      "source_references": [],
+      "note": "Registry assignment retained; no imaginary active layout or obligation inferred from a historic name."
+    },
+    {
+      "id": "TRANSPORT_MONITOR_PLUGIN_SYNC",
+      "number": 390,
+      "boundary": "reference-only",
+      "owner": "registry-research",
+      "required": false,
+      "disposition": "no-current-runtime-reference",
+      "source_references": [],
+      "note": "Registry assignment retained; no imaginary active layout or obligation inferred from a historic name."
+    },
+    {
+      "id": "TRANSPORT_MONITOR_PEER_RESPONSE_END",
+      "number": 391,
+      "boundary": "reference-only",
+      "owner": "registry-research",
+      "required": false,
+      "disposition": "no-current-runtime-reference",
+      "source_references": [],
+      "note": "Registry assignment retained; no imaginary active layout or obligation inferred from a historic name."
+    },
+    {
+      "id": "TRANSPORT_ADD_ADDRESS",
+      "number": 1200,
+      "boundary": "service-ipc",
+      "owner": "transport-service",
+      "required": true,
+      "disposition": "active-external",
+      "source_references": [
+        {
+          "path": "src/service/transport/gnunet-service-transport.c",
+          "line": 16084
+        },
+        {
+          "path": "src/service/transport/transport_api_communication.c",
+          "line": 374
+        }
+      ],
+      "note": "External sender/handler token discovered; fields, state and evidence are separate obligations."
+    },
+    {
+      "id": "TRANSPORT_DEL_ADDRESS",
+      "number": 1201,
+      "boundary": "service-ipc",
+      "owner": "transport-service",
+      "required": true,
+      "disposition": "active-external",
+      "source_references": [
+        {
+          "path": "src/service/transport/gnunet-service-transport.c",
+          "line": 16088
+        },
+        {
+          "path": "src/service/transport/transport_api_communication.c",
+          "line": 396
+        }
+      ],
+      "note": "External sender/handler token discovered; fields, state and evidence are separate obligations."
+    },
+    {
+      "id": "TRANSPORT_INCOMING_MSG",
+      "number": 1202,
+      "boundary": "service-ipc",
+      "owner": "transport-service",
+      "required": true,
+      "disposition": "active-external",
+      "source_references": [
+        {
+          "path": "src/service/transport/gnunet-service-transport.c",
+          "line": 16092
+        },
+        {
+          "path": "src/service/transport/transport_api_communication.c",
+          "line": 966
+        }
+      ],
+      "note": "External sender/handler token discovered; fields, state and evidence are separate obligations."
+    },
+    {
+      "id": "TRANSPORT_INCOMING_MSG_ACK",
+      "number": 1203,
+      "boundary": "service-ipc",
+      "owner": "transport-service",
+      "required": true,
+      "disposition": "active-external",
+      "source_references": [
+        {
+          "path": "src/service/transport/gnunet-service-transport.c",
+          "line": 5284
+        },
+        {
+          "path": "src/service/transport/transport_api_communication.c",
+          "line": 826
+        }
+      ],
+      "note": "External sender/handler token discovered; fields, state and evidence are separate obligations."
+    },
+    {
+      "id": "TRANSPORT_QUEUE_SETUP",
+      "number": 1204,
+      "boundary": "service-ipc",
+      "owner": "transport-service",
+      "required": true,
+      "disposition": "active-external",
+      "source_references": [
+        {
+          "path": "src/service/transport/gnunet-service-transport.c",
+          "line": 16104
+        },
+        {
+          "path": "src/service/transport/transport_api_communication.c",
+          "line": 420
+        }
+      ],
+      "note": "External sender/handler token discovered; fields, state and evidence are separate obligations."
+    },
+    {
+      "id": "TRANSPORT_QUEUE_TEARDOWN",
+      "number": 1205,
+      "boundary": "service-ipc",
+      "owner": "transport-service",
+      "required": true,
+      "disposition": "active-external",
+      "source_references": [
+        {
+          "path": "src/service/transport/gnunet-service-transport.c",
+          "line": 16112
+        },
+        {
+          "path": "src/service/transport/transport_api_communication.c",
+          "line": 473
+        }
+      ],
+      "note": "External sender/handler token discovered; fields, state and evidence are separate obligations."
+    },
+    {
+      "id": "TRANSPORT_QUEUE_CREATE",
+      "number": 1206,
+      "boundary": "service-ipc",
+      "owner": "transport-service",
+      "required": true,
+      "disposition": "active-external",
+      "source_references": [
+        {
+          "path": "src/service/transport/gnunet-service-transport.c",
+          "line": 13981
+        },
+        {
+          "path": "src/service/transport/transport_api_communication.c",
+          "line": 830
+        }
+      ],
+      "note": "External sender/handler token discovered; fields, state and evidence are separate obligations."
+    },
+    {
+      "id": "TRANSPORT_QUEUE_CREATE_OK",
+      "number": 1207,
+      "boundary": "service-ipc",
+      "owner": "transport-service",
+      "required": true,
+      "disposition": "active-external",
+      "source_references": [
+        {
+          "path": "src/service/transport/gnunet-service-transport.c",
+          "line": 16096
+        },
+        {
+          "path": "src/service/transport/transport_api_communication.c",
+          "line": 624
+        }
+      ],
+      "note": "External sender/handler token discovered; fields, state and evidence are separate obligations."
+    },
+    {
+      "id": "TRANSPORT_QUEUE_CREATE_FAIL",
+      "number": 1208,
+      "boundary": "service-ipc",
+      "owner": "transport-service",
+      "required": true,
+      "disposition": "active-external",
+      "source_references": [
+        {
+          "path": "src/service/transport/gnunet-service-transport.c",
+          "line": 16100
+        },
+        {
+          "path": "src/service/transport/transport_api_communication.c",
+          "line": 613
+        },
+        {
+          "path": "src/service/transport/transport_api_communication.c",
+          "line": 620
+        }
+      ],
+      "note": "External sender/handler token discovered; fields, state and evidence are separate obligations."
+    },
+    {
+      "id": "TRANSPORT_SEND_MSG",
+      "number": 1209,
+      "boundary": "service-ipc",
+      "owner": "transport-service",
+      "required": true,
+      "disposition": "active-external",
+      "source_references": [
+        {
+          "path": "src/service/transport/gnunet-service-transport.c",
+          "line": 5642
+        },
+        {
+          "path": "src/service/transport/transport_api_communication.c",
+          "line": 834
+        }
+      ],
+      "note": "External sender/handler token discovered; fields, state and evidence are separate obligations."
+    },
+    {
+      "id": "TRANSPORT_SEND_MSG_ACK",
+      "number": 1210,
+      "boundary": "service-ipc",
+      "owner": "transport-service",
+      "required": true,
+      "disposition": "active-external",
+      "source_references": [
+        {
+          "path": "src/service/transport/gnunet-service-transport.c",
+          "line": 16116
+        },
+        {
+          "path": "src/service/transport/transport_api_communication.c",
+          "line": 667
+        }
+      ],
+      "note": "External sender/handler token discovered; fields, state and evidence are separate obligations."
+    },
+    {
+      "id": "TRANSPORT_NEW_COMMUNICATOR",
+      "number": 1211,
+      "boundary": "service-ipc",
+      "owner": "transport-service",
+      "required": true,
+      "disposition": "active-external",
+      "source_references": [
+        {
+          "path": "src/service/transport/gnunet-service-transport.c",
+          "line": 16076
+        },
+        {
+          "path": "src/service/transport/transport_api_communication.c",
+          "line": 857
+        }
+      ],
+      "note": "External sender/handler token discovered; fields, state and evidence are separate obligations."
+    },
+    {
+      "id": "TRANSPORT_COMMUNICATOR_BACKCHANNEL",
+      "number": 1212,
+      "boundary": "service-ipc",
+      "owner": "transport-service",
+      "required": true,
+      "disposition": "active-external",
+      "source_references": [
+        {
+          "path": "src/service/transport/gnunet-service-transport.c",
+          "line": 16080
+        },
+        {
+          "path": "src/service/transport/transport_api_communication.c",
+          "line": 1168
+        }
+      ],
+      "note": "External sender/handler token discovered; fields, state and evidence are separate obligations."
+    },
+    {
+      "id": "TRANSPORT_BACKCHANNEL_ENCAPSULATION",
+      "number": 1213,
+      "boundary": "network-wire",
+      "owner": "transport-service",
+      "required": true,
+      "disposition": "active-external",
+      "source_references": [
+        {
+          "path": "src/service/transport/gnunet-service-transport.c",
+          "line": 6654
+        },
+        {
+          "path": "src/service/transport/gnunet-service-transport.c",
+          "line": 12189
+        }
+      ],
+      "note": "External sender/handler token discovered; fields, state and evidence are separate obligations."
+    },
+    {
+      "id": "TRANSPORT_FRAGMENT",
+      "number": 1214,
+      "boundary": "network-wire",
+      "owner": "transport-service",
+      "required": true,
+      "disposition": "active-external",
+      "source_references": [
+        {
+          "path": "src/service/transport/gnunet-service-transport.c",
+          "line": 12177
+        },
+        {
+          "path": "src/service/transport/gnunet-service-transport.c",
+          "line": 12445
+        }
+      ],
+      "note": "External sender/handler token discovered; fields, state and evidence are separate obligations."
+    },
+    {
+      "id": "TRANSPORT_RELIABILITY_BOX",
+      "number": 1216,
+      "boundary": "network-wire",
+      "owner": "transport-service",
+      "required": true,
+      "disposition": "active-external",
+      "source_references": [
+        {
+          "path": "src/service/transport/gnunet-service-transport.c",
+          "line": 12181
+        },
+        {
+          "path": "src/service/transport/gnunet-service-transport.c",
+          "line": 12548
+        }
+      ],
+      "note": "External sender/handler token discovered; fields, state and evidence are separate obligations."
+    },
+    {
+      "id": "TRANSPORT_RELIABILITY_ACK",
+      "number": 1217,
+      "boundary": "network-wire",
+      "owner": "transport-service",
+      "required": true,
+      "disposition": "active-external",
+      "source_references": [
+        {
+          "path": "src/service/transport/gnunet-service-transport.c",
+          "line": 7645
+        },
+        {
+          "path": "src/service/transport/gnunet-service-transport.c",
+          "line": 12185
+        }
+      ],
+      "note": "External sender/handler token discovered; fields, state and evidence are separate obligations."
+    },
+    {
+      "id": "TRANSPORT_DV_LEARN",
+      "number": 1218,
+      "boundary": "network-wire",
+      "owner": "transport-service",
+      "required": true,
+      "disposition": "active-external",
+      "source_references": [
+        {
+          "path": "src/service/transport/gnunet-service-transport.c",
+          "line": 9051
+        },
+        {
+          "path": "src/service/transport/gnunet-service-transport.c",
+          "line": 10229
+        },
+        {
+          "path": "src/service/transport/gnunet-service-transport.c",
+          "line": 12193
+        },
+        {
+          "path": "src/service/transport/gnunet-service-transport.c",
+          "line": 14365
+        }
+      ],
+      "note": "External sender/handler token discovered; fields, state and evidence are separate obligations."
+    },
+    {
+      "id": "TRANSPORT_DV_BOX",
+      "number": 1219,
+      "boundary": "network-wire",
+      "owner": "transport-service",
+      "required": true,
+      "disposition": "active-external",
+      "source_references": [
+        {
+          "path": "src/service/transport/gnunet-service-transport.c",
+          "line": 5884
+        },
+        {
+          "path": "src/service/transport/gnunet-service-transport.c",
+          "line": 10224
+        },
+        {
+          "path": "src/service/transport/gnunet-service-transport.c",
+          "line": 12197
+        }
+      ],
+      "note": "External sender/handler token discovered; fields, state and evidence are separate obligations."
+    },
+    {
+      "id": "TRANSPORT_COMMUNICATOR_BACKCHANNEL_INCOMING",
+      "number": 1220,
+      "boundary": "service-ipc",
+      "owner": "transport-service",
+      "required": true,
+      "disposition": "active-external",
+      "source_references": [
+        {
+          "path": "src/service/transport/gnunet-service-transport.c",
+          "line": 8467
+        },
+        {
+          "path": "src/service/transport/transport_api_communication.c",
+          "line": 839
+        }
+      ],
+      "note": "External sender/handler token discovered; fields, state and evidence are separate obligations."
+    },
+    {
+      "id": "TRANSPORT_FLOW_CONTROL",
+      "number": 1221,
+      "boundary": "network-wire",
+      "owner": "transport-service",
+      "required": true,
+      "disposition": "active-external",
+      "source_references": [
+        {
+          "path": "src/service/transport/gnunet-service-transport.c",
+          "line": 6322
+        },
+        {
+          "path": "src/service/transport/gnunet-service-transport.c",
+          "line": 12201
+        }
+      ],
+      "note": "External sender/handler token discovered; fields, state and evidence are separate obligations."
+    },
+    {
+      "id": "TRANSPORT_QUEUE_UPDATE",
+      "number": 1222,
+      "boundary": "service-ipc",
+      "owner": "transport-service",
+      "required": true,
+      "disposition": "active-external",
+      "source_references": [
+        {
+          "path": "src/service/transport/gnunet-service-transport.c",
+          "line": 16108
+        },
+        {
+          "path": "src/service/transport/transport_api_communication.c",
+          "line": 447
+        }
+      ],
+      "note": "External sender/handler token discovered; fields, state and evidence are separate obligations."
+    },
+    {
+      "id": "TRANSPORT_MONITOR_START",
+      "number": 1250,
+      "boundary": "service-ipc",
+      "owner": "transport-service",
+      "required": true,
+      "disposition": "active-external",
+      "source_references": [
+        {
+          "path": "src/service/transport/gnunet-service-transport.c",
+          "line": 16125
+        },
+        {
+          "path": "src/service/transport/transport_api_monitor.c",
+          "line": 93
+        }
+      ],
+      "note": "External sender/handler token discovered; fields, state and evidence are separate obligations."
+    },
+    {
+      "id": "TRANSPORT_MONITOR_DATA",
+      "number": 1251,
+      "boundary": "service-ipc",
+      "owner": "transport-service",
+      "required": true,
+      "disposition": "active-external",
+      "source_references": [
+        {
+          "path": "src/service/transport/gnunet-service-transport.c",
+          "line": 4168
+        },
+        {
+          "path": "src/service/transport/transport_api_monitor.c",
+          "line": 210
+        }
+      ],
+      "note": "External sender/handler token discovered; fields, state and evidence are separate obligations."
+    },
+    {
+      "id": "TRANSPORT_MONITOR_END",
+      "number": 1252,
+      "boundary": "service-ipc",
+      "owner": "transport-service",
+      "required": true,
+      "disposition": "active-external",
+      "source_references": [
+        {
+          "path": "src/service/transport/transport_api_monitor.c",
+          "line": 214
+        }
+      ],
+      "note": "External sender/handler token discovered; fields, state and evidence are separate obligations."
+    },
+    {
+      "id": "TRANSPORT_START_BURST",
+      "number": 1253,
+      "boundary": "service-ipc",
+      "owner": "transport-service",
+      "required": true,
+      "disposition": "active-external",
+      "source_references": [
+        {
+          "path": "src/service/transport/gnunet-service-transport.c",
+          "line": 11766
+        },
+        {
+          "path": "src/service/transport/transport_api_communication.c",
+          "line": 844
+        }
+      ],
+      "note": "External sender/handler token discovered; fields, state and evidence are separate obligations."
+    },
+    {
+      "id": "TRANSPORT_BURST_FINISHED",
+      "number": 1254,
+      "boundary": "service-ipc",
+      "owner": "transport-service",
+      "required": true,
+      "disposition": "active-external",
+      "source_references": [
+        {
+          "path": "src/service/transport/gnunet-service-transport.c",
+          "line": 16120
+        },
+        {
+          "path": "src/service/transport/transport_api_communication.c",
+          "line": 1187
+        }
+      ],
+      "note": "External sender/handler token discovered; fields, state and evidence are separate obligations."
+    },
+    {
+      "id": "TRANSPORT_LINK_LIST_REQUEST",
+      "number": 1255,
+      "boundary": "service-ipc",
+      "owner": "transport-service",
+      "required": true,
+      "disposition": "active-external",
+      "source_references": [
+        {
+          "path": "src/service/transport/gnunet-service-transport.c",
+          "line": 16129
+        },
+        {
+          "path": "src/service/transport/transport_api_monitor.c",
+          "line": 474
+        }
+      ],
+      "note": "External sender/handler token discovered; fields, state and evidence are separate obligations."
+    },
+    {
+      "id": "TRANSPORT_LINK_LIST_RESPONSE",
+      "number": 1256,
+      "boundary": "service-ipc",
+      "owner": "transport-service",
+      "required": true,
+      "disposition": "active-external",
+      "source_references": [
+        {
+          "path": "src/service/transport/gnunet-service-transport.c",
+          "line": 13825
+        },
+        {
+          "path": "src/service/transport/transport_api_monitor.c",
+          "line": 448
+        }
+      ],
+      "note": "External sender/handler token discovered; fields, state and evidence are separate obligations."
+    },
+    {
+      "id": "TRANSPORT_LINK_LIST_RESPONSE_END",
+      "number": 1257,
+      "boundary": "service-ipc",
+      "owner": "transport-service",
+      "required": true,
+      "disposition": "active-external",
+      "source_references": [
+        {
+          "path": "src/service/transport/gnunet-service-transport.c",
+          "line": 13901
+        },
+        {
+          "path": "src/service/transport/transport_api_monitor.c",
+          "line": 453
+        }
+      ],
+      "note": "External sender/handler token discovered; fields, state and evidence are separate obligations."
+    },
+    {
+      "id": "TRANSPORT_COMMUNICATOR_KX_CONFIRMATION",
+      "number": 1275,
+      "boundary": "reference-only",
+      "owner": "registry-research",
+      "required": false,
+      "disposition": "declared-optional-extension",
+      "source_references": [],
+      "note": "Recommended communicator extension layout, no runtime sender/handler discovered; retain without claiming TCP path requires it."
+    },
+    {
+      "id": "TRANSPORT_COMMUNICATOR_FC_LIMITS",
+      "number": 1276,
+      "boundary": "reference-only",
+      "owner": "registry-research",
+      "required": false,
+      "disposition": "declared-optional-extension",
+      "source_references": [],
+      "note": "Recommended communicator extension layout, no runtime sender/handler discovered; retain without claiming TCP path requires it."
+    },
+    {
+      "id": "TRANSPORT_SUGGEST",
+      "number": 1300,
+      "boundary": "service-ipc",
+      "owner": "transport-service",
+      "required": true,
+      "disposition": "active-external",
+      "source_references": [
+        {
+          "path": "src/service/transport/gnunet-service-transport.c",
+          "line": 16050
+        },
+        {
+          "path": "src/service/transport/transport_api_application.c",
+          "line": 179
+        }
+      ],
+      "note": "External sender/handler token discovered; fields, state and evidence are separate obligations."
+    },
+    {
+      "id": "TRANSPORT_SUGGEST_CANCEL",
+      "number": 1301,
+      "boundary": "service-ipc",
+      "owner": "transport-service",
+      "required": true,
+      "disposition": "active-external",
+      "source_references": [
+        {
+          "path": "src/service/transport/gnunet-service-transport.c",
+          "line": 16054
+        },
+        {
+          "path": "src/service/transport/transport_api_application.c",
+          "line": 341
+        }
+      ],
+      "note": "External sender/handler token discovered; fields, state and evidence are separate obligations."
+    },
+    {
+      "id": "TRANSPORT_REQUEST_HELLO_VALIDATION",
+      "number": 1302,
+      "boundary": "service-ipc",
+      "owner": "transport-service",
+      "required": true,
+      "disposition": "active-external",
+      "source_references": [
+        {
+          "path": "src/service/transport/gnunet-service-transport.c",
+          "line": 16058
+        },
+        {
+          "path": "src/service/transport/transport_api_application.c",
+          "line": 389
+        }
+      ],
+      "note": "External sender/handler token discovered; fields, state and evidence are separate obligations."
+    },
+    {
+      "id": "TRANSPORT_ADDRESS_VALIDATION_CHALLENGE",
+      "number": 1303,
+      "boundary": "network-wire",
+      "owner": "transport-service",
+      "required": true,
+      "disposition": "active-external",
+      "source_references": [
+        {
+          "path": "src/service/transport/gnunet-service-transport.c",
+          "line": 12206
+        },
+        {
+          "path": "src/service/transport/gnunet-service-transport.c",
+          "line": 14027
+        }
+      ],
+      "note": "External sender/handler token discovered; fields, state and evidence are separate obligations."
+    },
+    {
+      "id": "TRANSPORT_ADDRESS_VALIDATION_RESPONSE",
+      "number": 1304,
+      "boundary": "network-wire",
+      "owner": "transport-service",
+      "required": true,
+      "disposition": "active-external",
+      "source_references": [
+        {
+          "path": "src/service/transport/gnunet-service-transport.c",
+          "line": 11046
+        },
+        {
+          "path": "src/service/transport/gnunet-service-transport.c",
+          "line": 12211
+        }
+      ],
+      "note": "External sender/handler token discovered; fields, state and evidence are separate obligations."
+    },
+    {
+      "id": "COMMUNICATOR_TCP_REKEY",
+      "number": 1450,
+      "boundary": "network-wire",
+      "owner": "tcp-communicator",
+      "required": true,
+      "disposition": "active-external",
+      "source_references": [
+        {
+          "path": "src/service/transport/gnunet-communicator-libp2p.c",
+          "line": 879
+        },
+        {
+          "path": "src/service/transport/gnunet-communicator-libp2p.c",
+          "line": 1349
+        },
+        {
+          "path": "src/service/transport/gnunet-communicator-tcp.c",
+          "line": 1735
+        },
+        {
+          "path": "src/service/transport/gnunet-communicator-tcp.c",
+          "line": 2265
+        }
+      ],
+      "note": "External sender/handler token discovered; fields, state and evidence are separate obligations."
+    },
+    {
+      "id": "COMMUNICATOR_TCP_BOX",
+      "number": 1451,
+      "boundary": "network-wire",
+      "owner": "tcp-communicator",
+      "required": true,
+      "disposition": "active-external",
+      "source_references": [
+        {
+          "path": "src/service/transport/gnunet-communicator-libp2p.c",
+          "line": 1323
+        },
+        {
+          "path": "src/service/transport/gnunet-communicator-libp2p.c",
+          "line": 1869
+        },
+        {
+          "path": "src/service/transport/gnunet-communicator-tcp.c",
+          "line": 2239
+        },
+        {
+          "path": "src/service/transport/gnunet-communicator-tcp.c",
+          "line": 2793
+        }
+      ],
+      "note": "External sender/handler token discovered; fields, state and evidence are separate obligations."
+    },
+    {
+      "id": "COMMUNICATOR_TCP_FINISH",
+      "number": 1452,
+      "boundary": "network-wire",
+      "owner": "tcp-communicator",
+      "required": true,
+      "disposition": "active-external",
+      "source_references": [
+        {
+          "path": "src/service/transport/gnunet-communicator-libp2p.c",
+          "line": 365
+        },
+        {
+          "path": "src/service/transport/gnunet-communicator-libp2p.c",
+          "line": 1378
+        },
+        {
+          "path": "src/service/transport/gnunet-communicator-tcp.c",
+          "line": 1177
+        },
+        {
+          "path": "src/service/transport/gnunet-communicator-tcp.c",
+          "line": 2294
+        }
+      ],
+      "note": "External sender/handler token discovered; fields, state and evidence are separate obligations."
+    },
+    {
+      "id": "COMMUNICATOR_TCP_CONFIRMATION_ACK",
+      "number": 1453,
+      "boundary": "network-wire",
+      "owner": "tcp-communicator",
+      "required": true,
+      "disposition": "active-external",
+      "source_references": [
+        {
+          "path": "src/service/transport/gnunet-communicator-libp2p.c",
+          "line": 818
+        },
+        {
+          "path": "src/service/transport/gnunet-communicator-libp2p.c",
+          "line": 1205
+        },
+        {
+          "path": "src/service/transport/gnunet-communicator-tcp.c",
+          "line": 1668
+        },
+        {
+          "path": "src/service/transport/gnunet-communicator-tcp.c",
+          "line": 2117
+        }
+      ],
+      "note": "External sender/handler token discovered; fields, state and evidence are separate obligations."
+    },
+    {
+      "id": "COMMUNICATOR_UDP_ACK",
+      "number": 1460,
+      "boundary": "network-wire",
+      "owner": "udp-communicator",
+      "required": true,
+      "disposition": "active-external",
+      "source_references": [
+        {
+          "path": "src/service/transport/gnunet-communicator-udp.c",
+          "line": 1807
+        },
+        {
+          "path": "src/service/transport/gnunet-communicator-udp.c",
+          "line": 1970
+        },
+        {
+          "path": "src/service/transport/gnunet-communicator-udp.c",
+          "line": 3583
+        }
+      ],
+      "note": "External sender/handler token discovered; fields, state and evidence are separate obligations."
+    },
+    {
+      "id": "COMMUNICATOR_UDP_PAD",
+      "number": 1461,
+      "boundary": "network-wire",
+      "owner": "udp-communicator",
+      "required": true,
+      "disposition": "active-external",
+      "source_references": [
+        {
+          "path": "src/service/transport/gnunet-communicator-udp.c",
+          "line": 2000
+        },
+        {
+          "path": "src/service/transport/gnunet-communicator-udp.c",
+          "line": 2892
+        }
+      ],
+      "note": "External sender/handler token discovered; fields, state and evidence are separate obligations."
+    },
+    {
+      "id": "COMMUNICATOR_UDP_REKEY",
+      "number": 1462,
+      "boundary": "network-wire",
+      "owner": "udp-communicator",
+      "required": true,
+      "disposition": "active-external",
+      "source_references": [
+        {
+          "path": "src/service/transport/gnunet-communicator-udp.c",
+          "line": 1915
+        },
+        {
+          "path": "src/service/transport/gnunet-communicator-udp.c",
+          "line": 3046
+        }
+      ],
+      "note": "External sender/handler token discovered; fields, state and evidence are separate obligations."
+    },
+    {
+      "id": "CORE_PEER_ID",
+      "number": 1811,
+      "boundary": "reference-only",
+      "owner": "registry-research",
+      "required": false,
+      "disposition": "no-current-runtime-reference",
+      "source_references": [],
+      "note": "Registry assignment retained; no imaginary active layout or obligation inferred from a historic name."
+    }
+  ],
+  "operations": [
+    {
+      "id": "startup.service-activation",
+      "owner": "node-composition",
+      "boundary": "externally-observable-semantics",
+      "required": true,
+      "tier": "node-path",
+      "messages": [],
+      "contract": "Parse official config paths/UNIX listeners, establish dependencies, expose service only with usable identity; activation, client permissions and controlled shutdown have defined results.",
+      "required_cases": [
+        "-c real official config and activation",
+        "missing service/config failure",
+        "permission rejection and owned shutdown"
+      ]
+    },
+    {
+      "id": "startup.pils-address-identity",
+      "owner": "node-composition",
+      "boundary": "externally-observable-semantics",
+      "required": true,
+      "tier": "node-path",
+      "messages": [],
+      "contract": "PILS address feed and HELLO-derived identity must agree with current communicator addresses; stale address-set callbacks cannot roll identity back or combine two identities in one session.",
+      "required_cases": [
+        "no identity before address feed",
+        "matching/mismatching address-set hash",
+        "identity replacement closes old sessions and fresh publishes",
+        "PILS physical loss/reconnect"
+      ]
+    },
+    {
+      "id": "startup.identity-key-material",
+      "owner": "node-composition",
+      "boundary": "externally-observable-semantics",
+      "required": true,
+      "tier": "node-path",
+      "messages": [],
+      "contract": "Retain actual identity secrets through cryptographic operations; old async signing/decapsulation belongs to its original epoch; key release follows owned work retirement.",
+      "required_cases": [
+        "real fixed-test seed profile",
+        "private-key unavailable",
+        "stale identity callback",
+        "normal secret/HELLO compatibility"
+      ]
+    },
+    {
+      "id": "startup.peerstore-history",
+      "owner": "node-composition",
+      "boundary": "externally-observable-semantics",
+      "required": true,
+      "tier": "node-path",
+      "messages": [],
+      "contract": "All monotonic replay namespaces have authoritative ordering and durable anti-rollback semantics; a lost physical MQ does not prove a pending backend STORE canceled.",
+      "required_cases": [
+        "existing multiple replay values",
+        "scan actual END then single STORE",
+        "same peer and replay-kind competing sessions",
+        "unacknowledged STORE loss then attach",
+        "process restart and writer uniqueness",
+        "database failure is no false ACK"
+      ]
+    },
+    {
+      "id": "startup.peerstore-hello",
+      "owner": "transport-service",
+      "boundary": "externally-observable-semantics",
+      "required": true,
+      "tier": "node-path",
+      "messages": [],
+      "contract": "Persist/export current signed HELLO and discover target HELLO via PEERSTORE; cancel and reconnect monitors without applying stale peer/epoch results.",
+      "required_cases": [
+        "HELLO publish/feed/update/remove",
+        "target-specific suggestion cannot enumerate unrelated targets",
+        "expiry and malformed HELLO",
+        "PS reconnect/resubscribe"
+      ]
+    },
+    {
+      "id": "startup.nat-addresses",
+      "owner": "node-composition",
+      "boundary": "externally-observable-semantics",
+      "required": true,
+      "tier": "node-path",
+      "messages": [],
+      "contract": "Address scope, NAT registration/reversal, canonical address strings and announced validity match external transport requirements.",
+      "required_cases": [
+        "loopback real path",
+        "IPv4 and IPv6",
+        "NAT reversal/probe",
+        "address removed during async validation"
+      ]
+    },
+    {
+      "id": "core.init-loopback",
+      "owner": "core-host",
+      "boundary": "service-ipc",
+      "required": true,
+      "tier": "node-path",
+      "messages": [
+        "CORE_INIT",
+        "CORE_INIT_REPLY"
+      ],
+      "contract": "Exactly one initialized app gets actual self identity/class and working self MQ; required service-info is not an invented serialized field.",
+      "required_cases": [
+        "native enum32 little profile",
+        "self send/receive",
+        "bad INIT/reserved/options/frame",
+        "PILS reidentity retires old app epoch"
+      ]
+    },
+    {
+      "id": "core.peer-notify-barrier",
+      "owner": "core-host",
+      "boundary": "service-ipc",
+      "required": true,
+      "tier": "node-path",
+      "messages": [
+        "CORE_NOTIFY_CONNECT",
+        "CORE_NOTIFY_DISCONNECT",
+        "CORE_SEND_READY"
+      ],
+      "contract": "Old request timers/CAR ownership are retired before DISCONNECT; prior queued READY remains FIFO before notification, and new peer generation cannot inherit old work.",
+      "required_cases": [
+        "two peers and same-peer reconnect",
+        "old pending and old queued READY",
+        "partial original SEND drain after DISC",
+        "MQ loss and exact one notification"
+      ]
+    },
+    {
+      "id": "core.send-permit",
+      "owner": "core-host",
+      "boundary": "service-ipc",
+      "required": true,
+      "tier": "node-path",
+      "messages": [
+        "CORE_SEND_REQUEST",
+        "CORE_SEND_READY",
+        "CORE_SEND"
+      ],
+      "contract": "Peer+smr association, 16-bit wrap/backpressure, priority/deadline and remote admission have real effects; READY grants capacity, not delivery.",
+      "required_cases": [
+        "normal library public send",
+        "two peer interleave",
+        "cancel before/after request and partial SEND",
+        "size0/undersize/malformed",
+        "wrap and stale/foreign epoch",
+        "remote aggregate64512 eachinner<64512 self65487"
+      ]
+    },
+    {
+      "id": "core.traffic-subscriptions",
+      "owner": "core-host",
+      "boundary": "service-ipc",
+      "required": true,
+      "tier": "node-path",
+      "messages": [
+        "CORE_NOTIFY_INBOUND",
+        "CORE_NOTIFY_OUTBOUND"
+      ],
+      "contract": "Dispatch each actual inner frame to matching types/options, preserve full/header shape and source peer; empty-type/nonzero-options wildcard is explicit pinned behavior.",
+      "required_cases": [
+        "type match/miss",
+        "full inbound/outbound",
+        "both four-byte previews of larger inner frame",
+        "emptytype wildcard",
+        "slow consumer queue limits and no cross-peer data"
+      ]
+    },
+    {
+      "id": "core.monitor",
+      "owner": "core-host",
+      "boundary": "service-ipc",
+      "required": true,
+      "tier": "node-path",
+      "messages": [
+        "CORE_MONITOR_PEERS",
+        "CORE_MONITOR_NOTIFY"
+      ],
+      "contract": "Independent continuous monitor emits current state/time then exact state11/zeropeer/FOREVER snapshot marker and later updates; physical loss is local, not invented server END.",
+      "required_cases": [
+        "normal C public monitor initial snapshot",
+        "continuous actual peer transitions",
+        "cancel original connection",
+        "malformed marker/unknownstate preservation"
+      ]
+    },
+    {
+      "id": "core.cake-handshake",
+      "owner": "core-peer",
+      "boundary": "network-wire",
+      "required": true,
+      "tier": "node-path",
+      "messages": [
+        "CORE_INITIATOR_HELLO",
+        "CORE_RESPONDER_HELLO",
+        "CORE_INITIATOR_DONE",
+        "CORE_ACK"
+      ],
+      "contract": "Both initiator orderings authenticate actual peer identities/classes/services and tolerate legitimate retransmission without replacing old confirmed association incorrectly.",
+      "required_cases": [
+        "two deterministic role seeds with normal C",
+        "duplicate/reordered flights",
+        "bad identity/tag/encapsulation",
+        "retry exhaustion and late old ACK",
+        "new exchange preserves existing association"
+      ]
+    },
+    {
+      "id": "core.cake-records",
+      "owner": "core-peer",
+      "boundary": "network-wire",
+      "required": true,
+      "tier": "node-path",
+      "messages": [
+        "CORE_ENCRYPTED_MESSAGE_CAKE"
+      ],
+      "contract": "Authentic records preserve application framing; per-association epoch and replay windows advance only after valid authentication.",
+      "required_cases": [
+        "actual C app bilateral payload",
+        "badtag followed by valid recovery",
+        "duplicate replay",
+        "future epoch invalid tag",
+        "valid old epoch after new epoch"
+      ]
+    },
+    {
+      "id": "core.key-update-liveness",
+      "owner": "core-peer",
+      "boundary": "network-wire",
+      "required": true,
+      "tier": "node-path",
+      "messages": [
+        "CORE_HEARTBEAT",
+        "CORE_ACK",
+        "CORE_ENCRYPTED_MESSAGE_CAKE"
+      ],
+      "contract": "Key update requests in both directions produce actual epoch1 records; heartbeat loss/retry, idle expiry and timer backpressure obey real time.",
+      "required_cases": [
+        "both roles and both directions actual HB flags1",
+        "actual app payload after rekey",
+        "genuine old/new record reorder",
+        "no artificial12h clock jump as liveness proof"
+      ]
+    },
+    {
+      "id": "transport.core-start",
+      "owner": "transport-service",
+      "boundary": "service-ipc",
+      "required": true,
+      "tier": "node-path",
+      "messages": [
+        "TRANSPORT_START",
+        "TRANSPORT_CONNECT",
+        "TRANSPORT_DISCONNECT"
+      ],
+      "contract": "Validate START identity/receive options and per-connection role; notify only usable confirmed links, preserving per-peer lifecycle on queue churn.",
+      "required_cases": [
+        "normal libgnunettransportcore start",
+        "wrong self identity",
+        "duplicate/wrong-role request",
+        "queue becomes unavailable",
+        "new client snapshot"
+      ]
+    },
+    {
+      "id": "transport.core-flow",
+      "owner": "transport-service",
+      "boundary": "service-ipc",
+      "required": true,
+      "tier": "node-path",
+      "messages": [
+        "TRANSPORT_SEND",
+        "TRANSPORT_SEND_OK",
+        "TRANSPORT_RECV",
+        "TRANSPORT_RECV_OK"
+      ],
+      "contract": "Four per-peer client send credits and explicit receive completion control actual local capacity; SEND_OK is not remote application delivery; no premature communicator ACK when CORE is stalled.",
+      "required_cases": [
+        "C-to-Rust and Rust-to-C data",
+        "exhaust then replenish actual credits",
+        "slow CORE and explicit RECV_OK",
+        "two peer isolation",
+        "partial MQ/cancel/disconnect"
+      ]
+    },
+    {
+      "id": "transport.communicator-registration",
+      "owner": "transport-service",
+      "boundary": "service-ipc",
+      "required": true,
+      "tier": "node-path",
+      "messages": [
+        "TRANSPORT_NEW_COMMUNICATOR",
+        "TRANSPORT_ADD_ADDRESS",
+        "TRANSPORT_DEL_ADDRESS"
+      ],
+      "contract": "One physical communicator connection owns its advertised prefix/characteristics and address IDs; scoped address changes feed PILS and never release foreign owners.",
+      "required_cases": [
+        "normal TCP communicator registers",
+        "duplicate prefix/address/foreign ID",
+        "address expiry/removal",
+        "physical MQ failure and reconnect"
+      ]
+    },
+    {
+      "id": "transport.queue-lifecycle",
+      "owner": "transport-service",
+      "boundary": "service-ipc",
+      "required": true,
+      "tier": "node-path",
+      "messages": [
+        "TRANSPORT_QUEUE_SETUP",
+        "TRANSPORT_QUEUE_UPDATE",
+        "TRANSPORT_QUEUE_TEARDOWN",
+        "TRANSPORT_QUEUE_CREATE",
+        "TRANSPORT_QUEUE_CREATE_OK",
+        "TRANSPORT_QUEUE_CREATE_FAIL"
+      ],
+      "contract": "Queue identity is scoped to original communicator and peer; address/network/MTU/reliability/length updates alter actual routing; CREATE request results cannot complete another epoch.",
+      "required_cases": [
+        "normal C create/setup/updates/teardown",
+        "bounded pending queue create fail",
+        "same peer multiple queues",
+        "old async create after shutdown",
+        "queue removed while in-flight"
+      ]
+    },
+    {
+      "id": "transport.communicator-io",
+      "owner": "transport-service",
+      "boundary": "service-ipc",
+      "required": true,
+      "tier": "node-path",
+      "messages": [
+        "TRANSPORT_SEND_MSG",
+        "TRANSPORT_SEND_MSG_ACK",
+        "TRANSPORT_INCOMING_MSG",
+        "TRANSPORT_INCOMING_MSG_ACK"
+      ],
+      "contract": "Original per-queue message/correlation ownership survives partial output; positive/negative completion and receive flow leases complete once.",
+      "required_cases": [
+        "actual normal communicator IPC bothways",
+        "partial writes/lost socket",
+        "negative ACK and retry",
+        "unknown queue/peer/foreign flow ID",
+        "multiple peers fairness"
+      ]
+    },
+    {
+      "id": "transport.virtual-link-control",
+      "owner": "transport-service",
+      "boundary": "network-wire",
+      "required": true,
+      "tier": "node-path",
+      "messages": [
+        "TRANSPORT_FLOW_CONTROL"
+      ],
+      "contract": "Authenticate/promote peer link only after address validation; real peer byte windows, sequence, RTT/retransmission and one-sided reset prevent unbounded send/ping-pong.",
+      "required_cases": [
+        "actual normal C flow negotiation",
+        "window exhaustion and resumption",
+        "out-of-order sender_time",
+        "seq wrap/reset",
+        "one-sided restart",
+        "bounded retransmission while stalled"
+      ]
+    },
+    {
+      "id": "transport.address-validation",
+      "owner": "transport-service",
+      "boundary": "network-wire",
+      "required": true,
+      "tier": "node-path",
+      "messages": [
+        "TRANSPORT_ADDRESS_VALIDATION_CHALLENGE",
+        "TRANSPORT_ADDRESS_VALIDATION_RESPONSE"
+      ],
+      "contract": "Validate exact target/queue challenge signature purpose35, echo origin time, bound validity/RTT and refresh; an unvalidated queue alone cannot announce a usable CORE link.",
+      "required_cases": [
+        "actual normal C challenge/response",
+        "wrong nonce/signature/identity",
+        "old response after queue replacement",
+        "expiry/revalidation",
+        "PILS signing error",
+        "legitimate NAT/reverse channel"
+      ]
+    },
+    {
+      "id": "transport.fragmentation",
+      "owner": "transport-service",
+      "boundary": "network-wire",
+      "required": true,
+      "tier": "node-path",
+      "messages": [
+        "TRANSPORT_FRAGMENT",
+        "TRANSPORT_RELIABILITY_ACK"
+      ],
+      "contract": "Fragment offsets/total/messageUUID identify assembly; ACK UUID is unique per transmission attempt and duplicate fragments get immediate ACK without duplicate delivery.",
+      "required_cases": [
+        "payload exceeds queue MTU",
+        "out-of-order and duplicates",
+        "overlap/total mismatch/out-of-range",
+        "bounded assembly expiry",
+        "retransmit new ackUUID same messageUUID",
+        "shutdown drops original leases"
+      ]
+    },
+    {
+      "id": "transport.reliability",
+      "owner": "transport-service",
+      "boundary": "network-wire",
+      "required": true,
+      "tier": "node-path",
+      "messages": [
+        "TRANSPORT_RELIABILITY_BOX",
+        "TRANSPORT_RELIABILITY_ACK"
+      ],
+      "contract": "Match ACK by authenticated sender+UUID across queues; cumulative counter/delay, retransmission, Karn/RTT and duplicate suppression affect actual original work once.",
+      "required_cases": [
+        "loss/retransmission/duplicateACK",
+        "ACK from another queue samepeer",
+        "foreignpeer sameUUID rejected",
+        "reordered counters/wrap",
+        "deadline/failure cannot fake success"
+      ]
+    },
+    {
+      "id": "transport.backchannel",
+      "owner": "transport-service",
+      "boundary": "network-wire",
+      "required": true,
+      "tier": "node-path",
+      "messages": [
+        "TRANSPORT_BACKCHANNEL_ENCAPSULATION",
+        "TRANSPORT_COMMUNICATOR_BACKCHANNEL",
+        "TRANSPORT_COMMUNICATOR_BACKCHANNEL_INCOMING"
+      ],
+      "contract": "Preserve header4 + one complete inner frame + NUL communicator prefix and the actual carrier sender identity; route over a confirmed virtual link or neighbour and deliver only to the registered matching communicator. Cryptographic/replay protection belongs to the inner communicator/carrier or enclosing DV box, not invented1213 fields.",
+      "required_cases": [
+        "actual normalC encapsulation bothways",
+        "wrong or unterminated prefix and malformed inner",
+        "unknown communicator",
+        "old physical peer/MQ owner",
+        "actual inner communicator and carrier auth/replay profile"
+      ]
+    },
+    {
+      "id": "transport.dv-discovery",
+      "owner": "transport-service",
+      "boundary": "network-wire",
+      "required": true,
+      "tier": "node-path",
+      "messages": [
+        "TRANSPORT_DV_LEARN"
+      ],
+      "contract": "Validate initiator purpose37 and each hop purpose36, path bounds/duplicates and persistent monotime; route learning/cancel prevents replay amplification.",
+      "required_cases": [
+        "three real nodes multihop",
+        "loop/pathlimit/badsignature",
+        "replayed learn across processrestart",
+        "PS unknowncommit",
+        "route refresh/expiry"
+      ]
+    },
+    {
+      "id": "transport.dv-data",
+      "owner": "transport-service",
+      "boundary": "network-wire",
+      "required": true,
+      "tier": "node-path",
+      "messages": [
+        "TRANSPORT_DV_BOX",
+        "TRANSPORT_FLOW_CONTROL"
+      ],
+      "contract": "Actual encrypted DV boxes preserve initiator/target/path/encapsulation, decapsulation lifetime and target-only inner dispatch; intermediate forwarding is bounded.",
+      "required_cases": [
+        "nonadjacent real peers payload",
+        "wrong target/encapsulation/tag",
+        "nested control vs raw data",
+        "route loss and alternative queue",
+        "two simultaneous paths and fairness"
+      ]
+    },
+    {
+      "id": "transport.application-suggestion",
+      "owner": "transport-service",
+      "boundary": "service-ipc",
+      "required": true,
+      "tier": "node-path",
+      "messages": [
+        "TRANSPORT_SUGGEST",
+        "TRANSPORT_SUGGEST_CANCEL",
+        "TRANSPORT_REQUEST_HELLO_VALIDATION"
+      ],
+      "contract": "Per-client peer preferences and strength update routing; cancel only original suggestion and validate/import HELLO without accepting stale async peer results.",
+      "required_cases": [
+        "normal lib application helper actual suggest",
+        "one peer cannot trigger unrelated HELLO",
+        "cancel/reconnect/duplicate ownership",
+        "valid/expired/malformed HELLO"
+      ]
+    },
+    {
+      "id": "transport.monitor-links",
+      "owner": "transport-service",
+      "boundary": "service-ipc",
+      "required": true,
+      "tier": "node-path",
+      "messages": [
+        "TRANSPORT_MONITOR_START",
+        "TRANSPORT_MONITOR_DATA",
+        "TRANSPORT_MONITOR_END",
+        "TRANSPORT_LINK_LIST_REQUEST",
+        "TRANSPORT_LINK_LIST_RESPONSE",
+        "TRANSPORT_LINK_LIST_RESPONSE_END"
+      ],
+      "contract": "Monitor snapshot/continuous modes and peer filters remain external capabilities; link list actual end marker and confirmed/unconfirmed filter are exact. MONITOR_END is accepted by normal library but no emitter found in pinned service; preserve discrepancy.",
+      "required_cases": [
+        "normal public one-shot and continuous profile",
+        "zero/one/multi queues peer filter",
+        "link list include_unconfirmed",
+        "terminal/loss/cancel",
+        "explicit source inconsistency report for1252"
+      ]
+    },
+    {
+      "id": "transport.nat-burst",
+      "owner": "transport-service",
+      "boundary": "service-ipc",
+      "required": true,
+      "tier": "additional-communicators",
+      "messages": [
+        "TRANSPORT_START_BURST",
+        "TRANSPORT_BURST_FINISHED"
+      ],
+      "contract": "NAT burst synchronization updates concrete original queue readiness; failure/shutdown retires only original burst and backpressure cannot spin.",
+      "required_cases": [
+        "normal C UDP burst bothroles",
+        "bursttimeout/reject",
+        "stale burst after queue/MQ loss",
+        "NATconfiguration disabled"
+      ]
+    },
+    {
+      "id": "tcp.handshake-stream",
+      "owner": "tcp-communicator",
+      "boundary": "network-wire",
+      "required": true,
+      "tier": "node-path",
+      "messages": [],
+      "contract": "Real byte-stream initial handshake, cryptographic derivation and first FINISH use the official layout even though the initial bytes have no GNUnet message-header registry assignment.",
+      "required_cases": [
+        "normal C initiator and responder",
+        "short read/write fragmentation",
+        "bad key/tag/handshake timeout",
+        "two concurrent peers"
+      ]
+    },
+    {
+      "id": "tcp.record-rekey",
+      "owner": "tcp-communicator",
+      "boundary": "network-wire",
+      "required": true,
+      "tier": "node-path",
+      "messages": [
+        "COMMUNICATOR_TCP_REKEY",
+        "COMMUNICATOR_TCP_BOX",
+        "COMMUNICATOR_TCP_FINISH",
+        "COMMUNICATOR_TCP_CONFIRMATION_ACK"
+      ],
+      "contract": "Authenticated frame lengths, key confirmation/rekey and replay histories remain per original session, with real IO fairness and no false local progress.",
+      "required_cases": [
+        "normal C twopeers data and rekeys",
+        "corrupt/truncated records",
+        "duplicate old stamp",
+        "samepeer sessions historyserialization",
+        "partial future cancellation and owned shutdown"
+      ]
+    },
+    {
+      "id": "tcp.nat-probe",
+      "owner": "tcp-communicator",
+      "boundary": "network-wire",
+      "required": true,
+      "tier": "node-path",
+      "messages": [
+        "TRANSPORT_TCP_NAT_PROBE"
+      ],
+      "contract": "NAT probes are distinguished from cryptographic traffic and use canonical intended remote/local address without fabricating validated CORE links.",
+      "required_cases": [
+        "normal C probe",
+        "bad probe length/address",
+        "listener limits and restart"
+      ]
+    },
+    {
+      "id": "communicator.udp",
+      "owner": "udp-communicator",
+      "boundary": "network-wire",
+      "required": true,
+      "tier": "additional-communicators",
+      "messages": [
+        "COMMUNICATOR_UDP_ACK",
+        "COMMUNICATOR_UDP_PAD",
+        "COMMUNICATOR_UDP_REKEY"
+      ],
+      "contract": "UDP datagram initial KX/backchannel/MTU/ack/rekey and address semantics remain required additional transport profile; TCP success grants no UDP credit.",
+      "required_cases": [
+        "real normal C UDP mixed peers",
+        "loss/reorder/duplicate/MTU",
+        "KX replay and rekey",
+        "burst and NAT profile"
+      ]
+    },
+    {
+      "id": "communicator.other-current",
+      "owner": "additional-communicators",
+      "boundary": "externally-observable-semantics",
+      "required": true,
+      "tier": "additional-communicators",
+      "messages": [],
+      "contract": "Current UNIX/QUIC/HTTP3/libp2p communicator protocol and configuration capabilities stay separate explicit profiles; absence from the selected TCP node proof cannot remove them from overall full implementation.",
+      "required_cases": [
+        "configured reference availability per protocol",
+        "actual normal C mixed-peer profile per protocol",
+        "explicit unavailable dependency gap without success credit"
+      ]
+    }
+  ],
+  "profiles": [
+    {
+      "id": "core-host-selfloop",
+      "required_operations": [
+        "core.init-loopback",
+        "core.send-permit",
+        "core.monitor"
+      ],
+      "required_components": [
+        "normal-C-libgnunetcore-app",
+        "Rust-CORE-host",
+        "normal-C-PILS",
+        "normal-C-STATS"
+      ],
+      "forbidden_data_plane_substitutions": [
+        "mock-core-service",
+        "test-transport-relay"
+      ],
+      "node_credit": false
+    },
+    {
+      "id": "core-host-normal-carrier",
+      "required_operations": [
+        "core.cake-handshake",
+        "core.cake-records",
+        "core.key-update-liveness",
+        "core.send-permit"
+      ],
+      "required_components": [
+        "normal-C-libgnunetcore-app",
+        "Rust-CORE-host",
+        "normal-C-CORE",
+        "normal-C-TRANSPORT",
+        "normal-C-TCP"
+      ],
+      "forbidden_data_plane_substitutions": [
+        "test-transport-relay",
+        "opaque-Python-relay",
+        "mock-peer"
+      ],
+      "node_credit": false
+    },
+    {
+      "id": "rust-TCP-node-to-normal-C-node",
+      "required_operations": [
+        "startup.service-activation",
+        "startup.pils-address-identity",
+        "startup.identity-key-material",
+        "startup.peerstore-history",
+        "startup.peerstore-hello",
+        "core.init-loopback",
+        "core.peer-notify-barrier",
+        "core.send-permit",
+        "core.traffic-subscriptions",
+        "core.monitor",
+        "core.cake-handshake",
+        "core.cake-records",
+        "core.key-update-liveness",
+        "transport.core-start",
+        "transport.core-flow",
+        "transport.communicator-registration",
+        "transport.queue-lifecycle",
+        "transport.communicator-io",
+        "transport.virtual-link-control",
+        "transport.address-validation",
+        "transport.application-suggestion",
+        "transport.monitor-links",
+        "tcp.handshake-stream",
+        "tcp.record-rekey"
+      ],
+      "required_components": [
+        "normal-C-libgnunetcore-app-at-Rust-node",
+        "Rust-CORE-host",
+        "Rust-TRANSPORT-service",
+        "Rust-TCP-communicator",
+        "normal-C-libgnunetcore-app-at-C-node",
+        "normal-C-CORE",
+        "normal-C-TRANSPORT",
+        "normal-C-TCP",
+        "Rust-identity-owner",
+        "Rust-single-writer-history"
+      ],
+      "forbidden_data_plane_substitutions": [
+        "test-transport-relay",
+        "opaque-Python-relay",
+        "mock-core-service",
+        "mock-transport-service",
+        "normal-C-TRANSPORT-at-Rust-node"
+      ],
+      "node_credit": false,
+      "note": "Node-path receipt alone is still not full overall GNUnet or all TRANSPORT profiles. Separate DV/backchannel/reliability/fragment cases require deliberate route/MTU/loss setup."
+    }
+  ],
+  "known_discrepancies": [
+    {
+      "id": "transport-monitor-end1252",
+      "contract": "one-shot monitor external termination",
+      "fact": "normal client handles MONITOR_END1252, no current transport-service emitter discovered",
+      "decision": "retain required operation and source limitation; no fake terminal or deleted row"
+    },
+    {
+      "id": "core-header-wildcard",
+      "contract": "traffic observation subscription selection",
+      "fact": "empty type list and nonzero options type_match all; inbound gets full rather than header",
+      "decision": "test header-only via explicit nonmatching subscription; document normal profile"
+    },
+    {
+      "id": "core-remote-single-limit",
+      "contract": "remote aggregate vs inner message size",
+      "fact": "remote queue permits aggregate64512 but transmission asserts eachinner<64512",
+      "decision": "preflight each inner strict and preserve compound equality; no execute/crash credit"
+    }
+  ],
+  "reference_revision": "346358e26d4dcc2dc4f51bef5d52dca29c7d8165",
+  "input_files": {
+    "src/include/gnunet_constants.h": "5a6984d815cf34d895457199b04b59117c3edcd193a143e6c92529dbd4e37996",
+    "src/include/gnunet_core_service.h": "3c80c16833a9c3adea9e9e526c7680f844a41a9f90002b0f3024996cd6155496",
+    "src/include/gnunet_peerstore_service.h": "217f44dac06c7c9ad1c6723fa7cf70a7dcf86b76f85fef5bed2c4b0f2d6a9005",
+    "src/include/gnunet_protocols.h": "9a86ea10c53da11d68c255fa732d24f9d8695a6405396b965893384d3c952392",
+    "src/include/gnunet_signatures.h": "bb546c9f1af6f09664a8c09d75543bd78fa3f4a4ccd17cce5bff9f4c4a5eea90",
+    "src/include/gnunet_transport_application_service.h": "ff4aba2216d239a00f788f6bfe06082f481c522b97e3896a4d2d844c8a45ba81",
+    "src/include/gnunet_transport_communication_service.h": "ba34a03f071fdf13882af07aaaa8965810082bf9123010a61af0968f1556776a",
+    "src/include/gnunet_transport_core_service.h": "64d504fa733782c9e60dcc21171d27709402c79e7166aed93845aa71eee78675",
+    "src/include/gnunet_transport_monitor_service.h": "582477b1cba100ed358a127542db521383397538c69f86daa84e054025e9b4e6",
+    "src/service/core/core.h": "22e401fcb5a411db0a3beb4bf9dd59847ac144b675083b8287e24dd56b60b68d",
+    "src/service/core/core_api.c": "d5f0159c2322647d7dc15d4d94912ac3772bbe0f8a2e7024bd474ad012470438",
+    "src/service/core/core_api_monitor_peers.c": "0042212f869eea0d7a104478648cb9c5190cf67d310b2ef366e43d4be51365a3",
+    "src/service/core/gnunet-service-core.c": "9766422698929a34c8bc18e371460c5319ed199e3d2635bd1ca0a9309c02adc4",
+    "src/service/core/gnunet-service-core_kx.c": "e231279845946696cddade298ae38715a3f3d22857c51b6829f18a953a7d6dbe",
+    "src/service/core/gnunet-service-core_kx.h": "95db039d06c7270b322a45db0a6cc8dbccd70e6e446ec0609420d5b322f5c1c8",
+    "src/service/core/gnunet-service-core_sessions.c": "f64d27c8cf7d785f1c322d491a35277965ef2559771ec1230e9c3f57341f00b6",
+    "src/service/transport/communicator.h": "badd6ff02dd63da7918244301428fc22a8a34c46c1b956e6c80c024a5c2ade93",
+    "src/service/transport/gnunet-communicator-http3.c": "cf1662f720cafac59e30007f466d5bbf2bcc624c64dddfbc8c4e84dbb0388c8d",
+    "src/service/transport/gnunet-communicator-libp2p.c": "28f76ef8e50c66ecfc229e1e71fb54a07a968e3bbe9bbc3360fbd43d2c23017d",
+    "src/service/transport/gnunet-communicator-quic.c": "13c6df45c5700d6e29a50811afbf46f37339aa2410219ca8f3fd8283828958d1",
+    "src/service/transport/gnunet-communicator-tcp.c": "850f9fbe2417bc8c1bd4311d26bd1323eded386dbeaf00525e5ab5a964f824a6",
+    "src/service/transport/gnunet-communicator-udp.c": "2e8b3085910489bcd5ce81994133ce5fee89c3b8cf37065f09efec9a61f43cd7",
+    "src/service/transport/gnunet-communicator-unix.c": "7024ec7293f48797f237733185dd5830c91eb2c7348b9ea6549ae02710ee0409",
+    "src/service/transport/gnunet-service-transport.c": "b75e931604a1c12bda1c87bb3b40d4cb33e27b651fcc4ca3945077f347a72c60",
+    "src/service/transport/transport.h": "0f7d9038424bb75b6f1347c6c00c50017a4289e17e391db0ae6c26ae21b2d7cc",
+    "src/service/transport/transport_api_application.c": "146c86cafb43c0dfc9d00e426e89967955b03fbd90d4668e5c24b7b8ab0c238d",
+    "src/service/transport/transport_api_cmd_backchannel_check.c": "14412d5ce230598020c913dc7ae1340d750d7fb752b6fdb0c26c7785f6823b94",
+    "src/service/transport/transport_api_cmd_connecting_peers.c": "3b1b228af626d0200224d81cfaa0c90d94f025206c5c88d1f5fdfe9b7aeb69e5",
+    "src/service/transport/transport_api_cmd_send_simple.c": "868f613ee4b2e1fe2508e569bb81d88f4055a424a381cc862c982cc2f97e9a65",
+    "src/service/transport/transport_api_cmd_send_simple_performance.c": "0b43c0ca5fcd5605c8b81595ccbac1a5e756cac85fb72f0df85b36e7bc3391fb",
+    "src/service/transport/transport_api_cmd_start_peer.c": "7491233f44017c2de5fa3a0200b9241bc9b3a6c9f63456c7a6e720389ddf49e9",
+    "src/service/transport/transport_api_cmd_stop_peer.c": "4f557c836a82651da582c2aa35810757f7d33e7030f07fbf352cf73e20af3d51",
+    "src/service/transport/transport_api_communication.c": "c31e4f70e861a0246308edbdd87998eb9d35e1f9f1df0ac4d6f4854151e785a8",
+    "src/service/transport/transport_api_core.c": "3a16742fe36f8c0828f4cc9b838b421b84cb90bb958524da0a9757e3f3a751d3",
+    "src/service/transport/transport_api_monitor.c": "39f541e8f5971b4276d0567a08659e563cee93e5387b97293bc98cd79e8d9af4"
+  }
+}

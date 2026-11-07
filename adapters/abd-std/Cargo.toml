@@ -1,0 +1,22 @@
+[package]
+name = "gnunet-abd-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+gnunet-abd = { workspace = true, features = ["alloc"] }
+gnunet-client-host.workspace = true
+gnunet-service-runtime.workspace = true
+gnunet-gns-client-host.workspace = true
+gnunet-namestore-client-host.workspace = true
+gnunet-identity = { workspace = true, features = ["alloc"] }
+gnunet-gnsrecord.workspace = true
+gnunet-types.workspace = true
+gnunet-wire.workspace = true
+tokio = { workspace = true, features = ["rt", "time"] }
+zeroize.workspace = true
+
+[lints]
+workspace = true

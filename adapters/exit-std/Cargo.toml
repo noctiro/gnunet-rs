@@ -1,0 +1,24 @@
+[package]
+name = "gnunet-exit-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+[dependencies]
+gnunet-exit = { workspace = true, features = ["alloc"] }
+gnunet-vpn.workspace = true
+gnunet-cadet-host.workspace = true
+gnunet-tun-host.workspace = true
+gnunet-service-runtime.workspace = true
+gnunet-dns.workspace = true
+gnunet-crypto.workspace = true
+gnunet-types.workspace = true
+gnunet-wire.workspace = true
+getrandom.workspace = true
+socket2.workspace = true
+tokio = { workspace = true, features = ["net", "time", "rt"] }
+[lints]
+workspace = true
+[dev-dependencies]
+gnunet-cadet.workspace = true
+tokio = { workspace = true, features = ["io-util"] }

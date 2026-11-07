@@ -1,0 +1,81 @@
+{
+  "schema": 1,
+  "upstream_revision": "346358e26d4dcc2dc4f51bef5d52dca29c7d8165",
+  "source_sha256": {
+    "src/include/gnunet_arm_service.h": "f407a4abc309f95e927bf590cc865c5c46054cff29edf598ac952ce33e4175e0",
+    "src/include/gnunet_testing_arm_lib.h": "82db5bfd30410a28bac2f496649f5fe73847e49bd9a24f60e21dda119a70d202",
+    "src/service/arm/arm.h": "b65e52f7f8d14afaa0dae3cf8f33a06a255261a0e5c6f142d903815b802350f4",
+    "src/service/arm/arm_api.c": "a186cb0a4a396b962be7aa6a9536278aef86c380fd70147a606eb12ae738ed79",
+    "src/service/arm/arm_monitor_api.c": "49394890a664066283d9c24d5c488e27d362db440ae8ae2d6fc9170a6df91d1f",
+    "src/service/arm/gnunet-service-arm.c": "96c0ba0c52c21fe0d347818fa406a233e341868c8d9561d59d4e96fba62515df",
+    "src/service/arm/arm.conf.in": "f694597cf7fb286d2abde7ce0ff812a1313c80f8a95a9bbbeeb0a2f4277f8c3d",
+    "src/service/arm/meson.build": "51310126ad6ef53beab8b8e0552a4d7aa0c6ab38962882d063248f0eea6cbccb",
+    "src/cli/arm/gnunet-arm.c": "dd0718e13650635466b120b2476c358b08f9bbdbdb572c2ce33c8ec1b7ba6a40",
+    "src/service/arm/testing_arm_cmd_start_peer.c": "b2192163e2f5e5b9cbf7d8cfd3351c452f0aa029163dd0ed51527e9c179b008a",
+    "src/service/arm/testing_arm_cmd_stop_peer.c": "2a02e887ef11ffc5af1f02e8813e4dcda93a588b1c23ce37faf076d2b842dc0e",
+    "src/service/arm/testing_arm_traits.c": "6f1eda29c8320e05b1862d5ed3cf84c0f987777f1dd8199167ac6ce4f184490a",
+    "src/include/gnunet_time_lib.h": "314e4c1a3b537ecb0fc05c4473a055f0f1ca976236999c0e679ab72926e575d0",
+    "src/include/gnunet_os_lib.h": "c90a250accc85a999c84bb4646f1623a77e606c0d013f71abfb5ac832fa99485",
+    "src/include/gnunet_common.h": "03bc808f9b183fda2ece71d1e0c5453af127d7f9be59ba80d28df68e46ca6861",
+    "src/include/gnunet_protocols.h": "9a86ea10c53da11d68c255fa732d24f9d8695a6405396b965893384d3c952392",
+    "src/include/gnunet_util_lib.h": "4ce105eeffdde0beb3b4367c98551dd7d601ef58d1116980e384cd61bb4da770",
+    "src/include/gnunet_mq_lib.h": "2c5ab8a293f4d28b52d919f7d0892b48ff521109f3e0b38d134f4dad669dee15",
+    "src/lib/util/mq.c": "e7d81696911fae5a15c7bf1045905605252af20a8ecda08183f800225c742763",
+    "src/lib/util/common_allocation.c": "743b91c928c06a9a9a6774e8560dc4b33bc2d9e7f59bf91cc22aa7bbbcf0431a"
+  },
+  "api_version": 3,
+  "functions": [
+    "GNUNET_ARM_connect",
+    "GNUNET_ARM_disconnect",
+    "GNUNET_ARM_operation_cancel",
+    "GNUNET_ARM_request_service_list",
+    "GNUNET_ARM_request_service_stop",
+    "GNUNET_ARM_request_service_start",
+    "GNUNET_ARM_monitor_start",
+    "GNUNET_ARM_monitor_stop"
+  ],
+  "callbacks": [
+    "GNUNET_ARM_ConnectionStatusCallback",
+    "GNUNET_ARM_ResultCallback",
+    "GNUNET_ARM_ServiceListCallback",
+    "GNUNET_ARM_ServiceMonitorCallback"
+  ],
+  "opaque_handles": [
+    "GNUNET_ARM_Handle",
+    "GNUNET_ARM_Operation",
+    "GNUNET_ARM_MonitorHandle"
+  ],
+  "enums": [
+    "GNUNET_ARM_RequestStatus",
+    "GNUNET_ARM_ServiceMonitorStatus",
+    "GNUNET_ARM_Result",
+    "GNUNET_ARM_ServiceStatus"
+  ],
+  "records": [
+    "GNUNET_ARM_ServiceInfo"
+  ],
+  "wire_ids": [
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15
+  ],
+  "compiler_inventory": "/private/tmp/gnunet-api-inventory-20261026/headers/gnunet_arm_service.h/declarations.json",
+  "scope": "Full ARM source-derived inventory plus first pure client/codec/monitor candidate; daemon/native/CLI/testing integration pending",
+  "verification": null,
+  "native_layout": {
+    "profile": "ArmAbi::U64Align8",
+    "actual_message_size": 16,
+    "actual_result_size": 24,
+    "actual_list_prefix": 24,
+    "actual_info_size": 28,
+    "actual_status_size": 8,
+    "evidence": "normal_bytes.c actual native C compile/run using unchanged headers; wire_trace actual Rust encode",
+    "profile_align4": "Implemented explicit20/20, synthetic codec-only; actual32-bit public interoperability pending",
+    "rejected_initial_inference": "/private/tmp/gnunet-arm-wrong-layout-draft-20261027/REJECTED.json"
+  }
+}

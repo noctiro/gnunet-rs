@@ -1,0 +1,32 @@
+[package]
+name = "gnunet-communicator-udp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+gnunet-program-host = { workspace = true, features = ["resolver-broker"] }
+gnunet-client-host.workspace = true
+gnunet-config.workspace = true
+gnunet-crypto.workspace = true
+gnunet-hello.workspace = true
+gnunet-native.workspace = true
+gnunet-nat-client-host.workspace = true
+gnunet-pils.workspace = true
+gnunet-pils-host.workspace = true
+gnunet-resolver-broker.workspace = true
+gnunet-service-runtime.workspace = true
+gnunet-service-startup.workspace = true
+gnunet-transport-application-host.workspace = true
+gnunet-types.workspace = true
+gnunet-udp-communicator-core.workspace = true
+gnunet-udp-communicator-host = { workspace = true, features = ["transport", "pils-client"] }
+gnunet-wire.workspace = true
+getrandom.workspace = true
+nix = { workspace = true, features = ["poll"] }
+socket2.workspace = true
+tokio = { workspace = true, features = ["rt", "net", "time", "signal"] }
+
+[lints]
+workspace = true

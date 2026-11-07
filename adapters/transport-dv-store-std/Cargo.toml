@@ -1,0 +1,16 @@
+[package]
+name = "gnunet-transport-dv-store-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+[target.'cfg(unix)'.dependencies]
+gnunet-snapshot-host.workspace = true
+gnunet-transport.workspace = true
+gnunet-transport-dv-crypto.workspace = true
+gnunet-types.workspace = true
+gnunet-service-runtime.workspace = true
+tokio = { workspace = true, features = ["time"] }
+zeroize = { workspace = true, features = ["alloc"] }
+[lints]
+workspace = true

@@ -1,0 +1,23 @@
+[package]
+name = "gnunet-gns"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = []
+alloc = []
+
+[dependencies]
+gnunet-types.workspace = true
+gnunet-gnsrecord.workspace = true
+gnunet-gnscrypto.workspace = true
+gnunet-dns.workspace = true
+gnunet-idna.workspace = true
+
+[dev-dependencies]
+gnunet-crypto.workspace = true
+
+[lints]
+workspace = true

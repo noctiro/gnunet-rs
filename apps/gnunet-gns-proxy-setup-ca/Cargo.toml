@@ -1,0 +1,22 @@
+[package]
+name = "gnunet-gns-proxy-setup-ca-command"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+gnunet-program-host.workspace = true
+gnunet-config.workspace = true
+gnunet-types.workspace = true
+rcgen.workspace = true
+base64ct = { workspace = true, features = ["alloc"] }
+time = { workspace = true, features = ["std"] }
+zeroize = { workspace = true, features = ["alloc"] }
+
+[[bin]]
+name = "gnunet-gns-proxy-setup-ca"
+path = "src/main.rs"
+
+[lints]
+workspace = true

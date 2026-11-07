@@ -1,0 +1,32 @@
+[package]
+name = "gnunet-zonemaster-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+[features]
+default = []
+program = ["dep:gnunet-config", "dep:gnunet-program-host", "dep:gnunet-resolver-broker", "dep:gnunet-service-startup", "tokio/signal", "dep:gnunet-ipc-unix", "dep:gnunet-client"]
+[dependencies]
+gnunet-zonemaster = { workspace = true, features = ["alloc"] }
+gnunet-types.workspace = true
+gnunet-snapshot-host.workspace = true
+zeroize = { workspace = true, features = ["alloc"] }
+gnunet-identity = { workspace = true, features = ["alloc"] }
+gnunet-gnsrecord-text.workspace = true
+gnunet-wire.workspace = true
+gnunet-client-host.workspace = true
+gnunet-native.workspace = true
+gnunet-namestore-client-host.workspace = true
+gnunet-namecache-client-host.workspace = true
+gnunet-dht-client-host.workspace = true
+gnunet-service-runtime.workspace = true
+gnunet-config = { workspace = true, optional = true }
+gnunet-service-startup = { workspace = true, optional = true }
+gnunet-program-host = { workspace = true, features = ["runtime", "resolver-broker"], optional = true }
+gnunet-resolver-broker = { workspace = true, optional = true }
+gnunet-ipc-unix = { workspace = true, optional = true }
+gnunet-client = { workspace = true, optional = true }
+tokio = { workspace = true, features = ["rt", "net", "time", "sync"] }
+[lints]
+workspace = true

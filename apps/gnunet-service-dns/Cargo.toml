@@ -1,0 +1,23 @@
+[package]
+name = "gnunet-service-dns"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+gnunet-types.workspace = true
+gnunet-client.workspace = true
+gnunet-client-host.workspace = true
+gnunet-ipc-unix.workspace = true
+gnunet-config.workspace = true
+gnunet-dns-interception = { workspace = true, features = ["alloc"] }
+gnunet-dns-service-host.workspace = true
+gnunet-program-host = { workspace = true, features = ["service-runtime"] }
+gnunet-resolver-broker.workspace = true
+gnunet-service-runtime.workspace = true
+gnunet-service-startup.workspace = true
+tokio = { workspace = true, features = ["rt", "net", "time", "signal"] }
+
+[lints]
+workspace = true

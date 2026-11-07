@@ -1,0 +1,167 @@
+{
+  "schema": 2,
+  "status": "integrated_in_main_workspace; fresh current-source component validation required; no owner promotion",
+  "root_baseline": "M11 f26d6ce2175a5a92e29cedfa4130fb4cd3f0f44d257f8f003efdec5e99296bb9",
+  "source_selection": "Source API identities are caller-owned safe decomposition of C globals; connect replacement is cfg selection, not readiness.",
+  "callsites": [
+    {
+      "file": "adapters/ipc-unix/src/client_transport.rs",
+      "baseline_sha256": "58921811ca74180c09751e71be49ed9fb30561135bc86a5432ebd896ae5b0b40",
+      "items": [
+        "ResolverQuery",
+        "ResolverQuery::new",
+        "attempt",
+        "live_endpoint"
+      ],
+      "required_change": "Remove the private per-query ResolverQuery, RESOLVER_ID and resolver endpoint snapshots. Route every TCP hostname, including numeric/internal ones, through an explicit shared ResolutionContext. Keep a direct Unix-only path with no DNS dependency; no private fallback when a shared context is absent.",
+      "candidate_sha256": "2b5c93977d9b05264678085be69e484edbda46ec0a4fc183644f93385ed22ffa",
+      "status": "integrated; source-specific validation required"
+    },
+    {
+      "file": "adapters/ipc-unix/src/transport.rs",
+      "baseline_sha256": "0ec50bddc43008fdc4fe5d8c38a5f0e113eeaa06a047afbf5136550083fab85a",
+      "items": [
+        "Endpoint::configuration",
+        "Endpoint::configuration_live",
+        "Endpoint::attempt",
+        "Connection"
+      ],
+      "required_change": "Make shared resolution explicit in configured TCP constructors, retain a DNS drain lease in the owned Connection, preserve independently cached service TCP/live Unix inputs. Remove legacy resolver-store argument in favor of the shared broker selected cfg owner.",
+      "candidate_sha256": "257564b394623c4ec78d2e9a67dd01cba939e93a11bfb8b337a2d4d5df1583f9",
+      "status": "integrated; source-specific validation required"
+    },
+    {
+      "file": "adapters/ipc-unix/src/handle.rs",
+      "baseline_sha256": "d399b14dc3a1a04b07668849d80a7cf39d66aa09e227c6e275a364be2daee114",
+      "items": [
+        "StatisticsHandle::from_config",
+        "StatisticsHandle::new",
+        "stream",
+        "connecting"
+      ],
+      "required_change": "Configured STATISTICS host must accept the caller shared resolution and use public transport Connection/ConnectionAttempt so service teardown cancels only its original DNS lease. Unix convenience can remain Unix-only without a private resolver.",
+      "candidate_sha256": "18722efb233e1c9f7a153ab1819ca6f0417ddb6ad1df3f7e5bc2c52315b8532b",
+      "status": "integrated; source-specific validation required"
+    },
+    {
+      "file": "adapters/ipc-unix/src/resolver.rs",
+      "baseline_sha256": "ea95ec3c7a99d7da76e69e4a2bcf449eab6f9d4962cf8c9bfeb48c961d076486",
+      "items": [
+        "ResolverHandle::new",
+        "ResolverHandle::from_config",
+        "ResolverHandle::connect",
+        "ResolverHandle::drive",
+        "native_profile",
+        "check_config"
+      ],
+      "required_change": "Replace the standalone Resolver host default with the shared broker Context/Driver split. Preserve audited native_profile/check_config/native hostname utilities in a narrow IPC profile module to avoid a broker<->IPC dependency cycle. Do not retain the old query-private resolver driver as the official default.",
+      "candidate_sha256": "d76a2b417beda2633bf64677bd2f6b10f89a2115a3b00a18d00f39429cbb440b",
+      "status": "integrated; source-specific validation required"
+    },
+    {
+      "file": "adapters/arm-std/src/endpoint.rs",
+      "baseline_sha256": "b38ab8ea62b3ace2a2a168f23cbb4754ee5233b4b160e7ded85ea1947be75f4e",
+      "items": [
+        "Source::Configuration",
+        "Source::Live",
+        "Source::resolve"
+      ],
+      "required_change": "Carry one SharedResolution from the process caller across all new ARM/monitor MQs; attach it to each endpoint. A cfg replacement changes selection only through the broker port, not by duplicating per-service resolver config.",
+      "candidate_sha256": "ab27c663df28b2fc17f87787dcb23ab3fd0dd7098e0f082f5afc67be9877be3d",
+      "status": "integrated; source-specific validation required"
+    },
+    {
+      "file": "adapters/arm-std/src/control.rs",
+      "baseline_sha256": "985992f8f14d875acd7506a7dfe570c9bafb4ca51ddc30bc522d19bcdef168a3",
+      "items": [
+        "ClientHost::connect",
+        "ClientHost::connect_live",
+        "ClientHost::construct"
+      ],
+      "required_change": "Require/retain shared resolution on configured ARM constructors and every MQ rebuild. Preserve active attempt/stream/partial TX/RX and operation/callback ownership. Do not bind a fresh broker per control operation.",
+      "candidate_sha256": "5f527121bd195223a5133f30810ad9791f85521b0a115c21b7c616ef56b4913b",
+      "status": "integrated; source-specific validation required"
+    },
+    {
+      "file": "adapters/arm-std/src/monitor_host.rs",
+      "baseline_sha256": "5e8bc8b489d077169b93bf0925b9ddc7d1582cae6576025cf64a29aa62cbffa1",
+      "items": [
+        "MonitorHost::start",
+        "MonitorHost::start_live",
+        "MonitorHost::construct"
+      ],
+      "required_change": "Use the same process SharedResolution as ClientHost for monitor TCP attempts and reconnects, retaining each successful service socket DNS drain lease until actual END or Drop.",
+      "candidate_sha256": "a96d0d4a9c8becf6fdc54e2eeaa6a27a5036d244030fd558a5039bf9cde196dc",
+      "status": "integrated; source-specific validation required"
+    },
+    {
+      "file": "apps/gnunet-arm/src/runtime.rs",
+      "baseline_sha256": "932d6666087fc49a44ed4018cb68cb85ae9bc65f801b114ad1c701bc9597217b",
+      "items": [
+        "ClientHost::connect",
+        "MonitorHost::start"
+      ],
+      "required_change": "Create or receive exactly one caller-owned broker context/driver for the process domain; pass the same shared resolution to control and monitor, and drive it concurrently with PROGRAM logical clock and both host owners. Teardown respects Query/Connection/Driver ownership; no private per-query MQ.",
+      "candidate_sha256": "69cdcde9ef0bf7dcd2ff5f77451cb58e071ab94af1b4fefedff484f1da57a318",
+      "status": "integrated; source-specific validation required"
+    },
+    {
+      "file": "adapters/ipc-unix/src/lib.rs",
+      "baseline_sha256": "5cf5173fd6ebd301bc56e99fcae71f8a3591877dbab1201f422af53250a086cf",
+      "items": [
+        "StatisticsClient::connect"
+      ],
+      "required_change": "This public one-shot helper is explicitly Unix-only. It needs no resolver context and must stay Unix-only rather than gain a hidden resolver connection.",
+      "candidate_sha256": "3e945660441a184cd5379e52cf026f52cc6b60c498a46e5ab6431e2da4e1f02a",
+      "status": "integrated; source-specific validation required"
+    }
+  ],
+  "PROGRAM": {
+    "owner": "/root/official_config",
+    "tree": "/private/tmp/gnunet-program-next-20261027",
+    "port": "Program ResolverConnect uses Context::connect(cfg.duplicate()?) at fixed native pre-main callsites; one SharedClock Subscription implements RuntimeClock. The same broker/driver must be supplied through process context to all service clients.",
+    "source_sites": [
+      "src/lib/util/program.c:94 scheduled after SPEEDUP_start and shutdown stop registration, before run",
+      "src/lib/util/program.c:391 direct before run, no SPEEDUP_start"
+    ],
+    "pending": "actual composed PROGRAM+ARM+STATISTICS shared-driver acceptance remains required; no credit from trait adapter compilation alone."
+  },
+  "root_imports": "ROOT-FIX-IMPORTS.json records parent-owned final M11 process/3py maintenance; never overwrite newer Root accepted/server/resolver-host files.",
+  "constructor_contracts": {
+    "CLIENT": "Endpoint::configuration(Configuration,service,SharedResolution); configuration_live(LiveConfiguration,service,SharedResolution). Unix-only Endpoint::unix has no DNS dependency.",
+    "STATISTICS": "StatisticsHandle::from_config(&Configuration,SharedResolution,subsystem,Limits); from_live_config(LiveConfiguration,SharedResolution,subsystem,Limits). DISABLE sampled at construction, endpoint at MQ recreation.",
+    "ARM": "ClientHost::connect/connect_live(core,service config,SharedResolution,launcher,limits,clock,failure), MonitorHost::start/start_live likewise; every MQ shares caller broker, preserves original attempts and leased DNS.",
+    "CLI": "runtime::run<const R,N>(config,options,ports,&mut Driver<R,N>,registry,out,err). The same drive_waiting is polled with ARM/monitor/signals; standalone main constructs one broker, PROGRAM caller may supply source clock.",
+    "PROGRAM": "Stable RuntimeClock/ClockSample and Context::connect ports are unchanged. Full PROGRAM/config observer composition belongs to the independently developing official_config candidate, not this package claim."
+  },
+  "removed_defaults": [
+    "ResolverQuery per physical service attempt",
+    "private RESOLVER_ID",
+    "Endpoint optional resolver fallback",
+    "standalone private ResolverHandle host default"
+  ],
+  "ownership": [
+    "Configuration selection replacement has no I/O/wake and does not replace existing MQ/attempt/immutable TX/RX.",
+    "Each TCP success retains its original query drain lease until actual END/timeout/connection Drop.",
+    "Internal CLIENT holds its actual address callback until native socket connect first poll. Only that exact local ID may resume its same callback stack/NULL; public Query/Delivery requires explicit Driver as before.",
+    "A configured TCP endpoint without a shared context cannot be constructed. No hidden task or per-host broker in production. Test Domain explicitly owns one task and one shared context per fixture runtime."
+  ],
+  "protected_no_merge": [
+    "adapters/ipc-unix/src/accepted.rs",
+    "adapters/ipc-unix/src/server.rs",
+    "adapters/ipc-unix/src/network.rs",
+    "adapters/resolver-std/src/lib.rs",
+    "adapters/service-runtime/src/process.rs"
+  ],
+  "candidate_hook": "Endpoint::configuration/configuration_live require SharedResolution; Context::resolution_context supplies one actual shared domain. No optional with_resolution fallback remains.",
+  "resolver_assertion_coverage": {
+    "retained": [
+      "12 IPC Resolver assertions ported directly to Context/Query/Driver without a product compatibility layer",
+      "combined endpoint round0/1/2 and actual Unix failure fallback",
+      "original live five-second unavailable Resolver query deadline",
+      "actual maximum65535 shared frame and atomic too-large rejection",
+      "numeric/loopback local callback order and same-ID free before connection notice",
+      "partial RX/TX, unknown ID, epoch/reconnect, cancellation/tombstone, retained DNS drain"
+    ]
+  }
+}

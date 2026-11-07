@@ -1,0 +1,46 @@
+[package]
+name = "gnunet-transport"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = []
+alloc = ["zeroize/alloc", "dep:gnunet-nat"]
+
+[dependencies]
+zeroize.workspace = true
+gnunet-types.workspace = true
+gnunet-wire.workspace = true
+gnunet-nat = { workspace = true, optional = true }
+gnunet-crypto.workspace = true
+gnunet-client.workspace = true
+gnunet-hello.workspace = true
+
+[lints]
+workspace = true
+
+[[test]]
+name = "validation"
+required-features = ["alloc"]
+
+[[test]]
+name = "async_validation"
+required-features = ["alloc"]
+
+[[test]]
+name = "size_boundaries"
+required-features = ["alloc"]
+
+[[test]]
+name = "application"
+required-features = ["alloc"]
+
+[[test]]
+name = "address_publication"
+required-features = ["alloc"]
+
+[[test]]
+name = "own_publication"
+required-features = ["alloc"]

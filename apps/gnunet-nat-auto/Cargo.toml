@@ -1,0 +1,19 @@
+[package]
+name = "gnunet-nat-auto-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "gnunet-nat-auto"
+path = "src/main.rs"
+
+[target.'cfg(unix)'.dependencies]
+gnunet-nat-test-host = { workspace = true, features = ["program"] }
+gnunet-config.workspace = true
+gnunet-program-host = { workspace = true, features = ["resolver-broker"] }
+tokio = { workspace = true, features = ["rt", "net", "time", "signal"] }
+
+[lints]
+workspace = true

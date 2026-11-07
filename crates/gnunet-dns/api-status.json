@@ -1,0 +1,530 @@
+{
+  "schema": 1,
+  "scope": "34 public parser capability mappings with wire/storage, explicit native IDNA and native canonical graph/prefix packing; owner/API acceptance remains separate.",
+  "items": [
+    {
+      "id": "GNUNET_DNSPARSER_bin_to_hex",
+      "c_signature": [
+        "char *(const void *, size_t)"
+      ],
+      "rust_items": [
+        "encode_hex_lower"
+      ],
+      "wire_or_storage_operation_implemented": true,
+      "native_text_backend_required_for_full_c_equivalence": false,
+      "native_text_backend_implemented": null,
+      "owner_verified": false,
+      "qualification": "Safe ownership/cursor/output and RFC corrections documented in UPSTREAM.md; no C ABI claim."
+    },
+    {
+      "id": "GNUNET_DNSPARSER_builder_add_cert",
+      "c_signature": [
+        "int (char *, size_t, size_t *, const struct GNUNET_DNSPARSER_CertRecord *)"
+      ],
+      "rust_items": [
+        "Cert::encode",
+        "RData::encode_at"
+      ],
+      "wire_or_storage_operation_implemented": true,
+      "native_text_backend_required_for_full_c_equivalence": false,
+      "native_text_backend_implemented": null,
+      "owner_verified": false,
+      "qualification": "Safe ownership/cursor/output and RFC corrections documented in UPSTREAM.md; no C ABI claim."
+    },
+    {
+      "id": "GNUNET_DNSPARSER_builder_add_mx",
+      "c_signature": [
+        "int (char *, size_t, size_t *, const struct GNUNET_DNSPARSER_MxRecord *)"
+      ],
+      "rust_items": [
+        "Mx::encode",
+        "RData::encode_at"
+      ],
+      "wire_or_storage_operation_implemented": true,
+      "native_text_backend_required_for_full_c_equivalence": true,
+      "native_text_backend_implemented": true,
+      "owner_verified": false,
+      "qualification": "Safe ownership/cursor/output and RFC corrections documented in UPSTREAM.md; no C ABI claim.",
+      "native_text_backend": "gnunet_idna::Backend; explicit libidn2 2.3.8 lookup Unicode15.1 / libunistring1.5 Unicode18 normal reference profile, separate Unicode15.1-properties variant",
+      "native_composition": "Name::write_native_text / native_builder_form with explicit Backend; Packet::pack_native composes graph conversion and section-prefix behavior."
+    },
+    {
+      "id": "GNUNET_DNSPARSER_builder_add_name",
+      "c_signature": [
+        "int (char *, size_t, size_t *, const char *)"
+      ],
+      "rust_items": [
+        "Name::from_native_text",
+        "Name::encode_at"
+      ],
+      "wire_or_storage_operation_implemented": true,
+      "native_text_backend_required_for_full_c_equivalence": true,
+      "native_text_backend_implemented": true,
+      "owner_verified": false,
+      "qualification": "Safe ownership/cursor/output and RFC corrections documented in UPSTREAM.md; no C ABI claim.",
+      "native_text_backend": "gnunet_idna::Backend; explicit libidn2 2.3.8 lookup Unicode15.1 / libunistring1.5 Unicode18 normal reference profile, separate Unicode15.1-properties variant",
+      "native_composition": "Name::write_native_text / native_builder_form with explicit Backend; Packet::pack_native composes graph conversion and section-prefix behavior."
+    },
+    {
+      "id": "GNUNET_DNSPARSER_builder_add_query",
+      "c_signature": [
+        "int (char *, size_t, size_t *, const struct GNUNET_DNSPARSER_Query *)"
+      ],
+      "rust_items": [
+        "Query::encode_at"
+      ],
+      "wire_or_storage_operation_implemented": true,
+      "native_text_backend_required_for_full_c_equivalence": true,
+      "native_text_backend_implemented": true,
+      "owner_verified": false,
+      "qualification": "Safe ownership/cursor/output and RFC corrections documented in UPSTREAM.md; no C ABI claim.",
+      "native_text_backend": "gnunet_idna::Backend; explicit libidn2 2.3.8 lookup Unicode15.1 / libunistring1.5 Unicode18 normal reference profile, separate Unicode15.1-properties variant",
+      "native_composition": "Name::write_native_text / native_builder_form with explicit Backend; Packet::pack_native composes graph conversion and section-prefix behavior."
+    },
+    {
+      "id": "GNUNET_DNSPARSER_builder_add_soa",
+      "c_signature": [
+        "int (char *, size_t, size_t *, const struct GNUNET_DNSPARSER_SoaRecord *)"
+      ],
+      "rust_items": [
+        "Soa::encode",
+        "RData::encode_at"
+      ],
+      "wire_or_storage_operation_implemented": true,
+      "native_text_backend_required_for_full_c_equivalence": true,
+      "native_text_backend_implemented": true,
+      "owner_verified": false,
+      "qualification": "Safe ownership/cursor/output and RFC corrections documented in UPSTREAM.md; no C ABI claim.",
+      "native_text_backend": "gnunet_idna::Backend; explicit libidn2 2.3.8 lookup Unicode15.1 / libunistring1.5 Unicode18 normal reference profile, separate Unicode15.1-properties variant",
+      "native_composition": "Name::write_native_text / native_builder_form with explicit Backend; Packet::pack_native composes graph conversion and section-prefix behavior."
+    },
+    {
+      "id": "GNUNET_DNSPARSER_builder_add_srv",
+      "c_signature": [
+        "int (char *, size_t, size_t *, const struct GNUNET_DNSPARSER_SrvRecord *)"
+      ],
+      "rust_items": [
+        "Srv::encode",
+        "RData::encode_at"
+      ],
+      "wire_or_storage_operation_implemented": true,
+      "native_text_backend_required_for_full_c_equivalence": true,
+      "native_text_backend_implemented": true,
+      "owner_verified": false,
+      "qualification": "Safe ownership/cursor/output and RFC corrections documented in UPSTREAM.md; no C ABI claim.",
+      "native_text_backend": "gnunet_idna::Backend; explicit libidn2 2.3.8 lookup Unicode15.1 / libunistring1.5 Unicode18 normal reference profile, separate Unicode15.1-properties variant",
+      "native_composition": "Name::write_native_text / native_builder_form with explicit Backend; Packet::pack_native composes graph conversion and section-prefix behavior."
+    },
+    {
+      "id": "GNUNET_DNSPARSER_builder_add_uri",
+      "c_signature": [
+        "int (char *, size_t, size_t *, const struct GNUNET_DNSPARSER_UriRecord *)"
+      ],
+      "rust_items": [
+        "Uri::encode",
+        "RData::encode_at"
+      ],
+      "wire_or_storage_operation_implemented": true,
+      "native_text_backend_required_for_full_c_equivalence": false,
+      "native_text_backend_implemented": null,
+      "owner_verified": false,
+      "qualification": "Safe ownership/cursor/output and RFC corrections documented in UPSTREAM.md; no C ABI claim."
+    },
+    {
+      "id": "GNUNET_DNSPARSER_check_label",
+      "c_signature": [
+        "enum GNUNET_GenericReturnValue (const char *)"
+      ],
+      "rust_items": [
+        "check_label"
+      ],
+      "wire_or_storage_operation_implemented": false,
+      "native_text_backend_required_for_full_c_equivalence": true,
+      "native_text_backend_implemented": true,
+      "owner_verified": false,
+      "qualification": "Safe ownership/cursor/output and RFC corrections documented in UPSTREAM.md; no C ABI claim.",
+      "native_text_backend": "gnunet_idna::Backend; explicit libidn2 2.3.8 lookup Unicode15.1 / libunistring1.5 Unicode18 normal reference profile, separate Unicode15.1-properties variant",
+      "native_composition": "Name::write_native_text / native_builder_form with explicit Backend; Packet::pack_native composes graph conversion and section-prefix behavior."
+    },
+    {
+      "id": "GNUNET_DNSPARSER_check_name",
+      "c_signature": [
+        "enum GNUNET_GenericReturnValue (const char *)"
+      ],
+      "rust_items": [
+        "check_name"
+      ],
+      "wire_or_storage_operation_implemented": false,
+      "native_text_backend_required_for_full_c_equivalence": true,
+      "native_text_backend_implemented": true,
+      "owner_verified": false,
+      "qualification": "Safe ownership/cursor/output and RFC corrections documented in UPSTREAM.md; no C ABI claim.",
+      "native_text_backend": "gnunet_idna::Backend; explicit libidn2 2.3.8 lookup Unicode15.1 / libunistring1.5 Unicode18 normal reference profile, separate Unicode15.1-properties variant",
+      "native_composition": "Name::write_native_text / native_builder_form with explicit Backend; Packet::pack_native composes graph conversion and section-prefix behavior."
+    },
+    {
+      "id": "GNUNET_DNSPARSER_duplicate_cert_record",
+      "c_signature": [
+        "struct GNUNET_DNSPARSER_CertRecord *(const struct GNUNET_DNSPARSER_CertRecord *)"
+      ],
+      "rust_items": [
+        "Cert::duplicate_into"
+      ],
+      "wire_or_storage_operation_implemented": true,
+      "native_text_backend_required_for_full_c_equivalence": false,
+      "native_text_backend_implemented": null,
+      "owner_verified": false,
+      "qualification": "Safe ownership/cursor/output and RFC corrections documented in UPSTREAM.md; no C ABI claim."
+    },
+    {
+      "id": "GNUNET_DNSPARSER_duplicate_mx_record",
+      "c_signature": [
+        "struct GNUNET_DNSPARSER_MxRecord *(const struct GNUNET_DNSPARSER_MxRecord *)"
+      ],
+      "rust_items": [
+        "Mx::duplicate_into"
+      ],
+      "wire_or_storage_operation_implemented": true,
+      "native_text_backend_required_for_full_c_equivalence": false,
+      "native_text_backend_implemented": null,
+      "owner_verified": false,
+      "qualification": "Safe ownership/cursor/output and RFC corrections documented in UPSTREAM.md; no C ABI claim."
+    },
+    {
+      "id": "GNUNET_DNSPARSER_duplicate_record",
+      "c_signature": [
+        "struct GNUNET_DNSPARSER_Record *(const struct GNUNET_DNSPARSER_Record *)"
+      ],
+      "rust_items": [
+        "Record::duplicate_into"
+      ],
+      "wire_or_storage_operation_implemented": true,
+      "native_text_backend_required_for_full_c_equivalence": false,
+      "native_text_backend_implemented": null,
+      "owner_verified": false,
+      "qualification": "Safe ownership/cursor/output and RFC corrections documented in UPSTREAM.md; no C ABI claim."
+    },
+    {
+      "id": "GNUNET_DNSPARSER_duplicate_soa_record",
+      "c_signature": [
+        "struct GNUNET_DNSPARSER_SoaRecord *(const struct GNUNET_DNSPARSER_SoaRecord *)"
+      ],
+      "rust_items": [
+        "Soa::duplicate_into"
+      ],
+      "wire_or_storage_operation_implemented": true,
+      "native_text_backend_required_for_full_c_equivalence": false,
+      "native_text_backend_implemented": null,
+      "owner_verified": false,
+      "qualification": "Safe ownership/cursor/output and RFC corrections documented in UPSTREAM.md; no C ABI claim."
+    },
+    {
+      "id": "GNUNET_DNSPARSER_duplicate_srv_record",
+      "c_signature": [
+        "struct GNUNET_DNSPARSER_SrvRecord *(const struct GNUNET_DNSPARSER_SrvRecord *)"
+      ],
+      "rust_items": [
+        "Srv::duplicate_into"
+      ],
+      "wire_or_storage_operation_implemented": true,
+      "native_text_backend_required_for_full_c_equivalence": false,
+      "native_text_backend_implemented": null,
+      "owner_verified": false,
+      "qualification": "Safe ownership/cursor/output and RFC corrections documented in UPSTREAM.md; no C ABI claim."
+    },
+    {
+      "id": "GNUNET_DNSPARSER_duplicate_uri_record",
+      "c_signature": [
+        "struct GNUNET_DNSPARSER_UriRecord *(const struct GNUNET_DNSPARSER_UriRecord *)"
+      ],
+      "rust_items": [
+        "Uri::duplicate_into"
+      ],
+      "wire_or_storage_operation_implemented": true,
+      "native_text_backend_required_for_full_c_equivalence": false,
+      "native_text_backend_implemented": null,
+      "owner_verified": false,
+      "qualification": "Safe ownership/cursor/output and RFC corrections documented in UPSTREAM.md; no C ABI claim."
+    },
+    {
+      "id": "GNUNET_DNSPARSER_free_cert",
+      "c_signature": [
+        "void (struct GNUNET_DNSPARSER_CertRecord *)"
+      ],
+      "rust_items": [
+        "Cert/Arena scope end"
+      ],
+      "wire_or_storage_operation_implemented": true,
+      "native_text_backend_required_for_full_c_equivalence": false,
+      "native_text_backend_implemented": null,
+      "owner_verified": false,
+      "qualification": "Safe ownership/cursor/output and RFC corrections documented in UPSTREAM.md; no C ABI claim."
+    },
+    {
+      "id": "GNUNET_DNSPARSER_free_mx",
+      "c_signature": [
+        "void (struct GNUNET_DNSPARSER_MxRecord *)"
+      ],
+      "rust_items": [
+        "Mx/Arena scope end"
+      ],
+      "wire_or_storage_operation_implemented": true,
+      "native_text_backend_required_for_full_c_equivalence": false,
+      "native_text_backend_implemented": null,
+      "owner_verified": false,
+      "qualification": "Safe ownership/cursor/output and RFC corrections documented in UPSTREAM.md; no C ABI claim."
+    },
+    {
+      "id": "GNUNET_DNSPARSER_free_packet",
+      "c_signature": [
+        "void (struct GNUNET_DNSPARSER_Packet *)"
+      ],
+      "rust_items": [
+        "Packet/slot/Arena scope end"
+      ],
+      "wire_or_storage_operation_implemented": true,
+      "native_text_backend_required_for_full_c_equivalence": false,
+      "native_text_backend_implemented": null,
+      "owner_verified": false,
+      "qualification": "Safe ownership/cursor/output and RFC corrections documented in UPSTREAM.md; no C ABI claim."
+    },
+    {
+      "id": "GNUNET_DNSPARSER_free_record",
+      "c_signature": [
+        "void (struct GNUNET_DNSPARSER_Record *)"
+      ],
+      "rust_items": [
+        "Record/slot/Arena scope end"
+      ],
+      "wire_or_storage_operation_implemented": true,
+      "native_text_backend_required_for_full_c_equivalence": false,
+      "native_text_backend_implemented": null,
+      "owner_verified": false,
+      "qualification": "Safe ownership/cursor/output and RFC corrections documented in UPSTREAM.md; no C ABI claim."
+    },
+    {
+      "id": "GNUNET_DNSPARSER_free_soa",
+      "c_signature": [
+        "void (struct GNUNET_DNSPARSER_SoaRecord *)"
+      ],
+      "rust_items": [
+        "Soa/Arena scope end"
+      ],
+      "wire_or_storage_operation_implemented": true,
+      "native_text_backend_required_for_full_c_equivalence": false,
+      "native_text_backend_implemented": null,
+      "owner_verified": false,
+      "qualification": "Safe ownership/cursor/output and RFC corrections documented in UPSTREAM.md; no C ABI claim."
+    },
+    {
+      "id": "GNUNET_DNSPARSER_free_srv",
+      "c_signature": [
+        "void (struct GNUNET_DNSPARSER_SrvRecord *)"
+      ],
+      "rust_items": [
+        "Srv/Arena scope end"
+      ],
+      "wire_or_storage_operation_implemented": true,
+      "native_text_backend_required_for_full_c_equivalence": false,
+      "native_text_backend_implemented": null,
+      "owner_verified": false,
+      "qualification": "Safe ownership/cursor/output and RFC corrections documented in UPSTREAM.md; no C ABI claim."
+    },
+    {
+      "id": "GNUNET_DNSPARSER_free_uri",
+      "c_signature": [
+        "void (struct GNUNET_DNSPARSER_UriRecord *)"
+      ],
+      "rust_items": [
+        "Uri/Arena scope end"
+      ],
+      "wire_or_storage_operation_implemented": true,
+      "native_text_backend_required_for_full_c_equivalence": false,
+      "native_text_backend_implemented": null,
+      "owner_verified": false,
+      "qualification": "Safe ownership/cursor/output and RFC corrections documented in UPSTREAM.md; no C ABI claim."
+    },
+    {
+      "id": "GNUNET_DNSPARSER_hex_to_bin",
+      "c_signature": [
+        "size_t (const char *, void *)"
+      ],
+      "rust_items": [
+        "decode_hex_native"
+      ],
+      "wire_or_storage_operation_implemented": true,
+      "native_text_backend_required_for_full_c_equivalence": false,
+      "native_text_backend_implemented": null,
+      "owner_verified": false,
+      "qualification": "Safe ownership/cursor/output and RFC corrections documented in UPSTREAM.md; no C ABI claim."
+    },
+    {
+      "id": "GNUNET_DNSPARSER_pack",
+      "c_signature": [
+        "int (const struct GNUNET_DNSPARSER_Packet *, uint16_t, char **, size_t *)"
+      ],
+      "rust_items": [
+        "Packet::pack_native",
+        "Packet::native_builder_form",
+        "NativeScratch",
+        "NativePackReport",
+        "Packet::pack",
+        "Packet::encode"
+      ],
+      "wire_or_storage_operation_implemented": true,
+      "native_text_backend_required_for_full_c_equivalence": true,
+      "native_text_backend_implemented": true,
+      "owner_verified": false,
+      "qualification": "Native text canonicalization and conservative C capacity semantics require pack_native. Raw pack preserves wire octets. Safe ownership/output and CERT5/URI/DNAME/true-count corrections remain explicit.",
+      "native_text_backend": "gnunet_idna::Backend; explicit libidn2 2.3.8 lookup Unicode15.1 / libunistring1.5 Unicode18 normal reference profile, separate Unicode15.1-properties variant",
+      "native_composition": "Name::write_native_text / native_builder_form with explicit Backend; Packet::pack_native composes graph conversion and section-prefix behavior."
+    },
+    {
+      "id": "GNUNET_DNSPARSER_parse",
+      "c_signature": [
+        "struct GNUNET_DNSPARSER_Packet *(const char *, size_t)"
+      ],
+      "rust_items": [
+        "Packet::parse"
+      ],
+      "wire_or_storage_operation_implemented": true,
+      "native_text_backend_required_for_full_c_equivalence": true,
+      "native_text_backend_implemented": true,
+      "owner_verified": false,
+      "qualification": "Safe ownership/cursor/output and RFC corrections documented in UPSTREAM.md; no C ABI claim.",
+      "native_text_backend": "gnunet_idna::Backend; explicit libidn2 2.3.8 lookup Unicode15.1 / libunistring1.5 Unicode18 normal reference profile, separate Unicode15.1-properties variant",
+      "native_composition": "Name::write_native_text / native_builder_form with explicit Backend; Packet::pack_native composes graph conversion and section-prefix behavior."
+    },
+    {
+      "id": "GNUNET_DNSPARSER_parse_cert",
+      "c_signature": [
+        "struct GNUNET_DNSPARSER_CertRecord *(const char *, size_t, size_t *)"
+      ],
+      "rust_items": [
+        "Reader::cert"
+      ],
+      "wire_or_storage_operation_implemented": true,
+      "native_text_backend_required_for_full_c_equivalence": false,
+      "native_text_backend_implemented": null,
+      "owner_verified": false,
+      "qualification": "Safe ownership/cursor/output and RFC corrections documented in UPSTREAM.md; no C ABI claim."
+    },
+    {
+      "id": "GNUNET_DNSPARSER_parse_mx",
+      "c_signature": [
+        "struct GNUNET_DNSPARSER_MxRecord *(const char *, size_t, size_t *)"
+      ],
+      "rust_items": [
+        "Reader::mx"
+      ],
+      "wire_or_storage_operation_implemented": true,
+      "native_text_backend_required_for_full_c_equivalence": true,
+      "native_text_backend_implemented": true,
+      "owner_verified": false,
+      "qualification": "Safe ownership/cursor/output and RFC corrections documented in UPSTREAM.md; no C ABI claim.",
+      "native_text_backend": "gnunet_idna::Backend; explicit libidn2 2.3.8 lookup Unicode15.1 / libunistring1.5 Unicode18 normal reference profile, separate Unicode15.1-properties variant",
+      "native_composition": "Name::write_native_text / native_builder_form with explicit Backend; Packet::pack_native composes graph conversion and section-prefix behavior."
+    },
+    {
+      "id": "GNUNET_DNSPARSER_parse_name",
+      "c_signature": [
+        "char *(const char *, size_t, size_t *)"
+      ],
+      "rust_items": [
+        "Reader::name",
+        "Name::write_native_text"
+      ],
+      "wire_or_storage_operation_implemented": true,
+      "native_text_backend_required_for_full_c_equivalence": true,
+      "native_text_backend_implemented": true,
+      "owner_verified": false,
+      "qualification": "Safe ownership/cursor/output and RFC corrections documented in UPSTREAM.md; no C ABI claim.",
+      "native_text_backend": "gnunet_idna::Backend; explicit libidn2 2.3.8 lookup Unicode15.1 / libunistring1.5 Unicode18 normal reference profile, separate Unicode15.1-properties variant",
+      "native_composition": "Name::write_native_text / native_builder_form with explicit Backend; Packet::pack_native composes graph conversion and section-prefix behavior."
+    },
+    {
+      "id": "GNUNET_DNSPARSER_parse_query",
+      "c_signature": [
+        "int (const char *, size_t, size_t *, struct GNUNET_DNSPARSER_Query *)"
+      ],
+      "rust_items": [
+        "Reader::query"
+      ],
+      "wire_or_storage_operation_implemented": true,
+      "native_text_backend_required_for_full_c_equivalence": true,
+      "native_text_backend_implemented": true,
+      "owner_verified": false,
+      "qualification": "Safe ownership/cursor/output and RFC corrections documented in UPSTREAM.md; no C ABI claim.",
+      "native_text_backend": "gnunet_idna::Backend; explicit libidn2 2.3.8 lookup Unicode15.1 / libunistring1.5 Unicode18 normal reference profile, separate Unicode15.1-properties variant",
+      "native_composition": "Name::write_native_text / native_builder_form with explicit Backend; Packet::pack_native composes graph conversion and section-prefix behavior."
+    },
+    {
+      "id": "GNUNET_DNSPARSER_parse_record",
+      "c_signature": [
+        "int (const char *, size_t, size_t *, struct GNUNET_DNSPARSER_Record *)"
+      ],
+      "rust_items": [
+        "Reader::record"
+      ],
+      "wire_or_storage_operation_implemented": true,
+      "native_text_backend_required_for_full_c_equivalence": true,
+      "native_text_backend_implemented": true,
+      "owner_verified": false,
+      "qualification": "Safe ownership/cursor/output and RFC corrections documented in UPSTREAM.md; no C ABI claim.",
+      "native_text_backend": "gnunet_idna::Backend; explicit libidn2 2.3.8 lookup Unicode15.1 / libunistring1.5 Unicode18 normal reference profile, separate Unicode15.1-properties variant",
+      "native_composition": "Name::write_native_text / native_builder_form with explicit Backend; Packet::pack_native composes graph conversion and section-prefix behavior."
+    },
+    {
+      "id": "GNUNET_DNSPARSER_parse_soa",
+      "c_signature": [
+        "struct GNUNET_DNSPARSER_SoaRecord *(const char *, size_t, size_t *)"
+      ],
+      "rust_items": [
+        "Reader::soa"
+      ],
+      "wire_or_storage_operation_implemented": true,
+      "native_text_backend_required_for_full_c_equivalence": true,
+      "native_text_backend_implemented": true,
+      "owner_verified": false,
+      "qualification": "Safe ownership/cursor/output and RFC corrections documented in UPSTREAM.md; no C ABI claim.",
+      "native_text_backend": "gnunet_idna::Backend; explicit libidn2 2.3.8 lookup Unicode15.1 / libunistring1.5 Unicode18 normal reference profile, separate Unicode15.1-properties variant",
+      "native_composition": "Name::write_native_text / native_builder_form with explicit Backend; Packet::pack_native composes graph conversion and section-prefix behavior."
+    },
+    {
+      "id": "GNUNET_DNSPARSER_parse_srv",
+      "c_signature": [
+        "struct GNUNET_DNSPARSER_SrvRecord *(const char *, size_t, size_t *)"
+      ],
+      "rust_items": [
+        "Reader::srv"
+      ],
+      "wire_or_storage_operation_implemented": true,
+      "native_text_backend_required_for_full_c_equivalence": true,
+      "native_text_backend_implemented": true,
+      "owner_verified": false,
+      "qualification": "Safe ownership/cursor/output and RFC corrections documented in UPSTREAM.md; no C ABI claim.",
+      "native_text_backend": "gnunet_idna::Backend; explicit libidn2 2.3.8 lookup Unicode15.1 / libunistring1.5 Unicode18 normal reference profile, separate Unicode15.1-properties variant",
+      "native_composition": "Name::write_native_text / native_builder_form with explicit Backend; Packet::pack_native composes graph conversion and section-prefix behavior."
+    },
+    {
+      "id": "GNUNET_DNSPARSER_parse_uri",
+      "c_signature": [
+        "struct GNUNET_DNSPARSER_UriRecord *(const char *, size_t, size_t *)"
+      ],
+      "rust_items": [
+        "Reader::uri"
+      ],
+      "wire_or_storage_operation_implemented": true,
+      "native_text_backend_required_for_full_c_equivalence": false,
+      "native_text_backend_implemented": null,
+      "owner_verified": false,
+      "qualification": "Safe ownership/cursor/output and RFC corrections documented in UPSTREAM.md; no C ABI claim."
+    }
+  ],
+  "remaining_functions": [
+    "Complete owner-level public API/signature and service acceptance; no finite component comparison is whole DNS verification."
+  ],
+  "independent_review": "Native compressed-name provenance, source shape/borrowed storage, native capacity composition and all 34 public operation representations reviewed separately. SOA native capacity ordering defect repaired; URI CString boundary is an explicit separately reviewed delta. This is no owner verification.",
+  "workspace_integrated": true,
+  "verified_promotions": 0
+}

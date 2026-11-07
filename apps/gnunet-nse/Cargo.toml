@@ -1,0 +1,17 @@
+[package]
+name = "gnunet-nse-command"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+[target.'cfg(unix)'.dependencies]
+gnunet-nse-client-host = { workspace = true, features = ["program"] }
+gnunet-config.workspace = true
+gnunet-program-host = { workspace = true, features = ["runtime", "resolver-broker"] }
+tokio = { workspace = true, features = ["rt", "time", "net", "signal"] }
+[lints]
+workspace = true
+
+[[bin]]
+name = "gnunet-nse"
+path = "src/main.rs"

@@ -1,0 +1,21 @@
+[package]
+name = "gnunet-topology-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+[dependencies]
+gnunet-topology = { workspace = true, features = ["alloc"] }
+gnunet-types.workspace = true
+gnunet-hello.workspace = true
+gnunet-wire.workspace = true
+gnunet-transport.workspace = true
+gnunet-core-client-host.workspace = true
+gnunet-peerstore-client-host.workspace = true
+gnunet-pils-host = { workspace = true, features = ["client"] }
+gnunet-pils = { workspace = true, features = ["alloc"] }
+gnunet-client-host.workspace = true
+gnunet-service-runtime.workspace = true
+tokio = { workspace = true, features = ["rt", "time"] }
+[lints]
+workspace = true

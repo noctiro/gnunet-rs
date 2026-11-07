@@ -1,0 +1,35 @@
+[package]
+name = "gnunet-rest-server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = []
+oidc = ["gnunet-rest-host/oidc", "dep:gnunet-oidc-crypto-host"]
+
+[target.'cfg(unix)'.dependencies]
+gnunet-oidc-crypto-host = { workspace = true, optional = true }
+gnunet-config.workspace = true
+gnunet-rest.workspace = true
+getrandom.workspace = true
+gnunet-rest-host.workspace = true
+gnunet-idna.workspace = true
+gnunet-gnsrecord-text.workspace = true
+gnunet-identity-client-host.workspace = true
+gnunet-namestore-client-host.workspace = true
+gnunet-reclaim-client-host.workspace = true
+gnunet-client-host.workspace = true
+gnunet-program-host = { workspace = true, features = ["resolver-broker"] }
+gnunet-resolver-broker.workspace = true
+gnunet-service-runtime.workspace = true
+gnunet-service-startup.workspace = true
+tokio = { workspace = true, features = ["rt", "net", "time", "signal"] }
+zeroize.workspace = true
+uzers.workspace = true
+nix = { workspace = true, features = ["user"] }
+libc.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,4138 @@
+{
+  "schema": 1,
+  "source_revision": "346358e26d4dcc2dc4f51bef5d52dca29c7d8165",
+  "status": "inventory-only",
+  "sources": {
+    "src/include/gnunet_core_service.h": {
+      "sha256": "3c80c16833a9c3adea9e9e526c7680f844a41a9f90002b0f3024996cd6155496",
+      "bytes": 19964,
+      "functions": []
+    },
+    "src/include/gnunet_core_underlay.h": {
+      "sha256": "2105e9a018637b05aac2d25c0a6d8a6fbdccc5ef6dd0c45b388174b9f8f07e9d",
+      "bytes": 6586,
+      "functions": []
+    },
+    "src/include/gnunet_crypto_lib.h": {
+      "sha256": "da243a272eb2d84e604d23dcce1ecd72852442e1e40ff0dae2ba6957df9d4294",
+      "bytes": 155333,
+      "functions": []
+    },
+    "src/include/gnunet_nat_service.h": {
+      "sha256": "17918d4febb14ab4dd4dae55c8c91d71409177f387d301d1ae33362b3f3f228a",
+      "bytes": 14226,
+      "functions": []
+    },
+    "src/include/gnunet_peerstore_service.h": {
+      "sha256": "217f44dac06c7c9ad1c6723fa7cf70a7dcf86b76f85fef5bed2c4b0f2d6a9005",
+      "bytes": 12967,
+      "functions": []
+    },
+    "src/include/gnunet_pils_service.h": {
+      "sha256": "af5ffdb5878dd79f22beafb17b1589911fcd9b73c1e00af2228dbc5bc5316f38",
+      "bytes": 11967,
+      "functions": []
+    },
+    "src/include/gnunet_protocols.h": {
+      "sha256": "9a86ea10c53da11d68c255fa732d24f9d8695a6405396b965893384d3c952392",
+      "bytes": 95909,
+      "functions": []
+    },
+    "src/include/gnunet_signatures.h": {
+      "sha256": "bb546c9f1af6f09664a8c09d75543bd78fa3f4a4ccd17cce5bff9f4c4a5eea90",
+      "bytes": 6165,
+      "functions": []
+    },
+    "src/include/gnunet_transport_application_service.h": {
+      "sha256": "ff4aba2216d239a00f788f6bfe06082f481c522b97e3896a4d2d844c8a45ba81",
+      "bytes": 3726,
+      "functions": []
+    },
+    "src/include/gnunet_transport_communication_service.h": {
+      "sha256": "ba34a03f071fdf13882af07aaaa8965810082bf9123010a61af0968f1556776a",
+      "bytes": 12951,
+      "functions": []
+    },
+    "src/include/gnunet_transport_core_service.h": {
+      "sha256": "64d504fa733782c9e60dcc21171d27709402c79e7166aed93845aa71eee78675",
+      "bytes": 5871,
+      "functions": []
+    },
+    "src/include/gnunet_transport_monitor_service.h": {
+      "sha256": "582477b1cba100ed358a127542db521383397538c69f86daa84e054025e9b4e6",
+      "bytes": 10120,
+      "functions": []
+    },
+    "src/lib/util/crypto_ecc.c": {
+      "sha256": "8b7124466b75768125c028c63d51c4892c35aff5c2b6bc560b120a90659d6273",
+      "bytes": 25462,
+      "functions": [
+        {
+          "name": "key_from_sexp",
+          "line": 101,
+          "end_line": 148,
+          "body_sha256": "87d81f3b8f663dd2981675a8c2b13418e2fd8f1a82fe8d345628441a573f643e",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "decode_private_ecdsa_key",
+          "line": 159,
+          "end_line": 187,
+          "body_sha256": "749a75a19037207852713fbfbf1011ba69596d73e0c41943ad646440ac68b2de",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_CRYPTO_ecdsa_key_get_public",
+          "line": 191,
+          "end_line": 198,
+          "body_sha256": "4519596e7108da33836f923df53ceeb2cc72cae0be218a0cc264558d9e6c7154",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_CRYPTO_eddsa_key_get_public",
+          "line": 202,
+          "end_line": 214,
+          "body_sha256": "1814d26cf582a7fb2185c97c0ccf9214fbfd12ad513a6bb37f9975d795294ae3",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_CRYPTO_ecdhe_key_get_public",
+          "line": 218,
+          "end_line": 225,
+          "body_sha256": "8ba817f791bfd17c694148b0038e887583b2720030d9e66289c22b4e3cf35e7a",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_CRYPTO_ecdsa_public_key_to_string",
+          "line": 229,
+          "end_line": 252,
+          "body_sha256": "cb107f5fa6d57b4899ee97e85a8f846b09e5993ab859d67f3d477a1e159d0fd1",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_CRYPTO_eddsa_public_key_to_string",
+          "line": 256,
+          "end_line": 279,
+          "body_sha256": "fe5f225e5eab7483f7f29fbf16a42685f2bc822562f0047ef0c6ed8adb8447db",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_CRYPTO_eddsa_private_key_to_string",
+          "line": 283,
+          "end_line": 306,
+          "body_sha256": "084f5368a7da5425b4781edcc75d585b742f264ebe9533f09334149e2933be3a",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_CRYPTO_ecdsa_private_key_to_string",
+          "line": 310,
+          "end_line": 333,
+          "body_sha256": "9200716037213f0f779c1706a26ef3f1609afeca068804391eb0340b74930ef9",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_CRYPTO_ecdsa_public_key_from_string",
+          "line": 337,
+          "end_line": 358,
+          "body_sha256": "7722d6ef9f0ad5eaae27b6401195884b6d1636613c978303ebc6227a00b55550",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_CRYPTO_eddsa_public_key_from_string",
+          "line": 362,
+          "end_line": 383,
+          "body_sha256": "e68f56540a71507485b253dd5a82c59474f23680e4a7f88e53faeb9bf488ee3f",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_CRYPTO_eddsa_private_key_from_string",
+          "line": 387,
+          "end_line": 415,
+          "body_sha256": "c81bd79ddf4072fadfde80af608ab2e1a3fb6728db51eec40dd954d3b38a4485",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "buffer_clear",
+          "line": 419,
+          "end_line": 430,
+          "body_sha256": "07f03e229631cedb3f06281f1caaa472f8d22af1bf0787ad0b0a25a40da2fde5",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_CRYPTO_ecdhe_key_clear",
+          "line": 434,
+          "end_line": 437,
+          "body_sha256": "10389809c277cef1dce8d71c9690a86d37d0af57ac9c6c0e8ad1f6a8397c54aa",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_CRYPTO_ecdsa_key_clear",
+          "line": 441,
+          "end_line": 444,
+          "body_sha256": "ce6d757c6237a7652e63ced82e5ab089c47d1680a431397c8fd4a2136a28009f",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_CRYPTO_eddsa_key_clear",
+          "line": 448,
+          "end_line": 451,
+          "body_sha256": "51a64a26c5c12f5246a3593e38808b47c1a1cccbeaa57cd7444dfcdb56fab94f",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_CRYPTO_ecdhe_key_create",
+          "line": 455,
+          "end_line": 461,
+          "body_sha256": "95fc2178b6152d31752009e0e5cd2c1f74e84347f1c687df0cbc12e0783edd96",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_CRYPTO_ecdsa_key_create",
+          "line": 465,
+          "end_line": 475,
+          "body_sha256": "53c171652e9f8ea85e8a49c706ee64d645002c7f06a50ec38e892732f0f9db7d",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_CRYPTO_eddsa_key_create",
+          "line": 479,
+          "end_line": 494,
+          "body_sha256": "428aabb57defec90e946a8f3b757fb1843d2a310db535305ea970e6485d75346",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_CRYPTO_ecdsa_key_get_anonymous",
+          "line": 498,
+          "end_line": 518,
+          "body_sha256": "8af7ccd73654dea587ed7f226f218909aaab269e25d1847c677fe39216931558",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_CRYPTO_eddsa_key_get_anonymous",
+          "line": 522,
+          "end_line": 541,
+          "body_sha256": "37b1064e6927b219a2938a48a33c3af8eae0abfa43e540e5876fb9cf5fa52046",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "data_to_ecdsa_value",
+          "line": 552,
+          "end_line": 571,
+          "body_sha256": "53cc142c38e4126eb3418a6d67d93eeb9543088976a0c05f20201f911f64149c",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_CRYPTO_ecdsa_sign_",
+          "line": 575,
+          "end_line": 621,
+          "body_sha256": "6c7a9a2f5ef105f67ffda1c35bebef986da9312e75b902979bd046ba2ee9aca8",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_CRYPTO_eddsa_sign_raw",
+          "line": 625,
+          "end_line": 642,
+          "body_sha256": "7f385ce8b96915fa9770456fefdfccc00d86c7c3978f10cfa4aa36ab432cbe8a",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_CRYPTO_eddsa_sign_",
+          "line": 646,
+          "end_line": 666,
+          "body_sha256": "0066a47af0929fd23258faeed511748a7e8b5e2cdbab4f38bdd555c15d407b8e",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_CRYPTO_ecdsa_verify_",
+          "line": 670,
+          "end_line": 725,
+          "body_sha256": "3123801e5e73467889b8e8de551a96b5dc3d367a73ecb99ad7a56da3fe7d370d",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_CRYPTO_eddsa_verify_",
+          "line": 729,
+          "end_line": 749,
+          "body_sha256": "d327c21fb4ac373bc6f2310b2d3f62a427542541504a209d77339792cda2c50d",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_CRYPTO_eddsa_verify_raw",
+          "line": 753,
+          "end_line": 768,
+          "body_sha256": "1fd81dcbd8a558f5ea9aff511535ae9f8f4f7df864b7b65068175473d188d278",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_CRYPTO_ecc_ecdh",
+          "line": 772,
+          "end_line": 781,
+          "body_sha256": "c4de60768c786fca6fc299996c39e1360a430d5b1925cb5f0082680513f8b03e",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_CRYPTO_eddsa_ecdh",
+          "line": 785,
+          "end_line": 803,
+          "body_sha256": "07668d5e5cbae9909114e8fe71eae7c903e464cf242fcec6bd5d64ffdbc67095",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_CRYPTO_x25519_ecdh",
+          "line": 807,
+          "end_line": 819,
+          "body_sha256": "aadff6371d91d3aa41bb88bb3148f849fd0701a692a222260e04a1aa03cdc811",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_CRYPTO_ecdh_x25519",
+          "line": 823,
+          "end_line": 841,
+          "body_sha256": "f839e0f7456d08eb7012376e4fd92cba7e98a317dc067be2e48714a55ab8cc8c",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_CRYPTO_ecdsa_ecdh",
+          "line": 845,
+          "end_line": 859,
+          "body_sha256": "8ca1898089a5846caf6aa39f4ee6888c8aed5cb64c2e47b4a5418a7d5e1b02de",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_CRYPTO_ecdh_eddsa",
+          "line": 863,
+          "end_line": 876,
+          "body_sha256": "08189581f954c67fa917271d99f4b57501fb65f39ba450564ed7fc91dc808fe5",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_CRYPTO_ecdh_ecdsa",
+          "line": 880,
+          "end_line": 893,
+          "body_sha256": "263b73aab3ea0f492745ecfd6a1bac89f7e6f595ff39eda17f38d2712705ebee",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        }
+      ]
+    },
+    "src/lib/util/crypto_elligator.c": {
+      "sha256": "fab6b3c8b2cac04f959d9c7eec39d9135664d75b07aa884d2b3fe02af8090f0c",
+      "bytes": 22215,
+      "functions": [
+        {
+          "name": "decode_bytes",
+          "line": 204,
+          "end_line": 213,
+          "body_sha256": "806bd978052117d4a8446d38c2290159e72eedc2f933f561608c00bffbaa8184",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "encode_bytes",
+          "line": 224,
+          "end_line": 230,
+          "body_sha256": "82c16a75c6aa092a3a8986c772acfefb0e5efc18a4c63d40774e85bd49aa595f",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_CRYPTO_ecdhe_elligator_initialize",
+          "line": 240,
+          "end_line": 308,
+          "body_sha256": "f7f4efd25ff7fa3de18fd34288cfc6cb3060d7b8a586eefdac74c430414f3848",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "least_square_root",
+          "line": 320,
+          "end_line": 355,
+          "body_sha256": "5d4b7f7d2b0dc41b31c5947a644c988a4cb0ee5c82b731dfe082203d3cf59e2c",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_CRYPTO_ecdhe_elligator_encoding",
+          "line": 359,
+          "end_line": 432,
+          "body_sha256": "6ca75f339566a75795e13befafe89028f6626630d659bcfb31df8abb97fca80e",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "elligator_direct_map",
+          "line": 447,
+          "end_line": 504,
+          "body_sha256": "51ff42427f3f09b1ec37fd574a5a8f9b866faf35fa60ee54d9c365c855bba868",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_CRYPTO_ecdhe_elligator_decoding",
+          "line": 508,
+          "end_line": 528,
+          "body_sha256": "d0d89c08cd720728f4c510a2723304c124c3a4f310a2c63cc0db7a286e998b7f",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "convert_from_ed_to_curve",
+          "line": 542,
+          "end_line": 605,
+          "body_sha256": "e42258e27f22b324c403c3306ddc5109b08622ac4f930b32d9eb9c2a2ef871f0",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "elligator_generate_public_key",
+          "line": 609,
+          "end_line": 635,
+          "body_sha256": "af6f184a03453402cc9746aae53ded90e6376077ee094a2a116a7ec9599bd0f3",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_CRYPTO_ecdhe_elligator_key_get_public_norand",
+          "line": 639,
+          "end_line": 658,
+          "body_sha256": "6dda66986de5693b79b51aa18a4f998bc3a28a1aa0844ccf15ace4957ff2d1ad",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_CRYPTO_ecdhe_elligator_key_get_public",
+          "line": 662,
+          "end_line": 675,
+          "body_sha256": "e411f23b1362e95858e0902fe02451653458dfd4dc9e66d44bb5675e163d7e84",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_CRYPTO_ecdhe_elligator_key_create",
+          "line": 679,
+          "end_line": 696,
+          "body_sha256": "b53817ad90681f8eb7fcc5efa9c1cb502b2d0a3181eb90753bda60bb95de6ced",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        }
+      ]
+    },
+    "src/lib/util/crypto_hpke.c": {
+      "sha256": "da460803eeffe98ca8664cf1b9965244b392bd323f569d9a0991f1e244c38dba",
+      "bytes": 38095,
+      "functions": [
+        {
+          "name": "labeled_extract",
+          "line": 51,
+          "end_line": 75,
+          "body_sha256": "0d73be0f042646f07fa2da6ff77d1830b48b736927f2ac0726879280df1e63d1",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "labeled_expand",
+          "line": 94,
+          "end_line": 124,
+          "body_sha256": "0db3ecb4338b54a4eb9a3ddd7e8e96ee2f66cde22f1e09857bac3f2f71b49f98",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_CRYPTO_hpke_labeled_extract_and_expand",
+          "line": 128,
+          "end_line": 157,
+          "body_sha256": "338db9c2fc26ecc254393f249be60343e9697f73f6d91159f12aa263270c8d6c",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "kem_encaps_norand",
+          "line": 171,
+          "end_line": 207,
+          "body_sha256": "0299c7b2ce07621b5972fc9e9ffa84e9eb718529aeca0c812034f2720be36eca",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_CRYPTO_hpke_kem_encaps_norand",
+          "line": 211,
+          "end_line": 228,
+          "body_sha256": "39cd3cb034b63fff9bcf2525f22e6385264e24b4cff49ca150f95a9bedca2ae9",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_CRYPTO_hpke_kem_encaps",
+          "line": 232,
+          "end_line": 242,
+          "body_sha256": "6b1ecc3205dd5abf8204c24f200ac977cb3d484042645772361fa92bd626b635",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_CRYPTO_eddsa_kem_encaps",
+          "line": 246,
+          "end_line": 258,
+          "body_sha256": "bf959610564a16c5f826ac69699eea8d869d3ebfccc587c8f8969417f2ab1d4e",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_CRYPTO_hpke_kem_decaps",
+          "line": 262,
+          "end_line": 296,
+          "body_sha256": "f817073a43f374a32311d413cae047939a249c3a8be3de07202d77da6bfbd6d3",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_CRYPTO_eddsa_kem_decaps",
+          "line": 301,
+          "end_line": 314,
+          "body_sha256": "f46f6438234197e209412cb100d9a04694b9793202174e4cfc7a5c93aa068831",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_CRYPTO_hpke_elligator_kem_encaps_norand",
+          "line": 318,
+          "end_line": 344,
+          "body_sha256": "a6b5377465274422c55226681e56033697c70544c7c96108a519ef63cc6cd652",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_CRYPTO_hpke_elligator_kem_encaps",
+          "line": 348,
+          "end_line": 364,
+          "body_sha256": "4759c01b52862fe0474a35847311eb1d65aede3f4c8c8351bebe2168627a08ef",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_CRYPTO_hpke_elligator_kem_decaps",
+          "line": 368,
+          "end_line": 407,
+          "body_sha256": "755490af67a3ccc02ea5890ff3b5364d4655d466495860e84d0c9b1cd0193ee6",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "verify_psk_inputs",
+          "line": 411,
+          "end_line": 445,
+          "body_sha256": "92ff72b5a76280a95b25bb73b2b1b4d22f0d90e4385bbbe4f058a568f1d7e108",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "key_schedule",
+          "line": 449,
+          "end_line": 530,
+          "body_sha256": "70fa347b7f98274ab96948c35a66602eff9348629eacddd397cea5b715df335a",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_CRYPTO_hpke_sender_setup2",
+          "line": 534,
+          "end_line": 588,
+          "body_sha256": "d1feac8f47c929689ad8413bf9ed39032317a4b5cf6a7f2a78175e03e5dc0030",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_CRYPTO_hpke_sender_setup",
+          "line": 592,
+          "end_line": 611,
+          "body_sha256": "804a11d4b7e89589a3ef677ea0a5bd372b1b6ec4db8dadcd97d38497a59ddbdd",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_CRYPTO_hpke_receiver_setup2",
+          "line": 615,
+          "end_line": 659,
+          "body_sha256": "85926e565366a5d866adef258f2bddea0701d1847992086f04640238a7d5f4e7",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_CRYPTO_hpke_receiver_setup",
+          "line": 663,
+          "end_line": 675,
+          "body_sha256": "120fffad5f68525e42edf7ec5abd0328453808d773cfd2a920460a0f1b39af67",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "increment_seq",
+          "line": 679,
+          "end_line": 688,
+          "body_sha256": "fd8131795057dcac0eb786e095cb8967b8e4a95920bbda68e3adb0dc2a42e953",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "compute_nonce",
+          "line": 692,
+          "end_line": 705,
+          "body_sha256": "3e2da4e1585833c1b1eacc3b579f59ac054ddd2a6de532b0c7212555d8ced48f",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_CRYPTO_hpke_seal",
+          "line": 709,
+          "end_line": 736,
+          "body_sha256": "15bdf23f83c2fd07de537c89e7eca6338c6debd016698940765ebc8650bc8ba9",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_CRYPTO_hpke_open",
+          "line": 740,
+          "end_line": 771,
+          "body_sha256": "22f0362d30a376e65a93b0cda00c62dbd4642b65191891c109ad4d8d09a60b56",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_CRYPTO_hpke_seal_oneshot",
+          "line": 775,
+          "end_line": 801,
+          "body_sha256": "c56e4c05eb470482f8a55cec6c8982fe3ee56b4cce0f92c7a227762627f1740e",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_CRYPTO_hpke_open_oneshot",
+          "line": 805,
+          "end_line": 832,
+          "body_sha256": "9418bd897e2ee581bb5937e5059c51c2290330add555b891d83b6cca86b8a304",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_CRYPTO_hpke_pk_to_x25519",
+          "line": 836,
+          "end_line": 860,
+          "body_sha256": "6821aba4ba9d3987ca5d9e94a06f19f5f84c304ced01e404a7a563e1469809a0",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_CRYPTO_hpke_sk_to_x25519",
+          "line": 864,
+          "end_line": 888,
+          "body_sha256": "8eb6bad19de8ce2de6afae10dd85359423944285802430d7bd3645d5de1be047",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_CRYPTO_hpke_pk_get_length",
+          "line": 892,
+          "end_line": 903,
+          "body_sha256": "cc45eb6063187061ce81843eed393b392e77f650caa47ff7c88b89d1ebf1dcbe",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_CRYPTO_read_hpke_pk_from_buffer",
+          "line": 907,
+          "end_line": 929,
+          "body_sha256": "407f54a65f75d3a19f8e87a2afae5454996aa3e555b9f31bd747a03d505ac6d0",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_CRYPTO_write_hpke_pk_to_buffer",
+          "line": 933,
+          "end_line": 947,
+          "body_sha256": "b69c0a81188ca1a6ab6023878b1ab98fd361e447e036063b4027c7819aec7612",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_CRYPTO_hpke_sk_clear",
+          "line": 951,
+          "end_line": 961,
+          "body_sha256": "b1fd583b97462d1927b9217afd68c713d705d6f1ce0455549fcba0ac343c354b",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_CRYPTO_hpke_sk_create2",
+          "line": 965,
+          "end_line": 1007,
+          "body_sha256": "3b727f008f766a6881e3293fd9b787e447a00ad30da7ce6ac6ae75b437e7f5a0",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_CRYPTO_hpke_sk_create",
+          "line": 1011,
+          "end_line": 1023,
+          "body_sha256": "99d6aaa4634ac11c4a2423d17d6da95b95cf6e7c3aab57fabf93793eadb64cc4",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_CRYPTO_hpke_sk_get_length",
+          "line": 1027,
+          "end_line": 1041,
+          "body_sha256": "53cbd4ac865bd9c627b4f8052d444c38d4a3ef9ba77fd0ffb4dab2e5b56c986b",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_CRYPTO_read_hpke_sk_from_buffer",
+          "line": 1045,
+          "end_line": 1068,
+          "body_sha256": "1b24f710c1927e9bdc0bca24b0621ac89858940ed3ea0e9ca1393a2d22f8f223",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_CRYPTO_write_hpke_sk_to_buffer",
+          "line": 1072,
+          "end_line": 1087,
+          "body_sha256": "a76b0bbcae73fb263b6b7b1c1e1bc982ba19e23c700ee14ca8cdb360dba2aa11",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_CRYPTO_hpke_sk_get_public",
+          "line": 1091,
+          "end_line": 1109,
+          "body_sha256": "61cbfdcff6aee9551fc96d136cd5a7760475a0c21b10ed9dee9c4c9c1927fd8a",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        }
+      ]
+    },
+    "src/service/core/core.h": {
+      "sha256": "22e401fcb5a411db0a3beb4bf9dd59847ac144b675083b8287e24dd56b60b68d",
+      "bytes": 7469,
+      "functions": []
+    },
+    "src/service/core/core_api.c": {
+      "sha256": "d5f0159c2322647d7dc15d4d94912ac3772bbe0f8a2e7024bd474ad012470438",
+      "bytes": 21459,
+      "functions": [
+        {
+          "name": "reconnect_task",
+          "line": 168,
+          "end_line": 175,
+          "body_sha256": "0e08bc4147f0dc731722285cec367f8599741f494a52f2218160d7d379766425",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "disconnect_and_free_peer_entry",
+          "line": 188,
+          "end_line": 209,
+          "body_sha256": "6974e8e56a64a2ce720841b93908c9abae1f0392a5898ee89e1e70faeefb5b19",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "reconnect_later",
+          "line": 219,
+          "end_line": 234,
+          "body_sha256": "1266d35ea011425b63da4afd0b5806a16e7a5a37dfbd1d058e89f3a758b63015",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "handle_mq_error",
+          "line": 245,
+          "end_line": 251,
+          "body_sha256": "3b53c6ef2c93a340d4bd64cf8c48d89ea601f625a7e8f67fb75bb56a32d23856",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "core_mq_send_impl",
+          "line": 263,
+          "end_line": 314,
+          "body_sha256": "b7bc29c5d5433eb35aad77161bdccc7e40064c8696bb3d1b8c829977c1fa4701",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "core_mq_destroy_impl",
+          "line": 325,
+          "end_line": 331,
+          "body_sha256": "457d12a877b5b6e86364205994a0976dd9b7cc4cab171efe8c6e32f4af343faf",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "core_mq_cancel_impl",
+          "line": 342,
+          "end_line": 350,
+          "body_sha256": "9ad43f0ea37ba5e920663ce7acb63e8493cd367698c7fa34eb974e9d8dc446e0",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "core_mq_error_handler",
+          "line": 362,
+          "end_line": 368,
+          "body_sha256": "db00990f06ca5a1aa745b70592d0d9e2c549dae4c87e15a35a0436ede00ad983",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "connect_peer",
+          "line": 381,
+          "end_line": 408,
+          "body_sha256": "0fa8b29c552cb496fc867608ed322dd5b666c32cd1fdff3a78d4b4e19ca55c86",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "handle_init_reply",
+          "line": 420,
+          "end_line": 456,
+          "body_sha256": "79c8cd14fd3c5b737bbb80bf15062f4f5fb1bc9ffd85d8292d176ae657c40345",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "handle_connect_notify",
+          "line": 467,
+          "end_line": 489,
+          "body_sha256": "69f3f1d18d3fd8d7765c3eeafc201704581655a4e34f2d7c65f5f5208794367d",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "handle_disconnect_notify",
+          "line": 500,
+          "end_line": 523,
+          "body_sha256": "de2bf030aeeeabf10ed946d5de3123117c11def52cb2d447ec11e0770546d778",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "check_notify_inbound",
+          "line": 534,
+          "end_line": 553,
+          "body_sha256": "468e1bc4df703869846b18f1b999890e9322913020bd35d7d270d9b9d87a11b7",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "handle_notify_inbound",
+          "line": 564,
+          "end_line": 582,
+          "body_sha256": "fbb38053c3d47742038235fb1ec217e2d0dfb6863ce7861cfe7b29ab2eaa2814",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "handle_send_ready",
+          "line": 594,
+          "end_line": 626,
+          "body_sha256": "22be9007c8b7cb592a7eab1d36ff416ea759b1caab36e454243ed4dca2bab4a4",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "reconnect",
+          "line": 636,
+          "end_line": 680,
+          "body_sha256": "f583fe53043af8c6d67359cdd09a6044c31ec5c3e4b8e5f4413f2d6f9042672c",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_CORE_connect",
+          "line": 698,
+          "end_line": 735,
+          "body_sha256": "d9dd168747d23d0be1fd294f7ff18b6ddc5816f9774022fd3db4b65998b03e60",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_CORE_disconnect",
+          "line": 744,
+          "end_line": 764,
+          "body_sha256": "a2ae4045df9148039eff9fd24d847ca5a67f6b112f0868b1e9c128abbfa18ff3",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_CORE_get_mq",
+          "line": 775,
+          "end_line": 784,
+          "body_sha256": "7053f037e65587c139cde138f8e35383b6510e929f8b0681f16c15cddad8bcd5",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        }
+      ]
+    },
+    "src/service/core/core_api_monitor_peers.c": {
+      "sha256": "0042212f869eea0d7a104478648cb9c5190cf67d310b2ef366e43d4be51365a3",
+      "bytes": 5259,
+      "functions": [
+        {
+          "name": "handle_mq_error",
+          "line": 78,
+          "end_line": 84,
+          "body_sha256": "f8ea1646e58777646b746c69a170e31b139b5660fc4c9e1183a7346e2a135d35",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "handle_receive_info",
+          "line": 94,
+          "end_line": 102,
+          "body_sha256": "afd77b0c1e6a08950d3886bcb4931aa4069b58bd3c8d27b8eadc9ae0ecc52463",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "reconnect",
+          "line": 112,
+          "end_line": 138,
+          "body_sha256": "04567bc661492f70820115fee445b018bf00542211be4736005af30166a0d963",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_CORE_monitor_start",
+          "line": 158,
+          "end_line": 176,
+          "body_sha256": "e021f44e49e992afde39042258dfe315cf11840a0990768dcb3a0175daa48b17",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_CORE_monitor_stop",
+          "line": 185,
+          "end_line": 193,
+          "body_sha256": "684a6abfc2a60d30898493e538600fb6c1bf6a4e6f988fa830f0153b1ce2f8bb",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        }
+      ]
+    },
+    "src/service/core/gnunet-service-core.c": {
+      "sha256": "9766422698929a34c8bc18e371460c5319ed199e3d2635bd1ca0a9309c02adc4",
+      "bytes": 36344,
+      "functions": [
+        {
+          "name": "GSC_SVCI_init",
+          "line": 199,
+          "end_line": 205,
+          "body_sha256": "4bea812f5bba28dbf696d4592807af124ffbe93f442c4bd5ca36ab7ec3625fe6",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GSC_SVCI_destroy",
+          "line": 210,
+          "end_line": 214,
+          "body_sha256": "ce1a25241aa4480f99d8b3e44b8d7e1844b3d41a77821a9c6c71bf0f17ac74f2",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GSC_SVCI_add",
+          "line": 220,
+          "end_line": 232,
+          "body_sha256": "1410b625989d2a73b8c0529c7c758a1f9860f67885058f12583d5db65a154453",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GSC_SVCI_remove",
+          "line": 237,
+          "end_line": 277,
+          "body_sha256": "2d2374cc4e09773c0a551cdcdf81919ab3e7b8d96160a6bc7e8f794f391209d8",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "type_match",
+          "line": 293,
+          "end_line": 304,
+          "body_sha256": "accf06db515c741d6bebd43b1bd4bb906dd947aa2f12145e8a3cd007be173493",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "check_client_init",
+          "line": 315,
+          "end_line": 318,
+          "body_sha256": "4bc3763f16e37a17b2601c2cfefc2b3fe171e9fd58a70cfa333a49aadfb2535a",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "handle_client_init",
+          "line": 328,
+          "end_line": 375,
+          "body_sha256": "2a437beccee37b7b1e03de30e95284a4ad6cc2cd33f7f144ff4b5c2106f48669",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GSC_CLIENTS_reject_request",
+          "line": 391,
+          "end_line": 402,
+          "body_sha256": "55a0b2d06608a7d51a6644a437847d9d323167f817b7d2d54f4ec8bdfd7c20e5",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GSC_CLIENTS_solicit_request",
+          "line": 413,
+          "end_line": 451,
+          "body_sha256": "5adb6568af25feb7c663ca1eb9962c36ac15582246cb174854c41c81a68adf08",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "handle_client_send_request",
+          "line": 461,
+          "end_line": 535,
+          "body_sha256": "3b9a334fd6213d66fc3ad70997a65575d6981a22194c767d508f4ed8abf323e5",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "tokenized_cb",
+          "line": 568,
+          "end_line": 623,
+          "body_sha256": "dc58fe992cfdfa1beecc8c53c8c5c68aaaca22df0afc22417d6d1ae3329ee418",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "check_client_send",
+          "line": 634,
+          "end_line": 637,
+          "body_sha256": "798d5fba5b68678b12557f8069c6eedd85079f79c2acc1c65c24135a26e7b815",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "handle_client_send",
+          "line": 647,
+          "end_line": 700,
+          "body_sha256": "cfedcc8ec92efb0de86b4b59ece8ef51c16ce3cfdc47d4752428f6a54b034eb3",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "destroy_active_client_request",
+          "line": 712,
+          "end_line": 726,
+          "body_sha256": "017534e76005bb6c4438d8fb69a2459ace34b4555fc96e04a060f83509544ffd",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "client_connect_cb",
+          "line": 738,
+          "end_line": 750,
+          "body_sha256": "81f3564528305eaf5ea9b22e7e2f587afbc7b787d7e5b27741770f3e88cb5b49",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "client_disconnect_cb",
+          "line": 761,
+          "end_line": 787,
+          "body_sha256": "02a2c6efcc820805c2f821fa00b6e202b2398ad4b1250c613b390348732f3ee2",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GSC_CLIENTS_notify_client_about_neighbour",
+          "line": 802,
+          "end_line": 858,
+          "body_sha256": "b513ce7c93566e1cecaa442ad90725c9f59e85e0390f2552d0c6409eb9a79bf6",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GSC_complete_initialization_cb",
+          "line": 867,
+          "end_line": 877,
+          "body_sha256": "16b0c871dabf7b635b9fc94394df21bd48df33a8903b5a95abad263b0baeae1e",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GSC_CLIENTS_notify_clients_about_neighbour",
+          "line": 891,
+          "end_line": 903,
+          "body_sha256": "e949f0b432d4ef4828f0476a5b4ff2ce26bd9fb4f51df5cb730d24a47f1bc834",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GSC_CLIENTS_deliver_message",
+          "line": 918,
+          "end_line": 1021,
+          "body_sha256": "d5afeaa94c995e1d25aa7eec8e83adb5c6ec1d5361b2ab410b5547268883ce0e",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "shutdown_task",
+          "line": 1031,
+          "end_line": 1047,
+          "body_sha256": "bc619a12b5f030881909e67a1eb3c69a5566eb8a75bfae28b108eb991ec53fd4",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "handle_client_monitor_peers",
+          "line": 1060,
+          "end_line": 1067,
+          "body_sha256": "0c7a98942f3a5af9b8c915b34dde590d42a91db6d8a6c29cb6091492dfd87dce",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "run",
+          "line": 1078,
+          "end_line": 1133,
+          "body_sha256": "5890f11a98c87b5c617785fa19cebef24fd3aba32d1818e8de791652cbe1995c",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        }
+      ]
+    },
+    "src/service/core/gnunet-service-core.h": {
+      "sha256": "2a0f9776cc73dcd9ebdb88f24db15700c33b3c85bb5f9e5d82fb4ab705044736",
+      "bytes": 5780,
+      "functions": []
+    },
+    "src/service/core/gnunet-service-core_kx.c": {
+      "sha256": "e231279845946696cddade298ae38715a3f3d22857c51b6829f18a953a7d6dbe",
+      "bytes": 130655,
+      "functions": [
+        {
+          "name": "buffer_clear",
+          "line": 517,
+          "end_line": 528,
+          "body_sha256": "07f03e229631cedb3f06281f1caaa472f8d22af1bf0787ad0b0a25a40da2fde5",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "cleanup_handshake_secrets",
+          "line": 532,
+          "end_line": 554,
+          "body_sha256": "bb6efabcef1d29f14c840c62899707faabd0134795031a9d12f496f3b592db8c",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "replay_reset",
+          "line": 567,
+          "end_line": 572,
+          "body_sha256": "69bf8c80f415763bcac8e8a1e987bc7b305f2ea473d6adbe19da1e5635a66710",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "replay_reset_all",
+          "line": 581,
+          "end_line": 585,
+          "body_sha256": "2e29aefe8443643c4aeb70630d9e3744c0322f957b4997aebd7b9b607706a0bc",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "replay_check",
+          "line": 602,
+          "end_line": 618,
+          "body_sha256": "8e858b059f23540c51397e9b495dc2ecafbd0fdc0d4737a747691e2f2dade423",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "replay_commit",
+          "line": 630,
+          "end_line": 649,
+          "body_sha256": "b5c589d8d98b6915f3de8fcb1556cab6c5fc8ac981660b592f889b051837e092",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "snapshot_transcript",
+          "line": 653,
+          "end_line": 660,
+          "body_sha256": "a6078e0f056663790712dc75c961f68f9f26f8bd741f926b44f32ba7559e5c0a",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "monitor_notify_all",
+          "line": 669,
+          "end_line": 680,
+          "body_sha256": "2f7f0afa3ce0d4a511efa1e7891bfda3cc33df0b9da858284c8a11a0365ed2b2",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "send_heartbeat",
+          "line": 694,
+          "end_line": 754,
+          "body_sha256": "8b5fd35a9242e5823d121604dc8cb3a7fbf07fc7b97047fdbf35dd03afddc8e4",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "update_timeout",
+          "line": 765,
+          "end_line": 792,
+          "body_sha256": "a710e9f176a789a088a713f36a0c4b50b832a2ff26d6a7a0b4e9a7067cd35b00",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "deliver_message",
+          "line": 816,
+          "end_line": 833,
+          "body_sha256": "db2cb9d72dbbc4f8f4ad05b34be855cf6d4fe290dfa7be12f47286aba2404560",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "schedule_resend",
+          "line": 848,
+          "end_line": 857,
+          "body_sha256": "b7e7837e596fdc0da705596b43f760901f8d2af3e61109cb5f649b6702b24a66",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "start_resend",
+          "line": 868,
+          "end_line": 874,
+          "body_sha256": "2f7faa741b53dd2f02028cae24f2d6e49712c71563d85062db3153cfe6264f7c",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "reset_handshake",
+          "line": 886,
+          "end_line": 915,
+          "body_sha256": "d86f26a6872ca63cc46adbbc8ea6998d293b22c959c5c1f05473539bcdaaa735",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "abandon_exchange",
+          "line": 928,
+          "end_line": 953,
+          "body_sha256": "bbec761921caa818610b744df4aff596104b8c8008f9ad8d44f03a478a7fa092",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "restart_kx",
+          "line": 957,
+          "end_line": 1006,
+          "body_sha256": "28d0a2bf70b8c79f7fddec8fd2d0f22d509e726c893a418421b4f7920f8b5ac9",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "handle_transport_notify_connect",
+          "line": 1020,
+          "end_line": 1048,
+          "body_sha256": "c51eb8973f421427d4df075a6c4edc51e441d45fac80fb2999f19194bb9cb2c9",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "derive_es_ets",
+          "line": 1097,
+          "end_line": 1128,
+          "body_sha256": "ddd092dffdac872cd35233c6c23f4b8f976f5c683a53b8d5e86e7a1c602f0e69",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "derive_sn",
+          "line": 1136,
+          "end_line": 1147,
+          "body_sha256": "4b58ff5edaf59c55502b5990bcfb5fe429724e173246f2b000bf61bcc61aa58b",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "derive_hs",
+          "line": 1155,
+          "end_line": 1193,
+          "body_sha256": "1545d5221d6be7cd073ca53b293f2139771fbab75357937cc117a36966e534c3",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "derive_ihts",
+          "line": 1201,
+          "end_line": 1213,
+          "body_sha256": "860d0a8891b09d37ccc889e4128455526ceb56f91326f53e0884e268cba76218",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "derive_rhts",
+          "line": 1221,
+          "end_line": 1233,
+          "body_sha256": "1645cefa1efdf1a9f5b2be482de14ca680071b3a4f3f904c4fadb40aef6675ce",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "derive_ms",
+          "line": 1241,
+          "end_line": 1272,
+          "body_sha256": "3fdaaf09f9159443d6f05135b28abb8721e681599aad6e2c0aa3af3284f90aba",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "generate_per_record_nonce",
+          "line": 1281,
+          "end_line": 1298,
+          "body_sha256": "bedf5f3b601687ed5c176a6fcc4b47aac372a1301d6d9b83420de427cba34eab",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "derive_per_message_secrets",
+          "line": 1306,
+          "end_line": 1333,
+          "body_sha256": "4058dc83427f2750383943966af3ef4aa258da0d1eb04f3233b969a0e2831821",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "derive_next_ats",
+          "line": 1341,
+          "end_line": 1359,
+          "body_sha256": "79825bd81d1f0a88c489fbe213707f61d4a8eea22b3d73614b304e403c5d7acf",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "derive_initial_ats",
+          "line": 1367,
+          "end_line": 1386,
+          "body_sha256": "3083727a479f2acb09b406ad464da0cbc24ba9b7ff602e9f8d55e70dee478561",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "generate_responder_finished",
+          "line": 1396,
+          "end_line": 1420,
+          "body_sha256": "5b9791f7f9a5813c0236e52a994e32bb304d68ab2a476ac3858f5d2b37009219",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "generate_initiator_finished",
+          "line": 1430,
+          "end_line": 1453,
+          "body_sha256": "d22c3e9c7cf4ce4df5efc34eb2703809b6486ae914f4b1b161cfe74feadf4bae",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "resend_responder_hello",
+          "line": 1457,
+          "end_line": 1475,
+          "body_sha256": "b2a873be12bed56d115a463eb320bb6faa89879b315e85d84e0714b11dcaec56",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "send_responder_hello",
+          "line": 1479,
+          "end_line": 1694,
+          "body_sha256": "7286828e95bde17666268481f111575a5931cc9bd6f0a928fea25b867a76a835",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "handle_initiator_hello_cont",
+          "line": 1707,
+          "end_line": 1848,
+          "body_sha256": "d8f5bd37b872eb801fa543eec3759390e31266fb16f9fc407dce7ecf8d735681",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "check_initiator_hello",
+          "line": 1852,
+          "end_line": 1863,
+          "body_sha256": "224753f33798a7a3c97e8f84303acc2239e49c1b87008732471ed25206f8d7b8",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "handle_initiator_hello",
+          "line": 1875,
+          "end_line": 2074,
+          "body_sha256": "bb4bab13c42ca18e5bb6aa63c2d17cbfd80f48b8708af83b163dbd2c191c2134",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "resend_initiator_done",
+          "line": 2112,
+          "end_line": 2130,
+          "body_sha256": "4a88e6af5feb2d6a60a7909dc42407d6730711547aa6b7781b8781ebf5d189e8",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "handle_responder_hello_cont",
+          "line": 2143,
+          "end_line": 2334,
+          "body_sha256": "592985be2fa9a005a3a8c7fe52ac19ed0ca7a00362d4c854042cfb71edb91d78",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "check_responder_hello",
+          "line": 2338,
+          "end_line": 2350,
+          "body_sha256": "ddd1ef6520a42d6740effdbc0bb85e0da1e767ee649ea54bb9ff284115542938",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "handle_responder_hello",
+          "line": 2359,
+          "end_line": 2585,
+          "body_sha256": "19889e4556d7527ec428e7e62f71f719bfcf1115cee7b0bd65161cd2b977f1ee",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "check_initiator_done",
+          "line": 2589,
+          "end_line": 2598,
+          "body_sha256": "ca2f8677e090cd29013c49eb6383f6beb5cc033804cf7e3f2605b67132c684e6",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "handle_initiator_done",
+          "line": 2607,
+          "end_line": 2819,
+          "body_sha256": "675b6659d885f1e72fcf9689e8843cf180628bdbee09fb51ceaf41cdcba9a0b6",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "check_encrypted_message",
+          "line": 2828,
+          "end_line": 2841,
+          "body_sha256": "1777dc05b60b9d59179f13dc5b060774eda34036354b41e6e8a468df07c3955f",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "handle_heartbeat",
+          "line": 2850,
+          "end_line": 2885,
+          "body_sha256": "d88968fbdc1c1317acd6bb5c56aba5b0f4cbb6ac79d258ee09e6b8dd4d9285ae",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "check_if_ack_or_heartbeat",
+          "line": 2889,
+          "end_line": 2939,
+          "body_sha256": "0076d115e489c30c4b8ef19fdf2541a2061e1f60513b4ba296ff16bc763afdab",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "handle_encrypted_message",
+          "line": 2948,
+          "end_line": 3175,
+          "body_sha256": "4a6f59df3a8bb0b02b2204e6b1ce3f1137babafcc90db45628f14186efa1a424",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "handle_transport_notify_disconnect",
+          "line": 3188,
+          "end_line": 3228,
+          "body_sha256": "a79fa819b64babafe372326d3ac2c8dc26b96d5f573242379c27c5917cc81d9a",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "resend_initiator_hello",
+          "line": 3232,
+          "end_line": 3258,
+          "body_sha256": "354a8f756e41f2d4e921add419410dd97656589e1c29ccd68ed1769e76038e65",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "send_initiator_hello",
+          "line": 3267,
+          "end_line": 3384,
+          "body_sha256": "76e514edde0fa704ac5d122f70c14628470d2c83c3d85f319e356707acfc92f8",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "check_rekey",
+          "line": 3395,
+          "end_line": 3429,
+          "body_sha256": "7c0fcc28b85da78d73fa06d4303a3e4bd3fb16be9178e893ef6aa8fb27c1f8df",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GSC_KX_encrypt_and_transmit",
+          "line": 3439,
+          "end_line": 3535,
+          "body_sha256": "bbb704b2db17d98d2d45a7db764d86c508ab8e795eb87799ba03a3da2eb348c7",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GSC_KX_start",
+          "line": 3539,
+          "end_line": 3606,
+          "body_sha256": "d5f878c897ceaedbcf87f52394053850a1e873b4416d96e0ea2fc6039a2974bb",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "pid_change_cb",
+          "line": 3610,
+          "end_line": 3618,
+          "body_sha256": "05387f8e1fa16338161446ad8c9cbadfbf386e68a9c143e43230ece935468ea2",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GSC_KX_init",
+          "line": 3627,
+          "end_line": 3639,
+          "body_sha256": "c9233c16c124a624de4b59db175ea96efdfe587b687cbe141d829727fdaf9d44",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GSC_KX_done",
+          "line": 3646,
+          "end_line": 3668,
+          "body_sha256": "ad499cf8b50ea9be088ddad7b8296ac68e9aed7f5dac4caa109e000eeac5e63b",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GSC_NEIGHBOURS_get_queue_length",
+          "line": 3678,
+          "end_line": 3681,
+          "body_sha256": "68069cb26aac3d49517d725c649786b960767c923f70a19eaf5dfdede641c7f0",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GSC_NEIGHBOURS_check_excess_bandwidth",
+          "line": 3685,
+          "end_line": 3688,
+          "body_sha256": "67a216c6f3aaccbf7736cd89824bda40b3cc15f4dde36f05eadfc04ad1f0f2fe",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GSC_KX_handle_client_monitor_peers",
+          "line": 3700,
+          "end_line": 3722,
+          "body_sha256": "e1fd7b0cd300abf070c47ac07fbd10eb5ce39917394d509734ab60704f8b304e",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        }
+      ]
+    },
+    "src/service/core/gnunet-service-core_kx.h": {
+      "sha256": "95db039d06c7270b322a45db0a6cc8dbccd70e6e446ec0609420d5b322f5c1c8",
+      "bytes": 6683,
+      "functions": []
+    },
+    "src/service/core/gnunet-service-core_sessions.c": {
+      "sha256": "f64d27c8cf7d785f1c322d491a35277965ef2559771ec1230e9c3f57341f00b6",
+      "bytes": 21789,
+      "functions": [
+        {
+          "name": "find_session",
+          "line": 145,
+          "end_line": 150,
+          "body_sha256": "863fc49c6a5e1bb57c08e31953aa970435f5b68665832bfc8eeca49afd95d778",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GSC_SESSIONS_end",
+          "line": 160,
+          "end_line": 208,
+          "body_sha256": "89960fddfc507ff978da0dc9e2079be2608d4da5aa324c9770810459ab57eda2",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GSC_SESSIONS_create",
+          "line": 219,
+          "end_line": 248,
+          "body_sha256": "3277f4918536113ca6e2c26290ff90406a7c0a76f455462cce34d26b8c040616",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GSC_SESSIONS_reinit",
+          "line": 260,
+          "end_line": 271,
+          "body_sha256": "8b5fa46a9960ae50545e82a4b19d538075ded4d07a043e17c292eeee8803717f",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "notify_client_about_session",
+          "line": 283,
+          "end_line": 296,
+          "body_sha256": "44301a3b142aa65dbafbd77012bbe2378dc479912076a651f58378fd7589ec2d",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GSC_SESSIONS_notify_client_about_sessions",
+          "line": 305,
+          "end_line": 311,
+          "body_sha256": "36308244128bfbf8508fd367bf8460ae6abee3edcbe2280ee124702969085e20",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GSC_SESSIONS_queue_request",
+          "line": 334,
+          "end_line": 359,
+          "body_sha256": "c1a0c7a99de385512501a526b26d506611164ea0e5acf5a7add5c6f4b6bf1f19",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GSC_SESSIONS_dequeue_request",
+          "line": 369,
+          "end_line": 390,
+          "body_sha256": "f52c6ede3714d0597a5317650a47410ba404bc31f42ed5dd452b8f4edf5bd0d9",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "solicit_messages",
+          "line": 401,
+          "end_line": 438,
+          "body_sha256": "95b2c32bfe8cbf7bda6ca1fce96b0c4ce35c94ddc2a3212cf3246a0c14c7afdf",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "pop_cork_task",
+          "line": 448,
+          "end_line": 454,
+          "body_sha256": "fab07c113d88bceec24b9f2c812bbbe70ab6fb276cfea7997193b2fc7197e267",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "try_transmission",
+          "line": 465,
+          "end_line": 625,
+          "body_sha256": "7c9e75cf7674cc57d9a2c30b6fdc46c44d7733d28e1967eda4b0c2d1694c5b78",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GSC_SESSIONS_solicit",
+          "line": 636,
+          "end_line": 647,
+          "body_sha256": "1c9a8fec75cdb641379f12c983d7b0c9c23df7a3417e64b9c87996a6f643a4c7",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GSC_SESSIONS_transmit",
+          "line": 651,
+          "end_line": 691,
+          "body_sha256": "6c0348771f1d1e5af48ec8078a0dcb33829e9f777147148cb00fe873a8201146",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GSC_SESSIONS_init",
+          "line": 698,
+          "end_line": 701,
+          "body_sha256": "cb6f2caa4af91756deda1d6b55accd6b1e6700ada1ee6bb28bb96a665a3b608a",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "free_session_helper",
+          "line": 714,
+          "end_line": 722,
+          "body_sha256": "34a6d84c2293250cff98f7c42b76ac4678771c12de4a70c75bad3972f14ef5d5",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GSC_SESSIONS_done",
+          "line": 729,
+          "end_line": 739,
+          "body_sha256": "18cbf374d7a89d26fff9afa187bcf3cd24ad21018f9f56ce2d823997225731a5",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        }
+      ]
+    },
+    "src/service/core/gnunet-service-core_sessions.h": {
+      "sha256": "73cd7f97969292608554affc89e1fcf3e230d2ff93f046a1922280295e75b8a6",
+      "bytes": 3843,
+      "functions": []
+    },
+    "src/service/transport/communicator.h": {
+      "sha256": "badd6ff02dd63da7918244301428fc22a8a34c46c1b956e6c80c024a5c2ade93",
+      "bytes": 4299,
+      "functions": []
+    },
+    "src/service/transport/gnunet-communicator-tcp.c": {
+      "sha256": "850f9fbe2417bc8c1bd4311d26bd1323eded386dbeaf00525e5ab5a964f824a6",
+      "bytes": 133854,
+      "functions": [
+        {
+          "name": "eddsa_priv_to_hpke_key",
+          "line": 971,
+          "end_line": 979,
+          "body_sha256": "cce5eeac4d5bdeac8224d9800a8c00dd6581406f8ba2ef651c98e050ec03f180",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "eddsa_pub_to_hpke_key",
+          "line": 983,
+          "end_line": 990,
+          "body_sha256": "7c24590adfad97bf3c2a0efcb9e61270648cb8e99be0a67ee860b0abc6125cf0",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "queue_destroy",
+          "line": 1001,
+          "end_line": 1105,
+          "body_sha256": "83f366f0d681948e8d06b4510f3c35dee3ab21091a50c6b26a5d0061c74ad4a2",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "calculate_hmac",
+          "line": 1117,
+          "end_line": 1134,
+          "body_sha256": "9eb23b34bb4c31079da15a105961f8936e27891d529062542e3f0d595ecc709a",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "finish_timeout_cb",
+          "line": 1150,
+          "end_line": 1159,
+          "body_sha256": "e65b2448a55df8a564c3488744231ee4f1d1e0f7091cbbd0f6fb93245ed021cf",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "queue_finish",
+          "line": 1169,
+          "end_line": 1206,
+          "body_sha256": "4e7a6234e379c35342cdd45bea5e4db7337f6bef43b2222936b80c9e3f469db7",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "core_read_finished_cb",
+          "line": 1226,
+          "end_line": 1262,
+          "body_sha256": "c15ae19668e183dbf37f292234d0cbc64b0afe8fe98ed08c4e20f377d0d5c711",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "pass_plaintext_to_core",
+          "line": 1275,
+          "end_line": 1309,
+          "body_sha256": "ddea093907d36cb1654c0f80b567bdac14f3f85e5265b6ed7d80997914661f91",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "setup_cipher",
+          "line": 1322,
+          "end_line": 1357,
+          "body_sha256": "80c4e837c7f01a80b41acef75427b22cc5fff0e064b928ecb9ac95701106def9",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "rekey_monotime_store_cb",
+          "line": 1366,
+          "end_line": 1376,
+          "body_sha256": "300d0ca6896a4c8dccbe29107d7873d61a27f8d93123eda5aaee21cd7c032a41",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "rekey_monotime_cb",
+          "line": 1387,
+          "end_line": 1438,
+          "body_sha256": "ed01ecce21cdee6bc9a73632db734cff3f9f13ba6f4f620b56c662f7b88781ed",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "setup_in_cipher_elligator",
+          "line": 1448,
+          "end_line": 1467,
+          "body_sha256": "0de33a629cb4487eb86918b837e7a9de8055977b04a9182ce746c04c997078ad",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "setup_in_cipher",
+          "line": 1477,
+          "end_line": 1490,
+          "body_sha256": "920f3bac537869cdde98a782c698ae3efacbc0ba528dc8676ac993a76da0ab33",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "do_rekey",
+          "line": 1502,
+          "end_line": 1560,
+          "body_sha256": "a7fe921ca03af06fe61020f9f5f146797acdad3b795c353bc3e041292bac2bda",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "handshake_ack_monotime_store_cb",
+          "line": 1569,
+          "end_line": 1580,
+          "body_sha256": "9a6808d8137b2bc3a5269411a41e2be43e4ce16cc333a4869c52c15c8278a2bf",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "handshake_ack_monotime_cb",
+          "line": 1591,
+          "end_line": 1642,
+          "body_sha256": "dd548151204fca680bb936ab8b78ce581c836ff4885595bb87b910a24fbc59da",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "send_challenge",
+          "line": 1652,
+          "end_line": 1693,
+          "body_sha256": "34e1d2738ba3a0ffcc9f7b93732cb7af5836b584964c2d25b104a6446090cdf0",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "setup_out_cipher",
+          "line": 1703,
+          "end_line": 1709,
+          "body_sha256": "98abedb72e3251ec98ca21277550c898b44e7a913c3160dbae252f114ec16cc2",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "inject_rekey",
+          "line": 1719,
+          "end_line": 1777,
+          "body_sha256": "8513f55163e385998ae0ead58227b509ac9fc29a549a1b69fc3329ec3972ddc3",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "pending_reversal_key",
+          "line": 1796,
+          "end_line": 1810,
+          "body_sha256": "af505776e109df9c82adad304cbb06676d6cc1e8a487474c46d5cfe1fc65191e",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "pending_reversals_delete_it",
+          "line": 1814,
+          "end_line": 1833,
+          "body_sha256": "d020875722349404a228c982792bde1ff0f53a9542643fd3edfbfb1312e978dc",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "check_and_remove_pending_reversal",
+          "line": 1850,
+          "end_line": 1870,
+          "body_sha256": "13cb654b39a52309ed2bc511c3c916da84362f2ca2b1394bcd058338b8be4f7b",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "free_proto_queue",
+          "line": 1879,
+          "end_line": 1905,
+          "body_sha256": "8cbda168b004429490e13b30124d54896222dd17c33b3157443661d934b065df",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "proto_queue_write",
+          "line": 1915,
+          "end_line": 1950,
+          "body_sha256": "710fadfb2ec470866a646e7ac93c78591f4777a97cc5862ed74286c5e4056a05",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "queue_write",
+          "line": 1960,
+          "end_line": 2064,
+          "body_sha256": "76dc35703fdd3374135b101ccd48d2a9db1fda86cd835fe4d59bb878cf18caa6",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "try_handle_plaintext",
+          "line": 2075,
+          "end_line": 2336,
+          "body_sha256": "4eedf5a81028f854ed314d9e5d2d592d1db6a40b42686399296c08158fadf0b3",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "queue_read",
+          "line": 2345,
+          "end_line": 2464,
+          "body_sha256": "8c94388a78cc034fba727246e6756347657ff848e9efc16f2017a18b9a05513b",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "tcp_address_to_sockaddr_numeric_v6",
+          "line": 2475,
+          "end_line": 2492,
+          "body_sha256": "b458c962ae2216baa16c398ece6952e50e71533ffc7b4fb8320f29aa1ff536c6",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "tcp_address_to_sockaddr_numeric_v4",
+          "line": 2503,
+          "end_line": 2517,
+          "body_sha256": "6e4a82f06c7fbb4b99e0f2f24876815889b5cd6f7d0f0ce3526251b579393e5a",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "tcp_address_to_sockaddr_port_only",
+          "line": 2527,
+          "end_line": 2573,
+          "body_sha256": "8979fc993c74457723f36e433d7f5960993621c6fed57b33ae2b89ecdce0ca12",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "extract_address",
+          "line": 2583,
+          "end_line": 2631,
+          "body_sha256": "c6c8143b84fe31a68b2b055b0c1697450a75aad6de9f94e0fb29b1d804e06e09",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "extract_port",
+          "line": 2641,
+          "end_line": 2712,
+          "body_sha256": "e5d321c8ec8a11271fbfe48ab935d7acea98401f7a90c873480e8f94735aa23c",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "tcp_address_to_sockaddr",
+          "line": 2723,
+          "end_line": 2765,
+          "body_sha256": "e54bdcd049c031a3192da435c08426ad2e95a5c24b940be39e7d5480a22327d5",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "mq_send",
+          "line": 2777,
+          "end_line": 2809,
+          "body_sha256": "9b68bbee293c8f186adac0305bacb79e48551fe1fea16a9560ccf13e1c099eaf",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "mq_destroy",
+          "line": 2821,
+          "end_line": 2830,
+          "body_sha256": "54dc8f7f39b29775cfeede1cf2c593a451d6d0232a92449ef109d2aca1f27d2a",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "mq_cancel",
+          "line": 2840,
+          "end_line": 2846,
+          "body_sha256": "a590ad5b6ccd82d0f4342701e5d10c5765f6cef992a5578e51fd9a65030b0d58",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "mq_error",
+          "line": 2859,
+          "end_line": 2868,
+          "body_sha256": "f983a847f21cb3a2d2a3c4eae8caa355d33628213263f9b9d3e0d0cf080ae64a",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "boot_queue",
+          "line": 2879,
+          "end_line": 2901,
+          "body_sha256": "5e080fc7461e112dfbbd74c60c8ca3f22eec5d8fa583c05ada24d5b4535e1566",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "transmit_kx",
+          "line": 2915,
+          "end_line": 2957,
+          "body_sha256": "7ef501847ec6beaea3679e0731e5a40118a7d9f47a9183ced1f0c09c3df22622",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "start_initial_kx_out",
+          "line": 2968,
+          "end_line": 2977,
+          "body_sha256": "1948b47ade174fbe04e43bb9cb902eef4ebbe4aae2ac79858ef520339a5cc141",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "handshake_monotime_store_cb",
+          "line": 2986,
+          "end_line": 2996,
+          "body_sha256": "82cb11d0db6e297767cb1729493f5f2a8e6eb957ae6cc6a5cce632e23a0a4e31",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "handshake_monotime_cb",
+          "line": 3007,
+          "end_line": 3064,
+          "body_sha256": "03af4cc3cf6fb667b18260b952829d512910c64b4d82edcace30d08a4030b0bf",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "decrypt_and_check_tc",
+          "line": 3079,
+          "end_line": 3119,
+          "body_sha256": "3ca939aef8f1bd4a10a5b32dc928e71c8b451ce0f204a22ce0f3090a6399a682",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "queue_read_kx",
+          "line": 3130,
+          "end_line": 3226,
+          "body_sha256": "6778baf611b7f62effca6156e0d05ce8ef1106d664f15f846b0cbed416736db2",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "proto_read_kx",
+          "line": 3236,
+          "end_line": 3354,
+          "body_sha256": "b959305734126f97a4040c995cec5dc862d7b3cca481b4b1cf41c85a8a20ba02",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "create_proto_queue",
+          "line": 3358,
+          "end_line": 3402,
+          "body_sha256": "43d92f78fe8c2cb5afcd0ea82aeb089203e67390c54532f5218f32318d455e75",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "listen_cb",
+          "line": 3413,
+          "end_line": 3448,
+          "body_sha256": "361446936688ee98a0402daaf8a0fb46ad3d4c02e155c5e3e73e7fc2d973135e",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "try_connection_reversal",
+          "line": 3452,
+          "end_line": 3492,
+          "body_sha256": "69a3c0e81d7d8256131a22f80feed49dbe04a820b7f26b78f0730e20aaf1ec76",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "pending_reversal_timeout",
+          "line": 3496,
+          "end_line": 3514,
+          "body_sha256": "b6c3746fe3f2085bb0e4f71abfb6e5bdf3dc80b91555e7e1facc6f1d9017c382",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "mq_init",
+          "line": 3536,
+          "end_line": 3749,
+          "body_sha256": "2ad40dd47306e800531a0f605002b794cb4cd2a51e15dc5903e6e9551d18e78e",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "get_lt_delete_it",
+          "line": 3761,
+          "end_line": 3781,
+          "body_sha256": "11820ae7d6339f8292017460a47d806f54699349510e15947f2ca01c6e860edb",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "get_queue_delete_it",
+          "line": 3793,
+          "end_line": 3803,
+          "body_sha256": "14a9dafab27beed9d01bfd8aa45a67b11ead01c23b53151f7bc8c9085503a15b",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "do_shutdown",
+          "line": 3812,
+          "end_line": 3875,
+          "body_sha256": "72ee4aa96cc25b9927ddbb1f276273d630499357b59d40ffb6044532a743f7ce",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "enc_notify_cb",
+          "line": 3890,
+          "end_line": 3898,
+          "body_sha256": "57511355516f99f4e00c0d041d863f86773b96ffa64c3f4a5bdb28488ad64fd3",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "nat_address_cb",
+          "line": 3915,
+          "end_line": 3953,
+          "body_sha256": "f737a7926f12786cd2c75e914624b63f747ccce701890c9dc30aae9c56643b62",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "add_addr",
+          "line": 3960,
+          "end_line": 3983,
+          "body_sha256": "05550b153fe961d2095b5ce8682ae9b8ac9e86ddae269ac61564c48781d34cb6",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "init_socket",
+          "line": 3994,
+          "end_line": 4124,
+          "body_sha256": "c58aba9a243a724ee821138464bce51c10f37c717c9962b6603fe94231e43666",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "nat_register",
+          "line": 4131,
+          "end_line": 4183,
+          "body_sha256": "63b2660f97ec8d7834a60d0faf8df06d6b4d95dd33b03a2db2e2dab169478a82",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "init_socket_resolv",
+          "line": 4194,
+          "end_line": 4238,
+          "body_sha256": "8121706811a626178c7af87fafb930c31ce5905cf643092b40b6afdf6ebd79fe",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "run",
+          "line": 4250,
+          "end_line": 4391,
+          "body_sha256": "d4be4c537fcea5f90ef8d54395fe5b54a4c74611f946f7ca0a4e754c68295c44",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "main",
+          "line": 4402,
+          "end_line": 4424,
+          "body_sha256": "046bb880650de3e6b952d81f65e46865bdb640b07ad9aa676a48065e9365c475",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        }
+      ]
+    },
+    "src/service/transport/gnunet-service-transport.c": {
+      "sha256": "b75e931604a1c12bda1c87bb3b40d4cb33e27b651fcc4ca3945077f347a72c60",
+      "bytes": 528616,
+      "functions": [
+        {
+          "name": "sign_by_my_identity",
+          "line": 3329,
+          "end_line": 3348,
+          "body_sha256": "ff23e24fa9918434fdd51da9e82cbaefd725cbd7f1ea2412beb872a99cf04916",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "get_age",
+          "line": 3441,
+          "end_line": 3447,
+          "body_sha256": "d58e7e119e9d29795194353f50622a9942ced32894299dbd5a8fa9fa809abf36",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "free_incoming_request",
+          "line": 3456,
+          "end_line": 3465,
+          "body_sha256": "38f8d903480c96f9b5092dc8e5cf6e62108f487dab8ba1ae2959f8e25af3ff6d",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "free_pending_acknowledgement",
+          "line": 3474,
+          "end_line": 3513,
+          "body_sha256": "e75ba8142c511e00d4fd5b75ccab130a706c9fd6a3bdedbb6811ea6064776b38",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "free_fragment_tree",
+          "line": 3525,
+          "end_line": 3553,
+          "body_sha256": "30350cadcfa0f32a1b42019d5a086d9fb5dc0a11a23a2d726eb3eee0cb26c757",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "free_pending_message",
+          "line": 3564,
+          "end_line": 3633,
+          "body_sha256": "57eee2126efe64140c486592234cc1ce6bdfe055e8f3cf8dee3331f4c3c5f65c",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "free_reassembly_context",
+          "line": 3642,
+          "end_line": 3652,
+          "body_sha256": "a3786b9bcd7cc9e6775c8bf7838c8073f2ff23b8a09c085061ecb8423ce2c23d",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "reassembly_cleanup_task",
+          "line": 3661,
+          "end_line": 3682,
+          "body_sha256": "12cad52be74d78fa83c9b006d530cdf8c653be214757dc36d8b0603ba196d99d",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "free_reassembly_cb",
+          "line": 3694,
+          "end_line": 3702,
+          "body_sha256": "b5bc73cdb60a99f1982f26fff1da8f574967730ef0c8ab7f7cff961b82d4d54d",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "send_ok_to_client",
+          "line": 3756,
+          "end_line": 3767,
+          "body_sha256": "c70c3a6d3318bf869a4035a3652c104238a4fce404a905d08e30afb0fad9c62c",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "credit_client",
+          "line": 3783,
+          "end_line": 3789,
+          "body_sha256": "c5e2c357a302f5851ea7793331faa9d3c505948fec0b242fe7ce90e9cd795829",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "free_virtual_link",
+          "line": 3798,
+          "end_line": 3886,
+          "body_sha256": "f363e558fa616857a05be9b0d9b15c0cb26c20d638cbc2152c56de456835de76",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "free_validation_state",
+          "line": 3895,
+          "end_line": 3927,
+          "body_sha256": "e4f6169151a78e060f1eabf0759fa0901eda70a6e39a216c6f8855fc7b8171c2",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "lookup_neighbour",
+          "line": 3937,
+          "end_line": 3940,
+          "body_sha256": "0c2a34d606e5f0be774480ea8551af981beb0a406d8e45fa5ad34df095603ab2",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "lookup_virtual_link",
+          "line": 3950,
+          "end_line": 3953,
+          "body_sha256": "b32bf5dca9d2a7016c15feb699dd34fb7cdef5b538cdb7d4f293a80d90ab6e11",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "free_distance_vector_hop",
+          "line": 3999,
+          "end_line": 4013,
+          "body_sha256": "cfb7f7613f1478d9564713995714815fc4b816e672acbefaa1619b1b8de196b8",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "cores_send_disconnect_info",
+          "line": 4032,
+          "end_line": 4048,
+          "body_sha256": "86e349bd353a4238c035bb54ffa6c354d987f1726ef66246fdee18186e529e9f",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "disconnect_and_free_virtual_link",
+          "line": 4078,
+          "end_line": 4092,
+          "body_sha256": "a3fbf447f6065d094da7e0b1f938983e2430fc17ae1a46483a3c23eeb77e3c37",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "free_dv_route",
+          "line": 4102,
+          "end_line": 4139,
+          "body_sha256": "0c758f6c1a21f6783067902491b0ab5770eb5ee27bb43b596dc199d2f008240a",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "notify_monitor",
+          "line": 4156,
+          "end_line": 4180,
+          "body_sha256": "48357c6f3c86ee08145949aa3a343989b791c7af3d6fcf52de5a516825562af8",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "notify_monitors",
+          "line": 4193,
+          "end_line": 4209,
+          "body_sha256": "3c535329cbff900ecdc1153c4c276faf133a2a1e3d3fb10e4e934a68be23d22c",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "client_connect_cb",
+          "line": 4222,
+          "end_line": 4238,
+          "body_sha256": "6616ac52bdbe0241dffe0caee2b57478c49b86bd46b5a7e3d4d18f46de855436",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "remove_global_addresses",
+          "line": 4242,
+          "end_line": 4252,
+          "body_sha256": "4b4616ab66d19420aa94100eb700644cbd8f5d40dada382dbddfc4a08add938a",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "free_neighbour",
+          "line": 4262,
+          "end_line": 4317,
+          "body_sha256": "cacc0540e5431b055b10d3a6bb72632d6903067a420e50f1799d0e170e41ce05",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "core_send_connect_info",
+          "line": 4327,
+          "end_line": 4337,
+          "body_sha256": "c0d0ba807586cdaa7d5fae37b060cc7f6507f1180314860b95cf77878d4e0d92",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "cores_send_connect_info",
+          "line": 4346,
+          "end_line": 4357,
+          "body_sha256": "e1fe111dc1c32bb90bec20f18a57f9730c74702518e59cc89f1bfb83e0f213d3",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "check_for_queue_with_higher_prio",
+          "line": 4380,
+          "end_line": 4404,
+          "body_sha256": "13d99adf02fccdf4ae206165dbe797c17357826d4edfebc13658ee190f3f1948",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "schedule_transmit_on_queue",
+          "line": 4425,
+          "end_line": 4504,
+          "body_sha256": "a32830e6702c7cf629494478e2262dc2478d964f38f893b3a5e4dd25a33f1bc3",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "check_link_down",
+          "line": 4519,
+          "end_line": 4607,
+          "body_sha256": "3ec61ffffe75c84862fdabd759a5d40584a574af0823473887108623813d9dfc",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "free_queue",
+          "line": 4616,
+          "end_line": 4703,
+          "body_sha256": "71deae01232a9f91d8609db7408e9f657bcb7fe637510f5ce8bf0dc3b21a8700",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "free_address_list_entry",
+          "line": 4723,
+          "end_line": 4753,
+          "body_sha256": "51671ebb1f3818a12d094ec25f9e1aa62f4902f8bf9c6cf4794db3fa4d9d9d4b",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "stop_peer_request",
+          "line": 4765,
+          "end_line": 4788,
+          "body_sha256": "8a96bcbf10a41243eb08c0b3658f80ed52a1513b2025f7858e8bd1ce7d5d68e2",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "detach_cmcs_from_link",
+          "line": 4805,
+          "end_line": 4819,
+          "body_sha256": "6af72a769dd8260ce6c75a72d6ede4da6284129f6a0c69d3232321d0681fad99",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "detach_cmc_from_backtalker",
+          "line": 4832,
+          "end_line": 4843,
+          "body_sha256": "6df63535108ea7a4a8d548ad2a83f166fa67a65dbfad2596ddb3001cef8d550c",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "detach_cmcs_from_client",
+          "line": 4865,
+          "end_line": 4877,
+          "body_sha256": "f4f2fafc6ffbb3f6a704fc5b609f92da9198c092d76ff2991640fa3a3f52eaad",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "client_disconnect_cb",
+          "line": 4889,
+          "end_line": 4971,
+          "body_sha256": "1c928cc4cc2571baf9f9238d8f4a38e3263412c469182173fb755c3ba59c4109",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "notify_client_connect_info",
+          "line": 4984,
+          "end_line": 4999,
+          "body_sha256": "0f88d45fbf33cdfc34dfb6d1c6652c018f2b7418edfdf51425124cab5013ece8",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "resume_communicators",
+          "line": 5013,
+          "end_line": 5037,
+          "body_sha256": "c629c5942fc4b2761da20c1ac249b547e5be02f751e8effc73b3d61066b3ed69",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "handle_client_start",
+          "line": 5049,
+          "end_line": 5086,
+          "body_sha256": "887e6706baa4e240f767971074b0524bc60a795a2856b15193ec8c677414be6f",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "check_client_send",
+          "line": 5096,
+          "end_line": 5120,
+          "body_sha256": "003ae03f2c5979e287c191bce9dfc79f0832dba47a1d2303d54a2d038cabf30f",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "client_send_response",
+          "line": 5131,
+          "end_line": 5147,
+          "body_sha256": "8d04d4a4d3c7365cbec984500677d33ba813ea7a86256e57aae9a6b93f27c8d6",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "pick_random_dv_hops",
+          "line": 5160,
+          "end_line": 5226,
+          "body_sha256": "3a3d01b0edeb23a7e1d06fe7a3df89d4d13b141de7dfdddb8608d88d5073613d",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "check_communicator_available",
+          "line": 5236,
+          "end_line": 5254,
+          "body_sha256": "ab34e01c0a4aa23e0ba4e3b59159237cf4aa28c7741b0ea4d8ba7289cd7cf231",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "send_cmc_ack",
+          "line": 5269,
+          "end_line": 5289,
+          "body_sha256": "e3a68a4ee030df207dfbd01f4f0def3ca1f11dee4ad9fd9c31bc3f230b21d0ea",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "resume_cmc_client",
+          "line": 5303,
+          "end_line": 5311,
+          "body_sha256": "c99402e3249adbd27d05fe40a371cc32e063f4fdec0d85d58046960f039cb9eb",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "finish_cmc_handling_with_continue",
+          "line": 5323,
+          "end_line": 5333,
+          "body_sha256": "2b57cde28fcee3040f27be463d45145e2bf23b224d08ec729384d0616996c6be",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "release_stalled_cmc",
+          "line": 5337,
+          "end_line": 5344,
+          "body_sha256": "f9cfa7d631fa061637a80a6de0998430c4146cadbf3e24d19c1890a136696ad7",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "finish_cmc_handling",
+          "line": 5348,
+          "end_line": 5351,
+          "body_sha256": "6c217cbd3ac0115979f70ee86d12711715cb712aa7b7bebb6326beff93a3bbef",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "handle_client_recv_ok",
+          "line": 5364,
+          "end_line": 5403,
+          "body_sha256": "711fa0cbb47ceb497b84affc7b3a16bd7235fb4d6a7c7fa86b0e1a2d433dde23",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "handle_communicator_available",
+          "line": 5413,
+          "end_line": 5456,
+          "body_sha256": "1471cde07ad8d6dc379068b635f99063c64dc43bd9846b65f89ad44525a5d603",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "check_communicator_backchannel",
+          "line": 5467,
+          "end_line": 5501,
+          "body_sha256": "2d230b2492db2024ddb29f37776b98b0dea919d549de4aadc3c40d72a33f69ff",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "sign_ephemeral",
+          "line": 5519,
+          "end_line": 5532,
+          "body_sha256": "98c60a70a79e4fa00803ecfe52f15a4ffcb6a9124f9c7d2a7eb37c1af5c5401b",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "free_timedout_queue_entry",
+          "line": 5541,
+          "end_line": 5590,
+          "body_sha256": "29019a75780f906e313e04f8e6c11c7e0899ed138a82e2ed1924a22aab656fd9",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "arm_free_queue_entry_task",
+          "line": 5594,
+          "end_line": 5609,
+          "body_sha256": "9207cafd3c59e008d83415e5ab67e4f7318aed4a293563437a3a2b76f79707ee",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "queue_send_msg",
+          "line": 5622,
+          "end_line": 5744,
+          "body_sha256": "757d25bd4141fd3c242579bec61fddeaa1fe60c5c3d05537adf095db0ec4e5f1",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "route_via_neighbour",
+          "line": 5758,
+          "end_line": 5825,
+          "body_sha256": "52836bef0e5d53aac3ff1088f7941f8e71e089bb110424665b53cfede0445730",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "encapsulate_for_dv",
+          "line": 5858,
+          "end_line": 5981,
+          "body_sha256": "dc893096ee115328f408b6850b1e7a35579b1483352c266d2595375e03f955c4",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "send_dv_to_neighbour",
+          "line": 5994,
+          "end_line": 6001,
+          "body_sha256": "9c2baca023ff0117e54eb16c712b6ff8a57d17f12020c8f4c074098a1f48b565",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "route_control_message_without_fc",
+          "line": 6016,
+          "end_line": 6119,
+          "body_sha256": "d46036fb73335239e8846e9a9d1d8137fc961e17fab2185c920f05217e8fb8be",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "task_consider_sending_fc",
+          "line": 6132,
+          "end_line": 6137,
+          "body_sha256": "ee2b22a8f462bf590bc94673c78186b3d33a398cb61721b4b38deb139295d916",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "add_global_addresses",
+          "line": 6160,
+          "end_line": 6186,
+          "body_sha256": "d2d4b223f7dfde99b423554e46ca126d7140b4444ea5c3b22a34a5f7ff172033",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "consider_sending_fc",
+          "line": 6200,
+          "end_line": 6381,
+          "body_sha256": "7a42a8521acff98195e1b0dce681f64e3323b50232d3007087cab6796f88f8c6",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "check_vl_transmission",
+          "line": 6401,
+          "end_line": 6532,
+          "body_sha256": "4ec09982166f8bbae1949fab9cdc77b298a83f104fd9c001a0f249b0668f242a",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "handle_client_send",
+          "line": 6542,
+          "end_line": 6612,
+          "body_sha256": "22e9c97bd3eabb3b8cd7bbc3ef41898c12f24ec4862cd6439d02122cadd2de83",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "handle_communicator_backchannel",
+          "line": 6625,
+          "end_line": 6678,
+          "body_sha256": "1a33a3152e1c6a7d29b20f991e3f846910b7f92b32d8b5b3f279cca6e55e3d11",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "check_add_address",
+          "line": 6689,
+          "end_line": 6701,
+          "body_sha256": "c9c93f5f1e6fd396af2287c7b34d354c5d823ffabae8af4c2d27f9f8bfaee744",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "cancel_address_store",
+          "line": 6744,
+          "end_line": 6774,
+          "body_sha256": "f99dd7ea10e4e34fd89044ea8213c4a57f70c1e4ab94bf35b96512651c39852d",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "shc_cont",
+          "line": 6778,
+          "end_line": 6800,
+          "body_sha256": "0634d7f2023050de061593cb62e3dab18f215dbea5872eaafd8d0cdaf3ee42e7",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "pils_sign_hello_cb",
+          "line": 6807,
+          "end_line": 6834,
+          "body_sha256": "cb29266ba84e2c885599b0dc087467075cef7fcedea27b7869f9691b14e4bcf3",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "peerstore_store_own_cb",
+          "line": 6844,
+          "end_line": 6887,
+          "body_sha256": "08a23faf3bc1d8c459cc830364cf386c5fb4a5bb108b19bc628b363aeba2a3df",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "store_signed_address",
+          "line": 6898,
+          "end_line": 6938,
+          "body_sha256": "b9e4f9d8bf6329fdf3c53ea06debc7773c4fe5152995740714a3dbc1b557b270",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "pils_sign_address",
+          "line": 6977,
+          "end_line": 7016,
+          "body_sha256": "84ba4c70560624bb9140aa3c83681e7c40d3169474f3bbacb8d408a666f07d88",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "store_pi",
+          "line": 7025,
+          "end_line": 7095,
+          "body_sha256": "ee5994ba6d8bb24666c46f65ef82ab426fd9397bb6467f1d052d9de089852913",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "create_address_entry",
+          "line": 7099,
+          "end_line": 7134,
+          "body_sha256": "2d23a28097b20f4c01d6c8a313e1e72c2a660905759e85d15404e2fd4078d0c7",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "feed_addresses_to_pils",
+          "line": 7138,
+          "end_line": 7147,
+          "body_sha256": "d8b931865192dc8b1ba0651b10be7cc99f18100694115cd316c36e594e19e333",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "handle_add_address",
+          "line": 7157,
+          "end_line": 7207,
+          "body_sha256": "4c5ed7d089d309b0a7995fc9f89f5a1e56f0e9b7a5f1522717476723ef4a92c8",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "handle_del_address",
+          "line": 7217,
+          "end_line": 7255,
+          "body_sha256": "a7497f92fac93e0aafa225fa1be73e04243572e4af38cf09a200201b500f4a4b",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "core_env_sent_cb",
+          "line": 7277,
+          "end_line": 7294,
+          "body_sha256": "7cd0bee9e0dbad19f819579e7689658cc22d3d659c09969ed2b9a547a02be479",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "core_fc_stalled",
+          "line": 7319,
+          "end_line": 7339,
+          "body_sha256": "41166b44874b2245357643e1ba3d405ceaa3e254f8d494bb7b1c9b2a6fbdd470",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "finish_handling_raw_message",
+          "line": 7343,
+          "end_line": 7455,
+          "body_sha256": "4a4b04b2b9b4189a796a7be66a03e24c1c435c146d564ab4b4811b6ad85ea94e",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "handle_raw_message",
+          "line": 7467,
+          "end_line": 7566,
+          "body_sha256": "67f52120e40da89c157d17bb7ca948d264826e924c048d9d3f7cf200e6cce1e8",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "check_fragment_box",
+          "line": 7577,
+          "end_line": 7599,
+          "body_sha256": "628fbdab7c31decdb9968bcb236fe1132df1d1d73ec6fc9ea5d0bc985503aee2",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "destroy_ack_cummulator",
+          "line": 7608,
+          "end_line": 7618,
+          "body_sha256": "c3a1423bf49e23442e2810f7867a269812ef1af5591d7e61271c7cceb161d9b3",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "transmit_cummulative_ack_cb",
+          "line": 7627,
+          "end_line": 7690,
+          "body_sha256": "163641b78a15e4eaa45152ddd336b258c236fe33ae11c6fcafe9d6f7e3895d42",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "cummulative_ack",
+          "line": 7702,
+          "end_line": 7748,
+          "body_sha256": "dbf4ff25bf403b338e4cccb12ded82ea460c6cb50fa349ec8128b7b8e98810f8",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "find_by_message_uuid",
+          "line": 7778,
+          "end_line": 7790,
+          "body_sha256": "b03775a276aba26a31db86f71daae35c47feca807c57ba9f46806e973eae8698",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "handle_fragment_box",
+          "line": 7801,
+          "end_line": 7992,
+          "body_sha256": "b3e47fa83c28d422e9a3d627b41333e88da9faf4dc78a1977cb3870fd138eb9e",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "check_reliability_box",
+          "line": 8003,
+          "end_line": 8019,
+          "body_sha256": "c8a2e5229db2f4cb92b705751d2b152137aeeffc5f0953d66fc03bc5b80daef9",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "handle_reliability_box",
+          "line": 8030,
+          "end_line": 8059,
+          "body_sha256": "72770c30c9610926b2252273c862d1730aee53962b899a69aeabe7ec34a0f2af",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "update_pd_age",
+          "line": 8071,
+          "end_line": 8086,
+          "body_sha256": "55539578faecace69d24f4a28f13ba957bf624b389c04c54c795115319615638",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "update_performance_data",
+          "line": 8098,
+          "end_line": 8113,
+          "body_sha256": "48a33f2b1d60c38b698e7c461de7679bbbeec6abcf37d5a5283160c4269d64ed",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "update_queue_performance",
+          "line": 8124,
+          "end_line": 8129,
+          "body_sha256": "3da8f31ab40886fc45c566960f9916e8999f98147d45b78e4604c4da2c63e671",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "update_dvh_performance",
+          "line": 8140,
+          "end_line": 8145,
+          "body_sha256": "4215034c4e9556713382f9c61d25e31fde7713102f3afb90c659cf9078c6a323",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "completed_pending_message",
+          "line": 8156,
+          "end_line": 8238,
+          "body_sha256": "55a14bced912ab67f4ea9205e8e12f2131fc29328857e738c11ac7b6f6175f41",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "handle_acknowledged",
+          "line": 8249,
+          "end_line": 8271,
+          "body_sha256": "faca21671e9d63756b39cd8981140e9ab0bef573160d51f190689460369404e4",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "check_reliability_ack",
+          "line": 8282,
+          "end_line": 8302,
+          "body_sha256": "b80db8aec8b3ce1de659bc48c388ffe3b7811eff78a5e73034323396b9b67f1a",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "handle_reliability_ack",
+          "line": 8313,
+          "end_line": 8353,
+          "body_sha256": "3c783f3de3eac4670b0cae9b676421238c11d32d29ecb252a979b34b0a1ba8f2",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "check_backchannel_encapsulation",
+          "line": 8364,
+          "end_line": 8397,
+          "body_sha256": "9b0430b46676173771a910b78fc58aa221c9ce063792193b7f2268d7c7d45150",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "handle_backchannel_encapsulation",
+          "line": 8409,
+          "end_line": 8474,
+          "body_sha256": "262c11d70c879db0f74604c34b63baac2125707fac7398c722fe0fc1ed32c326",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "path_cleanup_cb",
+          "line": 8487,
+          "end_line": 8522,
+          "body_sha256": "ee049792c6e5aabdfebf6fe824c7f0b845e6f84f77ea783a2ce9750d0d87a724",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "send_msg_from_cache",
+          "line": 8526,
+          "end_line": 8675,
+          "body_sha256": "92fbc2ba2e7e87cb1a208d9bf74352dc5b2ddacb24a395593ea9a7e9a0a1cc17",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "activate_core_visible_dv_path",
+          "line": 8686,
+          "end_line": 8751,
+          "body_sha256": "0b41e68560fce0349f17309d61a13540c763a7a3d1452a3a2292af7439b776dc",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "learn_dv_path",
+          "line": 8780,
+          "end_line": 8954,
+          "body_sha256": "4d6e6a3ff125dc40547e99f941e002d8344be25d9109c14d8e9b98591eb1c19d",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "check_dv_learn",
+          "line": 8965,
+          "end_line": 9001,
+          "body_sha256": "7895b2665da037d046e45208508ea5744dbde051b11fd5db9c3dc8da376b1c0a",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "forward_dv_learn",
+          "line": 9016,
+          "end_line": 9098,
+          "body_sha256": "5ebfd4c8baecd7149762717f6e17062fc113f2d2fc34a7974efdbd26e8c89498",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "validate_dv_initiator_signature",
+          "line": 9111,
+          "end_line": 9134,
+          "body_sha256": "ee339bc3cfbc97b0297fa397f132fffb52e1e4e095c589bcee7b3d7286b61479",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "dv_neighbour_selection",
+          "line": 9193,
+          "end_line": 9208,
+          "body_sha256": "a00b34fce15a786870a35862781f9a9ea2bee399670ae31b6d2cb4a4c2b771d7",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "dv_neighbour_transmission",
+          "line": 9222,
+          "end_line": 9253,
+          "body_sha256": "ee94621e03bf906c6e874ffed67118628b423788d23b2c75b1d251a7c5a9868d",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "calculate_fork_degree",
+          "line": 9300,
+          "end_line": 9342,
+          "body_sha256": "75194fd1780ba31899afc14338febd354eb026f4fc895307103cf7fe0951bd73",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "neighbour_store_dvmono_cb",
+          "line": 9352,
+          "end_line": 9360,
+          "body_sha256": "8eb433a4d7e6e7217cda8ba916eedf2d1ab726e4f9e143aa46fac022bc781340",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "get_network_latency",
+          "line": 9364,
+          "end_line": 9396,
+          "body_sha256": "cb19699bac0e3ed22d2fc70819af044dc765c195d789419fd0ba2556a731a0ad",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "handle_dv_learn",
+          "line": 9407,
+          "end_line": 9741,
+          "body_sha256": "82092b21fc39398169e914cd65e98dc8a7c811dcdef6520cec7737ace834b0ae",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "check_dv_box",
+          "line": 9752,
+          "end_line": 9800,
+          "body_sha256": "50c777ddb4e88b651605f19d6445ec9c3b57bb5a94ea383761abcde1c2a7c36e",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "forward_dv_box",
+          "line": 9816,
+          "end_line": 9915,
+          "body_sha256": "6079459c20a43bd97dc9206314e831017c78eb56579ca83b48fdfdf9af8f9d85",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "free_backtalker",
+          "line": 9924,
+          "end_line": 9953,
+          "body_sha256": "156ae26a01fd0d82160832a9adc16c7d38fdbff2d9875b33fdb6bbcc2f093b55",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "free_backtalker_cb",
+          "line": 9965,
+          "end_line": 9975,
+          "body_sha256": "d17d4e649a405e298b4e056459dad0df7729df4a03d15f8810114bb25ac62db5",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "backtalker_timeout_cb",
+          "line": 9984,
+          "end_line": 10001,
+          "body_sha256": "9f83f3757d2a0b51c41962e1082a0dfccbbeefeecf7d6e5705e6b333db8b20d8",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "backtalker_monotime_cb",
+          "line": 10013,
+          "end_line": 10069,
+          "body_sha256": "4dfe6fd5249968553c46283b0fb0e993cda0c97dfa8b4dc8c1d925198aa6e563",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "backtalker_monotime_store_cb",
+          "line": 10080,
+          "end_line": 10096,
+          "body_sha256": "0d963654f73f4f42afacbbf874fb8e0f01b2be3d4e6eb03c5dff16276a268a65",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "update_backtalker_monotime",
+          "line": 10105,
+          "end_line": 10143,
+          "body_sha256": "8e334cb2a4246eb3169b0bea2623c6075757d16a06f29233b2cdd7eb2786d0fd",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "decaps_dv_box_cont",
+          "line": 10155,
+          "end_line": 10327,
+          "body_sha256": "308dfa1b82f847c7e8de05a0bec8d44300c887b33583bb6dd1bdea8a0e7572a6",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "handle_dv_box",
+          "line": 10338,
+          "end_line": 10449,
+          "body_sha256": "4dfab19d0ef0ee7131af3e5df31007cc84e73b1e79c7024c24ebed0839887ce7",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "check_incoming_msg",
+          "line": 10460,
+          "end_line": 10472,
+          "body_sha256": "f76a7da089195f35bbc86fd6245866281dbf9b34621c4bc55a9468bec75c2cbe",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "check_known_address",
+          "line": 10502,
+          "end_line": 10514,
+          "body_sha256": "0e514f6180d1c5fc43189c31082d19defc5b638f509b3c4f9942c383def687e0",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "update_next_challenge_time",
+          "line": 10534,
+          "end_line": 10582,
+          "body_sha256": "976bb28ec15d0663682010bf253cd72aa8cf5c2c74353bdc8bf48ddd674807b5",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "revalidate_now_cb",
+          "line": 10596,
+          "end_line": 10619,
+          "body_sha256": "68a606342bebe6eaee059c52652c33305f23a65b4148aee36b51bac992d5e937",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "start_address_validation",
+          "line": 10629,
+          "end_line": 10711,
+          "body_sha256": "327b3da3ea3a5db43edaaa14a1a63ebedff01a4cc7ce4dc8bf279381b0ab9488",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "hello_for_incoming_cb",
+          "line": 10723,
+          "end_line": 10760,
+          "body_sha256": "dac9d8d9e0d9f7acaa00d72907d1d12205d7d56a05cd98d5a3261b4ef76ae7af",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "hello_from_record",
+          "line": 10786,
+          "end_line": 10804,
+          "body_sha256": "32fba9212b38070c5e7565001ef5f8c5503a5682a8cc932a8b31d0ff1e8e49bf",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "handle_hello_for_incoming",
+          "line": 10815,
+          "end_line": 10873,
+          "body_sha256": "2c0dc0b6ac9ac6db24eb3812d0dd41650bea3bfc73543a3ebdccdf00972a34b1",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "hello_for_incoming_error_cb",
+          "line": 10877,
+          "end_line": 10881,
+          "body_sha256": "050da0285c6aafb513f82c676792b21d1e6341d3fecf3fa395610e5e4db6ec2b",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "hello_for_incoming_sync_cb",
+          "line": 10885,
+          "end_line": 10889,
+          "body_sha256": "055f8c88366d96d0633d28374c8ae744d59f00047e5f5b4594db11637769f729",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "try_to_bring_link_up",
+          "line": 10901,
+          "end_line": 10951,
+          "body_sha256": "92c3f8c794d31884539afc82055f9cb5384f71d52485d68c79944d5eed117250",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "send_t_validation_response",
+          "line": 10962,
+          "end_line": 11010,
+          "body_sha256": "aafe6463bba88089b15310ba743c565c37554f00db8e3c45627c6d48e0c5c15d",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "handle_validation_challenge",
+          "line": 11022,
+          "end_line": 11069,
+          "body_sha256": "60e37fbc56466c658356527e4f7b119070b3415932e9a66cdefd4263caacedcb",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "check_known_challenge",
+          "line": 11099,
+          "end_line": 11111,
+          "body_sha256": "0610621104da797de195442ff668e3f27c2ede84edb13ba1194abc7254759561",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "peerstore_store_validation_cb",
+          "line": 11122,
+          "end_line": 11133,
+          "body_sha256": "0dbd8e95d9d40fbf0f5b706f53e4b6a7a003379d2cb506fc049aaeff76a85d31",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "find_queue",
+          "line": 11144,
+          "end_line": 11158,
+          "body_sha256": "108221dca854366af40789af082306b537178b3fb250c4670f72ca34f834d389",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "find_queue_by_ip",
+          "line": 11177,
+          "end_line": 11214,
+          "body_sha256": "0ec46d3e1050b276a25c17577e727af6d927e584c65ef89fb0f484dcff75a3c3",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "revalidation_start_cb",
+          "line": 11221,
+          "end_line": 11238,
+          "body_sha256": "77b35a65fee9fdd5ac0d45ec4c5bb369b082239d426e2a49aa0e641b02916eb4",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "revalidate_map_it",
+          "line": 11242,
+          "end_line": 11252,
+          "body_sha256": "0421fb52e9dc980ee7979f70eb1b25601bcbc76c1b4ae8b7260780f27fc9e996",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "handle_validation_response",
+          "line": 11264,
+          "end_line": 11507,
+          "body_sha256": "ea1850cc4d159d773ba7ec713a545799833e77b858cffcf8989e3beb9d412a76",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "handle_incoming_msg",
+          "line": 11516,
+          "end_line": 11541,
+          "body_sha256": "be8fe0512b793c2ae6e78e3e453b29b37fe6914ecba366ac607b2a0d9f699465",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "check_flow_control",
+          "line": 11553,
+          "end_line": 11603,
+          "body_sha256": "140b25efc486cad8f626828e1e4bc39abea15c0c19500428a520106e6c89c70e",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "calculate_rtt",
+          "line": 11607,
+          "end_line": 11630,
+          "body_sha256": "449f0bb6385a711e5c88d258b6d5eec86460649434201ce97fc862cb7836dba9",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "iterate_address_start_burst",
+          "line": 11634,
+          "end_line": 11672,
+          "body_sha256": "4da80115cac5e4d2278c828d7412d578a9428ee0e23655dfabc7c68dc12271a0",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "check_for_burst_address",
+          "line": 11676,
+          "end_line": 11732,
+          "body_sha256": "fb42d5181ff31ad1242fabaa26acb342f4ee6acb0cc48a881ab69a195d66b3ed",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "burst_timeout",
+          "line": 11736,
+          "end_line": 11739,
+          "body_sha256": "f7f67abf5b2c5bbc11f9d107a79712c98c56a0c3bf500d55036c94fe96d96a61",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "start_burst",
+          "line": 11743,
+          "end_line": 11800,
+          "body_sha256": "22a9336f4fba92b90762f27cb9083e8f86c1df4d79334cc2051b834539abdae8",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "free_burst_cls",
+          "line": 11810,
+          "end_line": 11826,
+          "body_sha256": "1edfbdda64d5ebb0ce8c1de5493bfea0449f7e9514da9d4a27dadcef9cb3b66f",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "queue_burst",
+          "line": 11830,
+          "end_line": 11892,
+          "body_sha256": "8fca09d71f6d1cd47e7419cf34f5da406811ee4fa57d87fdcb4f8e5c4508df2e",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "unconfirmed_link_timeout",
+          "line": 11902,
+          "end_line": 11919,
+          "body_sha256": "89c1e69c69d85975142bc6dfdf60b5870449f95224b9723f55f66f5b9a009214",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "handle_flow_control",
+          "line": 11931,
+          "end_line": 12162,
+          "body_sha256": "f4af283dcfb79152c321eae91a90f9a6f897e5a09e8a44c4f615903cb42fa695",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "demultiplex_with_cmc",
+          "line": 12173,
+          "end_line": 12262,
+          "body_sha256": "40ceda2ac852fba27928220aa05622bf477297373c6c495412aaf4453414bce7",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "check_add_queue_message",
+          "line": 12272,
+          "end_line": 12284,
+          "body_sha256": "c95228060b6b109b5757c0b22430eb78aeb073c8301e337df47321777c8fb94f",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "set_pending_message_uuid",
+          "line": 12293,
+          "end_line": 12299,
+          "body_sha256": "40b00bf504a805b054255149a4574f84af25a2606fad8e8d05795353651b4ca8",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "prepare_pending_acknowledgement",
+          "line": 12311,
+          "end_line": 12342,
+          "body_sha256": "2ab087a76b5c517dc2c8ca888a6ea819f4a096f9412c8ecc98004b441dd03d85",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "fragment_message",
+          "line": 12357,
+          "end_line": 12487,
+          "body_sha256": "810884c57620015bf3bfcb4d2adf06e31faa1afa3a3404bd739de697b44fa160",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "reliability_box_message",
+          "line": 12503,
+          "end_line": 12566,
+          "body_sha256": "ddecee05275892adae1c282249fab98c8a482d02ec0aaa572effd558534c1751",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "reorder_root_pm",
+          "line": 12570,
+          "end_line": 12599,
+          "body_sha256": "785c4d29193fa70678f4fde4e47dd52e4e5d891f31c39d024382f06e8f411847",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "check_next_attempt_tree",
+          "line": 12603,
+          "end_line": 12624,
+          "body_sha256": "b84b8cf20f3f0009b60f1c8c542c2901260fda3d938351c4ab5f70b72461dc50",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "harmonize_flight_round",
+          "line": 12628,
+          "end_line": 12639,
+          "body_sha256": "44d91d526d4a8af7e8822434ef19f430d93c0ae9810a787d39f5cc645690c924",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "update_pm_next_attempt",
+          "line": 12651,
+          "end_line": 12754,
+          "body_sha256": "c618b90f7cbc0977bf1c5375c2e9fe16c632d131436beb485dc74816bb7077f1",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "select_best_pending_from_link",
+          "line": 12821,
+          "end_line": 12998,
+          "body_sha256": "efdca95031ec90d1a36532eb78c2320ca7325ae4a93b98e9cdeef8e9ce2da04b",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "extract_box_cb",
+          "line": 13012,
+          "end_line": 13044,
+          "body_sha256": "87b3592f6d98f61aaf587c0283cf37f7a58b3eca63c733447bc074aa2f3f59ad",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "transmit_on_queue",
+          "line": 13063,
+          "end_line": 13350,
+          "body_sha256": "063db39974ef75dfee4468f5ec58887db85e4f77c3270a1407518ab8f858c18a",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "handle_del_queue_message",
+          "line": 13360,
+          "end_line": 13403,
+          "body_sha256": "3597828075ea9a246cf69ed7846684fdcfefedd80d0b34928c2f0382578a8f10",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "free_queue_entry",
+          "line": 13407,
+          "end_line": 13494,
+          "body_sha256": "611ccccecf4bda19e018ea1224698db40a4874aa0e8873396cb8f580caa801b0",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "handle_send_message_ack",
+          "line": 13504,
+          "end_line": 13627,
+          "body_sha256": "d96e911e95af3566eee8cbcb104ef38ef13fa04eb973b411e3e08657b8a3db2c",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "handle_burst_finished",
+          "line": 13636,
+          "end_line": 13644,
+          "body_sha256": "27a508535133deaa0fb448d2a141570f6f1c7b13fc96e42b30536c9b35c80b44",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "notify_client_queues",
+          "line": 13657,
+          "end_line": 13676,
+          "body_sha256": "57260b27296087c92995f8df52cdb45acfa642f844ebd92cdcaf97f7a3a05c0b",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "handle_monitor_start",
+          "line": 13686,
+          "end_line": 13703,
+          "body_sha256": "acde3d130df9197894ed00b0c271a7b71ecf7b77d24164d825b541745d23b358",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "communicator_list",
+          "line": 13732,
+          "end_line": 13765,
+          "body_sha256": "158eb18db220663909f002f10fd7f60fb11e455e52de46fd6411a3f1be9214c5",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "report_link",
+          "line": 13777,
+          "end_line": 13859,
+          "body_sha256": "cb4080819c65421ba1e4ceb749fa098485a25254d3cdd3205e720c321dcea5a3",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "handle_link_list_request",
+          "line": 13871,
+          "end_line": 13904,
+          "body_sha256": "d644c6a2fb058838cdcf2e3c35c781ce390c52b20dba700773e303583deffc93",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "lookup_communicator",
+          "line": 13915,
+          "end_line": 13931,
+          "body_sha256": "b2d05f773b081c8a4224289de2beda035766ba54782c8cddc2cf8c0400be7fee",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "suggest_to_connect",
+          "line": 13942,
+          "end_line": 13986,
+          "body_sha256": "81f8fc6b886ff930dbc952c86d8176936ec950ef57615c4c89ad66fee3c25338",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "validation_transmit_on_queue",
+          "line": 13997,
+          "end_line": 14037,
+          "body_sha256": "6249fd1b04a2d83c6b30cf440d6490d8d417e158a0d86b2503b14829e725db67",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "validation_challenge_freq",
+          "line": 14052,
+          "end_line": 14068,
+          "body_sha256": "d13b0579ddeee5a96ae419090557defd77987dba521ada27b770916eb6a181cc",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "validation_start_cb",
+          "line": 14077,
+          "end_line": 14145,
+          "body_sha256": "096eeaff2040f6ea7e5fe53f2d26072ed2001cbbe68422ff63f9e57214359632",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "check_connection_quality",
+          "line": 14188,
+          "end_line": 14211,
+          "body_sha256": "4703031d4b87d80ba28b708e174a100f4479c4a18d05f371dfd2fb22bcc99004",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "transmit_dv_init",
+          "line": 14237,
+          "end_line": 14277,
+          "body_sha256": "453f22999644612848fec7fe1a1446612c0b2c815e90651fdfd71e0e077e4716",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "start_dv_learn",
+          "line": 14292,
+          "end_line": 14389,
+          "body_sha256": "e5703a59a459db08da6cfc810dc7c5dfcbecd20f4b89c1f0567ab5bf6fda40d6",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "get_address_without_port",
+          "line": 14402,
+          "end_line": 14417,
+          "body_sha256": "c4db4074f8879d3cb0f22554ccb258f890d20f440d9cc34788e7e6c8db010f20",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "check_validation_request_pending",
+          "line": 14430,
+          "end_line": 14479,
+          "body_sha256": "061db22fc961a338033c26f00f64a4de0b320b2dcda8673f0e9e3002499dd67c",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "neighbour_dv_monotime_cb",
+          "line": 14491,
+          "end_line": 14518,
+          "body_sha256": "6a76721f7b28a0b8fc51114b7b38675d06d039754a241856c5c37664af1c8f78",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "iterate_address_and_compare_cb",
+          "line": 14522,
+          "end_line": 14618,
+          "body_sha256": "e2517828223b8b56b45fbae432be5c6f6e998d39558ea6bf57aef4f69fd9d88c",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "contains_address",
+          "line": 14636,
+          "end_line": 14659,
+          "body_sha256": "08113c0de01db65819058f3f319c87633470dbf1072f2b283937cf66bf75b4cf",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "check_for_global_natted_error_cb",
+          "line": 14663,
+          "end_line": 14667,
+          "body_sha256": "2cee4b625414271c2b524fe20b7a6701644df426fb154c9e8edb1fc3268c2735",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "check_for_global_natted_sync_cb",
+          "line": 14671,
+          "end_line": 14675,
+          "body_sha256": "59a4cd408ef742ffbe0f4d44b49ec3238447a10fe2b53808e0de4d457c1bb433",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "check_for_global_natted",
+          "line": 14679,
+          "end_line": 14800,
+          "body_sha256": "ed53e832b79bf97cd89199642e08b310b1746fcf567f153864cba5b877a2de5f",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "handle_add_queue_message",
+          "line": 14810,
+          "end_line": 14985,
+          "body_sha256": "5e1bd083c391240802bd4adcab2b5ac132e6b1b1a281d64419232d79478dc131",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "handle_update_queue_message",
+          "line": 14995,
+          "end_line": 15047,
+          "body_sha256": "6dd94f0de3a70a161d69eac54d287455089b400bcf308131a39f9baf9dfd4280",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "handle_queue_create_ok",
+          "line": 15058,
+          "end_line": 15077,
+          "body_sha256": "8992eeb3977597000e1fcc23c7845139bc9a8f5c682f43cdc0e8ff806cb4a5f3",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "handle_queue_create_fail",
+          "line": 15089,
+          "end_line": 15109,
+          "body_sha256": "8b635f1736d69532981e6f0b08b2bc0a9194bbf4f5cd4b96718b2ae3b0dbda80",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "handle_suggest_cancel",
+          "line": 15120,
+          "end_line": 15141,
+          "body_sha256": "24f59b9f752dc2ab9aa19a1bcfda0ea50ab84c9634c44d9f706fa1830b0d18a9",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "hello_for_client_cb",
+          "line": 15145,
+          "end_line": 15183,
+          "body_sha256": "1e7564344e1097a1b65d63a4ea82209d17feb6f98be1854e47662318b823546b",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "handle_hello_for_client",
+          "line": 15194,
+          "end_line": 15255,
+          "body_sha256": "2eb4da72a591c9c14009d7ae229d04f9a14314132435d2c9edd03dde7116f253",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "hello_for_client_error_cb",
+          "line": 15259,
+          "end_line": 15263,
+          "body_sha256": "4547c986a9045f997eb5be75fa0001e24ce1b52e423750130d6e44fb18e93163",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "hello_for_client_sync_cb",
+          "line": 15267,
+          "end_line": 15271,
+          "body_sha256": "450badfad8a129cc6f63c4aa05d0fa927bacc0873278e94fffdfe888f800ed01",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "start_peer_request_monitor",
+          "line": 15286,
+          "end_line": 15307,
+          "body_sha256": "f87d5efb450346a37defe4c5d06b07aac4f2e8f66f0ee1df89452876220fba77",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "suggest_retry_cb",
+          "line": 15320,
+          "end_line": 15356,
+          "body_sha256": "b8c80a57046bd6a1131ad86898123df7ae0b22b05b024066d58588efbf0f67f2",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "handle_suggest",
+          "line": 15367,
+          "end_line": 15429,
+          "body_sha256": "a49b1ae804df2ad13490f5df3c1dcd69b562446556215485c22c251d0db4ed17",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "check_request_hello_validation",
+          "line": 15441,
+          "end_line": 15447,
+          "body_sha256": "e8626c4fee7e862c201e83f5817d6045d3acf364f782d31ef1979e43303dffc6",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "handle_request_hello_validation",
+          "line": 15458,
+          "end_line": 15472,
+          "body_sha256": "a908fbce3992bdcceee0f26d29c16aab8c9d0bc8e76a268c45daaa2b0f522bb5",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "free_neighbour_cb",
+          "line": 15484,
+          "end_line": 15496,
+          "body_sha256": "452130cc82bd56685018ce2b26bf8b48fcd184bf50c72878c00af9ea69b79370",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "free_virtual_link_cb",
+          "line": 15514,
+          "end_line": 15525,
+          "body_sha256": "2882c0928997b64c55901a7bdaa7be4147c8c9230b14c0d3adb001bf9fa1adf7",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "free_dv_routes_cb",
+          "line": 15537,
+          "end_line": 15548,
+          "body_sha256": "67846fa8de3e4052b4d8c46b6c1d5ddc8704b83187a627786beefcbead815105",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "free_validation_state_cb",
+          "line": 15560,
+          "end_line": 15570,
+          "body_sha256": "01333e12fb808997332c46eeef4b871549dcef9f4a139316bf3979b0380adab7",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "free_pending_ack_cb",
+          "line": 15582,
+          "end_line": 15590,
+          "body_sha256": "79c469e74c8b02fd9cdb33b6ac0ba0a0db03a11601f54c0cb69120f51e07f586",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "free_ack_cummulator_cb",
+          "line": 15602,
+          "end_line": 15621,
+          "body_sha256": "36419b5c90974651b6b2d4a26de1a7603707edbbce0e33555427ecf3e1c2f6a2",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "do_shutdown",
+          "line": 15631,
+          "end_line": 15768,
+          "body_sha256": "eb8551acd499c756efb851d172fde4688906ac4922b20b407f723e86ed617695",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "get_client_type_name",
+          "line": 15772,
+          "end_line": 15787,
+          "body_sha256": "0f2d2171d01fcabeb517139d87ec69c72c29ecb4dc3b1b5fbfdcb57224a7445c",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "drop_remaining_clients",
+          "line": 15798,
+          "end_line": 15816,
+          "body_sha256": "fc2e9fa56f09ef4f6a4385d35302d8831a95328dded9113b46bd8d43edb4ba71",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "shutdown_task",
+          "line": 15820,
+          "end_line": 15844,
+          "body_sha256": "18442ce5920434910346ec32e16459262a27a6a9eb217f506f02bdbf448e193d",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "update_hello_from_pid_change_cb",
+          "line": 15853,
+          "end_line": 15868,
+          "body_sha256": "a9ae0578f6b83dbaadb06470648182134dced11899ce69b5dc41b90153ec7393",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "print_address_list",
+          "line": 15872,
+          "end_line": 15878,
+          "body_sha256": "97696ee6adacc450ef2106f1b31aaff29f3e57b3772b2459dbfabdde77e284bd",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "pils_pid_change_cb",
+          "line": 15891,
+          "end_line": 15949,
+          "body_sha256": "d1251721b5980d2bd21fd61425dc9438348e5959868714ede1ec794105992212",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "run",
+          "line": 15960,
+          "end_line": 16034,
+          "body_sha256": "712881b20a1000f06fb5430624a412567a0e621f9be4bb630f0aeb26d9c6c90e",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        }
+      ]
+    },
+    "src/service/transport/meson.build": {
+      "sha256": "46f0fec243d637df7f0400e9b0cf8edd99d4ce2641d9d39ba73dea347dfcf897",
+      "bytes": 22536,
+      "functions": []
+    },
+    "src/service/transport/transport.h": {
+      "sha256": "0f7d9038424bb75b6f1347c6c00c50017a4289e17e391db0ae6c26ae21b2d7cc",
+      "bytes": 20822,
+      "functions": []
+    },
+    "src/service/transport/transport_api_application.c": {
+      "sha256": "146c86cafb43c0dfc9d00e426e89967955b03fbd90d4668e5c24b7b8ab0c238d",
+      "bytes": 10602,
+      "functions": [
+        {
+          "name": "reconnect_task",
+          "line": 112,
+          "end_line": 118,
+          "body_sha256": "0d5ee82f0845e6d9b703cb44f2cfea331dfa252293af560d63f89129fc57e777",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "force_reconnect",
+          "line": 127,
+          "end_line": 136,
+          "body_sha256": "c772d2997854cac37cfa57174dedec8638c63f1d773e6a6657a89a9487a35cfd",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "error_handler",
+          "line": 147,
+          "end_line": 155,
+          "body_sha256": "cf4a546ff24f7568d1be2819b1f743e99fec13b1c5819a83e7cdad8902766eb3",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "transmit_suggestion",
+          "line": 168,
+          "end_line": 185,
+          "body_sha256": "895e2b988c3add08d19e2be9263c6f8eb55fb96aa13368e3702cbc3d11ea50a8",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "reconnect",
+          "line": 194,
+          "end_line": 209,
+          "body_sha256": "7116db58c9f339f4de05d2b2f550ccb5cdf405474b34cb94cd052c08f501bf93",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_TRANSPORT_application_init",
+          "line": 219,
+          "end_line": 229,
+          "body_sha256": "927cb0b38ac35490ce748beeee89229605de2f4542d4085f7f06bfd1cc32d98c",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "free_sug_handle",
+          "line": 242,
+          "end_line": 248,
+          "body_sha256": "f680651f5d7bfd441b929593512eb8d5a329c4de885a12209cad39a9ea8266bb",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_TRANSPORT_application_done",
+          "line": 257,
+          "end_line": 275,
+          "body_sha256": "083b9bc642eb25e8a4c8760878d0c55280532417ab01d70ccd4a2ab3be7001c0",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_TRANSPORT_application_suggest",
+          "line": 289,
+          "end_line": 314,
+          "body_sha256": "212feb0bff89cb4509903f599509ac1725e200e1d31cd06d07ce35484141d202",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_TRANSPORT_application_suggest_cancel",
+          "line": 323,
+          "end_line": 347,
+          "body_sha256": "e0c4c5212f973296f4a0cdc8c4aabb55aee0d2aeb9d85edb62ab73103e9e0454",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_TRANSPORT_application_validate",
+          "line": 366,
+          "end_line": 394,
+          "body_sha256": "b8ea724e6099aad389d1feb632503086b80b74c099cacf5ae1a61852d948f11b",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        }
+      ]
+    },
+    "src/service/transport/transport_api_communication.c": {
+      "sha256": "c31e4f70e861a0246308edbdd87998eb9d35e1f9f1df0ac4d6f4854151e785a8",
+      "bytes": 30662,
+      "functions": [
+        {
+          "name": "send_add_address",
+          "line": 365,
+          "end_line": 379,
+          "body_sha256": "a4dd12d167e029e5c86a7cc9def75975e63cfe318624ebb3a8762c3f40dc4fec",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "send_del_address",
+          "line": 389,
+          "end_line": 399,
+          "body_sha256": "10a741dad9ac7ee6ba753c01fb3eeb85ece7cb392a0c90b55b272a3717ecd1d4",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "send_add_queue",
+          "line": 409,
+          "end_line": 430,
+          "body_sha256": "febdea2c774cdc6f3a6e2cf644d391167604c3e7bd2b5123dc4c05da4a7105df",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "send_update_queue",
+          "line": 440,
+          "end_line": 456,
+          "body_sha256": "486148618716e39c1b72f160dbdc5de2c0c1287f8296e909b339e1ac6a940242",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "send_del_queue",
+          "line": 466,
+          "end_line": 477,
+          "body_sha256": "0558d22d384c85ddddf7059be7a0f2eef017a4489b4b63b8e9b83d0f9b8f4f96",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "disconnect",
+          "line": 489,
+          "end_line": 511,
+          "body_sha256": "b12d4d666530288803068aee53327f9646cb34f57fd6694117c6ee56f23e8896",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "error_handler",
+          "line": 518,
+          "end_line": 528,
+          "body_sha256": "82c39e69af9f66158d7d085b4b81ee6885038493f2ab16391de93c33e64c3646",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "handle_incoming_ack",
+          "line": 539,
+          "end_line": 573,
+          "body_sha256": "0dc5bac1356cc94032ce48ae06b08542b4cdf47ed3574669d5f2492e4d8a2092",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "check_create_queue",
+          "line": 585,
+          "end_line": 590,
+          "body_sha256": "dd0f8f66cbf41d724c8d338e5aaf12675ae65fcc7edc52917b538907ad310df7",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "handle_create_queue",
+          "line": 600,
+          "end_line": 628,
+          "body_sha256": "9610e6e4571c2c2d440bf988b48f12d46f1a1ee1ca079fb125f04e5a0e20f59c",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "check_send_msg",
+          "line": 640,
+          "end_line": 645,
+          "body_sha256": "c5bb0f80d5810af2abd1ba3e7e92c1f0d9f31af0e93ee446d9a763449d4a9b11",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "send_ack",
+          "line": 658,
+          "end_line": 673,
+          "body_sha256": "fdd356c05e308632201834eb50376844e78f21e29374d1655c5015d85a76e07c",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "send_ack_cb",
+          "line": 683,
+          "end_line": 692,
+          "body_sha256": "b0f1cd7f64f5eaf51cc2ac049bd462e8501b670bc790090df42ccc021849dba2",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "handle_send_msg",
+          "line": 702,
+          "end_line": 734,
+          "body_sha256": "62d8fde0679ce3b8615f9c22d7fe5231d188f1236537d6475402295181d45498",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "check_backchannel_incoming",
+          "line": 746,
+          "end_line": 753,
+          "body_sha256": "1081ae316804623d188a4eca5133638bd6cb3179b847a60326213bbe9a403e2c",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "handle_backchannel_incoming",
+          "line": 763,
+          "end_line": 776,
+          "body_sha256": "1c1764df8ba8400e49a27f3952556ec89d75ed00bdc5aed88158657b2d32f2c6",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "check_start_burst",
+          "line": 780,
+          "end_line": 792,
+          "body_sha256": "df219d5f32bc59b535c3fb0d7a4c4b26c4dfaf83167d88e5e300a3bed2527a02",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "handle_start_burst",
+          "line": 796,
+          "end_line": 813,
+          "body_sha256": "e5892ec8aa7ea0f7ff3fb4a2b6b848bb52c90de4842a04ae84016d1c6f2cf8fd",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "reconnect",
+          "line": 822,
+          "end_line": 871,
+          "body_sha256": "03146d82c957d91e6ab5a90b5034e85874b7cf02d1d158280a4e025fe27ff4ae",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_TRANSPORT_communicator_connect",
+          "line": 875,
+          "end_line": 911,
+          "body_sha256": "c09a6591cac1e20872606f97ead5006923c57e5af056e87f2faa18585ec3e419",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_TRANSPORT_communicator_disconnect",
+          "line": 920,
+          "end_line": 930,
+          "body_sha256": "d42b0074708cda2ea1e8ec09fe374bfb1cb26450b631c79403927e983481162b",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_TRANSPORT_communicator_receive",
+          "line": 937,
+          "end_line": 1000,
+          "body_sha256": "275cb270005e93c8805089ee2704bb8204d6c3a29d7ab5f61a8092b30986f435",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_TRANSPORT_communicator_mq_add",
+          "line": 1007,
+          "end_line": 1037,
+          "body_sha256": "e1ebef6068349bf60082186051a9b91c004d186cd1e89401f051d1d2b1fbe7c9",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_TRANSPORT_communicator_mq_update",
+          "line": 1041,
+          "end_line": 1058,
+          "body_sha256": "6a70414434c3ae26fadab69ed70ac59964a6384565d8f71c377023856f5947a1",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_TRANSPORT_communicator_mq_del",
+          "line": 1068,
+          "end_line": 1077,
+          "body_sha256": "ad805bd8cc75ae7bd74e68d0f1b3aebd08b039f3c2aa8ba8cf3bc29c85ce70a0",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_TRANSPORT_communicator_address_add",
+          "line": 1090,
+          "end_line": 1107,
+          "body_sha256": "a42c9663d497f697f9d4290f33cce7e31ddbaf65efded3e79dbf3118e3c87d3c",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_TRANSPORT_communicator_address_remove",
+          "line": 1117,
+          "end_line": 1127,
+          "body_sha256": "511b9ad53f7e1bc7b1dab754eaab2e879357aa95f2d2d48231614b480c413ed2",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_TRANSPORT_communicator_address_remove_all",
+          "line": 1136,
+          "end_line": 1146,
+          "body_sha256": "61fc8e705f64af86247e54e115232f07151f65fcde37835fb576fafd58933292",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_TRANSPORT_communicator_notify",
+          "line": 1153,
+          "end_line": 1174,
+          "body_sha256": "f2e7145adc5afbd191c1542d6d73a3004516f53f62946def010f78968faa6de2",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_TRANSPORT_communicator_burst_finished",
+          "line": 1180,
+          "end_line": 1189,
+          "body_sha256": "19c48d6d3e8b74692fa56e57254f605389d47cc6bb75e15d988f2a1d1728a7db",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        }
+      ]
+    },
+    "src/service/transport/transport_api_core.c": {
+      "sha256": "3a16742fe36f8c0828f4cc9b838b421b84cb90bb958524da0a9757e3f3a751d3",
+      "bytes": 23670,
+      "functions": [
+        {
+          "name": "neighbour_find",
+          "line": 193,
+          "end_line": 197,
+          "body_sha256": "51e7a2c90bedfefc241e060985bd359f178ee27685211a3f78caa21bf59625fc",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "neighbour_delete",
+          "line": 211,
+          "end_line": 233,
+          "body_sha256": "def5732bcf3f09f6bb2dc6bae537b949b62411fb4fd5ecaa5e8f7df3baaddaeb",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "mq_error_handler",
+          "line": 246,
+          "end_line": 254,
+          "body_sha256": "5a6b8c0c2482fb196839ecb1ff008e639b83566930bb4661e1562ba6311ef934",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "notify_send_done",
+          "line": 268,
+          "end_line": 276,
+          "body_sha256": "29b14355aa9bed08982aa21e2a61509f4721af786c74344a2f746b608a1d33df",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "do_send",
+          "line": 286,
+          "end_line": 299,
+          "body_sha256": "9ccf82e6a8a974730bcae643f09949afaf23776e5366eccb519430bb862ebdcd",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "mq_send_impl",
+          "line": 313,
+          "end_line": 353,
+          "body_sha256": "797dbf017a1cd605eebfd70512481da7b9837033e4d4c556cd1287d878d9d441",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "mq_destroy_impl",
+          "line": 364,
+          "end_line": 370,
+          "body_sha256": "7393f73d5c5d5103ce78a2d973f090912ba715762be6facbe003587f9e976938",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "mq_cancel_impl",
+          "line": 381,
+          "end_line": 397,
+          "body_sha256": "8a4f6f52d9dba7894e206c149d187655416c4237cf07e81903ef791ab1911a16",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "peer_mq_error_handler",
+          "line": 409,
+          "end_line": 418,
+          "body_sha256": "acc51cc1633f1d96ac1d37c283e2edbc9d9c37307802e9a35b443b4080c0ab0a",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "handle_connect",
+          "line": 428,
+          "end_line": 466,
+          "body_sha256": "a142a5063d7dce0a1a1d3ca4e474d7341ae1f1fb066e0ea2e2726f18920397df",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "handle_disconnect",
+          "line": 476,
+          "end_line": 493,
+          "body_sha256": "b9a55affc4a8e5f2ff909f84a2afd5b4ff5d7ea1e5bb8914bf1899f3d6b46845",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "handle_send_ok",
+          "line": 503,
+          "end_line": 547,
+          "body_sha256": "a214d4ca201605f8c9dcf3ecd2aa948425cb91173031052c6ffd4395c436b2f3",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "check_recv",
+          "line": 557,
+          "end_line": 577,
+          "body_sha256": "2e4393f69d0e1902f2b5e7323e926cb347304c0348720d47d29110d3a6f675e9",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "handle_recv",
+          "line": 587,
+          "end_line": 607,
+          "body_sha256": "9ae3d577a4d0add0ae2f1460527de78c53d445be252eb750ba3210e740ee881d",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "reconnect",
+          "line": 616,
+          "end_line": 658,
+          "body_sha256": "7dfede61ed604b1f7c49891f5fae6a414b61a80569735f770a660ad94fb5adbb",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "disconnect",
+          "line": 667,
+          "end_line": 675,
+          "body_sha256": "45cfc71a286f02146f8049148dd8742b3b2a3bd2967379b2471a634ac11d39f3",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "disconnect_and_schedule_reconnect",
+          "line": 685,
+          "end_line": 709,
+          "body_sha256": "b237ed60ba17993b8b4665dd22095b55293c208dab9af0807e5d4a20323ae174",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_TRANSPORT_core_get_mq",
+          "line": 720,
+          "end_line": 729,
+          "body_sha256": "55c36b80ff342f1e73fdc4b5403c2b0628e757d33016845eda72aaf53efb388c",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_TRANSPORT_core_receive_continue",
+          "line": 753,
+          "end_line": 768,
+          "body_sha256": "410bd5cb40d7c09a791d372568fc778c55404756f5f787a89866dc776cfb5c27",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_TRANSPORT_core_connect",
+          "line": 785,
+          "end_line": 826,
+          "body_sha256": "aa7094b26ad63649a88cd97c4c62ff72b329f5b452d5ecaeb3846d3fad703b7b",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_TRANSPORT_core_disconnect",
+          "line": 836,
+          "end_line": 852,
+          "body_sha256": "8f4a630e0e8877d146d73722102aa9161cb7e68609b093d9b246a896b1c3556b",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        }
+      ]
+    },
+    "src/service/transport/transport_api_monitor.c": {
+      "sha256": "39f541e8f5971b4276d0567a08659e563cee93e5387b97293bc98cd79e8d9af4",
+      "bytes": 13632,
+      "functions": [
+        {
+          "name": "send_start_monitor",
+          "line": 86,
+          "end_line": 97,
+          "body_sha256": "d4d142292075b490d802edf309b7edcd7cb4c094228318c023381ee9916f1f2e",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "disconnect",
+          "line": 106,
+          "end_line": 112,
+          "body_sha256": "d9a5be139ca65ad82be54daa4b9f65ad7dee35624c376735766b184a291a119b",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "error_handler",
+          "line": 122,
+          "end_line": 132,
+          "body_sha256": "2253d50537ac6dfc3b9d147ea1f75ca9a2a7c45d9c6fd974a93f08e140d724a0",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "check_monitor_data",
+          "line": 144,
+          "end_line": 149,
+          "body_sha256": "07e93262688164170e3df504e6cd5eba66bade64e8a64671ae47ee7eff4dc308",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "handle_monitor_data",
+          "line": 159,
+          "end_line": 174,
+          "body_sha256": "b151c7ccbe3df0f8af4206f7a0a84cb2795eab3b42d9400dd2afae9cc6946a47",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "handle_monitor_end",
+          "line": 184,
+          "end_line": 197,
+          "body_sha256": "473aa01faf6dae421ffe45313b8190e52d09567299ca8b42aaf4a75f91d4b625",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "reconnect",
+          "line": 206,
+          "end_line": 224,
+          "body_sha256": "9f5698ebd9dbd9362e3c4d3e5ec736f0d023a70f57374b57b909ccbc70842c6e",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_TRANSPORT_monitor",
+          "line": 254,
+          "end_line": 276,
+          "body_sha256": "866e48c48bd5446fa4d97ee689728171d68ef60d6241ce792f1267ce79ae5bf7",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_TRANSPORT_monitor_cancel",
+          "line": 285,
+          "end_line": 289,
+          "body_sha256": "b8fcee5d83fe4feb8eab3296db6c00987cb3b667a71d5875bc9271bbf4e68740",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "link_list_done",
+          "line": 323,
+          "end_line": 330,
+          "body_sha256": "c329cf1923d730d355b2553ed785ab20ec5766649f62db02d49b6285f72f271e",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "link_list_error_handler",
+          "line": 341,
+          "end_line": 349,
+          "body_sha256": "4cf575ba2686ed56dc92c22a82a6710c17e4472cadd36eb949fdb50ff00f0298",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "check_link_list_response",
+          "line": 360,
+          "end_line": 374,
+          "body_sha256": "a9f2af2b934ec4541d8dd64bcb35c30e214f311604bb34252ffd59f790407a69",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "handle_link_list_response",
+          "line": 384,
+          "end_line": 417,
+          "body_sha256": "0b062a369992f7d9048b81269b678fd534d2f5f37065f9cf5dd92779d28ff71c",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "handle_link_list_response_end",
+          "line": 427,
+          "end_line": 434,
+          "body_sha256": "7742f0d4c3dad65c10edbea8d8e96109240911dfbd6e1dc6e8e0e138fdabada7",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_TRANSPORT_links_list",
+          "line": 438,
+          "end_line": 480,
+          "body_sha256": "4fb074e248c3fa7c4e90d1d9a5086436b23c5874578eb235b6a438bcf186d96a",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        },
+        {
+          "name": "GNUNET_TRANSPORT_links_list_cancel",
+          "line": 484,
+          "end_line": 493,
+          "body_sha256": "eb810a4f33ff038ef6d9d32cdfc7b2b6c0bea23e42f5413db0ab4158012c5ead",
+          "assessment": "pending full owner/host implementation and source-bound validation"
+        }
+      ]
+    }
+  },
+  "tcp_function_count": 61,
+  "wire_sizes": {
+    "TcpHandshakeSignature": 144,
+    "TcpHandshakeAckSignature": 112,
+    "TcpRekeySignature": 112,
+    "TCPConfirmation": 136,
+    "initial_KX": 168,
+    "TCPConfirmationAck": 140,
+    "TCPBox_prefix": 36,
+    "TCPBox_max_total": 65571,
+    "TCPRekey": 140,
+    "TCPFinish": 36,
+    "TCPNATProbeMessage": 36
+  },
+  "wire_size_status": "source-layout calculation awaiting fresh normal C header/component check",
+  "selected_suite": {
+    "initial_KEM": "0x0022 Elligator2 X25519 HKDF-SHA256, representative32",
+    "rekey_KEM": "0x0020 ordinary X25519 DHKEM via EdDSA key conversion",
+    "cipher": "AES256 CTR128BE persistent stream",
+    "MAC": "HMAC-SHA512 truncate32 then key=SHA512(old64)",
+    "initial_plain_prefix": 32,
+    "ACK": "Ed25519 purpose39, no record MAC",
+    "BOX_size": "excludes36-byte prefix"
+  },
+  "whole_subsystems": {
+    "TRANSPORT": "pending; all communicator IPC, service routing/validation/flow-control/backchannels/monitor/application/core bindings retained",
+    "CORE": "pending; CAKE full source owner, transcript/epochs/replay/version/application/MQ/monitor/underlay retained",
+    "PILS": "pending actual service/key ring lifecycle",
+    "PEERSTORE": "pending actual monotonic iterate/store/cancel/expiration lifecycle",
+    "NAT": "pending registration/reversal/address change ownership"
+  },
+  "full_function_promotion": false
+}

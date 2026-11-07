@@ -1,0 +1,21 @@
+[package]
+name = "gnunet-base32-command"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "gnunet-base32"
+path = "src/main.rs"
+
+[target.'cfg(unix)'.dependencies]
+gnunet-gnsrecord.workspace = true
+gnunet-program-host.workspace = true
+gnunet-config.workspace = true
+gnunet-service-runtime.workspace = true
+tokio = { workspace = true, features = ["rt", "net", "signal", "time"] }
+nix = { workspace = true, features = ["fs"] }
+
+[lints]
+workspace = true

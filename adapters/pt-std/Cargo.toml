@@ -1,0 +1,29 @@
+[package]
+name = "gnunet-pt-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+[features]
+default = []
+program = ["dep:gnunet-config", "dep:gnunet-program-host", "dep:gnunet-resolver-broker", "dep:gnunet-service-startup", "tokio/signal", "dep:gnunet-ipc-unix", "dep:gnunet-client"]
+[dependencies]
+gnunet-client = { workspace = true, optional = true }
+gnunet-ipc-unix = { workspace = true, optional = true }
+gnunet-pt = { workspace = true, features = ["alloc"] }
+gnunet-dns-client-host.workspace = true
+gnunet-vpn-client-host.workspace = true
+gnunet-cadet-host.workspace = true
+gnunet-dht-client-host.workspace = true
+gnunet-client-host.workspace = true
+gnunet-config = { workspace = true, optional = true }
+gnunet-dns.workspace = true
+gnunet-types.workspace = true
+gnunet-wire.workspace = true
+gnunet-service-runtime.workspace = true
+gnunet-service-startup = { workspace = true, optional = true }
+gnunet-program-host = { workspace = true, features = ["runtime", "resolver-broker"], optional = true }
+gnunet-resolver-broker = { workspace = true, optional = true }
+tokio = { workspace = true, features = ["rt", "net", "time"] }
+[lints]
+workspace = true

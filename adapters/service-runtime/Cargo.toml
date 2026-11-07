@@ -1,0 +1,25 @@
+[package]
+name = "gnunet-service-runtime"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = []
+
+[dependencies]
+uzers.workspace = true
+gnunet-wire.workspace = true
+zeroize = { workspace = true, features = ["alloc"] }
+gnunet-native.workspace = true
+gnunet-config.workspace = true
+gnunet-types.workspace = true
+gnunet-crypto.workspace = true
+tokio = { workspace = true, features = ["rt", "net", "time", "signal", "io-util"] }
+socket2.workspace = true
+libc.workspace = true
+nix = { workspace = true, features = ["poll", "process", "socket", "user"] }
+
+[lints]
+workspace = true

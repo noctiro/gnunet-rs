@@ -1,0 +1,23 @@
+[package]
+name = "gnunet-arm-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = []
+
+[dependencies]
+gnunet-resolver-broker.workspace = true
+gnunet-program-host = { workspace = true, features = ["service-runtime"] }
+gnunet-service-runtime.workspace = true
+gnunet-arm-host.workspace = true
+gnunet-arm-core.workspace = true
+gnunet-config.workspace = true
+gnunet-client-host.workspace = true
+gnunet-types.workspace = true
+tokio = { workspace = true, features = ["rt", "net", "time", "io-util", "signal", "sync"] }
+
+[lints]
+workspace = true

@@ -1,0 +1,20 @@
+[package]
+name = "gnunet-service-namestore"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+gnunet-config.workspace = true
+gnunet-namestore = { workspace = true, features = ["alloc"] }
+gnunet-namestore-host.workspace = true
+gnunet-snapshot-host.workspace = true
+gnunet-program-host = { workspace = true, features = ["runtime", "service-runtime"] }
+gnunet-resolver-broker.workspace = true
+gnunet-service-runtime.workspace = true
+gnunet-service-startup.workspace = true
+tokio = { workspace = true, features = ["rt", "net", "time", "signal"] }
+
+[lints]
+workspace = true

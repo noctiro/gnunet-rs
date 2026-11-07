@@ -1,0 +1,2126 @@
+{
+  "revision": "346358e26d4dcc2dc4f51bef5d52dca29c7d8165",
+  "source_inputs": {
+    "src/lib/util/program.c": "7eff92cd6b31f79ab6f09a1e38ff8fc09abd930f93c96c709bee3ca130318dc9",
+    "src/lib/util/getopt.c": "eff8580742b2b9338caac5ee481fe1bda9e34b06c77010fddb1882e53c23b009",
+    "src/lib/util/getopt_helpers.c": "0bce2ec0172f3f0af9644b6a687b9bfe715ae02564d5ec9d2923a4869f46b7d1",
+    "src/lib/util/common_logging.c": "4773a6a343f2017f97e19002eb1da5102b23642825487c144ee1da97894b81c2",
+    "src/lib/util/speedup.c": "f4c5d5d9f4b5854673d61fcf336d5446a665c5246461dc8b3277962caa4bee67",
+    "src/include/gnunet_program_lib.h": "d065ac19cee6ef0fda6004aac56c21afc839d23a4188089f03e89599f5430e5f",
+    "src/include/gnunet_getopt_lib.h": "221b712eda242ce82e5c1c272350d32ed32273d4b5ddd6ff7fb50c0fcb099726",
+    "src/include/gnunet_common.h": "03bc808f9b183fda2ece71d1e0c5453af127d7f9be59ba80d28df68e46ca6861",
+    "src/lib/util/speedup.h": "010d9ebe35c1f584b5fb8e7d42dfcd51067c623ad3cfd4a36fb1e50640d1e082",
+    "src/lib/util/time.c": "b29d79895626e6201a893d64d49ab34fa56692a89495711a42111acdd1ab2d24",
+    "src/lib/util/scheduler.c": "94eb50311400ee289fc1257b94897e2ced1b36aec8cdeff5774b10ec215172da",
+    "src/lib/util/strings.c": "15559d5fda3c0254cda47cd88c5b09af758f19e085a99f228996dd94e6eaf4e9",
+    "src/lib/util/resolver_api.c": "2960034fb97c64c6465d1837d0c0a5fe608ca70d74607d72682022bf2e06ac60",
+    "src/include/gnunet_time_lib.h": "314e4c1a3b537ecb0fc05c4473a055f0f1ca976236999c0e679ab72926e575d0",
+    "src/include/gnunet_strings_lib.h": "222370c62cc3d32dabf2b6d2ec7f4c574c581d6266d7f2dccad6ffcddaec9d5f",
+    "src/include/gnunet_os_lib.h": "c90a250accc85a999c84bb4646f1623a77e606c0d013f71abfb5ac832fa99485",
+    "src/include/gnunet_resolver_service.h": "9fc00ec687e2889da30576c34e3804178d7003b8692f50dc31659b12268362b9"
+  },
+  "definitions": [
+    {
+      "file": "src/lib/util/program.c",
+      "name": "shutdown_task",
+      "line": 75,
+      "definition_sha256": "0c5f4e5d7345059f5f02c41ac3190ec81b62a38f2d5bd3b3403565f611db1fcc",
+      "public_name": false,
+      "implementation": "in_progress",
+      "evidence": [
+        "program-lifecycle",
+        "daemon",
+        "monolith",
+        "program-broker"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/runtime.rs",
+          "symbol": "Prepared::run_scheduled",
+          "ownership_and_errors": "Exact run-owned SPEEDUP ticket stops after scheduler return/cancel; no unrelated global scheduler authority."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/program.c",
+      "name": "program_main",
+      "line": 87,
+      "definition_sha256": "ab31731072f68536c61108408ba62f7285ff479ba190562fc6ce0c0e59866b6f",
+      "public_name": false,
+      "implementation": "in_progress",
+      "evidence": [
+        "program-lifecycle",
+        "daemon",
+        "monolith",
+        "program-broker"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/runtime.rs",
+          "symbol": "Prepared::run_scheduled",
+          "ownership_and_errors": "Caller-polled scheduler task calls the original shared Resolver context before borrowed main."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/program.c",
+      "name": "cmd_sorter",
+      "line": 110,
+      "definition_sha256": "06101bcc333694375429268c94587bde34d8f2a98e114059ec950528f28d2561",
+      "public_name": false,
+      "implementation": "in_progress",
+      "evidence": [
+        "program-lifecycle",
+        "daemon",
+        "monolith",
+        "program-broker"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/getopt.rs",
+          "symbol": "Options::sort_program",
+          "ownership_and_errors": "Canonical short-name ordering and caller duplicate suppression."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/program.c",
+      "name": "GNUNET_PROGRAM_run2",
+      "line": 131,
+      "definition_sha256": "74e5eb2523cf8711d8db4cfaf480def3373f7607306b0710bcee2e35d0b18699",
+      "public_name": true,
+      "implementation": "in_progress",
+      "evidence": [
+        "program-lifecycle",
+        "daemon",
+        "monolith",
+        "program-broker"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/program.rs",
+          "symbol": "prepare",
+          "ownership_and_errors": "Explicit ProjectData/config/logger/locale owners; direct or caller-polled runtime consumes Prepared."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/program.c",
+      "name": "GNUNET_PROGRAM_run",
+      "line": 406,
+      "definition_sha256": "a1873748bb3c72de3c403e565af233e389e25bbf2f82e56cddbe2ad137bf912b",
+      "public_name": true,
+      "implementation": "in_progress",
+      "evidence": [
+        "program-lifecycle",
+        "daemon",
+        "monolith",
+        "program-broker"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/program.rs",
+          "symbol": "prepare",
+          "ownership_and_errors": "Default ProjectData selects the same run2 body; no second parser/runtime."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/program.c",
+      "name": "GNUNET_PROGRAM_conf_and_options",
+      "line": 428,
+      "definition_sha256": "5814f1093dd8ce4675ea9405f34c77b51a590723012cafbf6a9b4ad1273409aa",
+      "public_name": true,
+      "implementation": "in_progress",
+      "evidence": [
+        "program-lifecycle",
+        "daemon",
+        "monolith",
+        "program-broker"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/program.rs",
+          "symbol": "conf_and_options",
+          "ownership_and_errors": "Nullable input becomes explicit Option; successful new cfg owner is retained instead of C leak."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/program.c",
+      "name": "monolith_main",
+      "line": 563,
+      "definition_sha256": "96558dc8e39602076c6bcb72573747e721e776f2d28e8ea84195bb5d4e8a2a35",
+      "public_name": false,
+      "implementation": "in_progress",
+      "evidence": [
+        "program-lifecycle",
+        "daemon",
+        "monolith",
+        "program-broker"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/daemon.rs",
+          "symbol": "Prepared::run_monolith_logged",
+          "ownership_and_errors": "Actual ServiceMain port runs before daemon callbacks and shared Resolver selection."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/program.c",
+      "name": "GNUNET_PROGRAM_monolith_main",
+      "line": 581,
+      "definition_sha256": "007c44a292c433b07a05f77768bc746d3545911502ee0a436ae1bf9aa7ae997f",
+      "public_name": true,
+      "implementation": "in_progress",
+      "evidence": [
+        "program-lifecycle",
+        "daemon",
+        "monolith",
+        "program-broker"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/daemon.rs",
+          "symbol": "prepare_monolith",
+          "ownership_and_errors": "Conf/options preparation emits no premature DAEMON enter or bind on option stop."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/program.c",
+      "name": "launch_daemon",
+      "line": 628,
+      "definition_sha256": "b362ab2d5c1f945f0d51e5ab811bef1b2e0c98ca6253eaa9c7d718ba90e6c5ed",
+      "public_name": false,
+      "implementation": "in_progress",
+      "evidence": [
+        "program-lifecycle",
+        "daemon",
+        "monolith",
+        "program-broker"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/daemon.rs",
+          "symbol": "Registry::launch_logged",
+          "ownership_and_errors": "Current cfg Option and arguments are scoped borrows; callback cannot synchronously destroy owner."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/program.c",
+      "name": "launch_daemons",
+      "line": 638,
+      "definition_sha256": "d23f85f6660344c5d99c66c04243dafba53f710fa6a6bdb1abcd1eeb9121f7a9",
+      "public_name": false,
+      "implementation": "in_progress",
+      "evidence": [
+        "program-lifecycle",
+        "daemon",
+        "monolith",
+        "program-broker"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/daemon.rs",
+          "symbol": "Registry::launch_logged",
+          "ownership_and_errors": "One newest-first snapshot before logs; callback/diagnostic re-registration affects next launch."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/program.c",
+      "name": "GNUNET_DAEMON_main",
+      "line": 657,
+      "definition_sha256": "1f6b72bfc7043f02c3387088ac53c4d250872f8ce8c39347c1c63b76c51d6681",
+      "public_name": true,
+      "implementation": "in_progress",
+      "evidence": [
+        "program-lifecycle",
+        "daemon",
+        "monolith",
+        "program-broker"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/daemon.rs",
+          "symbol": "Registry::main_without_scheduler",
+          "ownership_and_errors": "Explicit already-live scope or actual run_daemons_logged scheduler path; source nullable callback cfg preserved."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/program.c",
+      "name": "GNUNET_DAEMON_register",
+      "line": 682,
+      "definition_sha256": "21045d9e0dd964558f32a0bff78fba68bdc5d714be62cdd3226ecf5ad1e4f309",
+      "public_name": true,
+      "implementation": "in_progress",
+      "evidence": [
+        "program-lifecycle",
+        "daemon",
+        "monolith",
+        "program-broker"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/daemon.rs",
+          "symbol": "Context::register_logged",
+          "ownership_and_errors": "Restricted shared registry authority; bounded atomic admission and closed-owner retirement."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/getopt.c",
+      "name": "my_index",
+      "line": 196,
+      "definition_sha256": "cf1df280e8366808be27a654d230b3ae13ea87517bd44a0968f6fae4281f67d0",
+      "public_name": false,
+      "implementation": "in_progress",
+      "evidence": [
+        "getopt",
+        "ownership"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/getopt.rs",
+          "symbol": "Parser::next",
+          "ownership_and_errors": "Owned byte argv/table and synchronous Processor replace C pointer/permutation aliases; once-only cleaners run on every return."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/getopt.c",
+      "name": "exchange",
+      "line": 251,
+      "definition_sha256": "f1db680109d739c3871fa2be7c1c7f1a8545f52cdeec9b26e2c27fcccac6a97b",
+      "public_name": false,
+      "implementation": "in_progress",
+      "evidence": [
+        "getopt",
+        "ownership"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/getopt.rs",
+          "symbol": "Parser::exchange",
+          "ownership_and_errors": "Owned byte argv/table and synchronous Processor replace C pointer/permutation aliases; once-only cleaners run on every return."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/getopt.c",
+      "name": "_getopt_initialize",
+      "line": 316,
+      "definition_sha256": "53beb3bade807080d43bf033d3be143a96f2b1d684e6fac30b1fb1f86bcdf664",
+      "public_name": false,
+      "implementation": "in_progress",
+      "evidence": [
+        "getopt",
+        "ownership"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/getopt.rs",
+          "symbol": "Parser::new",
+          "ownership_and_errors": "Owned byte argv/table and synchronous Processor replace C pointer/permutation aliases; once-only cleaners run on every return."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/getopt.c",
+      "name": "GN_getopt_internal",
+      "line": 406,
+      "definition_sha256": "0856e7eb59480f9e6d0fdfe090a3976825f1740c7e6309b83ca178c3236b2cdd",
+      "public_name": false,
+      "implementation": "in_progress",
+      "evidence": [
+        "getopt",
+        "ownership"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/getopt.rs",
+          "symbol": "Parser::next",
+          "ownership_and_errors": "Owned byte argv/table and synchronous Processor replace C pointer/permutation aliases; once-only cleaners run on every return."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/getopt.c",
+      "name": "GNgetopt_long",
+      "line": 870,
+      "definition_sha256": "f337f7f895f265b6d5e886b118c0584a1721ec77cf746b45873eaa17ed6b940f",
+      "public_name": false,
+      "implementation": "in_progress",
+      "evidence": [
+        "getopt",
+        "ownership"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/getopt.rs",
+          "symbol": "Parser::long",
+          "ownership_and_errors": "Owned byte argv/table and synchronous Processor replace C pointer/permutation aliases; once-only cleaners run on every return."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/getopt.c",
+      "name": "GNUNET_GETOPT_run",
+      "line": 884,
+      "definition_sha256": "b39e4ad5a64b8b18afd2eeedd348295d07e8e59489214b488974787b5d961c2d",
+      "public_name": true,
+      "implementation": "in_progress",
+      "evidence": [
+        "getopt",
+        "ownership"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/getopt.rs",
+          "symbol": "Options::run_translated_observed",
+          "ownership_and_errors": "Owned byte argv/table and synchronous Processor replace C pointer/permutation aliases; once-only cleaners run on every return."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/getopt_helpers.c",
+      "name": "print_version",
+      "line": 43,
+      "definition_sha256": "adbfbcd0cb2de7ad1c4da4796e92d8f08d82757074daeb8b5755e042b530ecf7",
+      "public_name": false,
+      "implementation": "in_progress",
+      "evidence": [
+        "helpers",
+        "nls0-program",
+        "nls1-program",
+        "ownership"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/helpers.rs",
+          "symbol": "version",
+          "ownership_and_errors": "Typed Target ownership retains source assignment/return order; undefined C malformed-relative/base32/variadic inputs are never executed or counted."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/getopt_helpers.c",
+      "name": "GNUNET_GETOPT_option_version",
+      "line": 60,
+      "definition_sha256": "4213366e702e163c4d61493c6dfd233b939d07944a95e7d8d1242a74766dc95b",
+      "public_name": true,
+      "implementation": "in_progress",
+      "evidence": [
+        "helpers",
+        "nls0-program",
+        "nls1-program",
+        "ownership"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/helpers.rs",
+          "symbol": "version",
+          "ownership_and_errors": "Typed Target ownership retains source assignment/return order; undefined C malformed-relative/base32/variadic inputs are never executed or counted."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/getopt_helpers.c",
+      "name": "format_help",
+      "line": 91,
+      "definition_sha256": "dc3c673b1086bc436f9d43c59ef7baa4f6c0d1bfc7dd121b4ee5bc624acd3842",
+      "public_name": false,
+      "implementation": "in_progress",
+      "evidence": [
+        "helpers",
+        "nls0-program",
+        "nls1-program",
+        "ownership"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/helpers.rs",
+          "symbol": "help",
+          "ownership_and_errors": "Typed Target ownership retains source assignment/return order; undefined C malformed-relative/base32/variadic inputs are never executed or counted."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/getopt_helpers.c",
+      "name": "GNUNET_GETOPT_option_help",
+      "line": 200,
+      "definition_sha256": "f67b2d7188382a68b955215dea34bb37eace01ba1639e9e07a25c6741ad53e82",
+      "public_name": true,
+      "implementation": "in_progress",
+      "evidence": [
+        "helpers",
+        "nls0-program",
+        "nls1-program",
+        "ownership"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/helpers.rs",
+          "symbol": "help",
+          "ownership_and_errors": "Typed Target ownership retains source assignment/return order; undefined C malformed-relative/base32/variadic inputs are never executed or counted."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/getopt_helpers.c",
+      "name": "increment_value",
+      "line": 233,
+      "definition_sha256": "fc913a55a1e3fe1e246a0b8352997ccb8f7659cb3522e1f6dfd3944a8c704a4b",
+      "public_name": false,
+      "implementation": "in_progress",
+      "evidence": [
+        "helpers",
+        "nls0-program",
+        "nls1-program",
+        "ownership"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/helpers.rs",
+          "symbol": "increment",
+          "ownership_and_errors": "Typed Target ownership retains source assignment/return order; undefined C malformed-relative/base32/variadic inputs are never executed or counted."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/getopt_helpers.c",
+      "name": "GNUNET_GETOPT_option_increment_uint",
+      "line": 249,
+      "definition_sha256": "1b9364e0b7f7a0ab560c886e57a047c6c37c9d3e14b2f7d82bee8c341c49746c",
+      "public_name": true,
+      "implementation": "in_progress",
+      "evidence": [
+        "helpers",
+        "nls0-program",
+        "nls1-program",
+        "ownership"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/helpers.rs",
+          "symbol": "increment",
+          "ownership_and_errors": "Typed Target ownership retains source assignment/return order; undefined C malformed-relative/base32/variadic inputs are never executed or counted."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/getopt_helpers.c",
+      "name": "GNUNET_GETOPT_option_verbose",
+      "line": 267,
+      "definition_sha256": "d5542e541d81a4ca021300b2b122d0f83c68d1dd19b4d5067fe97ce0131c8e0b",
+      "public_name": true,
+      "implementation": "in_progress",
+      "evidence": [
+        "helpers",
+        "nls0-program",
+        "nls1-program",
+        "ownership"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/helpers.rs",
+          "symbol": "verbose",
+          "ownership_and_errors": "Typed Target ownership retains source assignment/return order; undefined C malformed-relative/base32/variadic inputs are never executed or counted."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/getopt_helpers.c",
+      "name": "set_one",
+      "line": 297,
+      "definition_sha256": "eef313fde48518f68b685023871491b79a14f7df55d3c2c1b195e379051f123e",
+      "public_name": false,
+      "implementation": "in_progress",
+      "evidence": [
+        "helpers",
+        "nls0-program",
+        "nls1-program",
+        "ownership"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/helpers.rs",
+          "symbol": "flag",
+          "ownership_and_errors": "Typed Target ownership retains source assignment/return order; undefined C malformed-relative/base32/variadic inputs are never executed or counted."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/getopt_helpers.c",
+      "name": "GNUNET_GETOPT_option_flag",
+      "line": 313,
+      "definition_sha256": "26ecb9a564c0871bbdd293c1f18495ec9bd4c865c26dcdbaaec23c8fcebad511",
+      "public_name": true,
+      "implementation": "in_progress",
+      "evidence": [
+        "helpers",
+        "nls0-program",
+        "nls1-program",
+        "ownership"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/helpers.rs",
+          "symbol": "flag",
+          "ownership_and_errors": "Typed Target ownership retains source assignment/return order; undefined C malformed-relative/base32/variadic inputs are never executed or counted."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/getopt_helpers.c",
+      "name": "set_string",
+      "line": 345,
+      "definition_sha256": "04ad1be863c4e6ad7edcbfe141efbd2b6c33603b678ce7083ed9fdec25bac895",
+      "public_name": false,
+      "implementation": "in_progress",
+      "evidence": [
+        "helpers",
+        "nls0-program",
+        "nls1-program",
+        "ownership"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/helpers.rs",
+          "symbol": "string",
+          "ownership_and_errors": "Typed Target ownership retains source assignment/return order; undefined C malformed-relative/base32/variadic inputs are never executed or counted."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/getopt_helpers.c",
+      "name": "GNUNET_GETOPT_option_string",
+      "line": 362,
+      "definition_sha256": "76c274c4dda5379948d571820fbb6e58cb3b84a15220a9c029959251fe2cdeb6",
+      "public_name": true,
+      "implementation": "in_progress",
+      "evidence": [
+        "helpers",
+        "nls0-program",
+        "nls1-program",
+        "ownership"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/helpers.rs",
+          "symbol": "string",
+          "ownership_and_errors": "Typed Target ownership retains source assignment/return order; undefined C malformed-relative/base32/variadic inputs are never executed or counted."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/getopt_helpers.c",
+      "name": "GNUNET_GETOPT_option_loglevel",
+      "line": 383,
+      "definition_sha256": "0c4938fed1c3f1e5da9fb9875f51752510a33ba328fdabe195b1b2661988f116",
+      "public_name": true,
+      "implementation": "in_progress",
+      "evidence": [
+        "helpers",
+        "nls0-program",
+        "nls1-program",
+        "ownership"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/helpers.rs",
+          "symbol": "loglevel",
+          "ownership_and_errors": "Typed Target ownership retains source assignment/return order; undefined C malformed-relative/base32/variadic inputs are never executed or counted."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/getopt_helpers.c",
+      "name": "set_filename",
+      "line": 411,
+      "definition_sha256": "3c80b62a22bc5c00d21b7f51a7017484e59116f6e43965e6e2c894ff9d99103f",
+      "public_name": false,
+      "implementation": "in_progress",
+      "evidence": [
+        "helpers",
+        "nls0-program",
+        "nls1-program",
+        "ownership"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/helpers.rs",
+          "symbol": "filename",
+          "ownership_and_errors": "Typed Target ownership retains source assignment/return order; undefined C malformed-relative/base32/variadic inputs are never executed or counted."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/getopt_helpers.c",
+      "name": "GNUNET_GETOPT_option_filename",
+      "line": 428,
+      "definition_sha256": "6c7951b850067144b1fc8d4970cb1d08eea33899be7349ca36c997647689ae20",
+      "public_name": true,
+      "implementation": "in_progress",
+      "evidence": [
+        "helpers",
+        "nls0-program",
+        "nls1-program",
+        "ownership"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/helpers.rs",
+          "symbol": "filename",
+          "ownership_and_errors": "Typed Target ownership retains source assignment/return order; undefined C malformed-relative/base32/variadic inputs are never executed or counted."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/getopt_helpers.c",
+      "name": "GNUNET_GETOPT_option_logfile",
+      "line": 449,
+      "definition_sha256": "e53218b710f4bf0f2f5886c412ee968ec11b9f0b629c18739f8254c7b48d6ab1",
+      "public_name": true,
+      "implementation": "in_progress",
+      "evidence": [
+        "helpers",
+        "nls0-program",
+        "nls1-program",
+        "ownership"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/helpers.rs",
+          "symbol": "logfile",
+          "ownership_and_errors": "Typed Target ownership retains source assignment/return order; undefined C malformed-relative/base32/variadic inputs are never executed or counted."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/getopt_helpers.c",
+      "name": "GNUNET_GETOPT_option_cfgfile",
+      "line": 467,
+      "definition_sha256": "83e057add0ff66b67edd450ed92483568cc3b60ebc2c7bdb1f1189c04abd59e3",
+      "public_name": true,
+      "implementation": "in_progress",
+      "evidence": [
+        "helpers",
+        "nls0-program",
+        "nls1-program",
+        "ownership"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/helpers.rs",
+          "symbol": "cfgfile",
+          "ownership_and_errors": "Typed Target ownership retains source assignment/return order; undefined C malformed-relative/base32/variadic inputs are never executed or counted."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/getopt_helpers.c",
+      "name": "set_ulong",
+      "line": 497,
+      "definition_sha256": "007eb26bb55ef772fee1162e21d4203aa76bfc64f4661e90ffcdfdef235f5394",
+      "public_name": false,
+      "implementation": "in_progress",
+      "evidence": [
+        "helpers",
+        "nls0-program",
+        "nls1-program",
+        "ownership"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/helpers.rs",
+          "symbol": "ulong",
+          "ownership_and_errors": "Typed Target ownership retains source assignment/return order; undefined C malformed-relative/base32/variadic inputs are never executed or counted."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/getopt_helpers.c",
+      "name": "GNUNET_GETOPT_option_ulong",
+      "line": 518,
+      "definition_sha256": "27ed5adcb9d5a4eadeba7b4a52d5d6c4835f5ccf7b01d8438d395ff4fbfee3b0",
+      "public_name": true,
+      "implementation": "in_progress",
+      "evidence": [
+        "helpers",
+        "nls0-program",
+        "nls1-program",
+        "ownership"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/helpers.rs",
+          "symbol": "ulong",
+          "ownership_and_errors": "Typed Target ownership retains source assignment/return order; undefined C malformed-relative/base32/variadic inputs are never executed or counted."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/getopt_helpers.c",
+      "name": "set_timetravel_time",
+      "line": 552,
+      "definition_sha256": "0e3f2a05e0c9dcf253544103702fbbe696ed665ea55e3e726e08e5aba6f88fa1",
+      "public_name": false,
+      "implementation": "in_progress",
+      "evidence": [
+        "helpers",
+        "nls0-program",
+        "nls1-program",
+        "ownership"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/helpers.rs",
+          "symbol": "time_travel",
+          "ownership_and_errors": "Typed Target ownership retains source assignment/return order; undefined C malformed-relative/base32/variadic inputs are never executed or counted."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/getopt_helpers.c",
+      "name": "GNUNET_GETOPT_option_timetravel",
+      "line": 600,
+      "definition_sha256": "0431dd5fc53c3fc4c6a55b7708706970206dc70381bf51db9842b3be263ac618",
+      "public_name": true,
+      "implementation": "in_progress",
+      "evidence": [
+        "helpers",
+        "nls0-program",
+        "nls1-program",
+        "ownership"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/helpers.rs",
+          "symbol": "time_travel",
+          "ownership_and_errors": "Typed Target ownership retains source assignment/return order; undefined C malformed-relative/base32/variadic inputs are never executed or counted."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/getopt_helpers.c",
+      "name": "set_relative_time",
+      "line": 631,
+      "definition_sha256": "d5f5e606cf44c2c4185b03fed61ea5061ae9175575d1c0583c2fc54d29bd8ff2",
+      "public_name": false,
+      "implementation": "in_progress",
+      "evidence": [
+        "helpers",
+        "nls0-program",
+        "nls1-program",
+        "ownership"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/helpers.rs",
+          "symbol": "relative_time",
+          "ownership_and_errors": "Typed Target ownership retains source assignment/return order; undefined C malformed-relative/base32/variadic inputs are never executed or counted."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/getopt_helpers.c",
+      "name": "GNUNET_GETOPT_option_relative_time",
+      "line": 651,
+      "definition_sha256": "1c59d71ba0b265e97d6be87f5bc6534cc7d5922a35d432986390bcd723280ae3",
+      "public_name": true,
+      "implementation": "in_progress",
+      "evidence": [
+        "helpers",
+        "nls0-program",
+        "nls1-program",
+        "ownership"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/helpers.rs",
+          "symbol": "relative_time",
+          "ownership_and_errors": "Typed Target ownership retains source assignment/return order; undefined C malformed-relative/base32/variadic inputs are never executed or counted."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/getopt_helpers.c",
+      "name": "set_absolute_time",
+      "line": 685,
+      "definition_sha256": "08501295416e6b330d07ee71db9dbe0d8230208ceb6d01e1f979dd6d0604f3b0",
+      "public_name": false,
+      "implementation": "in_progress",
+      "evidence": [
+        "helpers",
+        "nls0-program",
+        "nls1-program",
+        "ownership"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/helpers.rs",
+          "symbol": "absolute_time",
+          "ownership_and_errors": "Typed Target ownership retains source assignment/return order; undefined C malformed-relative/base32/variadic inputs are never executed or counted."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/getopt_helpers.c",
+      "name": "GNUNET_GETOPT_option_absolute_time",
+      "line": 705,
+      "definition_sha256": "020d0613f200c61a85ac50a744574771af3b76d863964ef54cd9ebe752b6f4a8",
+      "public_name": true,
+      "implementation": "in_progress",
+      "evidence": [
+        "helpers",
+        "nls0-program",
+        "nls1-program",
+        "ownership"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/helpers.rs",
+          "symbol": "absolute_time",
+          "ownership_and_errors": "Typed Target ownership retains source assignment/return order; undefined C malformed-relative/base32/variadic inputs are never executed or counted."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/getopt_helpers.c",
+      "name": "set_timestamp",
+      "line": 739,
+      "definition_sha256": "c41a77452e92d3cfaf4c56b4e679a5419ed07352015471d4f444f6eb74275bc7",
+      "public_name": false,
+      "implementation": "in_progress",
+      "evidence": [
+        "helpers",
+        "nls0-program",
+        "nls1-program",
+        "ownership"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/helpers.rs",
+          "symbol": "timestamp",
+          "ownership_and_errors": "Typed Target ownership retains source assignment/return order; undefined C malformed-relative/base32/variadic inputs are never executed or counted."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/getopt_helpers.c",
+      "name": "GNUNET_GETOPT_option_timestamp",
+      "line": 769,
+      "definition_sha256": "9b4fafab90780eee6c021c3e84c5290418e679083c86c3b5f8534885339b7a77",
+      "public_name": true,
+      "implementation": "in_progress",
+      "evidence": [
+        "helpers",
+        "nls0-program",
+        "nls1-program",
+        "ownership"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/helpers.rs",
+          "symbol": "timestamp",
+          "ownership_and_errors": "Typed Target ownership retains source assignment/return order; undefined C malformed-relative/base32/variadic inputs are never executed or counted."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/getopt_helpers.c",
+      "name": "set_uint",
+      "line": 803,
+      "definition_sha256": "b9f68ab91a99a7fbc7f092026b80f7b01eb5410c756ad5dba6d4bf18f60c10a4",
+      "public_name": false,
+      "implementation": "in_progress",
+      "evidence": [
+        "helpers",
+        "nls0-program",
+        "nls1-program",
+        "ownership"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/helpers.rs",
+          "symbol": "uint",
+          "ownership_and_errors": "Typed Target ownership retains source assignment/return order; undefined C malformed-relative/base32/variadic inputs are never executed or counted."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/getopt_helpers.c",
+      "name": "GNUNET_GETOPT_option_uint",
+      "line": 832,
+      "definition_sha256": "69c8d3813bbc32ea281ce9056b8b34f3a915b2208d78e1d1e63b14789e3841a5",
+      "public_name": true,
+      "implementation": "in_progress",
+      "evidence": [
+        "helpers",
+        "nls0-program",
+        "nls1-program",
+        "ownership"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/helpers.rs",
+          "symbol": "uint",
+          "ownership_and_errors": "Typed Target ownership retains source assignment/return order; undefined C malformed-relative/base32/variadic inputs are never executed or counted."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/getopt_helpers.c",
+      "name": "set_uint16",
+      "line": 866,
+      "definition_sha256": "fb3fdaedb59d245f323fbc35b68c14852b503dc0039ccea576c0870648f4bfc1",
+      "public_name": false,
+      "implementation": "in_progress",
+      "evidence": [
+        "helpers",
+        "nls0-program",
+        "nls1-program",
+        "ownership"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/helpers.rs",
+          "symbol": "uint16",
+          "ownership_and_errors": "Typed Target ownership retains source assignment/return order; undefined C malformed-relative/base32/variadic inputs are never executed or counted."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/getopt_helpers.c",
+      "name": "GNUNET_GETOPT_option_uint16",
+      "line": 897,
+      "definition_sha256": "31f25fca77dccf173100a80f6c2826d8295b274ccfb0ce09e69323e256be7a63",
+      "public_name": true,
+      "implementation": "in_progress",
+      "evidence": [
+        "helpers",
+        "nls0-program",
+        "nls1-program",
+        "ownership"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/helpers.rs",
+          "symbol": "uint16",
+          "ownership_and_errors": "Typed Target ownership retains source assignment/return order; undefined C malformed-relative/base32/variadic inputs are never executed or counted."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/getopt_helpers.c",
+      "name": "set_base32",
+      "line": 948,
+      "definition_sha256": "d5d53ed209f8016445985caff1de01fe33650f84f365c373d7c70c87beed1b8c",
+      "public_name": false,
+      "implementation": "in_progress",
+      "evidence": [
+        "helpers",
+        "nls0-program",
+        "nls1-program",
+        "ownership"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/helpers.rs",
+          "symbol": "base32_fixed",
+          "ownership_and_errors": "Typed Target ownership retains source assignment/return order; undefined C malformed-relative/base32/variadic inputs are never executed or counted."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/getopt_helpers.c",
+      "name": "free_bc",
+      "line": 980,
+      "definition_sha256": "48d28e6292512d19375a70b99a344a82b2ab6d6f94b03ed62d47cb52fb6e8fc3",
+      "public_name": false,
+      "implementation": "in_progress",
+      "evidence": [
+        "helpers",
+        "nls0-program",
+        "nls1-program",
+        "ownership"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/helpers.rs",
+          "symbol": "base32_fixed",
+          "ownership_and_errors": "Typed Target ownership retains source assignment/return order; undefined C malformed-relative/base32/variadic inputs are never executed or counted."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/getopt_helpers.c",
+      "name": "GNUNET_GETOPT_option_base32_fixed_size",
+      "line": 987,
+      "definition_sha256": "cd6bc3aad7817e0c27d8d40ae6da91a129d8c80003aaf040ed7b008ff5ea3dc3",
+      "public_name": true,
+      "implementation": "in_progress",
+      "evidence": [
+        "helpers",
+        "nls0-program",
+        "nls1-program",
+        "ownership"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/helpers.rs",
+          "symbol": "base32_fixed",
+          "ownership_and_errors": "Typed Target ownership retains source assignment/return order; undefined C malformed-relative/base32/variadic inputs are never executed or counted."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/getopt_helpers.c",
+      "name": "GNUNET_GETOPT_option_mandatory",
+      "line": 1013,
+      "definition_sha256": "e75dca7310b75b85680338d4b506b216d55e4fe76638496421c87f0bc4bfff0a",
+      "public_name": true,
+      "implementation": "in_progress",
+      "evidence": [
+        "helpers",
+        "nls0-program",
+        "nls1-program",
+        "ownership"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/getopt.rs",
+          "symbol": "Definition::mandatory",
+          "ownership_and_errors": "Typed Target ownership retains source assignment/return order; undefined C malformed-relative/base32/variadic inputs are never executed or counted."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/getopt_helpers.c",
+      "name": "GNUNET_GETOPT_option_exclusive",
+      "line": 1021,
+      "definition_sha256": "5f7a9075e829491395dbdf1a7a5e585d54a1d5f42378b39d9d382157d014452c",
+      "public_name": true,
+      "implementation": "in_progress",
+      "evidence": [
+        "helpers",
+        "nls0-program",
+        "nls1-program",
+        "ownership"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/getopt.rs",
+          "symbol": "Definition::exclusive",
+          "ownership_and_errors": "Typed Target ownership retains source assignment/return order; undefined C malformed-relative/base32/variadic inputs are never executed or counted."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/common_logging.c",
+      "name": "get_type",
+      "line": 254,
+      "definition_sha256": "c8ce17756cce5ba00390df63c647d35447905c66e3b483c849cec035971b8419",
+      "public_name": false,
+      "implementation": "in_progress",
+      "evidence": [
+        "logging",
+        "file-logging",
+        "diagnostic-helpers",
+        "native-stderr"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/policy.rs",
+          "symbol": "Level::parse",
+          "ownership_and_errors": "Caller-owned Logger, explicit writer/native process capability and safe typed messages replace global/static-buffer/variadic aliases; bytes remain data."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/common_logging.c",
+      "name": "GNUNET_abort_",
+      "line": 278,
+      "definition_sha256": "cc288df6c996ccfec1f664bc385d9536e3561b62535c1ae4af4f5c7eebaeec75",
+      "public_name": true,
+      "implementation": "in_progress",
+      "evidence": [
+        "ownership"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/diagnostics.rs",
+          "symbol": "abort",
+          "ownership_and_errors": "Fatal std::process::abort implementation; compile-signature control only, never invoked as an ordinary test/error."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/common_logging.c",
+      "name": "resize_logdefs",
+      "line": 289,
+      "definition_sha256": "2fb92c541c59f77ee239d3ddc1b7b5e8c5ecd51b807ea2ae3183b973bef9fb02",
+      "public_name": false,
+      "implementation": "in_progress",
+      "evidence": [
+        "logging",
+        "file-logging",
+        "diagnostic-helpers",
+        "native-stderr"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/policy.rs",
+          "symbol": "Policy::setup",
+          "ownership_and_errors": "Caller-owned Logger, explicit writer/native process capability and safe typed messages replace global/static-buffer/variadic aliases; bytes remain data."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/common_logging.c",
+      "name": "log_rotate",
+      "line": 302,
+      "definition_sha256": "d504ef62e8c19f0806b7d0e125134219723b095f4ec8e904a3ac80f5c7168418",
+      "public_name": false,
+      "implementation": "in_progress",
+      "evidence": [
+        "logging",
+        "file-logging",
+        "diagnostic-helpers",
+        "native-stderr"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/logging.rs",
+          "symbol": "Logger::update_file",
+          "ownership_and_errors": "Caller-owned Logger, explicit writer/native process capability and safe typed messages replace global/static-buffer/variadic aliases; bytes remain data."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/common_logging.c",
+      "name": "GNUNET_b2s",
+      "line": 324,
+      "definition_sha256": "c089541ad49be559e03d7d7e866df1382461bfd4758d36354ab8d57f6e151cdd",
+      "public_name": true,
+      "implementation": "in_progress",
+      "evidence": [
+        "logging",
+        "file-logging",
+        "diagnostic-helpers",
+        "native-stderr"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/diagnostics.rs",
+          "symbol": "bytes_short",
+          "ownership_and_errors": "Caller-owned Logger, explicit writer/native process capability and safe typed messages replace global/static-buffer/variadic aliases; bytes remain data."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/common_logging.c",
+      "name": "setup_log_file",
+      "line": 352,
+      "definition_sha256": "fd7f15eff4e6807abe104173db4f1a37b9ac5ccbd29721d3a752906cd04e0385",
+      "public_name": false,
+      "implementation": "in_progress",
+      "evidence": [
+        "logging",
+        "file-logging",
+        "diagnostic-helpers",
+        "native-stderr"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/logging.rs",
+          "symbol": "Logger::update_file",
+          "ownership_and_errors": "Caller-owned Logger, explicit writer/native process capability and safe typed messages replace global/static-buffer/variadic aliases; bytes remain data."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/common_logging.c",
+      "name": "add_definition",
+      "line": 439,
+      "definition_sha256": "72059f22467d235e2038921dcbe8fcb0a43f16bcc43895c66e4681ecd45f998a",
+      "public_name": false,
+      "implementation": "in_progress",
+      "evidence": [
+        "logging",
+        "file-logging",
+        "diagnostic-helpers",
+        "native-stderr"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/policy.rs",
+          "symbol": "Policy::setup",
+          "ownership_and_errors": "Caller-owned Logger, explicit writer/native process capability and safe typed messages replace global/static-buffer/variadic aliases; bytes remain data."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/common_logging.c",
+      "name": "GNUNET_get_log_call_status",
+      "line": 500,
+      "definition_sha256": "2408d9949d140d0fcc5efe1a13e385efafad8ac0addfa26a5d4dd600bcbb5b13",
+      "public_name": true,
+      "implementation": "in_progress",
+      "evidence": [
+        "logging",
+        "file-logging",
+        "diagnostic-helpers",
+        "native-stderr"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/policy.rs",
+          "symbol": "Policy::enabled",
+          "ownership_and_errors": "Caller-owned Logger, explicit writer/native process capability and safe typed messages replace global/static-buffer/variadic aliases; bytes remain data."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/common_logging.c",
+      "name": "parse_definitions",
+      "line": 570,
+      "definition_sha256": "b4dd8b89c9d065c428fddc5486ba710fa0202f99d054730fda6dfecff122f209",
+      "public_name": false,
+      "implementation": "in_progress",
+      "evidence": [
+        "logging",
+        "file-logging",
+        "diagnostic-helpers",
+        "native-stderr"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/policy.rs",
+          "symbol": "Policy::setup",
+          "ownership_and_errors": "Caller-owned Logger, explicit writer/native process capability and safe typed messages replace global/static-buffer/variadic aliases; bytes remain data."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/common_logging.c",
+      "name": "parse_all_definitions",
+      "line": 704,
+      "definition_sha256": "ea45fcc80ec57aa944131e8b45893e7ad643f6b3d795aeaf0a2971c8b0951c18",
+      "public_name": false,
+      "implementation": "in_progress",
+      "evidence": [
+        "logging",
+        "file-logging",
+        "diagnostic-helpers",
+        "native-stderr"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/policy.rs",
+          "symbol": "Policy::setup",
+          "ownership_and_errors": "Caller-owned Logger, explicit writer/native process capability and safe typed messages replace global/static-buffer/variadic aliases; bytes remain data."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/common_logging.c",
+      "name": "GNUNET_log_setup",
+      "line": 729,
+      "definition_sha256": "c2b5ef3041ba1361f8e9cb2534b955ce5be956334b011fdad133f1c92f1a9580",
+      "public_name": true,
+      "implementation": "in_progress",
+      "evidence": [
+        "logging",
+        "file-logging",
+        "diagnostic-helpers",
+        "native-stderr"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/logging.rs",
+          "symbol": "Logger::setup_routed",
+          "ownership_and_errors": "Caller-owned Logger, explicit writer/native process capability and safe typed messages replace global/static-buffer/variadic aliases; bytes remain data."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/common_logging.c",
+      "name": "GNUNET_logger_add",
+      "line": 774,
+      "definition_sha256": "c519651090da7fb78f07962c4456c80545100249fbc55a874c164f7357fe6f4d",
+      "public_name": true,
+      "implementation": "in_progress",
+      "evidence": [
+        "logging",
+        "file-logging",
+        "diagnostic-helpers",
+        "native-stderr"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/logging.rs",
+          "symbol": "Logger::logger_add",
+          "ownership_and_errors": "Caller-owned Logger, explicit writer/native process capability and safe typed messages replace global/static-buffer/variadic aliases; bytes remain data."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/common_logging.c",
+      "name": "GNUNET_logger_remove",
+      "line": 788,
+      "definition_sha256": "ddd528baa45ea171f296fe8f66ffea7bf0eb954e2d18df029c3a4641fef75dd9",
+      "public_name": true,
+      "implementation": "in_progress",
+      "evidence": [
+        "logging",
+        "file-logging",
+        "diagnostic-helpers",
+        "native-stderr"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/logging.rs",
+          "symbol": "Logger::logger_remove",
+          "ownership_and_errors": "Caller-owned Logger, explicit writer/native process capability and safe typed messages replace global/static-buffer/variadic aliases; bytes remain data."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/common_logging.c",
+      "name": "output_message",
+      "line": 821,
+      "definition_sha256": "d855ee13f780510485581644530feb00ee270eed83ac9063c71d6f598720b758",
+      "public_name": false,
+      "implementation": "in_progress",
+      "evidence": [
+        "logging",
+        "file-logging",
+        "diagnostic-helpers",
+        "native-stderr"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/logging.rs",
+          "symbol": "Logger::output",
+          "ownership_and_errors": "Caller-owned Logger, explicit writer/native process capability and safe typed messages replace global/static-buffer/variadic aliases; bytes remain data."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/common_logging.c",
+      "name": "flush_bulk",
+      "line": 930,
+      "definition_sha256": "a7123774dde3e75ba9a97a349cef51951269ec56a7b9134d07b9deb0a06b9b1a",
+      "public_name": false,
+      "implementation": "in_progress",
+      "evidence": [
+        "logging",
+        "file-logging",
+        "diagnostic-helpers",
+        "native-stderr"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/logging.rs",
+          "symbol": "Logger::flush_bulk",
+          "ownership_and_errors": "Caller-owned Logger, explicit writer/native process capability and safe typed messages replace global/static-buffer/variadic aliases; bytes remain data."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/common_logging.c",
+      "name": "GNUNET_log_skip",
+      "line": 973,
+      "definition_sha256": "d413cd098a92f2c203693f12e226ed471493e3363d07ae548a9cfcd136f474ae",
+      "public_name": true,
+      "implementation": "in_progress",
+      "evidence": [
+        "logging",
+        "file-logging",
+        "diagnostic-helpers",
+        "native-stderr"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/logging.rs",
+          "symbol": "Logger::log_skip_routed",
+          "ownership_and_errors": "Caller-owned Logger, explicit writer/native process capability and safe typed messages replace global/static-buffer/variadic aliases; bytes remain data."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/common_logging.c",
+      "name": "GNUNET_get_log_skip",
+      "line": 997,
+      "definition_sha256": "0d8ff9c5efe608e65f7c832dabfbfabcd7f73d5bb4d60c0b6b2d1b1f5f011970",
+      "public_name": true,
+      "implementation": "in_progress",
+      "evidence": [
+        "logging",
+        "file-logging",
+        "diagnostic-helpers",
+        "native-stderr"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/logging.rs",
+          "symbol": "Logger::get_log_skip",
+          "ownership_and_errors": "Caller-owned Logger, explicit writer/native process capability and safe typed messages replace global/static-buffer/variadic aliases; bytes remain data."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/common_logging.c",
+      "name": "mylog",
+      "line": 1012,
+      "definition_sha256": "70a62b3294d61912bdf6e104fd3002b4c3a4c2327c7de73df9566a3265c7b46e",
+      "public_name": false,
+      "implementation": "in_progress",
+      "evidence": [
+        "logging",
+        "file-logging",
+        "diagnostic-helpers",
+        "native-stderr"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/logging.rs",
+          "symbol": "Logger::nocheck",
+          "ownership_and_errors": "Caller-owned Logger, explicit writer/native process capability and safe typed messages replace global/static-buffer/variadic aliases; bytes remain data."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/common_logging.c",
+      "name": "GNUNET_log_nocheck",
+      "line": 1128,
+      "definition_sha256": "170ac80d99a888faaf6569957c5d2c55e39a2e1bfb609f61a8f82d183f260f0a",
+      "public_name": true,
+      "implementation": "in_progress",
+      "evidence": [
+        "logging",
+        "file-logging",
+        "diagnostic-helpers",
+        "native-stderr"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/logging.rs",
+          "symbol": "Logger::nocheck",
+          "ownership_and_errors": "Caller-owned Logger, explicit writer/native process capability and safe typed messages replace global/static-buffer/variadic aliases; bytes remain data."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/common_logging.c",
+      "name": "GNUNET_log_from_nocheck",
+      "line": 1153,
+      "definition_sha256": "983f0108d09aa171b87dd90425b8d7796717b0aba1c7bb546421ca6e763e2b06",
+      "public_name": true,
+      "implementation": "in_progress",
+      "evidence": [
+        "logging",
+        "file-logging",
+        "diagnostic-helpers",
+        "native-stderr"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/logging.rs",
+          "symbol": "Logger::from_nocheck",
+          "ownership_and_errors": "Caller-owned Logger, explicit writer/native process capability and safe typed messages replace global/static-buffer/variadic aliases; bytes remain data."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/common_logging.c",
+      "name": "GNUNET_error_type_to_string",
+      "line": 1181,
+      "definition_sha256": "0503a25448b40e5425f0496d842b3e8f677ef0e30721f98a2fad6b8fcd4efbf0",
+      "public_name": true,
+      "implementation": "in_progress",
+      "evidence": [
+        "logging",
+        "file-logging",
+        "diagnostic-helpers",
+        "native-stderr"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/policy.rs",
+          "symbol": "Level::name",
+          "ownership_and_errors": "Caller-owned Logger, explicit writer/native process capability and safe typed messages replace global/static-buffer/variadic aliases; bytes remain data."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/common_logging.c",
+      "name": "GNUNET_h2s",
+      "line": 1206,
+      "definition_sha256": "3bd820229846d6d8e8fcbb519590ce9b49a7db7e7ff4b8a1d67a3024b8231a93",
+      "public_name": true,
+      "implementation": "in_progress",
+      "evidence": [
+        "logging",
+        "file-logging",
+        "diagnostic-helpers",
+        "native-stderr"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/diagnostics.rs",
+          "symbol": "hash_short",
+          "ownership_and_errors": "Owned output replaces reused static C buffers; aliases produce identical bytes without requiring a second static slot."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/common_logging.c",
+      "name": "GNUNET_h2s2",
+      "line": 1228,
+      "definition_sha256": "4ed0031106acc8d85db62026ebe49369a176e2c5f914816aea76bc58abfa6494",
+      "public_name": true,
+      "implementation": "in_progress",
+      "evidence": [
+        "logging",
+        "file-logging",
+        "diagnostic-helpers",
+        "native-stderr"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/diagnostics.rs",
+          "symbol": "hash_short",
+          "ownership_and_errors": "Owned output replaces reused static C buffers; aliases produce identical bytes without requiring a second static slot."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/common_logging.c",
+      "name": "GNUNET_p2s",
+      "line": 1240,
+      "definition_sha256": "ce17877f014e4a6ade91ba6cdea5dc9e314caeca9c8d57bee806d24275ffa235",
+      "public_name": true,
+      "implementation": "in_progress",
+      "evidence": [
+        "logging",
+        "file-logging",
+        "diagnostic-helpers",
+        "native-stderr"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/diagnostics.rs",
+          "symbol": "public_key_short",
+          "ownership_and_errors": "Owned output replaces reused static C buffers; aliases produce identical bytes without requiring a second static slot."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/common_logging.c",
+      "name": "GNUNET_p2s2",
+      "line": 1256,
+      "definition_sha256": "1361ec69c40f4b728b136f239902c9fb3a9df7bff0e0b55e0eac63f9a5bdeb60",
+      "public_name": true,
+      "implementation": "in_progress",
+      "evidence": [
+        "logging",
+        "file-logging",
+        "diagnostic-helpers",
+        "native-stderr"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/diagnostics.rs",
+          "symbol": "public_key_short",
+          "ownership_and_errors": "Owned output replaces reused static C buffers; aliases produce identical bytes without requiring a second static slot."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/common_logging.c",
+      "name": "GNUNET_e2s",
+      "line": 1272,
+      "definition_sha256": "932f12cff6cb955d0d03ff61549ec40318feafd672414b4d2d9c7107c49264c7",
+      "public_name": true,
+      "implementation": "in_progress",
+      "evidence": [
+        "logging",
+        "file-logging",
+        "diagnostic-helpers",
+        "native-stderr"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/diagnostics.rs",
+          "symbol": "public_key_short",
+          "ownership_and_errors": "Owned output replaces reused static C buffers; aliases produce identical bytes without requiring a second static slot."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/common_logging.c",
+      "name": "GNUNET_e2s2",
+      "line": 1288,
+      "definition_sha256": "3000dd7223f91967a1e997ab20d273c9e151570bd09a98c94019ef1f5175d983",
+      "public_name": true,
+      "implementation": "in_progress",
+      "evidence": [
+        "logging",
+        "file-logging",
+        "diagnostic-helpers",
+        "native-stderr"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/diagnostics.rs",
+          "symbol": "public_key_short",
+          "ownership_and_errors": "Owned output replaces reused static C buffers; aliases produce identical bytes without requiring a second static slot."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/common_logging.c",
+      "name": "GNUNET_sh2s",
+      "line": 1313,
+      "definition_sha256": "9cf1f9c788b97adfb4f1be55758244454be616d3c6d06c4175cf2776d3bba7f0",
+      "public_name": true,
+      "implementation": "in_progress",
+      "evidence": [
+        "logging",
+        "file-logging",
+        "diagnostic-helpers",
+        "native-stderr"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/diagnostics.rs",
+          "symbol": "short_hash_short",
+          "ownership_and_errors": "Caller-owned Logger, explicit writer/native process capability and safe typed messages replace global/static-buffer/variadic aliases; bytes remain data."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/common_logging.c",
+      "name": "GNUNET_uuid2s",
+      "line": 1336,
+      "definition_sha256": "6b198691ff0d13168b0ea7b379a4d0cac12555467537cb4bdc956935aedf43f3",
+      "public_name": true,
+      "implementation": "in_progress",
+      "evidence": [
+        "logging",
+        "file-logging",
+        "diagnostic-helpers",
+        "native-stderr"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/diagnostics.rs",
+          "symbol": "uuid_short",
+          "ownership_and_errors": "Caller-owned Logger, explicit writer/native process capability and safe typed messages replace global/static-buffer/variadic aliases; bytes remain data."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/common_logging.c",
+      "name": "GNUNET_h2s_full",
+      "line": 1355,
+      "definition_sha256": "16c995522f59ffe5501db77457e82e2f28d4e32fe43a6b98fc8f59ef92c20548",
+      "public_name": true,
+      "implementation": "in_progress",
+      "evidence": [
+        "logging",
+        "file-logging",
+        "diagnostic-helpers",
+        "native-stderr"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/diagnostics.rs",
+          "symbol": "hash_full",
+          "ownership_and_errors": "Owned output replaces reused static C buffers; aliases produce identical bytes without requiring a second static slot."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/common_logging.c",
+      "name": "GNUNET_i2s",
+      "line": 1373,
+      "definition_sha256": "002c9b5f897fd9c121b0e9e8e3d0e7d4813b7e429cfe486437bc474e7de3fb5d",
+      "public_name": true,
+      "implementation": "in_progress",
+      "evidence": [
+        "logging",
+        "file-logging",
+        "diagnostic-helpers",
+        "native-stderr"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/diagnostics.rs",
+          "symbol": "peer_short",
+          "ownership_and_errors": "Owned output replaces reused static C buffers; aliases produce identical bytes without requiring a second static slot."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/common_logging.c",
+      "name": "GNUNET_i2s2",
+      "line": 1398,
+      "definition_sha256": "f1340b9bd2dd8769742d22e025921835cce4dd7fe6a3612dc0fff6743244b84d",
+      "public_name": true,
+      "implementation": "in_progress",
+      "evidence": [
+        "logging",
+        "file-logging",
+        "diagnostic-helpers",
+        "native-stderr"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/diagnostics.rs",
+          "symbol": "peer_short",
+          "ownership_and_errors": "Owned output replaces reused static C buffers; aliases produce identical bytes without requiring a second static slot."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/common_logging.c",
+      "name": "GNUNET_i2s_full",
+      "line": 1420,
+      "definition_sha256": "04e6c9e7ff158442ea09f0297149668d6f1227f28a420da7459b137277f7b60e",
+      "public_name": true,
+      "implementation": "in_progress",
+      "evidence": [
+        "logging",
+        "file-logging",
+        "diagnostic-helpers",
+        "native-stderr"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/diagnostics.rs",
+          "symbol": "peer_full",
+          "ownership_and_errors": "Owned output replaces reused static C buffers; aliases produce identical bytes without requiring a second static slot."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/common_logging.c",
+      "name": "GNUNET_a2s",
+      "line": 1443,
+      "definition_sha256": "390b3d94d799ff4697f6566b2eb58b76698b29eafbce325cc7866b616169cd7f",
+      "public_name": true,
+      "implementation": "in_progress",
+      "evidence": [
+        "logging",
+        "file-logging",
+        "diagnostic-helpers",
+        "native-stderr"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/diagnostics.rs",
+          "symbol": "address_translated",
+          "ownership_and_errors": "Caller-owned Logger, explicit writer/native process capability and safe typed messages replace global/static-buffer/variadic aliases; bytes remain data."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/common_logging.c",
+      "name": "GNUNET_log_config_missing",
+      "line": 1509,
+      "definition_sha256": "bb7e7bd7154521b9fda68e1f1cec47178109e06d2db560ab3fa32433d36c8ccf",
+      "public_name": true,
+      "implementation": "in_progress",
+      "evidence": [
+        "logging",
+        "file-logging",
+        "diagnostic-helpers",
+        "native-stderr"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/logging.rs",
+          "symbol": "Logger::config_missing",
+          "ownership_and_errors": "Caller-owned Logger, explicit writer/native process capability and safe typed messages replace global/static-buffer/variadic aliases; bytes remain data."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/common_logging.c",
+      "name": "GNUNET_log_config_invalid",
+      "line": 1523,
+      "definition_sha256": "f0a6649f8dfb0d791c795ab6132bd0aeb7995efb45d51c92f8bed5db08f1aa18",
+      "public_name": true,
+      "implementation": "in_progress",
+      "evidence": [
+        "logging",
+        "file-logging",
+        "diagnostic-helpers",
+        "native-stderr"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/logging.rs",
+          "symbol": "Logger::config_invalid",
+          "ownership_and_errors": "Caller-owned Logger, explicit writer/native process capability and safe typed messages replace global/static-buffer/variadic aliases; bytes remain data."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/common_logging.c",
+      "name": "GNUNET_async_scope_enter",
+      "line": 1545,
+      "definition_sha256": "31eb9dd44a2f5704109cb0b181418deecbbc3751422dd4be79d98923d9691125",
+      "public_name": true,
+      "implementation": "in_progress",
+      "evidence": [
+        "logging",
+        "file-logging",
+        "diagnostic-helpers",
+        "native-stderr"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/logging.rs",
+          "symbol": "Logger::scope_enter",
+          "ownership_and_errors": "Caller-owned Logger, explicit writer/native process capability and safe typed messages replace global/static-buffer/variadic aliases; bytes remain data."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/common_logging.c",
+      "name": "GNUNET_async_scope_restore",
+      "line": 1560,
+      "definition_sha256": "78af59c9cab524d33c11bf2acb366891c23e4775ad2c10829c9398cf6045e051",
+      "public_name": true,
+      "implementation": "in_progress",
+      "evidence": [
+        "logging",
+        "file-logging",
+        "diagnostic-helpers",
+        "native-stderr"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/logging.rs",
+          "symbol": "Logger::scope_restore",
+          "ownership_and_errors": "Caller-owned Logger, explicit writer/native process capability and safe typed messages replace global/static-buffer/variadic aliases; bytes remain data."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/common_logging.c",
+      "name": "GNUNET_async_scope_fresh",
+      "line": 1572,
+      "definition_sha256": "fe2249b96b10aae25ecc88a8384dab2b062108e5c9fde3f0be22be34e5f9e6fd",
+      "public_name": true,
+      "implementation": "in_progress",
+      "evidence": [
+        "logging",
+        "file-logging",
+        "diagnostic-helpers",
+        "native-stderr"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/logging.rs",
+          "symbol": "Logger::scope_fresh_os",
+          "ownership_and_errors": "Caller-owned Logger, explicit writer/native process capability and safe typed messages replace global/static-buffer/variadic aliases; bytes remain data."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/common_logging.c",
+      "name": "GNUNET_async_scope_get",
+      "line": 1585,
+      "definition_sha256": "8cd8005ba7cc94fdbc4504af440cc7a1225e1220caa97908f991a4c1f86fc8a0",
+      "public_name": true,
+      "implementation": "in_progress",
+      "evidence": [
+        "logging",
+        "file-logging",
+        "diagnostic-helpers",
+        "native-stderr"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/logging.rs",
+          "symbol": "Logger::scope_get",
+          "ownership_and_errors": "Caller-owned Logger, explicit writer/native process capability and safe typed messages replace global/static-buffer/variadic aliases; bytes remain data."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/common_logging.c",
+      "name": "GNUNET_hex2b",
+      "line": 1592,
+      "definition_sha256": "342af7dd46b36cd89f1b85ace1bc77274960cfad12545dc1f42a8e5ea964f13f",
+      "public_name": true,
+      "implementation": "in_progress",
+      "evidence": [
+        "rust-tests"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/diagnostics.rs",
+          "symbol": "hex_to_bytes",
+          "ownership_and_errors": "Safe Rust parsing only. Source sscanf %x with int* is conservatively classified source-only; no C execution/equivalence credit."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/common_logging.c",
+      "name": "GNUNET_print_bytes",
+      "line": 1618,
+      "definition_sha256": "6f03d67549db01ac824d473ef456f7a7dae9f6e2e2655ed6ffbffd252f7653f5",
+      "public_name": true,
+      "implementation": "in_progress",
+      "evidence": [
+        "logging",
+        "file-logging",
+        "diagnostic-helpers",
+        "native-stderr"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/diagnostics.rs",
+          "symbol": "print_bytes",
+          "ownership_and_errors": "Caller-owned Logger, explicit writer/native process capability and safe typed messages replace global/static-buffer/variadic aliases; bytes remain data."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/common_logging.c",
+      "name": "GNUNET_util_cl_init",
+      "line": 1648,
+      "definition_sha256": "c3c12946a5f98539f50051874752b62bf772dce34625862bdd3acf7ec2f78241",
+      "public_name": true,
+      "implementation": "in_progress",
+      "evidence": [
+        "logging",
+        "file-logging",
+        "diagnostic-helpers",
+        "native-stderr"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/logging.rs",
+          "symbol": "Logger::new",
+          "ownership_and_errors": "Explicit Logger/std::io::stderr and unsafe ProcessStderr capability decompose the C constructor. No hidden process-global initialization is claimed."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/speedup.c",
+      "name": "do_speedup",
+      "line": 42,
+      "definition_sha256": "1854cf3afef9997d2714b0e21908240b545caaff4407824220d6c92c2c418a2b",
+      "public_name": false,
+      "implementation": "in_progress",
+      "evidence": [
+        "program-lifecycle",
+        "program-broker",
+        "rust-tests"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/clock.rs",
+          "symbol": "Clock::tick",
+          "ownership_and_errors": "Same SharedClock revision wakes actual pending runtime/broker timers; exact ticket cleanup preserves offset. Full SCHEDULER remains a separate dependency."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/speedup.c",
+      "name": "GNUNET_SPEEDUP_start_",
+      "line": 60,
+      "definition_sha256": "4383520304ded4b23f84100e49a99dabae1142a9798a6d99db965e6644df79f3",
+      "public_name": true,
+      "implementation": "in_progress",
+      "evidence": [
+        "program-lifecycle",
+        "program-broker",
+        "rust-tests"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/clock.rs",
+          "symbol": "Clock::start",
+          "ownership_and_errors": "Same SharedClock revision wakes actual pending runtime/broker timers; exact ticket cleanup preserves offset. Full SCHEDULER remains a separate dependency."
+        }
+      ]
+    },
+    {
+      "file": "src/lib/util/speedup.c",
+      "name": "GNUNET_SPEEDUP_stop_",
+      "line": 100,
+      "definition_sha256": "29efc846f66bc90ad5555c4c30707598c53bb5e99f55ca9cfd02f13aeb2ecefb",
+      "public_name": true,
+      "implementation": "in_progress",
+      "evidence": [
+        "program-lifecycle",
+        "program-broker",
+        "rust-tests"
+      ],
+      "rust_equivalence": [
+        {
+          "path": "src/clock.rs",
+          "symbol": "Clock::stop",
+          "ownership_and_errors": "Same SharedClock revision wakes actual pending runtime/broker timers; exact ticket cleanup preserves offset. Full SCHEDULER remains a separate dependency."
+        }
+      ]
+    }
+  ],
+  "definition_count": 99,
+  "public_definition_count": 62,
+  "owner_complete": false,
+  "full_required_scope": [
+    "whole PROGRAM + DAEMON/monolith operations",
+    "whole GETOPT parser + every helper factory/macro",
+    "whole common_logging implementation incl bulk/custom/scope/hash/address/hex",
+    "locale/domain/catalog integration",
+    "logical clock + actual scheduler/driver speedup bridge",
+    "explicit early process-global installation/stdio authority"
+  ],
+  "requirements": [
+    {
+      "id": "PROGRAM",
+      "required": true,
+      "scope": "whole PROGRAM + DAEMON/monolith operations"
+    },
+    {
+      "id": "GETOPT",
+      "required": true,
+      "scope": "whole GETOPT parser + every helper factory/macro"
+    },
+    {
+      "id": "LOGGING",
+      "required": true,
+      "scope": "whole common_logging implementation incl bulk/custom/scope/hash/address/hex"
+    },
+    {
+      "id": "NLS",
+      "required": true,
+      "scope": "locale/domain/catalog integration"
+    },
+    {
+      "id": "CLOCK",
+      "required": true,
+      "scope": "logical clock + actual scheduler/driver speedup bridge"
+    },
+    {
+      "id": "NATIVE",
+      "required": true,
+      "scope": "explicit early process-global installation/stdio authority"
+    }
+  ],
+  "status_semantics": "in_progress records actual candidate mapping; evidence IDs resolve to freshly executed receipts in checkpoint.py. No status string grants owner completion."
+}

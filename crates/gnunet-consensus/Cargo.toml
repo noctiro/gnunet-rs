@@ -1,0 +1,18 @@
+[package]
+name = "gnunet-consensus"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = []
+alloc = ["dep:gnunet-crypto"]
+
+[dependencies]
+gnunet-types.workspace = true
+gnunet-wire.workspace = true
+gnunet-crypto = { workspace = true, optional = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,24 @@
+[package]
+name = "gnunet-udp-communicator-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+[features]
+default = []
+alloc = ["zeroize/alloc"]
+[dependencies]
+gnunet-types.workspace = true
+gnunet-wire.workspace = true
+gnunet-crypto.workspace = true
+gnunet-session-crypto.workspace = true
+zeroize.workspace = true
+[lints]
+workspace = true
+[dev-dependencies]
+getrandom.workspace = true
+serde_json = { workspace = true, features = ["std"] }
+
+[[example]]
+name = "udp_packet_oracle"
+required-features = ["alloc"]

@@ -1,0 +1,24 @@
+{
+  "scope": "normal public C util + one exact extracted path verifier, no DHT daemon",
+  "sizes": {
+    "get": 88,
+    "put": 88,
+    "stop": 80,
+    "known": 80,
+    "result": 104,
+    "monitor": 80,
+    "monitor_get": 88,
+    "monitor_put": 96,
+    "monitor_result": 96,
+    "path_element": 96,
+    "region": 144
+  },
+  "get_id_offset": 80,
+  "path_results": [
+    0,
+    1,
+    0
+  ],
+  "peer_key": "3d94eea49c580aef816935762be049559d6d1440dede12e6a125f1841fff8e6fa9d71862a3e5746b571be3d187b0041046f52ebd850c7cbd5fde8ee38473b649",
+  "peer_bloom": "0000010000000000010000000408000000000000000000200000000000000000000000000000000000002000000040001000000000000000000000000000000000000000000000000002000000800000000000001000002000000000488000000000000000000000000000000000000000000000000000000000020000000000"
+}

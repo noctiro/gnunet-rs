@@ -1,0 +1,25 @@
+[package]
+name = "gnunet-resolver-broker"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+[features]
+default = []
+[dependencies]
+gnunet-client.workspace = true
+gnunet-types.workspace = true
+gnunet-wire.workspace = true
+gnunet-config.workspace = true
+gnunet-native.workspace = true
+gnunet-client-host.workspace = true
+gnunet-service-runtime.workspace = true
+tokio = { workspace = true, features = ["rt", "net", "time", "io-util"] }
+[lints]
+workspace = true
+
+[dev-dependencies]
+gnunet-ipc-unix.workspace = true
+gnunet-arm-core.workspace = true
+gnunet-arm-host.workspace = true
+tokio = { workspace = true, features = ["sync"] }

@@ -1,0 +1,20 @@
+[package]
+name = "gnunet-dht-client"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = []
+alloc = ["dep:gnunet-crypto", "dep:gnunet-hello", "dep:zeroize"]
+
+[dependencies]
+gnunet-types.workspace = true
+gnunet-wire.workspace = true
+gnunet-crypto = { workspace = true, optional = true }
+gnunet-hello = { workspace = true, optional = true }
+zeroize = { workspace = true, features = ["alloc"], optional = true }
+
+[lints]
+workspace = true

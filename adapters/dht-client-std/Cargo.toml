@@ -1,0 +1,22 @@
+[package]
+name = "gnunet-dht-client-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+[features]
+default = []
+[dependencies]
+gnunet-dht-client = { workspace = true, features = ["alloc"] }
+gnunet-client-host.workspace = true
+gnunet-service-runtime.workspace = true
+gnunet-types.workspace = true
+gnunet-wire.workspace = true
+gnunet-hello.workspace = true
+tokio = { workspace = true, features = ["rt", "net", "time"] }
+[dev-dependencies]
+gnunet-config.workspace = true
+gnunet-crypto.workspace = true
+tokio = { workspace = true, features = ["io-util", "sync"] }
+[lints]
+workspace = true

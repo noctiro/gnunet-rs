@@ -1,0 +1,24 @@
+[package]
+name = "gnunet-service-abd"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+gnunet-abd = { workspace = true, features = ["alloc"] }
+gnunet-abd-host.workspace = true
+gnunet-client-host.workspace = true
+gnunet-gns-client-host.workspace = true
+gnunet-namestore-client-host.workspace = true
+gnunet-config.workspace = true
+gnunet-program-host = { workspace = true, features = ["service-runtime"] }
+gnunet-resolver-broker.workspace = true
+gnunet-service-runtime.workspace = true
+gnunet-service-startup.workspace = true
+gnunet-types.workspace = true
+gnunet-wire.workspace = true
+tokio = { workspace = true, features = ["rt", "signal", "time"] }
+
+[lints]
+workspace = true

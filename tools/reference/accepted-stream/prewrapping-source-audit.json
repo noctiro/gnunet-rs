@@ -1,0 +1,68 @@
+{
+  "schema": 2,
+  "scope": "source-read pre-wrapping policy audit, not executed failure evidence",
+  "files": [
+    {
+      "sha256": "c9997415bf1c89a9deb3d6f12840abfd58dc91b6e43c8a16095fc34dd216072c",
+      "origin": "rust-std",
+      "relative": "sys/net/connection/socket/unix.rs"
+    },
+    {
+      "sha256": "7ae90a0b33ebe207a7025ea0637ea4b9be1ac15631079bb2ef1079a9c3d0142d",
+      "origin": "rust-std",
+      "relative": "sys/fd/unix.rs"
+    },
+    {
+      "sha256": "5746cfeef8431b8737d9cd97b98118f214f6c37cf88ddaa4f34f47317cc6e2f9",
+      "origin": "registry",
+      "package": "mio",
+      "version": "1.2.4",
+      "relative": "src/sys/unix/tcp.rs"
+    },
+    {
+      "sha256": "5b11f94f596eb53d50f701fd2d6a23ec45ae68609af0fadf863fb04423fb2e1c",
+      "origin": "registry",
+      "package": "mio",
+      "version": "1.2.4",
+      "relative": "src/sys/unix/net.rs"
+    },
+    {
+      "sha256": "14d718fc14286e1a0c35d785d1ece2096c5af12188c248a7493851d0d87f824d",
+      "origin": "registry",
+      "package": "socket2",
+      "version": "0.6.5",
+      "relative": "src/socket.rs"
+    },
+    {
+      "sha256": "5193fd8c91103f8c73c03c0237c2a493aba911a2995c3750ffb13b054f5c9433",
+      "origin": "registry",
+      "package": "socket2",
+      "version": "0.6.5",
+      "relative": "src/sys/unix.rs"
+    },
+    {
+      "sha256": "ea1776876ab460ed698b1d358ab3686fdba09915ea448732117f259e75543395",
+      "origin": "registry",
+      "package": "tokio",
+      "version": "1.54.1",
+      "relative": "src/net/tcp/listener.rs"
+    },
+    {
+      "sha256": "1f0357a00457cd733c1463319c0d27171cee9c1f360d59ed21b72852ac365bfa",
+      "origin": "registry",
+      "package": "tokio",
+      "version": "1.54.1",
+      "relative": "src/net/tcp/stream.rs"
+    },
+    {
+      "sha256": "d31a2ee5d52e89bdc212815d1420f9a4527e5a451672f016cd48b3ca661cbefe",
+      "origin": "upstream",
+      "relative": "src/lib/util/network.c"
+    }
+  ],
+  "earlier_cloexec_failure_parity": "pending: C nonfatal versus std/mio/socket2 fatal before return",
+  "reactor_registration_failure": "separate earlier boundary; not counted as native initialization success",
+  "darwin_nosigpipe_source_profile": "macOS only; caller positive observations cover actual reapplication",
+  "Root_write": false,
+  "source_location": "Resolve the pinned toolchain rust-src, exact Cargo package manifest directory, or explicit --source; no historical absolute cache path is trusted."
+}

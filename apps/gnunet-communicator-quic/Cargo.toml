@@ -1,0 +1,14 @@
+[package]
+name = "gnunet-communicator-quic"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+gnunet-ipc-unix.workspace = true
+gnunet-quic-communicator-host = { workspace = true, features = ["program", "fresh-tls"] }
+gnunet-service-startup.workspace = true
+
+[lints]
+workspace = true

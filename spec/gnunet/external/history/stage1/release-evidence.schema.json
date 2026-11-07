@@ -1,0 +1,245 @@
+{
+  "$defs": {
+    "build": {
+      "additionalProperties": false,
+      "properties": {
+        "argv": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "binaries": {
+          "items": {
+            "$ref": "#/$defs/reference"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "inputs": {
+          "items": {
+            "$ref": "#/$defs/reference"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "profile": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "receipt": {
+          "$ref": "#/$defs/reference"
+        },
+        "toolchain": {
+          "minProperties": 1,
+          "type": "object"
+        }
+      },
+      "required": [
+        "profile",
+        "argv",
+        "toolchain",
+        "binaries",
+        "inputs",
+        "receipt"
+      ],
+      "type": "object"
+    },
+    "digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "process": {
+      "additionalProperties": false,
+      "properties": {
+        "argv": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "binary": {
+          "$ref": "#/$defs/reference"
+        },
+        "binary_after": {
+          "$ref": "#/$defs/digest"
+        },
+        "binary_before": {
+          "$ref": "#/$defs/digest"
+        },
+        "exit_code": {
+          "const": 0
+        },
+        "loaded_files_after": {
+          "additionalProperties": {
+            "$ref": "#/$defs/digest"
+          },
+          "type": "object"
+        },
+        "loaded_files_before": {
+          "additionalProperties": {
+            "$ref": "#/$defs/digest"
+          },
+          "type": "object"
+        },
+        "role": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "termination": {
+          "const": "exited"
+        }
+      },
+      "required": [
+        "role",
+        "argv",
+        "binary",
+        "binary_before",
+        "binary_after",
+        "exit_code",
+        "termination",
+        "loaded_files_before",
+        "loaded_files_after"
+      ],
+      "type": "object"
+    },
+    "receipt": {
+      "additionalProperties": false,
+      "properties": {
+        "adapter": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "artifacts": {
+          "items": {
+            "$ref": "#/$defs/reference"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "build": {
+          "$ref": "#/$defs/build"
+        },
+        "direction": {
+          "enum": [
+            "C-to-Rust",
+            "Rust-to-C",
+            "mixed",
+            "negative",
+            "recovery",
+            "artifact",
+            "oracle"
+          ]
+        },
+        "implementation_inputs": {
+          "additionalProperties": {
+            "$ref": "#/$defs/digest"
+          },
+          "minProperties": 1,
+          "type": "object"
+        },
+        "kind": {
+          "const": "external-boundary-receipt"
+        },
+        "observation": {
+          "$ref": "#/$defs/reference"
+        },
+        "processes": {
+          "items": {
+            "$ref": "#/$defs/process"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "profile": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "reference_inputs": {
+          "minProperties": 1,
+          "type": "object"
+        },
+        "reference_revision": {
+          "const": "346358e26d4dcc2dc4f51bef5d52dca29c7d8165"
+        },
+        "requirement": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "result": {
+          "const": "pass"
+        },
+        "review": {
+          "$ref": "#/$defs/reference"
+        },
+        "schema": {
+          "const": 1
+        }
+      },
+      "required": [
+        "schema",
+        "kind",
+        "requirement",
+        "profile",
+        "direction",
+        "adapter",
+        "result",
+        "implementation_inputs",
+        "reference_revision",
+        "reference_inputs",
+        "build",
+        "processes",
+        "artifacts",
+        "observation",
+        "review"
+      ],
+      "type": "object"
+    },
+    "reference": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "sha256": {
+          "$ref": "#/$defs/digest"
+        }
+      },
+      "required": [
+        "path",
+        "sha256"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "kind": {
+      "const": "external-release-evidence-index"
+    },
+    "records": {
+      "items": {
+        "$ref": "#/$defs/reference"
+      },
+      "type": "array"
+    },
+    "requirements_sha256": {
+      "const": "b8ca033719d1b7526b6019b3a07b752a639c5db5d4e53aa005c81524b262330e"
+    },
+    "schema": {
+      "const": 1
+    }
+  },
+  "required": [
+    "schema",
+    "kind",
+    "requirements_sha256",
+    "records"
+  ],
+  "title": "External release evidence index",
+  "type": "object"
+}

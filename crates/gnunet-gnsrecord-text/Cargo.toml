@@ -1,0 +1,22 @@
+[package]
+name = "gnunet-gnsrecord-text"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = []
+
+[dependencies]
+gnunet-dns.workspace = true
+gnunet-gnsrecord.workspace = true
+gnunet-types.workspace = true
+gnunet-wire.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+gnunet-idna.workspace = true
+
+[lints]
+workspace = true

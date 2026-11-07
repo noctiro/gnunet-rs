@@ -1,0 +1,28 @@
+[package]
+name = "gnunet-messenger-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+gnunet-messenger-core = { workspace = true, features = ["alloc"] }
+gnunet-messenger.workspace = true
+gnunet-messenger-client-host.workspace = true
+gnunet-namestore-client-host.workspace = true
+gnunet-gns-client-host.workspace = true
+gnunet-gnsrecord.workspace = true
+gnunet-gnsrecord-text.workspace = true
+subtle.workspace = true
+gnunet-client-host.workspace = true
+gnunet-service-runtime.workspace = true
+gnunet-crypto.workspace = true
+gnunet-identity.workspace = true
+gnunet-types.workspace = true
+gnunet-wire.workspace = true
+getrandom.workspace = true
+zeroize = { workspace = true, features = ["alloc"] }
+tokio = { workspace = true, features = ["rt", "time"] }
+
+[lints]
+workspace = true

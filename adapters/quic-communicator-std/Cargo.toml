@@ -1,0 +1,39 @@
+[package]
+name = "gnunet-quic-communicator-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+[features]
+default = []
+h3-profile = ["dep:h3", "dep:h3-quinn", "dep:bytes", "dep:http"]
+fresh-tls = ["dep:rcgen"]
+program = ["fresh-tls", "dep:gnunet-config", "dep:gnunet-program-host", "dep:gnunet-resolver-broker", "dep:gnunet-service-startup", "dep:libc", "tokio/signal"]
+[target.'cfg(unix)'.dependencies]
+gnunet-config = { workspace = true, optional = true }
+gnunet-program-host = { workspace = true, optional = true, features = ["resolver-broker"] }
+gnunet-resolver-broker = { workspace = true, optional = true }
+gnunet-service-startup = { workspace = true, optional = true }
+libc = { workspace = true, optional = true, features = ["std"] }
+gnunet-transport-quic.workspace = true
+gnunet-wire.workspace = true
+gnunet-types.workspace = true
+gnunet-native.workspace = true
+gnunet-client.workspace = true
+gnunet-client-host.workspace = true
+gnunet-service-runtime.workspace = true
+gnunet-pils.workspace = true
+gnunet-pils-host = { workspace = true, features = ["client"] }
+gnunet-hello.workspace = true
+gnunet-nat-client-host.workspace = true
+zeroize = { workspace = true, features = ["alloc"] }
+tokio = { workspace = true, features = ["rt", "net", "time", "io-util", "sync"] }
+rustls.workspace = true
+bytes = { workspace = true, optional = true }
+http = { version = "=1.5.0", default-features = false, optional = true }
+quinn = { version = "=0.11.12", default-features = false, features = ["runtime-tokio", "rustls-aws-lc-rs"] }
+h3 = { version = "=0.0.8", default-features = false, optional = true }
+h3-quinn = { version = "=0.0.10", default-features = false, optional = true }
+rcgen = { version = "=0.14.10", default-features = false, features = ["aws_lc_rs", "zeroize"], optional = true }
+[lints]
+workspace = true

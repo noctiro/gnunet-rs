@@ -1,0 +1,50 @@
+{
+  "scope": "Pinned upstream libc/libpthread source contracts; snapshots are not vendored and do not identify the installed OS binary.",
+  "records": [
+    {
+      "repository": "apple-libc",
+      "revision": "71bbe350ab79eef58113991d817ccc6165061a64",
+      "path": "locale/xlocale.c",
+      "blob_sha": "d5d2acdb8b84aed5315955b7d549d129b424466c",
+      "url": "https://github.com/apple-oss-distributions/Libc/blob/71bbe350ab79eef58113991d817ccc6165061a64/locale/xlocale.c",
+      "sha256": "bd63f1bed98be81dfaf099a273c7ec9b864e9149a1ea61df403a4116b327c361",
+      "bytes": 13716
+    },
+    {
+      "repository": "apple-libc",
+      "revision": "71bbe350ab79eef58113991d817ccc6165061a64",
+      "path": "locale/xlocale_private.h",
+      "blob_sha": "559b44824fbec049e2852b283f1e36f2a4e9c7a1",
+      "url": "https://github.com/apple-oss-distributions/Libc/blob/71bbe350ab79eef58113991d817ccc6165061a64/locale/xlocale_private.h",
+      "sha256": "55d92df9c99b69418680da9868d4e54575123d7dedadb96d253f7679f0a05681",
+      "bytes": 8149
+    },
+    {
+      "repository": "apple-libpthread",
+      "revision": "42d026df5b07825070f60134b980a1ec2552dfee",
+      "path": "src/pthread_tsd.c",
+      "blob_sha": "563edee390d7b749d50f0b884d52a59820adadb3",
+      "url": "https://github.com/apple-oss-distributions/libpthread/blob/42d026df5b07825070f60134b980a1ec2552dfee/src/pthread_tsd.c",
+      "sha256": "3722b5cac4f5ec6d61b729d68e97682fe70bb0a25425f8728eec77a148d91d2f",
+      "bytes": 12571
+    },
+    {
+      "repository": "glibc",
+      "revision": "04e750e75b73957cf1c791535a3f4319534a52fc",
+      "path": "locale/uselocale.c",
+      "blob_sha": "1e3627df72a4dba9abc649ccad9f4e75caa3eefe",
+      "url": "https://github.com/bminor/glibc/blob/04e750e75b73957cf1c791535a3f4319534a52fc/locale/uselocale.c",
+      "sha256": "70cad4bdd07099d168c6b222978ecc03fcef4c096bc47aa46d332939f6a8dff9",
+      "bytes": 2962
+    },
+    {
+      "repository": "apple-libpthread",
+      "revision": "42d026df5b07825070f60134b980a1ec2552dfee",
+      "path": "private/pthread/tsd_private.h",
+      "blob_sha": "01d34cc85c0f1e6cdcf8028049726a911010846a",
+      "sha256": "9b115ba29096c34d60785643f0f3dbbd7d5d105cc90e0acddae44d39776796fd",
+      "bytes": 11889,
+      "url": "https://github.com/apple-oss-distributions/libpthread/blob/42d026df5b07825070f60134b980a1ec2552dfee/private/pthread/tsd_private.h"
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+[package]
+name = "gnunet-bcd-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+gnunet-types.workspace = true
+gnunet-config.workspace = true
+gnunet-gnsrecord.workspace = true
+gnunet-service-runtime.workspace = true
+tokio = { workspace = true, features = ["rt", "net", "time", "signal", "io-util"] }
+hyper = { workspace = true, features = ["server", "http1"] }
+hyper-util = { workspace = true, features = ["tokio"] }
+http-body-util.workspace = true
+bytes.workspace = true
+libc.workspace = true
+
+[lints]
+workspace = true

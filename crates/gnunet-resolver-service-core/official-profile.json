@@ -1,0 +1,453 @@
+{
+  "schema": 1,
+  "scope": "Pinned source-derived Resolver requirements; source analysis is not runtime verification.",
+  "upstream": {
+    "revision": "346358e26d4dcc2dc4f51bef5d52dca29c7d8165",
+    "tag": "v0.29.1",
+    "daemon_path": "src/service/util/gnunet-service-resolver.c",
+    "daemon_lines": 1385
+  },
+  "source_inputs": {
+    "upstream:src/service/util/gnunet-service-resolver.c": "e9ea9f71e3853e43c32df9540dbc515b86932dc10aab523478efb71cc745b6b4",
+    "upstream:src/service/util/resolver.conf.in": "0d1a67c62f6fe7cdfcb93d8cd5d83c13cf1c892d83a83a691863089ba0d445a4",
+    "upstream:src/service/util/meson.build": "f24e76fa4771a69922107cb3fd64028dc9e34bc21d1a755893fd077100e77ece",
+    "upstream:src/include/gnunet_resolver_service.h": "9fc00ec687e2889da30576c34e3804178d7003b8692f50dc31659b12268362b9",
+    "upstream:src/lib/util/resolver.h": "1d6ec12f363ef56d97e06268f9d0a7d87eb268c5f47dd3319807ff9146afe144",
+    "upstream:src/lib/util/resolver_api.c": "2960034fb97c64c6465d1837d0c0a5fe608ca70d74607d72682022bf2e06ac60",
+    "upstream:src/lib/util/dnsstub.c": "26c94448c759b05ddb5dd87b597c11b268ba3bc3677beecd33738e32c5f20c56",
+    "upstream:src/lib/util/dnsparser.c": "9659bf2c49618c229d0b1ee91ecd1abb4a013708110193724d255e00acbc9ec8",
+    "upstream:src/include/gnunet_protocols.h": "9a86ea10c53da11d68c255fa732d24f9d8695a6405396b965893384d3c952392",
+    "upstream:src/lib/util/service.c": "51d9a618682670f23bd6450531e91ca56b0b626bb0ef0d4eb269508a45801dae",
+    "upstream:src/include/gnunet_service_lib.h": "dac805137bcff75029942ed551bbb0bf5817ff88a227ab5b579184d04d2e808a",
+    "api-build:gnunet_private_config.h": "ef089eb56453da371e33633d69f34f894e916f202a701626409d5de25f33a770"
+  },
+  "public_api": [
+    "GNUNET_RESOLVER_connect",
+    "GNUNET_RESOLVER_disconnect",
+    "GNUNET_RESOLVER_ip_get",
+    "GNUNET_RESOLVER_hostname_resolve",
+    "GNUNET_RESOLVER_local_fqdn_get",
+    "GNUNET_RESOLVER_hostname_get",
+    "GNUNET_RESOLVER_request_cancel"
+  ],
+  "callbacks": [
+    "GNUNET_RESOLVER_AddressCallback",
+    "GNUNET_RESOLVER_HostnameCallback"
+  ],
+  "opaque_handles": [
+    "GNUNET_RESOLVER_RequestHandle"
+  ],
+  "wire_ids": [
+    4,
+    5
+  ],
+  "feature_count": 45,
+  "features": [
+    {
+      "id": "resolver.service.wire.framing",
+      "requirement": "Exactly request4/fixed16 and response5/fixed8; no new cancel/status/handshake fields",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:987..1096",
+      "group": "daemon",
+      "status": "planned",
+      "verification": null
+    },
+    {
+      "id": "resolver.service.wire.native-family",
+      "requirement": "Native AF profile in BE32; Any/V4/V6 forward; V4/V6 reverse exact4/16 bytes",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:987..1096",
+      "group": "daemon",
+      "status": "planned",
+      "verification": null
+    },
+    {
+      "id": "resolver.service.wire.direction",
+      "requirement": "Direction0 forward; all nonzero values reverse",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:995..1024,1043..1094",
+      "group": "daemon",
+      "status": "planned",
+      "verification": null
+    },
+    {
+      "id": "resolver.service.wire.opaque-id",
+      "requirement": "Echo four native client-ID bytes unchanged, never DNS ID",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:1045,507..533",
+      "group": "daemon",
+      "status": "planned",
+      "verification": null
+    },
+    {
+      "id": "resolver.service.wire.cstring",
+      "requirement": "Final NUL required; forward effective name ends at first interior NUL",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:998,1050",
+      "group": "daemon",
+      "status": "planned",
+      "verification": null
+    },
+    {
+      "id": "resolver.service.wire.malformed",
+      "requirement": "Invalid known request/session closes safely; unsupported forward AF must not C-assert the Rust process",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:987..1025,1080..1083",
+      "group": "daemon",
+      "status": "planned",
+      "verification": null
+    },
+    {
+      "id": "resolver.service.wire.concurrent",
+      "requirement": "Continue input before processing; separate lookup generations support concurrent/pipelined and duplicate opaque IDs",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:1046,910..929",
+      "group": "daemon",
+      "status": "planned",
+      "verification": null
+    },
+    {
+      "id": "resolver.service.wire.results",
+      "requirement": "A/AAAA raw payload; PTR final-NUL; END empty; no numeric fallback/status at daemon",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:459..533",
+      "group": "daemon",
+      "status": "planned",
+      "verification": null
+    },
+    {
+      "id": "resolver.service.config.defaults",
+      "requirement": "Official resolver service defaults, native generic listener/ACL/activation settings",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:1267..1298,1349..1361",
+      "group": "daemon",
+      "status": "planned",
+      "verification": null
+    },
+    {
+      "id": "resolver.service.config.machine-files",
+      "requirement": "Read hosts/resolv.conf at startup only; no private config keys, reload or NSS replacement",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:320..385,1205..1298",
+      "group": "daemon",
+      "status": "planned",
+      "verification": null
+    },
+    {
+      "id": "resolver.service.config.absence",
+      "requirement": "Missing files/no upstream retains service; packed lookup still reaches original30s timeout",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:1276..1298,910..930",
+      "group": "daemon",
+      "status": "planned",
+      "verification": null
+    },
+    {
+      "id": "resolver.service.config.resolv-lines",
+      "requirement": "Exact prefixes; retain suffix whitespace/comments/CR; first search line; ignore unterminated final line",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:285..309,362..381",
+      "group": "daemon",
+      "status": "planned",
+      "verification": null
+    },
+    {
+      "id": "resolver.service.config.server-order",
+      "requirement": "Literal port53 IP list added in file order, then stub head-insert determines first destination",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:1288..1295",
+      "group": "daemon",
+      "status": "planned",
+      "verification": null
+    },
+    {
+      "id": "resolver.service.hosts.tokens",
+      "requirement": "Last# comment cut, leading isspace, space/tab tokens, raw aliases, numeric first token",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:1162..1198",
+      "group": "daemon",
+      "status": "planned",
+      "verification": null
+    },
+    {
+      "id": "resolver.service.hosts.precedence",
+      "requirement": "Each alias independent prepended forever entry; first exact name only, no family aggregation/PTR synthesis",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:608..615,1130..1152",
+      "group": "daemon",
+      "status": "planned",
+      "verification": null
+    },
+    {
+      "id": "resolver.service.hosts.wrong-family",
+      "requirement": "First matching hosts entry of wrong requested type causes DNS path, not next hosts/dynamic aggregation",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:608..630,638..662",
+      "group": "daemon",
+      "status": "planned",
+      "verification": null
+    },
+    {
+      "id": "resolver.service.names.search",
+      "requirement": "Original cache first; append one complete search string only no-dot and sum<=253; else original<255 or drop client",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:943..976",
+      "group": "daemon",
+      "status": "planned",
+      "verification": null
+    },
+    {
+      "id": "resolver.service.cache.key",
+      "requirement": "Bucket insertion strcasecmp; bucket lookup and direct record.name strcmp; preserve asymmetric case",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:609..624,656,721..728",
+      "group": "daemon",
+      "status": "planned",
+      "verification": null
+    },
+    {
+      "id": "resolver.service.cache.sections",
+      "requirement": "Cache all answers then authority then additional under queried name, not record own names",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:804..810,708..739",
+      "group": "daemon",
+      "status": "planned",
+      "verification": null
+    },
+    {
+      "id": "resolver.service.cache.order",
+      "requirement": "Prepend each record; additional reversed then authority reversed then answers reversed; retain duplicates/class/unknown data",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:638..658,734..738",
+      "group": "daemon",
+      "status": "planned",
+      "verification": null
+    },
+    {
+      "id": "resolver.service.cache.expiry",
+      "requirement": "Explicit UTC strict now>expiry; equality valid; remove empty visited buckets",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:545..566,617..625",
+      "group": "daemon",
+      "status": "planned",
+      "verification": null
+    },
+    {
+      "id": "resolver.service.cache.lru",
+      "requirement": "Dynamic bucket hit moves to head even if no eventual matching row; hosts separate",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:632..637",
+      "group": "daemon",
+      "status": "planned",
+      "verification": null
+    },
+    {
+      "id": "resolver.service.cache.limit",
+      "requirement": "Evict tail only while bucket_count>1024 before next nonempty batch; temporary1025 allowed; records not counted",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:795..810",
+      "group": "daemon",
+      "status": "planned",
+      "verification": null
+    },
+    {
+      "id": "resolver.service.cache.no-negative",
+      "requirement": "No negative cache, pending request coalescing or record deduplication",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:775..793,734..735,910..929",
+      "group": "daemon",
+      "status": "planned",
+      "verification": null
+    },
+    {
+      "id": "resolver.service.cname.order",
+      "requirement": "Before any direct reply, any encountered CNAME redirects before owner-name check",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:648..657",
+      "group": "daemon",
+      "status": "planned",
+      "verification": null
+    },
+    {
+      "id": "resolver.service.cname.lifecycle",
+      "requirement": "Iterative safe cycle/hop policy; new target lookup starts fresh30s timer; distinguish explicit Rust resource divergence",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:648..654,910..924",
+      "group": "daemon",
+      "status": "planned",
+      "verification": null
+    },
+    {
+      "id": "resolver.service.dns.query",
+      "requirement": "One IN question/RD; type A/AAAA/PTR; unbiased DNS ID0..65534 BE16",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:678..704,896..902",
+      "group": "daemon",
+      "status": "planned",
+      "verification": null
+    },
+    {
+      "id": "resolver.service.dns.transport-family",
+      "requirement": "DNS record query family independent from configured V4/V6 upstream transport",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:898..902,1288..1295",
+      "group": "daemon",
+      "status": "planned",
+      "verification": null
+    },
+    {
+      "id": "resolver.service.dns.id-filter",
+      "requirement": "Ignore malformed/wrong-ID DNS responses while keeping request and original deadline; do not add QR/rcode/question validation claims",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:759..774",
+      "group": "daemon",
+      "status": "planned",
+      "verification": null
+    },
+    {
+      "id": "resolver.service.dns.empty",
+      "requirement": "Zero total RR tries cache/END and terminates immediately, even first Any A phase",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:775..793",
+      "group": "daemon",
+      "status": "planned",
+      "verification": null
+    },
+    {
+      "id": "resolver.service.dns.any-sequence",
+      "requirement": "Any A first, then AAAA only after nonempty response; newID and exact cancel/admit; cachedA not emitted yet",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:898..901,812..837",
+      "group": "daemon",
+      "status": "planned",
+      "verification": null
+    },
+    {
+      "id": "resolver.service.dns.any-deadline",
+      "requirement": "A and AAAA keep original single30s deadline; AAAA timeout emits END only even when A remains cached",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:916..917,812..837,862..870",
+      "group": "daemon",
+      "status": "planned",
+      "verification": null
+    },
+    {
+      "id": "resolver.service.dns.any-pack-failure",
+      "requirement": "If AAAA pack fails, fall through to cached rows/END; first query pack failure immediate END without lookup",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:821..849,902..908,970..974",
+      "group": "daemon",
+      "status": "planned",
+      "verification": null
+    },
+    {
+      "id": "resolver.service.dns.result-cache",
+      "requirement": "After ordinary result or second phase, try cache then END when no matching supported records",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:841..851",
+      "group": "daemon",
+      "status": "planned",
+      "verification": null
+    },
+    {
+      "id": "resolver.service.dns.timeout",
+      "requirement": "Original30s deadline emits one END, then cancels token/timer and frees lookup; no DNS timeout in stub layer",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:256..271,862..870,916..924",
+      "group": "daemon",
+      "status": "planned",
+      "verification": null
+    },
+    {
+      "id": "resolver.service.dns.no-server",
+      "requirement": "No-server stub admission failure leaves active lookup to original30s timer, no fabricated immediate result",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:918..924,1281..1286",
+      "group": "daemon",
+      "status": "planned",
+      "verification": null
+    },
+    {
+      "id": "resolver.service.dns.eviction",
+      "requirement": "Explicitly consume evicted stub generation; old lookup retains deadline but cannot later cancel a replacement slot owner",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:759..766,256..269,918..924",
+      "group": "daemon",
+      "status": "planned",
+      "verification": null
+    },
+    {
+      "id": "resolver.service.lifetime.eof",
+      "requirement": "Client disconnect cancels all its lookups/token/timers only; shared cache and other clients remain",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:1329..1343,256..271",
+      "group": "daemon",
+      "status": "planned",
+      "verification": null
+    },
+    {
+      "id": "resolver.service.lifetime.no-cancel-frame",
+      "requirement": "Client public request_cancel is not a daemon request; EOF or actual completion retires backend work",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:1349..1361",
+      "group": "daemon",
+      "status": "planned",
+      "verification": null
+    },
+    {
+      "id": "resolver.service.lifetime.generations",
+      "requirement": "Bind delayed DNS/output effects to original ClientId/LookupId/StubRequestId, not reused opaque ID or raw slot pointer",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:100..154,256..271,1329..1343",
+      "group": "daemon",
+      "status": "planned",
+      "verification": null
+    },
+    {
+      "id": "resolver.service.shutdown.default",
+      "requirement": "Resolver macro NONE uses generic immediate drop, unlike STATISTICS soft drain",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:1105..1117,1349..1353",
+      "group": "daemon",
+      "status": "planned",
+      "verification": null
+    },
+    {
+      "id": "resolver.service.shutdown.explicit-soft",
+      "requirement": "Optional reusable Soft stops accept and waits non-monitor clients, not just active lookup count; not default daemon policy",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:1349..1353",
+      "group": "daemon",
+      "status": "planned",
+      "verification": null
+    },
+    {
+      "id": "resolver.service.shutdown.cleanup",
+      "requirement": "All lookups/cache/hosts/stub sockets/search ownership reclaimed once; no late callback/durability claim",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:1105..1117",
+      "group": "daemon",
+      "status": "planned",
+      "verification": null
+    },
+    {
+      "id": "resolver.service.profile.dnsparser",
+      "requirement": "Complete native name/IDNA profile and full section/typed/unknown-record ownership are required dependency evidence",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:695..696,759,737",
+      "group": "daemon",
+      "status": "planned",
+      "verification": null
+    },
+    {
+      "id": "resolver.service.profile.scope",
+      "requirement": "Resolver service distinct from DNS interception/TUN/helper; no DNS_EXIT or route/admin dependency introduced",
+      "upstream_source": "src/service/util/gnunet-service-resolver.c:27..30,1267..1298",
+      "group": "daemon",
+      "status": "planned",
+      "verification": null
+    }
+  ],
+  "native_profiles": [
+    {
+      "profile": "HAVE_GETADDRINFO",
+      "source": "src/lib/util/resolver_api.c:1163..1185",
+      "behavior": "gethostname; getaddrinfo(name,NULL,NULL); on failure NULL; firstcanon else copiedhostname only on successful lookup; freeaddrinfo",
+      "selected_by_actual_build": true
+    },
+    {
+      "profile": "else HAVE_GETHOSTBYNAME2",
+      "source": "src/lib/util/resolver_api.c:1186..1203",
+      "behavior": "V4 first then V6 on failure; both fail NULL; success copied h_name",
+      "selected_by_actual_build": false
+    },
+    {
+      "profile": "else HAVE_GETHOSTBYNAME",
+      "source": "src/lib/util/resolver_api.c:1204..1217",
+      "behavior": "single lookup; failure NULL; success copied h_name",
+      "selected_by_actual_build": false
+    },
+    {
+      "profile": "none",
+      "source": "src/lib/util/resolver_api.c:1218..1221",
+      "behavior": "hostname-only explicitly selected fallback, never recovery from failed getaddrinfo",
+      "selected_by_actual_build": false
+    }
+  ],
+  "no_native_daemon_backend": true,
+  "no_getnameinfo_or_gethostbyaddr_in_client": true,
+  "existing_c_only_evidence": [
+    {
+      "path": "/private/tmp/gnunet-resolver-full-design-20261026/probe-results3/result.json",
+      "sha256": "bd36222fcc9983706b9a761f991b7ff03f02aafb17aa614f20bc9cab0ea3c21e",
+      "scope": "Historical normal C local/no-IP20cases; no Rust daemon proof"
+    },
+    {
+      "path": "/private/tmp/gnunet-resolver-full-design-20261026/timeout-observation.json",
+      "sha256": "06f0fd7548e5ba795415d335c378c78b522a9ce18f74d10e773fd4ec49dfedc3",
+      "scope": "Actual C30.001672s deadline/END; no new timing run in this audit"
+    }
+  ],
+  "prototype_proposed_files": [
+    "/private/tmp/gnunet-resolver-daemon-prototype-20261026/Cargo.toml",
+    "/private/tmp/gnunet-resolver-daemon-prototype-20261026/src/{lib,files,cache,lookup}.rs",
+    "/private/tmp/gnunet-resolver-daemon-prototype-20261026/tests/{files,cache,lifecycle}.rs"
+  ],
+  "prototype_scope": "Begin deterministic no_std file/cache/lookup owner with caller storage and actual existing codec/pure DNS types; not a full daemon claim, no default network/NSS work"
+}

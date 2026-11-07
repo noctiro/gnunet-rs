@@ -1,0 +1,24 @@
+[package]
+name = "gnunet-daemon-topology"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+[target.'cfg(unix)'.dependencies]
+gnunet-ipc-unix.workspace = true
+gnunet-client.workspace = true
+gnunet-types.workspace = true
+gnunet-config.workspace = true
+gnunet-topology-host.workspace = true
+gnunet-hello.workspace = true
+gnunet-core-client-host.workspace = true
+gnunet-pils.workspace = true
+gnunet-peerstore-client-host.workspace = true
+gnunet-client-host.workspace = true
+gnunet-program-host = { workspace = true, features = ["resolver-broker"] }
+gnunet-resolver-broker.workspace = true
+gnunet-service-runtime.workspace = true
+gnunet-service-startup.workspace = true
+tokio = { workspace = true, features = ["rt", "net", "time", "signal"] }
+[lints]
+workspace = true

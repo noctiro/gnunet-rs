@@ -1,0 +1,26 @@
+[package]
+name = "gnunet-scrypt-command"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "gnunet-scrypt"
+path = "src/main.rs"
+
+[target.'cfg(unix)'.dependencies]
+gnunet-program-host = { workspace = true, features = ["service-runtime"] }
+gnunet-config.workspace = true
+gnunet-service-runtime.workspace = true
+gnunet-service-startup.workspace = true
+gnunet-nse.workspace = true
+gnunet-nse-host.workspace = true
+gnunet-pils-host.workspace = true
+gnunet-crypto = { workspace = true, features = ["pow"] }
+gnunet-types.workspace = true
+libc.workspace = true
+tokio = { workspace = true, features = ["rt", "time", "signal"] }
+
+[lints]
+workspace = true

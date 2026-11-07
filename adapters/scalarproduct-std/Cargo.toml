@@ -1,0 +1,24 @@
+[package]
+name = "gnunet-scalarproduct-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+gnunet-paillier.workspace = true
+gnunet-scalarproduct-paillier = { workspace = true, features = ["alloc"] }
+gnunet-scalarproduct = { workspace = true, features = ["alloc"] }
+gnunet-cadet-host.workspace = true
+gnunet-seti-client-host.workspace = true
+gnunet-client-host.workspace = true
+gnunet-service-runtime.workspace = true
+gnunet-types.workspace = true
+gnunet-wire.workspace = true
+gnunet-crypto.workspace = true
+getrandom.workspace = true
+zeroize = { workspace = true, features = ["alloc"] }
+tokio = { workspace = true, features = ["rt", "net", "time"] }
+
+[lints]
+workspace = true

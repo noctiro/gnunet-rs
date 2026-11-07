@@ -1,0 +1,18 @@
+[package]
+name = "gnunet-transport-application-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+gnunet-client-host.workspace = true
+gnunet-service-runtime.workspace = true
+gnunet-transport.workspace = true
+gnunet-hello.workspace = true
+gnunet-types.workspace = true
+gnunet-wire.workspace = true
+tokio = { workspace = true, features = ["time"] }
+
+[lints]
+workspace = true

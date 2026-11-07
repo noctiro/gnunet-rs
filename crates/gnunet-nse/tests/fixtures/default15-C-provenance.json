@@ -1,0 +1,14 @@
+{
+  "kind": "normal-C-public-crypto-and-extracted-NSE-verifier-only",
+  "source_commit": "346358e26d4dcc2dc4f51bef5d52dca29c7d8165",
+  "oracle_stdout": {
+    "path": "/private/tmp/gnunet-nse-algorithm-oracle-20261028/signature15-v2/stdout",
+    "sha256": "3b592e720d718bf4e8c8d5cc0b11914346525d09ce22095d6f88de4bfa117cce"
+  },
+  "proof_search_stdout": {
+    "path": "/private/tmp/gnunet-nse-algorithm-oracle-20261028/proof15-v1/stdout",
+    "sha256": "d7c51bfe22f8fc10043ab60070861e2c9d5ab35413a2d354ba877877a362cc6f"
+  },
+  "work15_attempts": 12530,
+  "no_PILS_service_multihop_Node_credit": true
+}

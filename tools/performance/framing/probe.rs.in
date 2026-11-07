@@ -1,0 +1,50 @@
+
+#[cfg(test)]
+mod performance_probe {
+    use super::Framed;
+    use gnunet_service_runtime::connection::Connection;
+    use std::{error::Error, future::{Future,poll_fn}, io, pin::pin, task::Poll, time::Instant};
+    use tokio::io::AsyncReadExt;
+    fn queue(framed:&mut Framed,bytes:Vec<u8>)->Result<(),gnunet_types::Error> { __ADMISSION_CALL__ }
+    fn rss() -> Option<u64> {
+        let output=std::process::Command::new("/bin/ps").args(["-o","rss=","-p",&std::process::id().to_string()]).output().ok()?;
+        if !output.status.success(){return None;}
+        std::str::from_utf8(&output.stdout).ok()?.trim().parse().ok()
+    }
+    #[test]
+    #[ignore = "Explicit bounded engineering microbenchmark, not protocol interoperability"]
+    fn unix_batch() -> Result<(),Box<dyn Error>> {
+        let index:usize=std::env::var("GNUNET_FRAME_BENCH_CASE")?.parse()?;
+        let (size,batch) = *[(64usize,1usize),(64,4),(64,32),(64,256),(1024,32),(16384,4),(65535,1)].get(index).ok_or("unknown case")?;
+        let rounds=400usize;let warmup=40usize;
+        let runtime=tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+        runtime.block_on(async {
+            let (send,mut sink)=tokio::net::UnixStream::pair()?;
+            let mut framed=Framed::new(Connection::from_unix(send),131070)?;
+            let cold=rss();let mut samples=Vec::with_capacity(rounds);let mut writes=Vec::with_capacity(rounds);let mut got=vec![0;size*batch];
+            for round in 0..rounds+warmup {
+                let start=Instant::now();
+                for n in 0..batch {
+                    let mut frame=vec![29;size];frame[..2].copy_from_slice(&(size as u16).to_be_bytes());frame[2..4].copy_from_slice(&17u16.to_be_bytes());
+                    frame[4..8].copy_from_slice(&(n as u32).to_be_bytes());frame[8..12].copy_from_slice(&(round as u32).to_be_bytes());queue(&mut framed,frame)?;
+                }
+                let mut read=pin!(sink.read_exact(&mut got));let mut positive=0usize;
+                poll_fn(|cx| {
+                    match framed.poll_write(cx) {
+                        Poll::Ready(Ok(()))=>{positive+=1;cx.waker().wake_by_ref();},
+                        Poll::Ready(Err(e))=>return Poll::Ready(Err(e)),Poll::Pending=>{}
+                    }
+                    read.as_mut().poll(cx).map(|v|v.map(|_|()))
+                }).await?;
+                let elapsed=start.elapsed().as_nanos();
+                for (n,frame) in got.chunks_exact(size).enumerate() {
+                    if frame[..2]!=(size as u16).to_be_bytes()||frame[2..4]!=17u16.to_be_bytes()||frame[4..8]!=(n as u32).to_be_bytes()||frame[8..12]!=(round as u32).to_be_bytes()||frame[12..].iter().any(|b|*b!=29){return Err(io::Error::other("actual carrier bytes/order mismatch").into());}
+                }
+                if round>=warmup {samples.push(elapsed);writes.push(positive);}
+            }
+            let sum:u128=samples.iter().sum();samples.sort_unstable();writes.sort_unstable();let q=|p:usize|samples[(samples.len()-1)*p/100];let count:usize=writes.iter().sum();
+            let metrics=format!("{{\"scope\":\"framing-only actual owned Unix carrier; no domain/C/crypto or speedup claim\",\"case\":{},\"frame_bytes\":{},\"batch_frames\":{},\"rounds\":{},\"warmup\":{},\"p50_ns\":{},\"p95_ns\":{},\"p99_ns\":{},\"total_ns\":{},\"positive_native_write_polls\":{},\"median_positive_write_polls\":{},\"wire_MiB_per_second\":{},\"cold_RSS_KiB\":{},\"after_RSS_KiB\":{},\"all_bytes_and_order_checked\":true}}\n",index,size,batch,rounds,warmup,q(50),q(95),q(99),sum,count,writes[(writes.len()-1)/2],((size*batch*rounds)as f64)/(1024.0*1024.0)/(sum as f64/1e9),cold.map_or("null".to_owned(),|n|n.to_string()),rss().map_or("null".to_owned(),|n|n.to_string()));
+            std::fs::write(std::env::var("GNUNET_FRAME_BENCH_OUTPUT")?,metrics)?;Ok::<_,Box<dyn Error>>(())
+        })
+    }
+}

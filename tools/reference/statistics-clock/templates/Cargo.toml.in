@@ -1,0 +1,16 @@
+# Generated only under the requested output directory. This is a read-only template.
+[package]
+name = "gnunet-statistics-clock-witness"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.99.1"
+[workspace]
+[dependencies]
+gnunet-client = { path = @CLIENT@ }
+gnunet-types = { path = @TYPES@ }
+gnunet-wire = { path = @WIRE@ }
+gnunet-config = { path = @CONFIG@ }
+gnunet-ipc-unix = { path = @IPC@ }
+runtime_real = { package = "gnunet-service-runtime", path = @RUNTIME@ }
+client_host_real = { package = "gnunet-client-host", path = @CLIENTHOST@ }
+tokio = { version = "=1.54.1", default-features = false, features = ["net", "time", "io-util", "rt"] }

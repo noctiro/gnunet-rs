@@ -1,0 +1,42 @@
+# DHT/R5N foundation
+
+`gnunet-dht` is a Rust protocol core with empty default features, no host/runtime/facade dependency, and no GNUnet C backend. Default builds expose allocation-free official peer Bloom/XOR/R5N forwarding plans and purpose6 signed-path verification. The optional `alloc` feature exposes the bounded local IPC/cache owner, the original-source network business owner and existing Rust BLOCK/HELLO validation adapter. All memory limits are explicit; allocation failures retain their error. The default bucket eligibility is a caller policy (the source fallback is eight, while shipped `dht.conf.in` configures four); the planner does not authenticate candidate identities.
+
+`network::NetworkOwner` linearly owns the same local cache/IPC owner and processes official peer GET/PUT/RESULT frames, R5N forwarding, bounded original-peer reverse routes, native-format BLOCK result groups and original local-query retries. It verifies tracked incoming paths and exposes exact purpose6 signing work; only an signature from the same local public key enables that original frame for native admission. Issued signing jobs retain retirement tombstones after source loss or Stop. A native admission receipt transfers the same frame to its original physical owner and is never described as a write, replication or storage ACK.
+
+The core composes with normal CORE/PILS/NSE/HELLO providers and SERVICE listeners in `adapters/dht-std`; the adapter's selected native profiles have passed static compilation. Full native DHT and mixed-node interoperability remain unverified. The local cache is real, bounded and volatile; a persistent backend remains separate work. There is no fabricated PUT acknowledgement or guarantee of replication, durability or application delivery. Official registry TODO152 remains unsupported. Empty159 means an absent self HELLO. The adapter validates offered HELLO metadata before discovery/address hints; a hint does not prove a connection. A local PUT cannot invent TRUNCATED predecessor metadata, since that request has no path/boundary field.
+
+Create caller-owned `service::Instance` storage before `LocalOwner`. Its exclusive borrow and private brand bind client/query tokens to that instance. Every physical reconnect receives a fresh client token. GET correlation retains original client, key and all eight copied request-ID bytes, including an all-zero ID; STOP/known updates do not cross client boundaries. Closing a publisher does not undo an accepted cache entry. `take_output`/`into_parts` transfer original-client/query identity with the original byte allocation. A containing host routes it only to that physical stream, preserves partial FIFO writes or retires that stream, and must not infer remote receipt from local handoff.
+
+BLOCK validation checks concrete type, validity/expiry and any derived-key association. Query/reply classification and resource refusal are separate from structural decoding. Known payload hashes only filter results. Duplicate local GETs are idempotent only for identical parameters; conflicts are refused. Multi-client result/monitor staging preflights the whole transition before committing cache/seen/completion state. Approximate cache lookup considers at most the configured nearest distinct key set (default four, required nonzero), and filtering does not expand that set. Caller-driven `tick` removes expired cache entries; absolute expiration equal to the current time is still valid.
+
+Network codecs live in `gnunet-wire::official::dht`, including borrowed IPC and the exact CORE158 wrapper. No codec grants peer authentication, BLOCK validity or callback authority. Public uint32 local fields remain uint32 and original request IDs are opaque bytes. Route paths record signature64 + signer32, as the official verifier uses them, with separate last-sender signature. Purpose6 binds exact144 bytes: purpose header, network-order absolute expiration, SHA512(payload), predecessor and successor. Verified signatures do not by themselves establish a current underlay session. Invalid-prefix salvage is explicit, carries the removed signer's identity as truncation boundary, and requires suffix re-verification.
+
+Private forwarding interfaces preserve a received peer's full u16 replication field. Local origination retains its original u32 intent and applies the existing bounded wire policy explicitly; routing fanout is bounded separately. Unmatched RESULTs retain independent monitor observation without cache or query effects. Typed installed/opaque outcomes let the host consider valid HELLO discovery before the pending-query gate without trusting opaque bytes. Valid HELLO PUT reaches the same discovery path. These latest source changes pass affected macOS/Linux strict and M0 alloc static checks; no query, codec, crypto, native or test execution was performed for this batch.
+
+Tests cover original operation/cancellation/reconnect, duplicates, atomic refusal, BLOCK validation/HELLO scratch errors, wire limits, Bloom bit order, bucket limits, random/greedy routing, TTL/replication, and path tampering. `tests/fixtures/normal-c` contains independently generated unchanged normal-C primitive/declaration vectors and one exact extracted original path-verifier test. That evidence is not C DHT service, native IPC or multi-hop interoperability credit. The full external DHT/R5N target remains pending after this foundation.
+
+Native callers must enforce the original finite `Work::Sign`/`Work::Send` target and original source identity before each native effect, drive provider retirement after `Work::Retire`, and retain their own physical FIFO/partial-write debt after `admitted`. Call `tick` with the source time before ordinary work; `close`/`retired` preserve clock-free cleanup. Reverse-route merging does not renew its original retention target. Local Stop cancels only its original query and unadmitted retry work. Snapshot counts cannot authorize new source/job identities or certify physical quiescence.
+
+Network cache payload bytes remain charged by `service::Limits::cache_bytes`; signed-path Vec capacities have the separate aggregate `network::Limits::cache_path_bytes` ceiling (default8MiB), in addition to cache-record and per-path entry ceilings. `Snapshot::cache_path_bytes` reports the retained Vec capacities. A replacement is preflighted against its original old allocation, and the verified GET return chain is appended to PUT metadata only for the cache commit.
+
+Multicast staging checks the shared output frame/byte limits for each next result/cache reply and each R5N forward before growing the stage. At most one bounded transient frame/candidate is prepared before refusal; a resource error commits no partial cache/group/seen transition. `jobs()` borrows existing original job capabilities and bounds without cloning frames or creating a native effect. Containing hosts use their pre-business native anchor to register each new job once, preserving hard bounds across later canonical-clock changes.
+
+The local peer's validated public HELLO occupies one dedicated payload,
+separate from ordinary volatile cache records/bytes. Normal PILS observations
+reach it directly from the original PILS signer through `local_hello_work` and
+`observe_local_hello`; an local source observation replaces that original snapshot only after local
+query/monitor preparation succeeds, even when its expiration is equal or shorter. Expiration is never used as an announcement version. The native PILS pending
+path precedes foreign cache candidates and address hints; generic remote
+observations cannot change this slot. Foreign announcements retain their existing
+cache policy. Peer HELLO/ANY GETs at the normal local/closest branch offer this
+announcement before the nearest cache-key subset, using the original BLOCK
+group, Bloom filter, requested query hash and bounded RESULT/signing path. A
+cache-full condition cannot hide the current self announcement. Existing local
+GETs retain access to it through the same delivery/key gates.
+
+`service::Snapshot::own_hello_bytes` reports its retained Vec capacity;
+`service::Limits::block_bytes` bounds that one capacity independently of cache
+quota. One additional bounded transient payload copy stages an update atomically. Expiration and close release the snapshot; later clock rollback cannot revive
+it. No current announcement, invalid validation, query/filter/resource refusal,
+prepared RESULT or native handoff is turned into a HELLO or remote receipt.

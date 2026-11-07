@@ -1,0 +1,199 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GNUnet version-bound API inventory index",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "baseline",
+    "required_subsystems",
+    "expected_header_ids",
+    "profile_ids",
+    "policy",
+    "files",
+    "readiness",
+    "full_gnunet_conformance_claim",
+    "header_bindings",
+    "expected_owner_messages",
+    "production_unit_bindings",
+    "control_source_inputs"
+  ],
+  "properties": {
+    "schema": {
+      "const": 1
+    },
+    "baseline": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "commit",
+        "repository"
+      ],
+      "properties": {
+        "tag": {
+          "const": "v0.29.1"
+        },
+        "commit": {
+          "const": "346358e26d4dcc2dc4f51bef5d52dca29c7d8165"
+        },
+        "repository": {
+          "const": "https://git.gnunet.org/gnunet.git"
+        }
+      }
+    },
+    "required_subsystems": {
+      "type": "array",
+      "minItems": 34,
+      "maxItems": 34,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "expected_header_ids": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "profile_ids": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "function_counts_are_feature_coverage",
+        "recovered_declarations_can_be_verified",
+        "deprecated_means_automatically_excluded",
+        "installed_means_automatically_active",
+        "no_public_header_means_no_required_behavior",
+        "evidence_validated_by"
+      ],
+      "properties": {
+        "function_counts_are_feature_coverage": {
+          "const": false
+        },
+        "recovered_declarations_can_be_verified": {
+          "const": false
+        },
+        "deprecated_means_automatically_excluded": {
+          "const": false
+        },
+        "installed_means_automatically_active": {
+          "const": false
+        },
+        "no_public_header_means_no_required_behavior": {
+          "const": false
+        },
+        "evidence_validated_by": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "files": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "role",
+          "path",
+          "sha256"
+        ],
+        "properties": {
+          "role": {
+            "enum": [
+              "declarations",
+              "operations",
+              "statistics"
+            ]
+          },
+          "path": {
+            "type": "string",
+            "pattern": "^spec/gnunet/api/[a-z]+\\.json$"
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        }
+      }
+    },
+    "readiness": {
+      "enum": [
+        "pending",
+        "reviewed"
+      ]
+    },
+    "full_gnunet_conformance_claim": {
+      "const": false
+    },
+    "header_bindings": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "scope",
+          "owners",
+          "foundation_owners",
+          "origin"
+        ]
+      }
+    },
+    "expected_owner_messages": {
+      "type": "object",
+      "minProperties": 34,
+      "maxProperties": 34,
+      "additionalProperties": {
+        "type": "array",
+        "uniqueItems": true,
+        "items": {
+          "type": "string",
+          "pattern": "^GNUNET_MESSAGE_TYPE_[A-Z0-9_]+$"
+        }
+      }
+    },
+    "production_unit_bindings": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "path",
+          "owner",
+          "source_sha256",
+          "preprocessed_sha256"
+        ]
+      }
+    },
+    "control_source_inputs": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": {
+        "type": "object",
+        "required": [
+          "path",
+          "sha256"
+        ]
+      }
+    }
+  }
+}

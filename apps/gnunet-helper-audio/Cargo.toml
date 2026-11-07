@@ -1,0 +1,20 @@
+[package]
+name = "gnunet-helper-audio-command"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+gnunet-conversation-audio-host.workspace = true
+
+[[bin]]
+name = "gnunet-helper-audio-record"
+path = "src/record.rs"
+
+[[bin]]
+name = "gnunet-helper-audio-playback"
+path = "src/playback.rs"
+
+[lints]
+workspace = true

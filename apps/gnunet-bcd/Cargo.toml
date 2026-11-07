@@ -1,0 +1,22 @@
+[package]
+name = "gnunet-bcd-command"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "gnunet-bcd"
+path = "src/main.rs"
+
+[target.'cfg(unix)'.dependencies]
+gnunet-bcd-host.workspace = true
+gnunet-program-host = { workspace = true, features = ["service-runtime"] }
+gnunet-config.workspace = true
+gnunet-service-runtime.workspace = true
+gnunet-service-startup.workspace = true
+socket2.workspace = true
+tokio = { workspace = true, features = ["rt", "time", "net", "signal"] }
+
+[lints]
+workspace = true

@@ -1,0 +1,79 @@
+{
+  "schema": 1,
+  "policy_id": "official-protocol-rust-native-v1",
+  "decision_date": "2026-10-27",
+  "authority": "Explicit user instruction: complete official GNUnet protocol interoperability with Rust-native internals and better layering, architecture and performance.",
+  "reference_target": {
+    "release": "v0.29.1",
+    "revision": "346358e26d4dcc2dc4f51bef5d52dca29c7d8165",
+    "official_refs": "https://git.gnunet.org/gnunet/gnunet/refs.html",
+    "living_standards": "https://lsd.gnunet.org/",
+    "checked_on": "2026-10-27",
+    "update_rule": "Recheck official releases and standards; review protocol differences and refresh affected evidence before changing the pinned interoperability target. Do not mix incompatible versions silently."
+  },
+  "coverage": {
+    "required_subsystems": 34,
+    "required_foundations": 8,
+    "all_official_protocol_capabilities_required": true,
+    "private_wire_fallback_allowed": false,
+    "production_libgnunet_backend_allowed": false,
+    "legacy_private_compatibility_or_migration_required": false
+  },
+  "required_boundaries": [
+    "network-wire",
+    "service-ipc",
+    "externally-observable-semantics",
+    "rust-implementation-quality"
+  ],
+  "external_contract": [
+    "Official message identifiers, serialized fields, widths, byte order, canonical encodings and public protocol artifacts.",
+    "Cryptographic algorithms, key/identity encodings, signature inputs, KDF domains, authentication, key updates and replay rejection.",
+    "Required network and public service IPC operations, responses, framing, flow control and protocol-defined ordering.",
+    "Protocol-visible error, cancellation, reconnect, restart and recovery behavior; distinguish transmission, remote processing and durability.",
+    "Every required external capability has versioned implementation status and real unchanged-official-C interoperability evidence."
+  ],
+  "internal_design_freedom": [
+    "Rust API names, type shapes, ownership, allocation and resource storage.",
+    "Scheduling, async runtime, queues, task topology, concurrency and buffering.",
+    "Static enum/trait registries or Rust extension mechanisms instead of the C plugin ABI and dynamic loader.",
+    "Single-process or separate-process service composition, with required public protocols preserved.",
+    "Internal database schema and persistence mechanisms, except externally standardized artifacts and explicitly supported interchange formats.",
+    "Logging and helper implementation details, except explicitly promised external configuration or command interfaces."
+  ],
+  "rust_quality_contract": [
+    "Protocol and service cores have no OS/runtime/database or facade dependency.",
+    "Shared generic runtime has no dependency on a specific service client such as STATISTICS.",
+    "State, identities, cancellation and cleanup have explicit owners; no stale completion can affect another instance.",
+    "Queues and expensive work have explicit resource bounds/backpressure; native unsafe boundaries remain small and auditable.",
+    "Traits and crate boundaries represent actual variation or ownership boundaries rather than one wrapper per C function.",
+    "Preserve useful no_std profiles without forcing host services into unnecessary embedded-style APIs.",
+    "Performance claims require repeatable comparable workloads, identical protocol/security behavior, and measured latency, throughput, CPU, memory and allocations."
+  ],
+  "reference_inventory_policy": {
+    "retain_compiler_and_source_catalogs": true,
+    "c_function_or_abi_parity_is_release_requirement": false,
+    "exhaustive_c_helper_classification_is_release_requirement": false,
+    "external_inventory_origin": "Complete official protocol messages, service capabilities, externally visible operations and state contracts; source inventories are supporting discovery material, not the definition of required Rust APIs.",
+    "unknown_external_message_or_operation_blocks_release": true,
+    "unmapped_internal_c_helper_alone_blocks_release": false,
+    "c_reference_count_implies_feature_completion": false,
+    "removing_reference_rows_cannot_reduce_external_coverage": true
+  },
+  "evidence_policy": {
+    "external_interop": "Real C-to-Rust, Rust-to-C and mixed-node end-to-end execution, with current source/target/profile/artifact identities and negative/recovery cases.",
+    "rust_quality": "Architecture checks, meaningful Rust correctness/resource tests and measured benchmarks; quality evidence cannot impersonate official-C interoperability.",
+    "historical_reports": "Keep original source/profile/scope; a policy change does not relabel old reports or award verified status.",
+    "no_automatic_completion_credit": true
+  },
+  "gate_transition": {
+    "state": "external-gate-stage2-draft-semantic-inventories-pending",
+    "legacy_gate": "Canonical check-conformance now checks external release requirements in both modes. check-legacy-conformance and check-api-inventory retain historical C catalog audits without product release authority.",
+    "required_next_steps": [
+      "Build the complete external operation/message/profile matrix independently of C helper signatures.",
+      "Independently review complete semantic inventories and real profile/direction slots. Stage2 expresses the FS38/147/18 draft without resolving734 original review obligations or granting implementation/release readiness.",
+      "Migrate all required producers and reviewed semantic evidence adapters with current source/build/profile bindings and meaningful omission/false-credit controls.",
+      "Rerun affected real interoperability evidence on the resulting implementation."
+    ],
+    "full_interoperability_verified": false
+  }
+}

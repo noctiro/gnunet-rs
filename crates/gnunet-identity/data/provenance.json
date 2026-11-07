@@ -1,0 +1,19 @@
+{
+  "unicode": "18.0.0",
+  "profile": "libunistring1.5 locale NULL lowercase, NFD",
+  "ucd18_zip_sha256": "7b3e555514060b92290d154f53655c5eb0fa62b16eb04c03434ff72d1a66a0d8",
+  "sources": {
+    "UnicodeData.txt": "0736451de439ae7baf1425136617da495e09ee5afbe6e394374db7009ea08950",
+    "SpecialCasing.txt": "8538dea57c184f1ef3783885ea79677b10f6efa06423717157e63712f14d1ad2",
+    "DerivedCoreProperties.txt": "09c928886a178fcafd93c29e4bd59073a058e5a100b716d425cb563ab50f68c9"
+  },
+  "lowercase_rows": 1508,
+  "lowercase_scalars": 1509,
+  "locale_neutral_contexts": [
+    [
+      "03A3",
+      "Final_Sigma"
+    ]
+  ],
+  "license": "COPYING.unicode"
+}

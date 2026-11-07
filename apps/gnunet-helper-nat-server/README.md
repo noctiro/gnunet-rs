@@ -1,0 +1,7 @@
+# gnunet-helper-nat-server
+
+Official positional CLI: `gnunet-helper-nat-server LOCAL_IP` (numeric IPv4). No stdin protocol or stdout banner exists. Stdout emits only `IPv4:PORT\n`, or bare `IPv4\n` for the official diagnostic zero-port observation. These are unauthenticated raw-packet observations, not successful mappings, connections or a peer identity. The service must retain the original child/PID, source generation, interface/address intent and complete line before using it; a trailing partial line at EOF belongs only to that retired child.
+
+On Linux/Darwin/FreeBSD12+, two raw sockets open before the permanent real-ID drop (Linux also resets capability sets). UDP binding, arguments, nonblocking polling, packets and diagnostics occur afterwards. The server alternates one UDP/ICMP probe every500ms, checks the observed original parent/stop state, and retains at most one bounded output line with its original cursor and2s bound. All I/O failures remain failures. Parent/SIGTERM stop physically releases owners without creating an endpoint or ACK; exit0 on that controlled stop does not mean NAT succeeded. Other OS targets are Unsupported. Darwin restores only kernel-transformed raw-header fields before the same checked network parser; FreeBSD12+ uses the modern network-order ABI.
+
+See the host README for exact ownership and privilege details. Installation privileges and raw network behavior remain unqualified; no helper execution, SUID/capability change or probe was performed.

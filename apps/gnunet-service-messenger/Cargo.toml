@@ -1,0 +1,21 @@
+[package]
+name = "gnunet-service-messenger"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+[target.'cfg(unix)'.dependencies]
+gnunet-config.workspace = true
+gnunet-client.workspace = true
+gnunet-types.workspace = true
+gnunet-client-host.workspace = true
+gnunet-ipc-unix.workspace = true
+gnunet-messenger-service-host.workspace = true
+gnunet-pils.workspace = true
+gnunet-program-host = { workspace = true, features = ["resolver-broker"] }
+gnunet-resolver-broker.workspace = true
+gnunet-service-runtime.workspace = true
+gnunet-service-startup.workspace = true
+tokio = { workspace = true, features = ["rt", "net", "time", "signal"] }
+[lints]
+workspace = true

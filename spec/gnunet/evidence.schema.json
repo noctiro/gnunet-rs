@@ -1,0 +1,194 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "gnunet-0.29.1-official-evidence-v1",
+  "title": "Official GNUnet cross-implementation evidence",
+  "type": "object",
+  "required": [
+    "schema",
+    "subsystem",
+    "profile",
+    "upstream_commit",
+    "source_sha256",
+    "source_unchanged",
+    "passed",
+    "implementations",
+    "binary_paths",
+    "binary_sha256",
+    "kinds",
+    "timestamp_utc",
+    "spec_inputs",
+    "commands",
+    "checks"
+  ],
+  "properties": {
+    "schema": {
+      "const": 1
+    },
+    "subsystem": {
+      "type": "string",
+      "minLength": 1
+    },
+    "profile": {
+      "const": "gnunet-0.29.1"
+    },
+    "upstream_commit": {
+      "const": "346358e26d4dcc2dc4f51bef5d52dca29c7d8165"
+    },
+    "source_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "source_unchanged": {
+      "const": true
+    },
+    "passed": {
+      "const": true
+    },
+    "implementations": {
+      "type": "array",
+      "items": {
+        "enum": [
+          "gnunet-c",
+          "gnunet-rs"
+        ]
+      },
+      "uniqueItems": true,
+      "minItems": 2,
+      "maxItems": 2
+    },
+    "binary_paths": {
+      "type": "object",
+      "required": [
+        "gnunet-c",
+        "gnunet-rs"
+      ],
+      "properties": {
+        "gnunet-c": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Repository-relative normal components only; canonical path must remain inside the repository."
+        },
+        "gnunet-rs": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Repository-relative normal components only; canonical path must remain inside the repository."
+        }
+      }
+    },
+    "binary_sha256": {
+      "type": "object",
+      "required": [
+        "gnunet-c",
+        "gnunet-rs"
+      ],
+      "properties": {
+        "gnunet-c": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "gnunet-rs": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "kinds": {
+      "type": "array",
+      "items": {
+        "enum": [
+          "official-c-peer",
+          "official-c-ipc",
+          "official-c-differential"
+        ]
+      },
+      "uniqueItems": true,
+      "minItems": 1
+    },
+    "timestamp_utc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "spec_inputs": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "path",
+          "sha256"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Repository-relative normal components only; canonical path must remain inside the repository."
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        }
+      }
+    },
+    "commands": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "argv",
+          "exit_code",
+          "executed_checks",
+          "output_path",
+          "output_sha256"
+        ],
+        "properties": {
+          "argv": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "exit_code": {
+            "const": 0
+          },
+          "executed_checks": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "output_path": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Repository-relative normal components only; canonical path must remain inside the repository."
+          },
+          "output_sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        }
+      }
+    },
+    "checks": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "passed"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "passed": {
+            "const": true
+          }
+        }
+      }
+    }
+  }
+}

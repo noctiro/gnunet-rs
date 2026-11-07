@@ -1,0 +1,13 @@
+[package]
+name = "gnunet-service-arm"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+[target.'cfg(unix)'.dependencies]
+gnunet-config.workspace = true
+gnunet-arm-service-host = { workspace = true, features = ["service"] }
+gnunet-program-host = { workspace = true, features = ["service-runtime"] }
+gnunet-service-startup.workspace = true
+[lints]
+workspace = true

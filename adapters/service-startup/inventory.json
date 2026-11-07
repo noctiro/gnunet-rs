@@ -1,0 +1,242 @@
+{
+  "schema": 1,
+  "revision": "346358e26d4dcc2dc4f51bef5d52dca29c7d8165",
+  "source_inputs": {
+    "src/lib/util/service.c": "51d9a618682670f23bd6450531e91ca56b0b626bb0ef0d4eb269508a45801dae",
+    "src/lib/util/os_process.c": "fbe432a54155a3c10164c11b0878e29c1c71209a03b4334b9d9de8af1a0cee49",
+    "src/lib/util/helper.c": "a503b731d4fa285c52d844b7657d333f9b82daf5ee275c1bb9b9da0ae5304b4c",
+    "src/lib/util/network.c": "d31a2ee5d52e89bdc212815d1420f9a4527e5a451672f016cd48b3ca661cbefe",
+    "src/lib/util/os_priority.c": "d344ddce35e3ca00b28ca740a6f40482035541cca7c93fae9aa24c13d7097b2b",
+    "src/lib/util/program.c": "7eff92cd6b31f79ab6f09a1e38ff8fc09abd930f93c96c709bee3ca130318dc9",
+    "src/lib/util/getopt.c": "eff8580742b2b9338caac5ee481fe1bda9e34b06c77010fddb1882e53c23b009",
+    "src/lib/util/getopt_helpers.c": "0bce2ec0172f3f0af9644b6a687b9bfe715ae02564d5ec9d2923a4869f46b7d1",
+    "src/lib/util/common_logging.c": "4773a6a343f2017f97e19002eb1da5102b23642825487c144ee1da97894b81c2",
+    "src/include/gnunet_service_lib.h": "dac805137bcff75029942ed551bbb0bf5817ff88a227ab5b579184d04d2e808a",
+    "src/include/gnunet_os_lib.h": "c90a250accc85a999c84bb4646f1623a77e606c0d013f71abfb5ac832fa99485",
+    "src/service/arm/arm_api.c": "a186cb0a4a396b962be7aa6a9536278aef86c380fd70147a606eb12ae738ed79",
+    "src/service/arm/gnunet-service-arm.c": "96c0ba0c52c21fe0d347818fa406a233e341868c8d9561d59d4e96fba62515df"
+  },
+  "design": {
+    "DESIGN.md": "e58b54c935a1b721b49eec08bba57b42ef62bc54531bdfcd3253d98016544b5a",
+    "API.rs.txt": "f655f5e9d7a777b2a1b1c6fead1c2c882ca1a943a3d373f86fd0fb0bc52c1a37"
+  },
+  "requirements": [
+    {
+      "id": "capture.single",
+      "source": "service.c:1509-1575; os_process.c:706-815",
+      "behavior": "Count/numeric colon FD list; no LISTEN_PID; original CLOEXEC clear; exact unique ownership.",
+      "status": "implementing",
+      "primitive": "capture_from_environment",
+      "verification": null
+    },
+    {
+      "id": "capture.close-mode",
+      "source": "service.c:1577-1653; arm_api.c:970-1007; network.c:579-590",
+      "behavior": "CLOSE option4 holds ordinary inherited descriptors (official pipe write end), binds own listeners then closes; no byte signal and no full-init guarantee.",
+      "status": "implementing",
+      "primitive": "InheritedResources::CloseAfterBind",
+      "verification": null
+    },
+    {
+      "id": "capture.stdio",
+      "source": "os_process.c:611-704,728-781",
+      "behavior": "Parent moves conflicting mappings before fork, maps stdio before other fds; Rust moves low inherited resources before restoring null stdio.",
+      "status": "implementing",
+      "primitive": "capture_from_environment",
+      "verification": null
+    },
+    {
+      "id": "capture.control",
+      "source": "os_process.c:169-291,706-727",
+      "behavior": "Independent hex control fd, prefix parse, byte-to-signal; clear hint; aliases rejected before adoption.",
+      "status": "implementing",
+      "primitive": "ParentControl::try_read_signal",
+      "verification": null
+    },
+    {
+      "id": "readiness.daemon",
+      "source": "service.c:1790-1862,918-925,2211-2216",
+      "behavior": "Internal fork pipe statuses dot/I/S, one write and closure; first dot before application init.",
+      "status": "implementing",
+      "primitive": "ReadyWriter",
+      "verification": null
+    },
+    {
+      "id": "privilege.lookup",
+      "source": "service.c:1680-1715",
+      "behavior": "USERNAME filename expansion and raw native account lookup; no option means keep identity.",
+      "status": "implementing",
+      "primitive": "configured_user; resolve_user",
+      "verification": null
+    },
+    {
+      "id": "privilege.sequence",
+      "source": "service.c:1716-1737",
+      "behavior": "Short-circuit gid/egid/initgroups/uid/euid then rgid/ruid fallback; partial failure is fatal startup, successful fallback does not prove supplementary reset.",
+      "status": "implementing",
+      "primitive": "apply_privileges",
+      "verification": null
+    },
+    {
+      "id": "cli.options",
+      "source": "service.c:2050-2062; getopt_helpers.c:383-478",
+      "behavior": "-c/--config filename, -d/--daemonize, -h/--help, -L/--log, -l/--logfile, -v/--version.",
+      "status": "pending",
+      "primitive": null,
+      "verification": null
+    },
+    {
+      "id": "cli.gnu-parsing",
+      "source": "getopt.c:317-999",
+      "behavior": "Short bundles, long unique abbreviations, equal/separate required values, --, POSIXLY_CORRECT permutation, last string value, help/version exclusivity and return codes.",
+      "status": "pending",
+      "primitive": null,
+      "verification": null
+    },
+    {
+      "id": "cli.program-vs-service",
+      "source": "program.c:174-199; service.c:2111-2119",
+      "behavior": "GNUNET_ARGS augmentation belongs PROGRAM_run2, not standalone SERVICE_run; registered path has distinct incomplete conf_and_options behavior.",
+      "status": "pending",
+      "primitive": null,
+      "verification": null
+    },
+    {
+      "id": "config.defaults",
+      "source": "service.c:2069-2075,2137-2170",
+      "behavior": "XDG_CONFIG_HOME/user config candidate, explicit unreadable config failure, else default load; preserve expansion/library profile.",
+      "status": "pending",
+      "primitive": null,
+      "verification": null
+    },
+    {
+      "id": "startup.order",
+      "source": "service.c:2128-2207",
+      "behavior": "Logging setup -> configuration -> listener setup/CLOSE -> optional detach -> username -> clock skew -> resolver-connect -> scheduler/service_main.",
+      "status": "pending",
+      "primitive": null,
+      "verification": null
+    },
+    {
+      "id": "daemon.fork",
+      "source": "service.c:1790-1862",
+      "behavior": "Create pipe, fork parent status wait; child closes0/1/readend, opens null, dup2 stdin/out, setsid failure log, stores status writer. No double-fork/chdir/umask guess.",
+      "status": "pending",
+      "primitive": null,
+      "verification": null
+    },
+    {
+      "id": "daemon.pidfile",
+      "source": "service.c:1746-1779,2207-2209",
+      "behavior": "Filename PIDFILE getter and unlink only after daemonized scheduler return; this function does not create a PIDFILE.",
+      "status": "pending",
+      "primitive": null,
+      "verification": null
+    },
+    {
+      "id": "logging.level",
+      "source": "common_logging.c:251-270,490-542,729-776",
+      "behavior": "Case-insensitive DEBUG/INFO/MESSAGE/WARNING/ERROR/NONE; unspecified/invalid fallback and definition overrides require actual source behavior.",
+      "status": "pending",
+      "primitive": null,
+      "verification": null
+    },
+    {
+      "id": "logging.environment",
+      "source": "common_logging.c:576-713,747-749",
+      "behavior": "GNUNET_LOG/GNUNET_FORCE_LOG regex+line-range grammar and precedence; GNUNET_FORCE_LOGFILE overrides nonempty.",
+      "status": "pending",
+      "primitive": null,
+      "verification": null
+    },
+    {
+      "id": "logging.files",
+      "source": "common_logging.c:346-424",
+      "behavior": "Filename expansion, UTC strftime, [] pid substitution, directory create, append0644 and stderr dup2, rotation; open/setup failures matter.",
+      "status": "pending",
+      "primitive": null,
+      "verification": null
+    },
+    {
+      "id": "logging.output",
+      "source": "common_logging.c:800-1114",
+      "behavior": "Source component/pid/date/error levels, MESSAGE formatting, JOURNAL_STREAM, custom loggers, bulk suppression and errno preservation.",
+      "status": "pending",
+      "primitive": null,
+      "verification": null
+    },
+    {
+      "id": "process.priority",
+      "source": "service.c; os_process.c; os_priority.c; arm_api.c:694-753",
+      "behavior": "No built-in nice/setpriority startup call or CLI key in these pinned files; inherit priority. ARM PREFIX can invoke external launcher.",
+      "status": "source-reviewed-no-added-option",
+      "primitive": null,
+      "verification": null
+    },
+    {
+      "id": "nls.profile",
+      "source": "service.c:2095-2110",
+      "behavior": "Conditional locale/gettext initialization before getopt; profile explicit.",
+      "status": "pending",
+      "primitive": null,
+      "verification": null
+    },
+    {
+      "id": "clock.skew",
+      "source": "service.c:2185-2201",
+      "behavior": "TESTING SKEW_OFFSET minus SKEW_VARIANCE feeds GNUNET_TIME_set_offset before scheduling.",
+      "status": "pending",
+      "primitive": null,
+      "verification": null
+    },
+    {
+      "id": "service.control-integration",
+      "source": "os_process.c:169-291; scheduler.c",
+      "behavior": "Read control byte, reschedule then raise own signal; install/shutdown handler ownership and reactor integration remain required.",
+      "status": "pending",
+      "primitive": null,
+      "verification": null
+    },
+    {
+      "id": "service.scheduler",
+      "source": "service.c:903-929,407-428",
+      "behavior": "Manual/Immediate/Soft shutdown, task registration/accept readiness, init callback order.",
+      "status": "pending",
+      "primitive": null,
+      "verification": null
+    },
+    {
+      "id": "service.registered",
+      "source": "service.c:2240-2391; program.c:427-590",
+      "behavior": "Registered/monolith configuration and per-service setup differs from standalone SERVICE_run; do not conflate.",
+      "status": "pending",
+      "primitive": null,
+      "verification": null
+    },
+    {
+      "id": "service.generic-agpl",
+      "source": "service.c:1891-1928",
+      "behavior": "Optional project AGPL request handler sends source URL and continues client; not a startup primitive.",
+      "status": "pending",
+      "primitive": null,
+      "verification": null
+    },
+    {
+      "id": "service.credentials-flags",
+      "source": "service.c:1656-1662,843-844",
+      "behavior": "UNIX_MATCH_UID/GID stored but accept AF_UNIX uses filesystem ACL unconditionally in this source; no invented credential enforcement.",
+      "status": "pending",
+      "primitive": null,
+      "verification": null
+    },
+    {
+      "id": "launcher.helper",
+      "source": "helper.c:395-475",
+      "behavior": "Helper maps own stdin/out pipes, stderr inheritance and optional independent control pipe; no readiness/protocol conflation.",
+      "status": "pending",
+      "primitive": null,
+      "verification": null
+    }
+  ],
+  "scope": "Integrated process-local startup primitives; complete generic service ownership remains pending"
+}

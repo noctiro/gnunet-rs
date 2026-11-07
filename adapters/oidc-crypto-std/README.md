@@ -1,0 +1,5 @@
+# Explicit OIDC signing bridge
+
+`Rsa::{generate,from_pkcs8,from_jwk,export_pkcs8,public,sign,sign_jwt}`, `Public::{from_jwk,write_jwk,verify,verify_jwt}` and `Hs512::{new,sign_jwt,verify_jwt}` are callable production functions. Only explicit caller-owned bytes/providers are accepted; no file, key discovery, service, network, encryption/decryption or production libgnunet FFI exists. Successful verification returns a redacted VerifiedPayload view with explicit exposure; issuer, audience, nonce, replay and time authorization remain separate. Rust private raw buffers, HMAC key and JWK/JSON scratch are zeroizing; the native backend owns/frees its RSA private allocations. Public modulus/exponent exports use existing library accessors, not a homemade DER parser.
+
+Exact approved host-only dependency: aws-lc-rs=1.19.0, default-features=false, features alloc/non-fips/ring-io, aws-lc-sys0.47.0. There is no std feature and ring-sig-verify is unnecessary. The mature AWS-LC native/asm RSA primitive is not claimed as pure Rust or FIPS. No RustCrypto rsa dependency/custom private RSA arithmetic/padding/decryption is introduced to evade RUSTSEC-2023-0071.

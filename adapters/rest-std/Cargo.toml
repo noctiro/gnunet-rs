@@ -1,0 +1,40 @@
+[package]
+name = "gnunet-rest-host"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[features]
+default = []
+oidc = ["gnunet-rest/oidc", "dep:gnunet-oidc-crypto-host", "dep:gnunet-snapshot-host"]
+
+[dependencies]
+gnunet-snapshot-host = { workspace = true, optional = true }
+gnunet-oidc-crypto-host = { workspace = true, optional = true }
+gnunet-config.workspace = true
+gnunet-gns-client-host.workspace = true
+nix = { workspace = true, features = ["user"] }
+libc.workspace = true
+gnunet-rest.workspace = true
+gnunet-types.workspace = true
+gnunet-json.workspace = true
+gnunet-wire.workspace = true
+gnunet-gnsrecord.workspace = true
+gnunet-gnsrecord-text.workspace = true
+gnunet-dns.workspace = true
+gnunet-identity = { workspace = true, features = ["alloc"] }
+gnunet-identity-client-host.workspace = true
+gnunet-namestore-client-host.workspace = true
+gnunet-reclaim.workspace = true
+gnunet-reclaim-client-host.workspace = true
+gnunet-reclaim-credentials = { workspace = true, features = ["attributes"] }
+gnunet-crypto.workspace = true
+gnunet-client-host.workspace = true
+gnunet-service-runtime.workspace = true
+tokio = { workspace = true, features = ["sync"] }
+zeroize.workspace = true
+getrandom.workspace = true
+
+[lints]
+workspace = true

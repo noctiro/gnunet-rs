@@ -1,0 +1,29 @@
+[package]
+name = "gnunet-dns2gns-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = []
+
+[dependencies]
+gnunet-client-host.workspace = true
+gnunet-config.workspace = true
+gnunet-dns.workspace = true
+gnunet-dnsstub-host.workspace = true
+gnunet-gns-host.workspace = true
+gnunet-gns-client-host.workspace = true
+gnunet-identity-client-host.workspace = true
+gnunet-vpn-client-host.workspace = true
+gnunet-vpn.workspace = true
+gnunet-gnsrecord.workspace = true
+gnunet-idna.workspace = true
+gnunet-service-runtime.workspace = true
+gnunet-types.workspace = true
+socket2.workspace = true
+tokio = { workspace = true, features = ["rt", "net", "time", "io-util"] }
+
+[lints]
+workspace = true

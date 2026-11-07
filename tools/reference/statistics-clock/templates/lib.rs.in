@@ -1,0 +1,13 @@
+#![forbid(unsafe_code)]
+// These aliases bind unchanged production imports to the tool's I/O capability
+// facade. Actual CLIENT selection, Resolver, clocks and leases remain delegated.
+extern crate self as gnunet_client_host;
+extern crate self as gnunet_service_runtime;
+pub use client_host_real::{LiveConfiguration, resolution};
+pub use gnunet_ipc_unix::IpcError;
+pub use ports::{ConnectionAttempt, Endpoint, EndpointSource};
+pub use runtime_real::clock;
+pub mod connection;
+mod ports;
+pub mod staged_handle;
+mod stream;

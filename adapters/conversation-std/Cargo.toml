@@ -1,0 +1,21 @@
+[package]
+name = "gnunet-conversation-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+gnunet-conversation = { workspace = true, features = ["alloc"] }
+gnunet-client-host.workspace = true
+gnunet-cadet-host.workspace = true
+gnunet-pils-host = { workspace = true, features = ["client"] }
+gnunet-pils = { workspace = true, features = ["alloc"] }
+gnunet-service-runtime.workspace = true
+gnunet-types.workspace = true
+gnunet-wire.workspace = true
+tokio = { workspace = true, features = ["rt", "time"] }
+zeroize.workspace = true
+
+[lints]
+workspace = true

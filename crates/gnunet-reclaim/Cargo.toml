@@ -1,0 +1,19 @@
+[package]
+name = "gnunet-reclaim"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = []
+alloc = ["zeroize/alloc"]
+
+[dependencies]
+gnunet-gnsrecord.workspace = true
+gnunet-types.workspace = true
+gnunet-wire.workspace = true
+zeroize.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,17 @@
+[package]
+name = "gnunet-cadet"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+gnunet-crypto.workspace = true
+gnunet-session-crypto.workspace = true
+gnunet-types.workspace = true
+gnunet-wire.workspace = true
+subtle.workspace = true
+zeroize.workspace = true
+
+[lints]
+workspace = true

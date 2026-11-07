@@ -1,0 +1,12 @@
+[package]
+name = "gnunet-helper-vpn"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+gnunet-tun-helper-host.workspace = true
+
+[lints]
+workspace = true

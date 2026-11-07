@@ -1,0 +1,28 @@
+[package]
+name = "gnunet-datastore-command"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "gnunet-datastore"
+path = "src/main.rs"
+
+[target.'cfg(unix)'.dependencies]
+gnunet-config.workspace = true
+gnunet-datastore-host.workspace = true
+gnunet-client-host.workspace = true
+gnunet-client.workspace = true
+gnunet-wire.workspace = true
+gnunet-types.workspace = true
+gnunet-program-host = { workspace = true, features = ["resolver-broker"] }
+gnunet-resolver-broker.workspace = true
+gnunet-service-runtime.workspace = true
+gnunet-service-startup.workspace = true
+zeroize = { workspace = true, features = ["alloc"] }
+nix = { workspace = true, features = ["poll", "fs"] }
+tokio = { workspace = true, features = ["rt", "net", "time", "signal"] }
+
+[lints]
+workspace = true

@@ -1,0 +1,20 @@
+[package]
+name = "gnunet-dht"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = []
+alloc = ["dep:gnunet-block", "dep:gnunet-hello"]
+
+[dependencies]
+gnunet-types.workspace = true
+gnunet-wire.workspace = true
+gnunet-crypto.workspace = true
+gnunet-block = { workspace = true, optional = true }
+gnunet-hello = { workspace = true, optional = true }
+
+[lints]
+workspace = true

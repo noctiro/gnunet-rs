@@ -1,0 +1,30 @@
+[package]
+name = "gnunet-core-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+gnunet-service-startup.workspace = true
+gnunet-core.workspace = true
+gnunet-wire.workspace = true
+gnunet-client.workspace = true
+gnunet-crypto.workspace = true
+gnunet-pils = { path = "../../crates/gnunet-pils", default-features = false }
+gnunet-pils-host = { path = "../pils-std", default-features = false }
+gnunet-hello.workspace = true
+gnunet-types.workspace = true
+gnunet-config.workspace = true
+gnunet-service-runtime.workspace = true
+gnunet-client-host.workspace = true
+gnunet-resolver-broker.workspace = true
+zeroize = { workspace = true, features = ["alloc"] }
+getrandom.workspace = true
+tokio = { workspace = true, features = ["rt", "net", "time", "io-util"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros"] }
+
+[lints]
+workspace = true

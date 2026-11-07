@@ -1,0 +1,681 @@
+{
+  "schema": 1,
+  "subsystem": "statistics",
+  "public_functions": [
+    {
+      "symbol": "GNUNET_STATISTICS_create",
+      "criterion_id": "api.GNUNET_STATISTICS_create",
+      "status": "in_progress",
+      "rust_equivalence_candidates": [
+        "gnunet_client::statistics_handle::StatisticsHandle::new",
+        "gnunet_ipc_unix::handle::StatisticsHandle::from_config"
+      ],
+      "reference_sources": [
+        {
+          "path": "src/include/gnunet_statistics_service.h",
+          "symbol": "GNUNET_STATISTICS_create"
+        },
+        {
+          "path": "src/service/statistics/statistics_api.c",
+          "symbol": "GNUNET_STATISTICS_create"
+        }
+      ],
+      "cases": [
+        {
+          "id": "statistics.client.create.disabled",
+          "required": true,
+          "requirement": "YES DISABLE returns no handle; missing, invalid or non-YES does not disable it.",
+          "status": "missing",
+          "test_commands": [],
+          "verification": null
+        },
+        {
+          "id": "statistics.client.create.lazy",
+          "required": true,
+          "requirement": "Create stores subsystem/configuration and starts at 1ms backoff without connecting.",
+          "status": "missing",
+          "test_commands": [],
+          "verification": null
+        },
+        {
+          "id": "statistics.client.create.subsystem",
+          "required": true,
+          "requirement": "SET/UPDATE use exactly the creating subsystem; GET/WATCH may select another subsystem.",
+          "status": "missing",
+          "test_commands": [],
+          "verification": null
+        },
+        {
+          "id": "statistics.client.create.config",
+          "required": true,
+          "requirement": "Official configuration selects service transport/activation; invalid or unavailable transport remains an explicit failure/retry state.",
+          "status": "missing",
+          "test_commands": [],
+          "verification": null
+        }
+      ]
+    },
+    {
+      "symbol": "GNUNET_STATISTICS_destroy",
+      "criterion_id": "api.GNUNET_STATISTICS_destroy",
+      "status": "in_progress",
+      "rust_equivalence_candidates": [
+        "gnunet_client::statistics_handle::StatisticsHandle::begin_destroy",
+        "gnunet_ipc_unix::handle::StatisticsHandle::destroy"
+      ],
+      "reference_sources": [
+        {
+          "path": "src/include/gnunet_statistics_service.h",
+          "symbol": "GNUNET_STATISTICS_destroy"
+        },
+        {
+          "path": "src/service/statistics/statistics_api.c",
+          "symbol": "GNUNET_STATISTICS_destroy"
+        }
+      ],
+      "cases": [
+        {
+          "id": "statistics.client.destroy.immediate",
+          "required": true,
+          "requirement": "sync_first=false retires watches, queued actions and transport without subsequent callbacks.",
+          "status": "missing",
+          "test_commands": [],
+          "verification": null
+        },
+        {
+          "id": "statistics.client.destroy.current-get",
+          "required": true,
+          "requirement": "Immediate destroy fails a non-aborted current GET once; explicit cancellation/iterator abort suppress disconnect continuation.",
+          "status": "missing",
+          "test_commands": [],
+          "verification": null
+        },
+        {
+          "id": "statistics.client.destroy.defer-condition",
+          "required": true,
+          "requirement": "Pinned C defers sync destruction only when MQ exists and its non-in-flight queue length is nonzero.",
+          "status": "missing",
+          "test_commands": [],
+          "verification": null
+        },
+        {
+          "id": "statistics.client.destroy.drain",
+          "required": true,
+          "requirement": "Deferred destruction removes queued GET/WATCH actions, retains setters and current GET stream tombstone, then sends DISCONNECT.",
+          "status": "missing",
+          "test_commands": [],
+          "verification": null
+        },
+        {
+          "id": "statistics.client.destroy.confirm",
+          "required": true,
+          "requirement": "Only expected DISCONNECT_CONFIRM acknowledges processing; this is not a filesystem durability claim.",
+          "status": "missing",
+          "test_commands": [],
+          "verification": null
+        },
+        {
+          "id": "statistics.client.destroy.deadline",
+          "required": true,
+          "requirement": "Deferred deadline is admission time plus 5*current backoff; later progress/END does not extend it.",
+          "status": "missing",
+          "test_commands": [],
+          "verification": null
+        },
+        {
+          "id": "statistics.client.destroy.failure",
+          "required": true,
+          "requirement": "Connection loss/deadline/disconnected shutdown reports discarded or unknown submitted mutations rather than fabricated flush success.",
+          "status": "missing",
+          "test_commands": [],
+          "verification": null
+        },
+        {
+          "id": "statistics.client.destroy.callback-authority",
+          "required": true,
+          "requirement": "Final destruction revokes all callback/epoch authority, including stale socket completions.",
+          "status": "missing",
+          "test_commands": [],
+          "verification": null
+        }
+      ]
+    },
+    {
+      "symbol": "GNUNET_STATISTICS_get",
+      "criterion_id": "api.GNUNET_STATISTICS_get",
+      "status": "in_progress",
+      "rust_equivalence_candidates": [
+        "gnunet_client::statistics_handle::StatisticsHandle::get",
+        "gnunet_ipc_unix::handle::StatisticsHandle::get"
+      ],
+      "reference_sources": [
+        {
+          "path": "src/include/gnunet_statistics_service.h",
+          "symbol": "GNUNET_STATISTICS_get"
+        },
+        {
+          "path": "src/service/statistics/statistics_api.c",
+          "symbol": "GNUNET_STATISTICS_get"
+        }
+      ],
+      "cases": [
+        {
+          "id": "statistics.client.get.wildcards",
+          "required": true,
+          "requirement": "Independent null/empty subsystem and name are wildcards.",
+          "status": "missing",
+          "test_commands": [],
+          "verification": null
+        },
+        {
+          "id": "statistics.client.get.queue",
+          "required": true,
+          "requirement": "Multiple admitted GETs queue FIFO; there is one current untagged GET until END or connection failure.",
+          "status": "missing",
+          "test_commands": [],
+          "verification": null
+        },
+        {
+          "id": "statistics.client.get.values",
+          "required": true,
+          "requirement": "Each VALUE belongs to the original operation, retains persistence/opaque names and borrows frame data only for callback use.",
+          "status": "missing",
+          "test_commands": [],
+          "verification": null
+        },
+        {
+          "id": "statistics.client.get.watch-interleave",
+          "required": true,
+          "requirement": "WATCH_VALUE can interleave with a current GET without completing or corrupting it.",
+          "status": "missing",
+          "test_commands": [],
+          "verification": null
+        },
+        {
+          "id": "statistics.client.get.end",
+          "required": true,
+          "requirement": "Exact END completes once, resets backoff to 1ms and permits the next queued action.",
+          "status": "missing",
+          "test_commands": [],
+          "verification": null
+        },
+        {
+          "id": "statistics.client.get.abort-iterator",
+          "required": true,
+          "requirement": "Iterator abort suppresses subsequent VALUE callbacks but drains to END and retains the successful completion continuation.",
+          "status": "missing",
+          "test_commands": [],
+          "verification": null
+        },
+        {
+          "id": "statistics.client.get.failure",
+          "required": true,
+          "requirement": "A malformed response for a registered STATISTICS handler or transport failure retires the current GET once; well-framed messages without a registered client handler are ignored and neither complete nor cancel it. Queued unsubmitted operations remain owned for retry.",
+          "status": "missing",
+          "test_commands": [],
+          "verification": null
+        },
+        {
+          "id": "statistics.client.get.callback-lifetime",
+          "required": true,
+          "requirement": "GET completion cannot synchronously destroy the same owner; safe Rust reentrancy/lifetime constraints must preserve this boundary.",
+          "status": "missing",
+          "test_commands": [],
+          "verification": null
+        },
+        {
+          "id": "statistics.client.get.bounds",
+          "required": true,
+          "requirement": "Every queue/name/terminal capacity rejection preserves prior IDs, queue order and callback authority.",
+          "status": "missing",
+          "test_commands": [],
+          "verification": null
+        }
+      ]
+    },
+    {
+      "symbol": "GNUNET_STATISTICS_get_cancel",
+      "criterion_id": "api.GNUNET_STATISTICS_get_cancel",
+      "status": "in_progress",
+      "rust_equivalence_candidates": [
+        "gnunet_client::statistics_handle::StatisticsHandle::get_cancel",
+        "gnunet_ipc_unix::handle::CallbackContext::get_cancel"
+      ],
+      "reference_sources": [
+        {
+          "path": "src/include/gnunet_statistics_service.h",
+          "symbol": "GNUNET_STATISTICS_get_cancel"
+        },
+        {
+          "path": "src/service/statistics/statistics_api.c",
+          "symbol": "GNUNET_STATISTICS_get_cancel"
+        }
+      ],
+      "cases": [
+        {
+          "id": "statistics.client.get_cancel.queued",
+          "required": true,
+          "requirement": "Queued cancellation removes only its original operation, clears continuation and does not submit its request.",
+          "status": "missing",
+          "test_commands": [],
+          "verification": null
+        },
+        {
+          "id": "statistics.client.get_cancel.current",
+          "required": true,
+          "requirement": "Current cancellation disables callbacks/continuation but retains the untagged tombstone until END/disconnect; socket is not closed solely to cancel.",
+          "status": "missing",
+          "test_commands": [],
+          "verification": null
+        },
+        {
+          "id": "statistics.client.get_cancel.late",
+          "required": true,
+          "requirement": "Stale/cancelled operation IDs never affect a later operation or a reused slot.",
+          "status": "missing",
+          "test_commands": [],
+          "verification": null
+        },
+        {
+          "id": "statistics.client.get_cancel.buffered",
+          "required": true,
+          "requirement": "Accepted cancellation is processed before another already-buffered VALUE can call the old callback.",
+          "status": "missing",
+          "test_commands": [],
+          "verification": null
+        }
+      ]
+    },
+    {
+      "symbol": "GNUNET_STATISTICS_set",
+      "criterion_id": "api.GNUNET_STATISTICS_set",
+      "status": "in_progress",
+      "rust_equivalence_candidates": [
+        "gnunet_client::statistics_handle::StatisticsHandle::set",
+        "gnunet_ipc_unix::handle::StatisticsHandle::set"
+      ],
+      "reference_sources": [
+        {
+          "path": "src/include/gnunet_statistics_service.h",
+          "symbol": "GNUNET_STATISTICS_set"
+        },
+        {
+          "path": "src/service/statistics/statistics_api.c",
+          "symbol": "GNUNET_STATISTICS_set"
+        }
+      ],
+      "cases": [
+        {
+          "id": "statistics.client.set.absolute",
+          "required": true,
+          "requirement": "SET uses unsigned absolute value, owner subsystem, exact name and the requested persistence flag.",
+          "status": "missing",
+          "test_commands": [],
+          "verification": null
+        },
+        {
+          "id": "statistics.client.set.replace",
+          "required": true,
+          "requirement": "Pending same-name SET+SET uses latest value/persistence without modifying an in-flight envelope.",
+          "status": "missing",
+          "test_commands": [],
+          "verification": null
+        },
+        {
+          "id": "statistics.client.set.coalesce-order",
+          "required": true,
+          "requirement": "Coalescing scans the full pending list and may reach an earlier setter across an intervening GET.",
+          "status": "missing",
+          "test_commands": [],
+          "verification": null
+        },
+        {
+          "id": "statistics.client.set.update-to-set",
+          "required": true,
+          "requirement": "A new SET overrides a pending UPDATE and changes its kind to absolute.",
+          "status": "missing",
+          "test_commands": [],
+          "verification": null
+        },
+        {
+          "id": "statistics.client.set.queue-atomic",
+          "required": true,
+          "requirement": "Capacity refusal leaves the earlier value/persistence, FIFO order and completion ownership unchanged.",
+          "status": "missing",
+          "test_commands": [],
+          "verification": null
+        },
+        {
+          "id": "statistics.client.set.submission",
+          "required": true,
+          "requirement": "MQ submission/first attempt/full write are distinct; a submitted setter has no remote acknowledgement and is not automatically replayed after loss.",
+          "status": "missing",
+          "test_commands": [],
+          "verification": null
+        }
+      ]
+    },
+    {
+      "symbol": "GNUNET_STATISTICS_update",
+      "criterion_id": "api.GNUNET_STATISTICS_update",
+      "status": "in_progress",
+      "rust_equivalence_candidates": [
+        "gnunet_client::statistics_handle::StatisticsHandle::update",
+        "gnunet_ipc_unix::handle::StatisticsHandle::update"
+      ],
+      "reference_sources": [
+        {
+          "path": "src/include/gnunet_statistics_service.h",
+          "symbol": "GNUNET_STATISTICS_update"
+        },
+        {
+          "path": "src/service/statistics/statistics_api.c",
+          "symbol": "GNUNET_STATISTICS_update"
+        }
+      ],
+      "cases": [
+        {
+          "id": "statistics.client.update.signed",
+          "required": true,
+          "requirement": "UPDATE encodes a signed delta as the official relative SET bit pattern.",
+          "status": "missing",
+          "test_commands": [],
+          "verification": null
+        },
+        {
+          "id": "statistics.client.update.zero",
+          "required": true,
+          "requirement": "A new update(0) is a complete no-op including persistence and row creation.",
+          "status": "missing",
+          "test_commands": [],
+          "verification": null
+        },
+        {
+          "id": "statistics.client.update.absolute-pending",
+          "required": true,
+          "requirement": "Pending absolute SET+UPDATE wraps positive addition and clamps negative subtraction to zero; defined INT64_MIN magnitude is used.",
+          "status": "missing",
+          "test_commands": [],
+          "verification": null
+        },
+        {
+          "id": "statistics.client.update.relative-pending",
+          "required": true,
+          "requirement": "Pending UPDATE+UPDATE wraps the unsigned delta sum; a coalesced zero remains an actual queued UPDATE.",
+          "status": "missing",
+          "test_commands": [],
+          "verification": null
+        },
+        {
+          "id": "statistics.client.update.persistence",
+          "required": true,
+          "requirement": "Latest persistence wins for a nonzero new setter, even after coalescing.",
+          "status": "missing",
+          "test_commands": [],
+          "verification": null
+        },
+        {
+          "id": "statistics.client.update.timeout",
+          "required": true,
+          "requirement": "Pinned C assigns a two-second timeout field but never enforces it; explicit optional Rust deadlines must not masquerade as reference expiry behavior.",
+          "status": "missing",
+          "test_commands": [],
+          "verification": null
+        }
+      ]
+    },
+    {
+      "symbol": "GNUNET_STATISTICS_watch",
+      "criterion_id": "api.GNUNET_STATISTICS_watch",
+      "status": "in_progress",
+      "rust_equivalence_candidates": [
+        "gnunet_client::statistics_handle::StatisticsHandle::watch",
+        "gnunet_ipc_unix::handle::StatisticsHandle::watch"
+      ],
+      "reference_sources": [
+        {
+          "path": "src/include/gnunet_statistics_service.h",
+          "symbol": "GNUNET_STATISTICS_watch"
+        },
+        {
+          "path": "src/service/statistics/statistics_api.c",
+          "symbol": "GNUNET_STATISTICS_watch"
+        }
+      ],
+      "cases": [
+        {
+          "id": "statistics.client.watch.literal",
+          "required": true,
+          "requirement": "WATCH treats empty names literally, not as GET wildcards, and admits duplicate subscriptions separately.",
+          "status": "missing",
+          "test_commands": [],
+          "verification": null
+        },
+        {
+          "id": "statistics.client.watch.no-ack",
+          "required": true,
+          "requirement": "Submission has no WATCH acknowledgement; zero initial value need not notify.",
+          "status": "missing",
+          "test_commands": [],
+          "verification": null
+        },
+        {
+          "id": "statistics.client.watch.initial",
+          "required": true,
+          "requirement": "Nonzero value notifies immediately; first SET of an unset watched zero row notifies; later equal values suppress per watch.",
+          "status": "missing",
+          "test_commands": [],
+          "verification": null
+        },
+        {
+          "id": "statistics.client.watch.ordering",
+          "required": true,
+          "requirement": "Queued registrations preserve actual transport order and consume connection-local WIDs, including cancelled tombstones still queued on that connection.",
+          "status": "missing",
+          "test_commands": [],
+          "verification": null
+        },
+        {
+          "id": "statistics.client.watch.callback",
+          "required": true,
+          "requirement": "Notification names derive from original registration; watcher return values do not cancel it.",
+          "status": "missing",
+          "test_commands": [],
+          "verification": null
+        },
+        {
+          "id": "statistics.client.watch.flags",
+          "required": true,
+          "requirement": "Reserved nonzero is diagnosed but retained; server persistence flag2 is interpreted with raw flags available, recording the C-client high-bit discrepancy.",
+          "status": "missing",
+          "test_commands": [],
+          "verification": null
+        },
+        {
+          "id": "statistics.client.watch.reconnect",
+          "required": true,
+          "requirement": "MQ recreation retains pending non-watch actions, removes old WATCH action copies, and appends live registrations in original ordinal order with fresh WIDs.",
+          "status": "missing",
+          "test_commands": [],
+          "verification": null
+        },
+        {
+          "id": "statistics.client.watch.epochs",
+          "required": true,
+          "requirement": "Old connection IDs/partial frames cannot mutate new registration mappings or deliver a callback to a replacement watch.",
+          "status": "missing",
+          "test_commands": [],
+          "verification": null
+        }
+      ]
+    },
+    {
+      "symbol": "GNUNET_STATISTICS_watch_cancel",
+      "criterion_id": "api.GNUNET_STATISTICS_watch_cancel",
+      "status": "in_progress",
+      "rust_equivalence_candidates": [
+        "gnunet_client::statistics_handle::StatisticsHandle::watch_cancel",
+        "gnunet_ipc_unix::handle::CallbackContext::watch_cancel"
+      ],
+      "reference_sources": [
+        {
+          "path": "src/include/gnunet_statistics_service.h",
+          "symbol": "GNUNET_STATISTICS_watch_cancel"
+        },
+        {
+          "path": "src/service/statistics/statistics_api.c",
+          "symbol": "GNUNET_STATISTICS_watch_cancel"
+        }
+      ],
+      "cases": [
+        {
+          "id": "statistics.client.watch_cancel.local",
+          "required": true,
+          "requirement": "Cancellation is local only: no wire unwatch; the server releases its watch on real disconnect.",
+          "status": "missing",
+          "test_commands": [],
+          "verification": null
+        },
+        {
+          "id": "statistics.client.watch_cancel.identity",
+          "required": true,
+          "requirement": "The selected original subscription is cancelled; duplicate names/callback contexts remain distinct.",
+          "status": "missing",
+          "test_commands": [],
+          "verification": null
+        },
+        {
+          "id": "statistics.client.watch_cancel.queued-copy",
+          "required": true,
+          "requirement": "A previously queued registration copy may still transmit and its WID is a cancelled tombstone, not authority for a reused logical slot.",
+          "status": "missing",
+          "test_commands": [],
+          "verification": null
+        },
+        {
+          "id": "statistics.client.watch_cancel.reconnect-hole",
+          "required": true,
+          "requirement": "Cancelled slots do not shift callback identity after reconnect; logical IDs and fresh connection WID mappings remain separate.",
+          "status": "missing",
+          "test_commands": [],
+          "verification": null
+        }
+      ]
+    }
+  ],
+  "callbacks": [
+    {
+      "name": "GNUNET_STATISTICS_Iterator",
+      "requirement": "GET Continue/AbortIteration differs from ignored WATCH return; borrowed names/value lifetime and persistence flags are explicit."
+    },
+    {
+      "name": "GNUNET_STATISTICS_Callback",
+      "requirement": "Exactly-once eligible GET continuation; cancellation, abort, disconnect and END are distinct."
+    }
+  ],
+  "wire_operations": [
+    {
+      "type": 168,
+      "name": "STATISTICS_SET"
+    },
+    {
+      "type": 169,
+      "name": "STATISTICS_GET"
+    },
+    {
+      "type": 170,
+      "name": "STATISTICS_VALUE"
+    },
+    {
+      "type": 171,
+      "name": "STATISTICS_END"
+    },
+    {
+      "type": 172,
+      "name": "STATISTICS_WATCH"
+    },
+    {
+      "type": 173,
+      "name": "STATISTICS_WATCH_VALUE"
+    },
+    {
+      "type": 174,
+      "name": "STATISTICS_DISCONNECT"
+    },
+    {
+      "type": 175,
+      "name": "STATISTICS_DISCONNECT_CONFIRM"
+    }
+  ],
+  "cross_operation_cases": [
+    {
+      "id": "statistics.client.reconnect.backoff",
+      "required": true,
+      "requirement": "Deterministic 1ms doubling backoff capped at15minutes; only successful END resets it. Initial virtual MQ creation differs from socket readiness.",
+      "status": "missing",
+      "test_commands": [],
+      "verification": null
+    },
+    {
+      "id": "statistics.client.transport.partial-write",
+      "required": true,
+      "requirement": "First send attempt, MQ non-in-flight queue length and full frame write are distinct; one partial envelope cannot corrupt or prematurely complete the next.",
+      "status": "missing",
+      "test_commands": [],
+      "verification": null
+    }
+  ],
+  "reference_discrepancies": [
+    {
+      "id": "statistics.watch.persistence-bit",
+      "state": "observed_normal_c",
+      "source": "statistics_api.c:handle_statistics_watch_value vs gnunet-service-statistics.c:notify_change",
+      "decision": "Retain server bit2 and raw flags; do not rewrite the official wire to match the C-client high-UID-bit mistake.",
+      "runtime_proof_required": true
+    },
+    {
+      "id": "statistics.watch.reconnect-hole",
+      "state": "observed_normal_c",
+      "source": "statistics_api.c:watch_cancel,try_connect,handle_statistics_watch_value",
+      "decision": "Separate stable logical watch identity from fresh per-connection WIDs. Normal C public-owner traces observe suppression of a new WID0 watch and misrouting of WID1 into the old logical slot; current-source regression evidence remains required.",
+      "runtime_proof_required": true
+    },
+    {
+      "id": "statistics.client.missing-hostname",
+      "state": "observed_normal_c_safety_error",
+      "source": "src/lib/util/client.c:GNUNET_CLIENT_connect",
+      "decision": "A valid Unix endpoint remains usable without a TCP hostname; Rust must not reproduce the normal C NULL-hostname dereference. Preserve source-bound negative reference evidence without treating the crash as a required Rust behavior.",
+      "runtime_proof_required": true
+    },
+    {
+      "id": "statistics.watch.pre-mq-notification",
+      "state": "observed_normal_c_invalid_peer_acceptance",
+      "source": "statistics_api.c:GNUNET_STATISTICS_watch,handle_statistics_watch_value",
+      "decision": "Normal C accepts a WID for a queued logical watch even before its WATCH MQ envelope exists. Rust requires connection-local WID assignment at actual MQ admission before delivering a callback; this is an explicit protocol/ownership boundary, not a memory-safety necessity. Valid service interaction remains covered separately.",
+      "runtime_proof_required": true
+    },
+    {
+      "id": "statistics.disconnect.pre-write-confirm",
+      "state": "observed_normal_c_invalid_peer_acceptance",
+      "source": "statistics_api.c:handle_disconnect_confirm,statistics_transmit",
+      "decision": "Normal C accepts confirmation once its disconnect envelope enters the MQ, even if earlier data remains physically unwritten. Rust requires the original barrier frame to be fully written before reporting ProcessingConfirmed. This preserves result integrity and is an explicit stricter invalid-peer policy, not a claim of identical C error acceptance or a memory-safety necessity.",
+      "runtime_proof_required": true
+    },
+    {
+      "id": "statistics.setter.int64-min",
+      "state": "source_confirmed_undefined_C_boundary",
+      "source": "statistics_api.c:add_setter_action and gnunet-service-statistics.c:handle_set",
+      "decision": "Use defined unsigned_abs magnitude; retain compiler-profile differential cases without claiming ISO-C UB portability.",
+      "runtime_proof_required": true
+    },
+    {
+      "id": "statistics.disconnect.persistence",
+      "state": "source_confirmed",
+      "source": "statistics_api.c:handle_disconnect_confirm comment vs service handle_disconnect/save",
+      "decision": "Confirmation is processing, never independently verified filesystem durability.",
+      "runtime_proof_required": true
+    }
+  ],
+  "full_client_api_verified": false,
+  "evidence_policy": "Every criterion needs current source/binary/log-bound reference evidence validated by the parent conformance checker. Mapping names, source observations and test counts confer no verification credit."
+}

@@ -1,0 +1,22 @@
+[package]
+name = "gnunet-service-startup"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = []
+
+[dependencies]
+gnunet-service-runtime.workspace = true
+gnunet-config.workspace = true
+nix = { workspace = true, features = ["user"] }
+uzers.workspace = true
+libc.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "net", "time"] }
+
+[lints]
+workspace = true

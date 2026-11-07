@@ -1,0 +1,17 @@
+[package]
+name = "gnunet-block"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = []
+
+[dependencies]
+gnunet-types.workspace = true
+gnunet-crypto = { workspace = true, features = ["pow"] }
+gnunet-hello.workspace = true
