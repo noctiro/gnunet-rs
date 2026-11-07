@@ -638,7 +638,7 @@ fn zero_retry_cannot_starve_readable_results_with_continue_callbacks() -> Result
         let (mut responses, mut sends) = (0, 0);
         assert_eq!(
             h.drive(
-                Some(Instant::now() + StdDuration::from_millis(5)),
+                Some(Instant::now() + StdDuration::from_secs(2)),
                 |event, _| {
                     match event {
                         Event::Datagram(data) => {
@@ -646,17 +646,38 @@ fn zero_retry_cannot_starve_readable_results_with_continue_callbacks() -> Result
                             assert_eq!(data.bytes, &[0xab; 12]);
                             responses += 1
                         }
-                        Event::Sent { .. } => sends += 1,
+                        Event::Sent {
+                            request: actual, ..
+                        } => {
+                            assert_eq!(actual, request);
+                            sends += 1;
+                            // The result callback continued; a subsequent real
+                            // retry proves that it did not complete the request.
+                            if responses != 0 {
+                                return Flow::Return;
+                            }
+                        }
                         _ => {}
                     }
                     Flow::Continue // response itself does not stop this raw stub
                 }
             )
             .await?,
-            Progress::WaitDeadline
+            Progress::Activity
         );
         assert_eq!(responses, 1);
         assert!(sends > 0);
+        assert!(h.owns_request(request));
+        // Check the caller budget separately from reactor delivery latency.
+        // A loaded host need not publish new readiness within five milliseconds.
+        assert_eq!(
+            h.drive(
+                Some(Instant::now() + StdDuration::from_millis(5)),
+                |_, _| Flow::Continue,
+            )
+            .await?,
+            Progress::WaitDeadline
+        );
         assert!(h.owns_request(request));
         Ok::<(), Box<dyn std::error::Error>>(())
     })
