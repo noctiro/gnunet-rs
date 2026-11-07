@@ -50,6 +50,10 @@ syscall; errors retain the same packet and original OS cause. There is no suffix
 send, nonce regeneration, implicit remote receipt or cryptographic credit refund. IPv6 sets IPV6_V6ONLY. The source profiles are IPv4 base1452/KX1300/BOX1404
 and IPv6 base1232/KX1080/BOX1184; source-compatible rekey adds36 to the BOX extent.
 
+Before publishing a bound or adopted socket, the adapter requests a 128 KiB
+kernel receive buffer if the reported budget is smaller, allowing a maximum
+datagram plus kernel accounting. The operating system may adjust the request.
+
 Real Rust socket composition passed IPv4 and IPv6 initial/BOX/rekey/newmaster
 traffic and captured KX rejection after a durable journal restart. The unchanged
 native test binary first failed all three tests with sandbox EPERM at bind; those
@@ -197,7 +201,7 @@ raw native fields (default local ABI). Address selection uses recvfrom
 endpoints rather than trusting advertised native ports. Passive default-port0
 probes produce only bounded unauthenticated dial candidates; they do not generate
 a completion without an original active command. Adopted IPv6 utility sockets
-keep their native configuration; mapped-v4 endpoints are refused.
+retain their bound endpoint and IPv6 mode; mapped-v4 endpoints are refused.
 
 Affected macOS/Linux strict library/binary checks and three architecture guards
 passed during central integration. A live socket is distinct from a quiescent

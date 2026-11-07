@@ -153,7 +153,8 @@ impl Receipt {
     }
 }
 /// Sole socket/TX/RX reader. Bound default IPv6 sockets set IPV6_V6ONLY;
-/// adopted utility scan descriptors keep their actual configuration. All IPv6
+/// adopted utility scan descriptors retain their bound endpoint and IPv6 mode.
+/// RX buffer requests cover a maximum datagram and kernel accounting. All IPv6
 /// owners reject mapped-v4 destinations. Addresses do not assert peer identity.
 pub struct DatagramSocket {
     owner: SocketId,

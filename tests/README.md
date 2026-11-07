@@ -52,7 +52,7 @@ to `main`, version tags and manual dispatch.
 
 Linux also runs architecture, lint/docs, isolated core feature profiles and C
 comparisons. Python controls run on Linux and macOS. CI scans Git history for
-credentials and checks both Cargo lockfiles against RustSec.
+credentials and checks all tracked Cargo lockfiles against RustSec.
 
 The [Rust setup](../.github/actions/setup-rust/action.yml) reads
 `rust-toolchain.toml` and verifies the native host. It caches downloaded Cargo
