@@ -1354,10 +1354,25 @@ mod boundaries {
             };
             let child = actual_command(&mut registry.0, command)?;
             drop(read);
-            // A real unrelated child produces SIGCHLD while the managed child
-            // remains alive. Its consuming wait belongs only to this fixture.
-            let status = std::process::Command::new("/usr/bin/true").status()?;
-            assert!(status.success());
+            // Observe SIGCHLD before consuming this other registry's exit.
+            // FreeBSD wait can dequeue an as-yet-undelivered child signal.
+            let mut unrelated = Registry(ChildRegistry::new(1)?);
+            let other = actual_command(
+                &mut unrelated.0,
+                NativeCommand {
+                    filename: OsString::from("/usr/bin/true"),
+                    argv: vec![OsString::from("true")],
+                    environment: EnvironmentSnapshot::system()?,
+                    environment_changes: Vec::new(),
+                    cwd: None,
+                    stdio: 0,
+                    stdio_snapshot: None,
+                    listeners: Vec::new(),
+                    mappings: Vec::new(),
+                },
+            )?;
+            let mut unrelated_exit = None;
+            let mut notified = false;
             let (release, receive) = std::sync::mpsc::channel();
             let closer = std::thread::spawn(move || -> io::Result<()> {
                 receive.recv().map_err(io::Error::other)?;
@@ -1381,11 +1396,18 @@ mod boundaries {
                         std::task::Poll::Ready(Ok(())) => {
                             // Deliberately return Pending after the notification
                             // produced no managed death, as a host driver does.
+                            notified = true;
+                        }
+                        std::task::Poll::Pending => {}
+                    }
+                    if notified && unrelated_exit.is_none() {
+                        unrelated.0.reap_completed()?;
+                        if let Some(event) = unrelated.0.take_reaped() {
+                            unrelated_exit = Some(event);
                             if let Some(release) = release.take() {
                                 release.send(()).map_err(io::Error::other)?;
                             }
                         }
-                        std::task::Poll::Pending => {}
                     }
                     std::task::Poll::Pending
                 }),
@@ -1399,6 +1421,10 @@ mod boundaries {
                 .join()
                 .map_err(|_| io::Error::other("owned pipe worker panicked"))??;
             let event = result??;
+            let unrelated_exit = unrelated_exit
+                .ok_or_else(|| io::Error::other("unrelated child notification was not observed"))?;
+            assert_eq!(unrelated_exit.child, other.child);
+            assert_eq!(unrelated_exit.exit, ChildExit::Exited(0));
             assert_eq!(event.child, child.child);
             assert_eq!(event.exit, ChildExit::Exited(0));
             // An outer deadline wake must not masquerade as a child wake.
