@@ -52,6 +52,7 @@ broken_intra_doc_links = "deny"
 invalid_html_tags = "deny"
 
 [workspace.dependencies]
+windows-sys = { version = "=0.61.2", default-features = false }
 gnunet-extractor-host = { path = "adapters/extractor-std", default-features = false }
 gnunet-secretsharing-host = { path = "adapters/secretsharing-std", default-features = false }
 gnunet-uri-host = { path = "adapters/uri-std", default-features = false }

@@ -17,6 +17,8 @@ pub enum Mode {
     LinuxPi,
     /// Darwin utun: network u32 AF_INET=2 or AF_INET6=30.
     Utun,
+    /// FreeBSD TUN_IFHEAD: network u32 AF_INET=2 or AF_INET6=28.
+    FreeBsd,
 }
 impl Mode {
     /// Actual per-packet prefix size.
@@ -101,11 +103,14 @@ pub fn decode(mode: Mode, frame: &[u8]) -> Result<(Version, &[u8]), PacketError>
                 return Err(PacketError::Family);
             }
         }
-        Mode::Utun => {
+        Mode::Utun | Mode::FreeBsd => {
             let p = u32::from_be_bytes([frame[0], frame[1], frame[2], frame[3]]);
             if p != match v {
                 Version::V4 => 2,
-                Version::V6 => 30,
+                Version::V6 => match mode {
+                    Mode::FreeBsd => 28,
+                    _ => 30,
+                },
             } {
                 return Err(PacketError::Family);
             }
@@ -126,5 +131,30 @@ pub const fn prefix(mode: Mode, v: Version) -> [u8; 4] {
             Version::V4 => [0, 0, 0, 2],
             Version::V6 => [0, 0, 0, 30],
         },
+        Mode::FreeBsd => match v {
+            Version::V4 => [0, 0, 0, 2],
+            Version::V6 => [0, 0, 0, 28],
+        },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn native_bsd_families_are_distinct_and_never_guessed_from_ip() {
+        let mut ipv6 = [0; 44];
+        ipv6[4] = 0x60;
+        ipv6[..4].copy_from_slice(&prefix(Mode::FreeBsd, Version::V6));
+        assert_eq!(decode(Mode::FreeBsd, &ipv6), Ok((Version::V6, &ipv6[4..])));
+        assert_eq!(decode(Mode::Utun, &ipv6), Err(PacketError::Family));
+        ipv6[..4].copy_from_slice(&prefix(Mode::Utun, Version::V6));
+        assert_eq!(decode(Mode::Utun, &ipv6), Ok((Version::V6, &ipv6[4..])));
+        assert_eq!(decode(Mode::FreeBsd, &ipv6), Err(PacketError::Family));
+        assert_eq!(
+            decode(Mode::FreeBsd, &ipv6[..3]),
+            Err(PacketError::Truncated)
+        );
     }
 }

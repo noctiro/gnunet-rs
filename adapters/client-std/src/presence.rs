@@ -6,14 +6,17 @@
 //! bind; other hostnames are assumed up without DNS or a network connection.
 //! None of these observations establishes a TEST reply or application authority.
 use crate::ConnectError;
-use gnunet_config::{Configuration, ProcessEnvironment};
+use gnunet_config::Configuration;
+#[cfg(unix)]
+use gnunet_config::ProcessEnvironment;
+#[cfg(unix)]
 use nix::unistd::{AccessFlags, access};
-use socket2::{Domain, SockAddr, Socket, Type};
-use std::{
-    io,
-    net::{Ipv4Addr, Ipv6Addr, SocketAddr},
-    path::Path,
-};
+#[cfg(unix)]
+use socket2::SockAddr;
+use socket2::{Domain, Socket, Type};
+#[cfg(unix)]
+use std::io;
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 
 /// Source-defined observation, without an authenticated application handshake.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -24,6 +27,7 @@ pub enum ServicePresence {
     LikelyUp,
 }
 
+#[cfg(unix)]
 fn arm_bound(config: &Configuration, service: &[u8]) -> bool {
     if config
         .get_yesno(service, b"IMMEDIATE_START")
@@ -39,7 +43,8 @@ fn arm_bound(config: &Configuration, service: &[u8]) -> bool {
     }
 }
 
-fn unix(path: &Path) -> Result<ServicePresence, ConnectError> {
+#[cfg(unix)]
+fn unix(path: &std::path::Path) -> Result<ServicePresence, ConnectError> {
     // Unlike ordinary CLIENT connection selection, this source operation never
     // shortens a long path. Validate the native sockaddr before socket creation.
     let address = SockAddr::unix(path)?;
@@ -65,6 +70,7 @@ fn unix(path: &Path) -> Result<ServicePresence, ConnectError> {
 /// connect may block just as in C; this operation supplies no fabricated timeout.
 /// Every created socket is local to this call and closed before return.
 pub fn test(config: &Configuration, service: &[u8]) -> Result<ServicePresence, ConnectError> {
+    #[cfg(unix)]
     match config.get_filename(service, b"UNIXPATH", &ProcessEnvironment) {
         Ok(path) => {
             if path.as_os_str().is_empty() {

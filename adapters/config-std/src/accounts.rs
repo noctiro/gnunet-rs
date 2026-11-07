@@ -1,6 +1,10 @@
 //! Safe host account lookup for the official secret-file diagnostic text.
-use crate::{Error, path_bytes};
-use std::{fs, path::Path};
+use crate::Error;
+#[cfg(unix)]
+use crate::path_bytes;
+#[cfg(unix)]
+use std::fs;
+use std::path::Path;
 /// Host account-name lookup. Values remain opaque Unix bytes; no shell command
 /// or process-global environment mutation is used.
 pub trait NssResolver {

@@ -13,7 +13,7 @@ mod external_contracts;
 mod inputs;
 mod verify;
 
-const USAGE: &str = "usage: cargo xtask check-deps|check-features|check-noalloc|check-lints|check-external-contracts [--strict]|check-external-release [--strict]|check-conformance [--strict]|check-legacy-conformance [--strict]|check-api-inventory [--strict]|evidence-inputs|verify [all|format|lint|tools|portable|test|embedded|reference|daemon-reference]";
+const USAGE: &str = "usage: cargo xtask check-deps|check-features|check-noalloc|check-lints|check-external-contracts [--strict]|check-external-release [--strict]|check-conformance [--strict]|check-legacy-conformance [--strict]|check-api-inventory [--strict]|evidence-inputs|verify [all|format|lint|tools|portable|runtime|test|embedded|reference|daemon-reference]";
 
 fn main() -> ExitCode {
     match run() {

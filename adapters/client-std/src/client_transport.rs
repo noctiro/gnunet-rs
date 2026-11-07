@@ -1,8 +1,7 @@
 //! Official CLIENT socket attempts with one explicit process Resolver port.
 //! No per-query Resolver MQ, hidden global, or native DNS substitution exists.
 use crate::{
-    ConnectError, ConnectGuard, live_configuration::LiveConfiguration, network::shorten_unixpath,
-    resolution::PortError,
+    ConnectError, ConnectGuard, live_configuration::LiveConfiguration, resolution::PortError,
 };
 use gnunet_config::{Configuration, ProcessEnvironment};
 use std::{
@@ -14,7 +13,9 @@ use std::{
     task::{Context, Poll},
     time::Duration,
 };
-use tokio::net::{TcpStream, UnixStream};
+use tokio::net::TcpStream;
+#[cfg(unix)]
+use tokio::net::UnixStream;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 type SocketFuture = Pin<
     Box<dyn Future<Output = io::Result<gnunet_service_runtime::connection::Connection>> + Send>,
@@ -369,7 +370,12 @@ fn native_guard(guard: &Option<ConnectGuard>) -> io::Result<()> {
         None => Ok(()),
     }
 }
-async fn connect_unix(path: PathBuf, guard: Option<ConnectGuard>) -> io::Result<UnixStream> {
+#[cfg(unix)]
+async fn connect_unix(
+    path: PathBuf,
+    guard: Option<ConnectGuard>,
+) -> io::Result<gnunet_service_runtime::connection::Connection> {
+    let path = gnunet_service_runtime::network::shorten_unixpath(&path)?;
     native_guard(&guard)?;
     let mut connecting = std::pin::pin!(UnixStream::connect(path));
     poll_fn(|cx| {
@@ -377,6 +383,18 @@ async fn connect_unix(path: PathBuf, guard: Option<ConnectGuard>) -> io::Result<
         connecting.as_mut().poll(cx)
     })
     .await
+    .map(gnunet_service_runtime::connection::Connection::from_unix)
+}
+#[cfg(not(unix))]
+async fn connect_unix(
+    _: PathBuf,
+    guard: Option<ConnectGuard>,
+) -> io::Result<gnunet_service_runtime::connection::Connection> {
+    native_guard(&guard)?;
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "native local socket backend is unavailable; configure official TCP IPC",
+    ))
 }
 
 enum StartedProbe {
@@ -582,18 +600,12 @@ fn attempt_shared(
         if (round.is_multiple_of(2) || endpoint.service.tcp.is_none())
             && let Some(path) = &endpoint.service.unix
         {
-            match shorten_unixpath(path) {
-                Ok(path) => match connect_unix(path, guard.clone()).await {
-                    Ok(stream) => {
-                        native_guard(&guard)?;
-                        return Ok((
-                            gnunet_service_runtime::connection::Connection::from_unix(stream),
-                            None,
-                        ));
-                    }
-                    Err(error) if PortError::from_io(&error).is_some() => return Err(error),
-                    Err(error) => unix_error = Some(error),
-                },
+            match connect_unix(path.clone(), guard.clone()).await {
+                Ok(stream) => {
+                    native_guard(&guard)?;
+                    return Ok((stream, None));
+                }
+                Err(error) if PortError::from_io(&error).is_some() => return Err(error),
                 Err(error) => unix_error = Some(error),
             }
         }
@@ -692,11 +704,9 @@ pub(crate) fn attempt_guarded(
                     .unix
                     .as_ref()
                     .ok_or_else(|| invalid("no Unix endpoint"))?;
-                let stream = connect_unix(shorten_unixpath(path)?, guard.clone()).await?;
+                let stream = connect_unix(path.clone(), guard.clone()).await?;
                 native_guard(&guard)?;
-                Ok(gnunet_service_runtime::connection::Connection::from_unix(
-                    stream,
-                ))
+                Ok(stream)
             }
         }),
     })

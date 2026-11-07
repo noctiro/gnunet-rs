@@ -16,6 +16,7 @@ enum Stage {
     Lint,
     Tools,
     Portable,
+    Runtime,
     Test,
     Embedded,
     Reference,
@@ -29,7 +30,7 @@ const DEFAULT: &[Stage] = &[
     Stage::Test,
     Stage::Embedded,
 ];
-const USAGE: &str = "expected verify [all|format|lint|tools|portable|test|embedded|reference|daemon-reference]; reference groups require GNUNET_REFERENCE_SOURCE; daemon-reference also requires GNUNET_REFERENCE_BUILD";
+const USAGE: &str = "expected verify [all|format|lint|tools|portable|runtime|test|embedded|reference|daemon-reference]; reference groups require GNUNET_REFERENCE_SOURCE; daemon-reference also requires GNUNET_REFERENCE_BUILD";
 
 fn stages(group: Option<&str>) -> CheckResult<Vec<Stage>> {
     Ok(match group {
@@ -38,6 +39,7 @@ fn stages(group: Option<&str>) -> CheckResult<Vec<Stage>> {
         Some("lint") => vec![Stage::Lint],
         Some("tools") => vec![Stage::Tools],
         Some("portable") => vec![Stage::Portable],
+        Some("runtime") => vec![Stage::Runtime],
         Some("test") => vec![Stage::Test],
         Some("embedded") => vec![Stage::Embedded],
         Some("reference") => vec![Stage::Reference],
@@ -78,6 +80,47 @@ fn commands(stage: Stage) -> Vec<Vec<&'static str>> {
                 "--lib",
                 "--all-features",
                 "--no-deps",
+                "--locked",
+            ],
+        ],
+        Stage::Runtime => vec![
+            vec![
+                "cargo",
+                "test",
+                "-p",
+                "gnunet-native",
+                "--lib",
+                "--all-features",
+                "--locked",
+            ],
+            vec![
+                "cargo",
+                "test",
+                "-p",
+                "gnunet-service-runtime",
+                "--all-targets",
+                "--all-features",
+                "--locked",
+            ],
+            vec![
+                "cargo",
+                "test",
+                "-p",
+                "gnunet-client-host",
+                "--lib",
+                "--test",
+                "transport",
+                "--all-features",
+                "--locked",
+            ],
+            vec![
+                "cargo",
+                "test",
+                "-p",
+                "gnunet-resolver-broker",
+                "--test",
+                "tcp",
+                "--all-features",
                 "--locked",
             ],
         ],
@@ -235,7 +278,7 @@ fn check_platform(stages: &[Stage], unix: bool) -> CheckResult<()> {
             )
         })
     {
-        return Err("native workspace/reference verification and Python tool controls require Unix; use `cargo xtask verify portable` for the portable core".into());
+        return Err("full-workspace/reference verification and Python tool controls still require Unix; `verify runtime` runs shared native TCP/clock/framing/Resolver checks on Windows, and `verify portable` checks protocol cores".into());
     }
     Ok(())
 }
@@ -326,7 +369,15 @@ mod tests {
     use super::*;
     #[test]
     fn non_unix_hosts_reject_native_groups_before_starting_any_commands() -> CheckResult<()> {
-        check_platform(&[Stage::Portable, Stage::Format, Stage::Embedded], false)?;
+        check_platform(
+            &[
+                Stage::Portable,
+                Stage::Runtime,
+                Stage::Format,
+                Stage::Embedded,
+            ],
+            false,
+        )?;
         check_platform(DEFAULT, true)?;
         if check_platform(DEFAULT, false).is_ok() {
             return Err("Windows default verification could falsely certify Unix services".into());
@@ -357,6 +408,7 @@ mod tests {
             ("lint", Stage::Lint),
             ("tools", Stage::Tools),
             ("portable", Stage::Portable),
+            ("runtime", Stage::Runtime),
             ("test", Stage::Test),
             ("embedded", Stage::Embedded),
             ("reference", Stage::Reference),

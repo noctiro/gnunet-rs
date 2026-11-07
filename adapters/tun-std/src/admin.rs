@@ -1,6 +1,6 @@
 //! Actual read-only per-interface observations, never restore/route ownership.
 use crate::{Epoch, Info, OwnedTun, platform};
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::{io, net::Ipv4Addr};
 use tokio::time::Instant;
@@ -111,7 +111,7 @@ impl NativeSnapshot {
     pub const fn up(&self) -> bool {
         self.flags & libc::IFF_UP as u32 != 0
     }
-    /// Actual native lower16 interface flags.
+    /// Actual native interface flags (both 16-bit words on FreeBSD).
     #[must_use]
     pub const fn flags(&self) -> u32 {
         self.flags
@@ -157,7 +157,7 @@ impl OwnedTun {
         Ok(())
     }
 }
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 fn get(fd: &OwnedFd, command: libc::c_ulong, request: &mut libc::ifreq) -> io::Result<()> {
     #[cfg(all(target_os = "linux", target_env = "musl"))]
     let request_code = libc::c_int::try_from(command)
@@ -177,7 +177,7 @@ fn get(fd: &OwnedFd, command: libc::c_ulong, request: &mut libc::ifreq) -> io::R
         Ok(())
     }
 }
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 fn ipv4(fd: &OwnedFd, name: &str, command: libc::c_ulong) -> io::Result<Ipv4Observation> {
     let mut req = platform::request(name)?;
     match get(fd, command, &mut req) {
@@ -219,13 +219,13 @@ pub(crate) fn snapshot(
 ) -> Result<NativeSnapshot, AdminFailure> {
     check()?;
     let started_at = Instant::now();
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
     {
         let socket: OwnedFd = platform::control_socket()?.into();
         platform::nonblocking(&socket)?;
         let result = (|| {
             let mut req = platform::request(&info.name)?;
-            get(&socket, libc::SIOCGIFMTU, &mut req)?;
+            get(&socket, platform::SIOCGIFMTU, &mut req)?;
             #[expect(
                 unsafe_code,
                 reason = "Successful SIOCGIFMTU wrote this exact initialized ifreq MTU union member"
@@ -235,17 +235,22 @@ pub(crate) fn snapshot(
                 .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "negative native MTU"))?;
             check()?;
             let mut req = platform::request(&info.name)?;
-            get(&socket, libc::SIOCGIFFLAGS, &mut req)?;
+            get(&socket, platform::SIOCGIFFLAGS, &mut req)?;
             #[expect(
                 unsafe_code,
                 reason = "Successful SIOCGIFFLAGS wrote the documented initialized ifreq flags union member"
             )]
             // SAFETY: read only the scalar flags written by this exact getter.
-            let flags = u32::from(unsafe { req.ifr_ifru.ifru_flags } as u16);
+            let native_flags = unsafe { req.ifr_ifru.ifru_flags };
+            #[cfg(not(target_os = "freebsd"))]
+            let flags = u32::from(native_flags as u16);
+            #[cfg(target_os = "freebsd")]
+            let flags =
+                u32::from(native_flags[0] as u16) | (u32::from(native_flags[1] as u16) << 16);
             check()?;
             let address = ipv4(&socket, &info.name, libc::SIOCGIFADDR)?;
             check()?;
-            let netmask = ipv4(&socket, &info.name, libc::SIOCGIFNETMASK)?;
+            let netmask = ipv4(&socket, &info.name, platform::SIOCGIFNETMASK)?;
             check()?;
             Ok::<_, AdminFailure>((mtu, flags, address, netmask))
         })();
@@ -283,7 +288,7 @@ pub(crate) fn snapshot(
             close_error,
         })
     }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "freebsd")))]
     {
         let _inputs = (epoch, info, until, started_at);
         Err(AdminFailure::Kernel(io::ErrorKind::Unsupported.into()))

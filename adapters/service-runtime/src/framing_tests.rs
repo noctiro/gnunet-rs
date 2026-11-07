@@ -20,9 +20,17 @@ fn limits(accounting: Accounting, slice: usize, bytes: usize, frames: usize) -> 
         io_slice_bytes: slice,
     }
 }
-fn pair() -> io::Result<(Connection, tokio::net::UnixStream)> {
-    let (a, b) = tokio::net::UnixStream::pair()?;
-    Ok((Connection::from_unix(a), b))
+async fn pair() -> io::Result<(Connection, tokio::net::TcpStream)> {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let (client, server) = tokio::join!(
+        tokio::net::TcpStream::connect(listener.local_addr()?),
+        listener.accept(),
+    );
+    let client = client?;
+    let (server, _) = server?;
+    client.set_nodelay(true)?;
+    server.set_nodelay(true)?;
+    Ok((Connection::from_tcp(server), client))
 }
 fn frame(value: u8) -> Vec<u8> {
     vec![0, 8, 0, 99, value, value, value, value]
@@ -60,7 +68,7 @@ fn actual_positive_writes_keep_foreign_brand_distinct_and_remove_only_unstarted_
         let removed = Origin { brand: &a, id: 2 };
         let next = Origin { brand: &b, id: 1 };
         assert_ne!(first, next);
-        let (connection, mut peer) = pair()?;
+        let (connection, mut peer) = pair().await?;
         let mut io = Framed::new(connection, limits(Accounting::Retained, 1, 32, 4))?;
         let one = frame(11);
         let two = frame(22);
@@ -127,7 +135,7 @@ fn exact_wire_accounting_and_extra_budget_never_replace_original_admission()
 -> Result<(), Box<dyn std::error::Error>> {
     runtime()?.block_on(async {
         for mode in [Accounting::Retained, Accounting::Remaining] {
-            let (connection, mut peer) = pair()?;
+            let (connection, mut peer) = pair().await?;
             let mut io = Framed::new(connection, limits(mode, 1, 8, 4))?;
             io.enqueue_copy(&frame(7), 1u8, Class::Ordinary)?;
             for _ in 0..4 {
@@ -151,7 +159,7 @@ fn exact_wire_accounting_and_extra_budget_never_replace_original_admission()
                 );
             }
         }
-        let (connection, _peer) = pair()?;
+        let (connection, _peer) = pair().await?;
         let mut io = Framed::new(connection, limits(Accounting::Retained, 8, 8, 1))?;
         io.enqueue_copy(&frame(1), 1u8, Class::Ordinary)?;
         io.set_reserved(Budget {
@@ -171,7 +179,7 @@ fn exact_wire_accounting_and_extra_budget_never_replace_original_admission()
 fn actual_partial_rx_wait_ready_borrow_and_mutable_secret_erasure_preserve_the_next_frame()
 -> Result<(), Box<dyn std::error::Error>> {
     runtime()?.block_on(async {
-        let (connection, mut peer) = pair()?;
+        let (connection, mut peer) = pair().await?;
         let mut io = Framed::<()>::new(connection, limits(Accounting::Retained, 1, 32, 4))?;
         let first = frame(0x71);
         let next = frame(0x39);
@@ -223,7 +231,7 @@ fn actual_partial_rx_wait_ready_borrow_and_mutable_secret_erasure_preserve_the_n
 fn retirement_closes_original_partial_mq_and_wipes_retained_incoming_secrets()
 -> Result<(), Box<dyn std::error::Error>> {
     runtime()?.block_on(async {
-        let (connection, mut peer) = pair()?;
+        let (connection, mut peer) = pair().await?;
         let mut io = Framed::new(connection, limits(Accounting::Retained, 1, 32, 4))?;
         peer.write_all(&frame(0x61)).await?;
         rx(&mut io).await?;
@@ -254,7 +262,7 @@ fn retirement_closes_original_partial_mq_and_wipes_retained_incoming_secrets()
 fn malformed_and_capacity_rejection_keep_original_identity_without_physical_io()
 -> Result<(), Box<dyn std::error::Error>> {
     runtime()?.block_on(async {
-        let (connection, peer) = pair()?;
+        let (connection, peer) = pair().await?;
         let mut io = Framed::new(connection, limits(Accounting::Retained, 8, 16, 2))?;
         let bad = vec![0, 7, 0, 99, 1, 2, 3, 4];
         let rejected = match io.enqueue_owned(OwnedFrame::new(bad.clone()), 42u8, Class::Ordinary) {
@@ -285,12 +293,12 @@ fn malformed_and_capacity_rejection_keep_original_identity_without_physical_io()
 fn real_clean_eof_and_partial_truncation_never_create_a_complete_frame()
 -> Result<(), Box<dyn std::error::Error>> {
     runtime()?.block_on(async {
-        let (connection, peer) = pair()?;
+        let (connection, peer) = pair().await?;
         let mut clean = Framed::<()>::new(connection, limits(Accounting::Retained, 1, 16, 2))?;
         drop(peer);
         assert_eq!(poll_fn(|cx| clean.poll_read(cx)).await?, ReadStep::Eof);
         assert!(clean.frame().is_none());
-        let (connection, mut peer) = pair()?;
+        let (connection, mut peer) = pair().await?;
         let mut partial = Framed::<()>::new(connection, limits(Accounting::Retained, 1, 16, 2))?;
         peer.write_all(&[0, 8]).await?;
         drop(peer);
@@ -321,7 +329,7 @@ fn real_clean_eof_and_partial_truncation_never_create_a_complete_frame()
 fn callback_unwind_cannot_leave_canceled_frames_or_phantom_queue_charge()
 -> Result<(), Box<dyn std::error::Error>> {
     runtime()?.block_on(async {
-        let (connection, mut peer) = pair()?;
+        let (connection, mut peer) = pair().await?;
         let mut io = Framed::new(connection, limits(Accounting::Retained, 8, 32, 4))?;
         for id in 1..=3 {
             io.enqueue_copy(&frame(id), id, Class::Ordinary)?;
@@ -356,7 +364,7 @@ fn untracked_vector_write_uses_one_real_progress_quantum_and_preserves_partial_t
 -> Result<(), Box<dyn std::error::Error>> {
     runtime()?.block_on(async {
         for accounting in [Accounting::Remaining, Accounting::Retained] {
-            let (connection, mut peer) = pair()?;
+            let (connection, mut peer) = pair().await?;
             let mut io = Framed::new(connection, limits(accounting, 12, 32, 4))?;
             for value in [1, 2, 3] {
                 io.enqueue_copy(&frame(value), (), Class::Ordinary)?;

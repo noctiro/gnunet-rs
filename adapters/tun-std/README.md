@@ -1,6 +1,6 @@
 # gnunet-tun-host
 
-This independent adapter owns a verified Linux TUN or macOS utun descriptor,
+This independent adapter owns a verified Linux TUN, macOS utun or FreeBSD TUN descriptor,
 or an explicitly launched Linux VPN helper and its original packet pipes. Both paths expose caller-driven complete raw IPv4/IPv6 packets. There is no
 GNUnet C FFI, background task, key access, service, Resolver or hidden route
 command. The optional helper uses the official type185 framing, not a private
@@ -15,12 +15,22 @@ macOS verifies SOCK_DGRAM, the connected utun controller ID, IFNAME, normal head
 flags and interface index. Arbitrary sockets/files cannot qualify through
 the public API. A failed adoption closes that consumed descriptor and preserves
 the original OS error. Successful adoption sets O_NONBLOCK and FD_CLOEXEC.
+FreeBSD requires a character device accepting `TUNGIFHEAD`, an enabled family
+header, and the actual `TUNGIFNAME`/interface index; TAP and ambiguous legacy
+link headers are refused.
 
 `OwnedTun::open_linux(name, packet_information, limits)` opens `/dev/net/tun` and
 executes TUNSETIFF. `None` uses kernel naming; `packet_information` explicitly
 chooses Linux PI or IFF_NO_PI. `OwnedTun::open_utun(unit, limits)` opens and connects
 the macOS kernel control; `None` chooses a free unit and Some(n) requests
 utunN. Native capability/permission failures return their errno. They do not configure addresses, MTU, link state or routes.
+
+`OwnedTun::open_freebsd_existing(name, limits)` checks an existing `tunN`, opens
+its named device and enables `TUN_IFHEAD`. The caller must serialize interface
+creation/destruction across this operation; observed name/index replacement is
+refused. FreeBSD interfaces persist after close, which clears their link and
+address state. This API does not own interface creation/destruction. Native
+provisioning, route and readiness integration remain [open work](../../IMPLEMENTATION_STATUS.md).
 
 `close` performs one native close attempt and returns its errno. Drop also
 owns normal FD release. `into_fd` transfers the original descriptor out. Both
@@ -44,6 +54,8 @@ complete admitted packet.
   ethertype is decoded in network order.
 - macOS utun uses a four-byte network-order address family: 2 for IPv4 and 30 for
   IPv6. Optional extended header flags are rejected during device qualification.
+- FreeBSD TUN uses a four-byte network-order family: 2 for IPv4 and 28 for IPv6.
+  Its maximum complete raw packet is 65535 bytes, matching the kernel's `TUNMRU`.
 - `Received::bytes()` is one complete raw IP packet; `native_bytes()` retains the
   exact original native frame. Version/header/declared total length are checked.
   IPv6 jumbograms are unsupported. IP/transport checksums and peer authenticity
@@ -77,6 +89,9 @@ lifetimes. A successful address ioctl does not claim DAD completed or that the
 interface is up; link-up is a separate explicit action. Address and mask changes
 remain separate actions, so a later error cannot hide an earlier successful call. NativeApplied only follows an successful native ioctl return and reports
 late completion timing separately.
+FreeBSD uses its own `ifreq` flags pair and `in6_aliasreq` including the native
+`vhid` field. An independent C probe checks these layouts and ioctl values against
+the running FreeBSD host's installed headers during native tests.
 
 For a `Route { gateway: None, .. }` effect, call `OwnedTun::route(effect)` or
 `AsyncTun::route(effect)`. The returned `NativeRoute` owns one native control

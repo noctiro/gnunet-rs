@@ -13,7 +13,6 @@ mod tests {
     use std::{
         future::{Future, poll_fn},
         io,
-        path::PathBuf,
         pin::Pin,
         task::{Context, Poll},
         time::Duration,
@@ -193,7 +192,9 @@ mod tests {
         let _observed_first_poll = (label, pending);
         Ok(())
     }
-    struct SocketPath(PathBuf);
+    #[cfg(unix)]
+    struct SocketPath(std::path::PathBuf);
+    #[cfg(unix)]
     impl Drop for SocketPath {
         fn drop(&mut self) {
             match std::fs::remove_file(&self.0) {
@@ -202,6 +203,7 @@ mod tests {
         }
     }
     #[test]
+    #[cfg(unix)]
     fn public_unix_attempt_is_lazy_and_canceled_wait_retains_original_io() -> Test {
         fn traits<T: AsyncRead + AsyncWrite + Send + Unpin>() {}
         traits::<Connection>();

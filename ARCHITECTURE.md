@@ -90,6 +90,14 @@ failure, or vice versa.
 
 ## Configuration and changes
 
+Linux, macOS, Windows and FreeBSD are full native implementation targets.
+They share GNUnet wire formats, service behavior and application capabilities.
+Platform adapters select the real socket, process, filesystem, credential and
+device mechanisms; a different native mechanism does not justify a smaller
+product surface. CI must compile and run equivalent service and recovery
+scenarios on each platform. Platform-specific tests supplement that shared
+coverage, and unfinished backends remain explicit open work.
+
 Resolve identity profiles once at the configuration boundary. Local derivation,
 remote HELLO coverage, Messenger layout and TLS/ALPN are separate contracts.
 Verification does not try another profile after failure.

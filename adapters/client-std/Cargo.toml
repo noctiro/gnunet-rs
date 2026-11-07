@@ -8,9 +8,11 @@ license.workspace = true
 gnunet-config.workspace = true
 gnunet-types.workspace = true
 gnunet-service-runtime.workspace = true
-nix.workspace = true
 socket2.workspace = true
 tokio = { workspace = true, features = ["net", "time", "io-util", "rt"] }
+[target.'cfg(unix)'.dependencies]
+nix.workspace = true
+
 [dev-dependencies]
 gnunet-resolver-broker.workspace = true
 tokio = { workspace = true, features = ["rt", "io-std", "sync"] }

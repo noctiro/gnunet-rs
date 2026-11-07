@@ -446,9 +446,23 @@ impl<const R: usize, const N: usize> Context<R, N> {
         family: Family,
         timeout: Duration,
     ) -> Result<Query<R, N>, BrokerError> {
-        use std::os::unix::ffi::OsStrExt;
         let hostname = gnunet_native::hostname()?;
-        self.ip_get(hostname.as_bytes(), family, timeout)
+        #[cfg(unix)]
+        let bytes = {
+            use std::os::unix::ffi::OsStrExt;
+            hostname.as_bytes()
+        };
+        #[cfg(windows)]
+        let bytes = hostname
+            .to_str()
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "hostname contains invalid Unicode",
+                )
+            })?
+            .as_bytes();
+        self.ip_get(bytes, family, timeout)
     }
     /// Cancel before the next callback. Sent requests retain the original drain
     /// tombstone; no cancel wire frame or terminal callback is manufactured.

@@ -1,4 +1,5 @@
 //! Owned local endpoints exercise shared service-section and path lifetime rules.
+#![cfg(unix)]
 #![forbid(unsafe_code)]
 use gnunet_config::Configuration;
 use gnunet_service_runtime::service::{Listener, ShutdownMode};

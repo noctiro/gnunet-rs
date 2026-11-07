@@ -1,4 +1,5 @@
 //! Actual native numeric-only calls; no ordinary hostname or external DNS query.
+#![cfg(unix)]
 #![expect(
     clippy::expect_used,
     reason = "Finite numeric native calls must succeed before inspecting the actual owned result"

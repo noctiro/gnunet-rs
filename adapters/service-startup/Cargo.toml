@@ -11,6 +11,8 @@ default = []
 [dependencies]
 gnunet-service-runtime.workspace = true
 gnunet-config.workspace = true
+
+[target.'cfg(unix)'.dependencies]
 nix = { workspace = true, features = ["user"] }
 uzers.workspace = true
 libc.workspace = true

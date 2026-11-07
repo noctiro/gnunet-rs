@@ -21,11 +21,22 @@ pub struct Connection {
     stream: Stream,
 }
 
+#[cfg(unix)]
 impl std::os::fd::AsFd for Connection {
     fn as_fd(&self) -> std::os::fd::BorrowedFd<'_> {
         match &self.stream {
+            #[cfg(unix)]
             Stream::Unix(stream) => stream.as_fd(),
             Stream::Tcp(stream) => stream.as_fd(),
+        }
+    }
+}
+
+#[cfg(windows)]
+impl std::os::windows::io::AsSocket for Connection {
+    fn as_socket(&self) -> std::os::windows::io::BorrowedSocket<'_> {
+        match &self.stream {
+            Stream::Tcp(stream) => stream.as_socket(),
         }
     }
 }
@@ -35,10 +46,15 @@ impl Connection {
     /// credential lookup and supplies no peer authentication authority.
     #[must_use]
     pub const fn is_unix(&self) -> bool {
-        matches!(self.stream, Stream::Unix(_))
+        match &self.stream {
+            #[cfg(unix)]
+            Stream::Unix(_) => true,
+            Stream::Tcp(_) => false,
+        }
     }
     /// Kernel-reported Unix peer UID/GID, or None for TCP. This only observes
     /// the original owned socket; it performs no account lookup or admission.
+    #[cfg(unix)]
     pub fn unix_peer_credentials(&self) -> io::Result<Option<(u32, u32)>> {
         match &self.stream {
             Stream::Unix(stream) => {
@@ -80,6 +96,7 @@ impl Connection {
 
     /// Take an already configured, uniquely owned Unix stream without I/O.
     /// This establishes no protocol, peer authentication or admission authority.
+    #[cfg(unix)]
     pub fn from_unix(stream: tokio::net::UnixStream) -> Self {
         Self {
             lease: None,
@@ -145,7 +162,7 @@ impl AsyncWrite for Connection {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     #![expect(
         clippy::panic_in_result_fn,

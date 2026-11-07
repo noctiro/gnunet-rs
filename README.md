@@ -13,9 +13,10 @@ Run commands from the repository root. Rust is pinned by
 [rust-toolchain.toml](rust-toolchain.toml); native features may also require a C
 compiler and platform SDK.
 
-Native services target Unix. Windows CI covers the portable core; embedded
-profiles compile selected `no_std` configurations. See the
-[platform matrix](tests/README.md#continuous-integration) for execution scope.
+Linux, macOS, Windows and FreeBSD are full native implementation targets.
+Remaining platform backends are tracked in [implementation status](IMPLEMENTATION_STATUS.md).
+The [platform matrix](tests/README.md#continuous-integration) describes actual
+execution coverage; embedded profiles compile selected `no_std` configurations.
 
 Build the CLI and inspect its commands:
 

@@ -3855,7 +3855,7 @@ const POLICIES: &[Policy] = &[
         name: "gnunet-native",
         directory: "adapters/native-std",
         core: false,
-        dependencies: &["libc"],
+        dependencies: &["libc", "windows-sys"],
     },
     Policy {
         name: "gnunet-statistics-store",

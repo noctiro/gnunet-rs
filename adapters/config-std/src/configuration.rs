@@ -1949,12 +1949,12 @@ impl Configuration {
             #[cfg(not(unix))]
             drop(file);
             if let Ok(metadata) = fs::metadata(&path) {
-                let mut permissions = metadata.permissions();
+                let permissions = metadata.permissions();
                 #[cfg(unix)]
-                {
+                let permissions = {
                     use std::os::unix::fs::PermissionsExt;
-                    permissions = fs::Permissions::from_mode(permissions.mode() & 0o777);
-                }
+                    fs::Permissions::from_mode(permissions.mode() & 0o777)
+                };
                 if let Err(error) = fs::set_permissions(&temporary, permissions) {
                     // chmod is diagnostic-only in the source; publication is
                     // still attempted after this warning.
@@ -2210,12 +2210,14 @@ impl Configuration {
                 }
                 Err(_) => {}
             }
-            let mut builder = fs::DirBuilder::new();
+            let builder = fs::DirBuilder::new();
             #[cfg(unix)]
-            {
+            let builder = {
                 use std::os::unix::fs::DirBuilderExt;
+                let mut builder = builder;
                 builder.mode(0o755);
-            }
+                builder
+            };
             if let Err(error) = builder.create(directory)
                 && error.kind() != std::io::ErrorKind::AlreadyExists
             {

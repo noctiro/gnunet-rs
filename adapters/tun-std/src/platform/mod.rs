@@ -1,6 +1,6 @@
 //! Small checked platform ABI boundary; never runs a command/helper process.
 use crate::{Action, Info};
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 use std::os::fd::AsRawFd;
 use std::{ffi::CString, io, os::fd::OwnedFd};
 #[cfg(target_os = "linux")]
@@ -11,14 +11,22 @@ pub(super) use linux::{apply, open, open_exclusive, verify};
 mod macos;
 #[cfg(target_os = "macos")]
 pub(super) use macos::{apply, open, verify};
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(target_os = "freebsd")]
+mod freebsd;
+#[cfg(target_os = "freebsd")]
+pub(super) use freebsd::{SIOCGIFFLAGS, SIOCGIFMTU, SIOCGIFNETMASK};
+#[cfg(target_os = "freebsd")]
+pub(super) use freebsd::{apply, open_existing, verify};
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(super) use libc::{SIOCGIFFLAGS, SIOCGIFMTU, SIOCGIFNETMASK};
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "freebsd")))]
 pub(super) fn verify(_: &OwnedFd) -> io::Result<Info> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "TUN platform unsupported",
     ))
 }
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "freebsd")))]
 pub(super) fn apply(_: &Info, _: &Action) -> io::Result<()> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
@@ -56,7 +64,7 @@ pub(super) fn index(name: &str) -> io::Result<u32> {
         Ok(result)
     }
 }
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 pub(super) fn read_name(bytes: &[libc::c_char]) -> io::Result<String> {
     let end = bytes
         .iter()
@@ -68,7 +76,7 @@ pub(super) fn read_name(bytes: &[libc::c_char]) -> io::Result<String> {
     let v: Vec<u8> = bytes[..end].iter().map(|b| *b as u8).collect();
     String::from_utf8(v).map_err(|_| invalid("non-UTF8 kernel interface name"))
 }
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 pub(super) fn request(name: &str) -> io::Result<libc::ifreq> {
     #[expect(
         unsafe_code,
@@ -82,7 +90,7 @@ pub(super) fn request(name: &str) -> io::Result<libc::ifreq> {
     }
     Ok(req)
 }
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 pub(super) fn control_socket() -> io::Result<socket2::Socket> {
     socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::DGRAM, None)
 }

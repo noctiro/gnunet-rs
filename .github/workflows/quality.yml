@@ -88,20 +88,19 @@ jobs:
           retention-days: 7
 
   tests:
-    name: Native workspace (${{ matrix.host }})
+    name: Native ${{ matrix.group }} (${{ matrix.host }})
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-24.04, host: x86_64-unknown-linux-gnu }
-          - { os: ubuntu-24.04-arm, host: aarch64-unknown-linux-gnu }
-          - { os: macos-15-intel, host: x86_64-apple-darwin }
-          - { os: macos-15, host: aarch64-apple-darwin }
+          - { os: ubuntu-24.04, host: x86_64-unknown-linux-gnu, group: test }
+          - { os: ubuntu-24.04-arm, host: aarch64-unknown-linux-gnu, group: test }
+          - { os: macos-15-intel, host: x86_64-apple-darwin, group: test }
+          - { os: macos-15, host: aarch64-apple-darwin, group: test }
+          - { os: windows-2025, host: x86_64-pc-windows-msvc, group: runtime }
+          - { os: windows-11-arm, host: aarch64-pc-windows-msvc, group: runtime }
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
-    env:
-      # Darwin has a short Unix socket path limit.
-      TMPDIR: /tmp
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -109,7 +108,10 @@ jobs:
       - uses: ./.github/actions/setup-rust
         with:
           host: ${{ matrix.host }}
-      - run: cargo xtask verify test
+      - run: cargo xtask verify ${{ matrix.group }}
+        env:
+          # Darwin has a short Unix socket path limit.
+          TMPDIR: ${{ runner.os == 'Windows' && runner.temp || '/tmp' }}
 
   portable:
     name: Portable core and feature tiers (${{ matrix.host }})

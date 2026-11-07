@@ -5,11 +5,15 @@ use crate::{
     stream::Stream,
 };
 use gnunet_native::network::{self, Diagnostics, InitializationError, StreamKind};
+#[cfg(unix)]
+use std::os::fd::AsFd;
+#[cfg(windows)]
+use std::os::windows::io::AsSocket;
 use std::{
     fmt, io,
-    os::fd::AsFd,
     task::{Context, Poll},
 };
+
 /// Actual accept failure or fatal initialization after a real socket was accepted.
 #[derive(Debug)]
 pub enum AcceptError {
@@ -31,7 +35,7 @@ impl AcceptError {
     /// Actual OS EMFILE condition. Descriptor values have no artificial ceiling.
     #[must_use]
     pub fn is_emfile(&self) -> bool {
-        self.io_error().raw_os_error() == Some(nix::errno::Errno::EMFILE as i32)
+        network::is_descriptor_limit(self.io_error())
     }
 }
 impl fmt::Display for AcceptError {
@@ -127,13 +131,17 @@ fn canonical_with(
     stream: Stream,
     peer: PeerAddress,
     initialize: impl FnOnce(
-        std::os::fd::BorrowedFd<'_>,
+        network::BorrowedStream<'_>,
         StreamKind,
     ) -> Result<Diagnostics, InitializationError>,
 ) -> Result<AcceptedConnection, AcceptError> {
     let diagnostics = match &stream {
+        #[cfg(unix)]
         Stream::Unix(s) => initialize(s.as_fd(), StreamKind::Unix),
+        #[cfg(unix)]
         Stream::Tcp(s) => initialize(s.as_fd(), StreamKind::Tcp),
+        #[cfg(windows)]
+        Stream::Tcp(s) => initialize(s.as_socket(), StreamKind::Tcp),
     };
     match diagnostics {
         Err(error) => {
@@ -142,6 +150,7 @@ fn canonical_with(
         }
         Ok(diagnostics) => {
             let connection = match stream {
+                #[cfg(unix)]
                 Stream::Unix(s) => Connection::from_unix(s),
                 Stream::Tcp(s) => Connection::from_tcp(s),
             };
@@ -179,6 +188,7 @@ impl Listener<'_> {
         poll_accept(self, cx).map(|result| {
             result.map(|(stream, peer)| {
                 let connection = match stream {
+                    #[cfg(unix)]
                     Stream::Unix(stream) => Connection::from_unix(stream),
                     Stream::Tcp(stream) => Connection::from_tcp(stream),
                 };
@@ -192,6 +202,7 @@ fn poll_accept(
     cx: &mut Context<'_>,
 ) -> Poll<io::Result<(Stream, PeerAddress)>> {
     match listener {
+        #[cfg(unix)]
         Listener::Unix(listener) => listener
             .poll_accept(cx)
             .map(|r| r.map(|(s, _)| (Stream::Unix(s), PeerAddress::Unix))),
@@ -201,7 +212,7 @@ fn poll_accept(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     //! Real owner close/continuation checks with explicitly injected init policy.
     #![expect(

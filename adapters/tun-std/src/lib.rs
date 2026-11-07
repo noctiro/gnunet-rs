@@ -28,22 +28,27 @@ use std::{
     os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd, RawFd},
     rc::Rc,
 };
+#[cfg(target_os = "freebsd")]
+const MAX_PACKET_BYTES: usize = 65535; // FreeBSD if_tun.h TUNMRU.
+#[cfg(not(target_os = "freebsd"))]
+const MAX_PACKET_BYTES: usize = 65575;
 /// Explicit maximum complete raw packet; no queues or unbounded worker are hidden.
 #[derive(Clone, Copy, Debug)]
 pub struct Limits {
-    /// Maximum raw IP bytes, from40 through65575; no IPv6 jumbograms.
+    /// Maximum raw IP bytes, from 40 through 65575 (65535 on FreeBSD).
+    /// IPv6 jumbograms are not supported.
     pub packet_bytes: usize,
 }
 impl Default for Limits {
     fn default() -> Self {
         Self {
-            packet_bytes: 65575,
+            packet_bytes: MAX_PACKET_BYTES,
         }
     }
 }
 impl Limits {
     fn validate(self) -> io::Result<()> {
-        if !(40..=65575).contains(&self.packet_bytes) {
+        if !(40..=MAX_PACKET_BYTES).contains(&self.packet_bytes) {
             Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "invalid TUN packet bound",
@@ -147,6 +152,18 @@ impl OwnedTun {
     pub fn open_utun(unit: Option<u32>, limits: Limits) -> io::Result<Self> {
         limits.validate()?;
         let fd = platform::open(unit)?;
+        Self::from_fd(fd, limits)
+    }
+    /// FreeBSD: open an existing named TUN and enable its native family header.
+    /// The interface must already exist. The caller must serialize interface
+    /// creation/destruction across this open; observed replacement is refused.
+    /// Close retires packet ownership and lets the kernel clear link/address
+    /// state, but does not destroy the persistent FreeBSD interface. Interface
+    /// creation/destruction remains with the caller's administrative owner.
+    #[cfg(target_os = "freebsd")]
+    pub fn open_freebsd_existing(name: &str, limits: Limits) -> io::Result<Self> {
+        limits.validate()?;
+        let fd = platform::open_existing(name)?;
         Self::from_fd(fd, limits)
     }
     /// Immutable actual device metadata.

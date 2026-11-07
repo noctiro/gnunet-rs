@@ -1,8 +1,9 @@
 //! Small native boundaries used by official host APIs.
 //!
-//! Hostname/address/network APIs retain their Unix availability. Locale C-byte
-//! contexts remain portable; selecting an unvalidated native locale ABI returns
-//! an explicit Unsupported error. This crate never calls libgnunet.
+//! Hostname and socket boundaries use native Unix or Windows APIs. Address and
+//! interface snapshots retain their documented platform availability. Locale
+//! C-byte contexts are portable; unsupported locale ABIs fail explicitly.
+//! This crate never calls libgnunet.
 
 /// Owned explicit locale snapshots and replaceable comparison contexts.
 pub mod locale;
@@ -12,13 +13,13 @@ pub mod locale;
 pub mod addresses;
 
 /// Native initialization policy for uniquely owned accepted streams.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub mod network;
 
 #[cfg(unix)]
 mod unix;
 #[cfg(unix)]
-pub use unix::{NativeError, hostname, hostname_max_length, local_fqdn};
+pub use unix::{hostname, hostname_max_length, local_fqdn};
 
 /// Bounded native interface snapshots.
 #[cfg(unix)]
@@ -39,3 +40,12 @@ pub mod nat_helper;
 /// No-replacement publication of an already prepared private directory.
 #[cfg(target_os = "macos")]
 pub mod directory;
+
+#[cfg(any(unix, windows))]
+mod error;
+#[cfg(any(unix, windows))]
+pub use error::NativeError;
+#[cfg(windows)]
+mod windows;
+#[cfg(windows)]
+pub use windows::{hostname, hostname_max_length, local_fqdn};

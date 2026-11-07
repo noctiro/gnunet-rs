@@ -25,11 +25,16 @@ pub fn native_profile() -> Result<FamilyProfile, Error> {
     {
         Ok(FamilyProfile::FREEBSD)
     }
+    #[cfg(windows)]
+    {
+        Ok(FamilyProfile::WINDOWS)
+    }
     #[cfg(not(any(
         target_os = "linux",
         target_os = "android",
         target_vendor = "apple",
-        target_os = "freebsd"
+        target_os = "freebsd",
+        windows
     )))]
     {
         Err(Error::Unsupported)

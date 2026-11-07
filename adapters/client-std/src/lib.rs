@@ -15,7 +15,6 @@ pub mod presence;
 pub mod resolution;
 use gnunet_config::Configuration;
 use gnunet_service_runtime::connection::Connection;
-use gnunet_service_runtime::network;
 pub use live_configuration::LiveConfiguration;
 use std::{
     future::Future,

@@ -1,12 +1,15 @@
 //! Shared listener references and service policy; no client or protocol engine.
 use crate::acl::AccessPolicy;
 use std::net::SocketAddr;
-use tokio::net::{TcpListener, UnixListener};
+use tokio::net::TcpListener;
+#[cfg(unix)]
+use tokio::net::UnixListener;
 
 /// One caller-owned listening socket; no network protocol is added by this host.
 #[derive(Clone, Copy, Debug)]
 pub enum Listener<'a> {
     /// Local Unix-domain stream listener.
+    #[cfg(unix)]
     Unix(&'a UnixListener),
     /// Official plain TCP service IPC listener.
     Tcp(&'a TcpListener),

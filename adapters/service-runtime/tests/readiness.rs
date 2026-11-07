@@ -1,4 +1,5 @@
 //! Real local socket-pair reactor tests, no public network or descriptor stealing.
+#![cfg(unix)]
 #![expect(
     clippy::expect_used,
     reason = "Finite owned-resource tests fail immediately on unexpected OS/reactor results"

@@ -11,11 +11,13 @@ Run from the repository root using the pinned Rust toolchain.
 | `cargo xtask verify lint` | Dependency/feature boundaries, Clippy and rustdoc |
 | `cargo xtask verify tools` | Python syntax and tool controls |
 | `cargo xtask verify portable` | Core feature profiles and facade allocation tiers |
+| `cargo xtask verify runtime` | Native sockets, clock/framing, CLIENT transport and Resolver TCP IPC |
 | `cargo xtask verify test` | Unix workspace with all features |
 | `cargo xtask verify embedded` | Cortex-M0/M4 compilation and no-allocation closure |
 
-`cargo xtask verify` runs all local groups above except the package-specific
-command. External C groups require explicit invocation.
+`cargo xtask verify` runs format, lint, tools, portable, workspace and embedded
+groups. Workspace tests include the runtime tests. External C groups require
+explicit invocation.
 
 Native tests use private files and Unix/loopback sockets. Keep socket paths short,
 for example `TMPDIR=/tmp cargo xtask verify test` on macOS.
@@ -23,7 +25,10 @@ for example `TMPDIR=/tmp cargo xtask verify test` on macOS.
 The portable group selects core packages from the architecture inventory. It
 runs without default features, then with all core features, and tests the facade
 with no features, `alloc` and `std`. Native adapters stay outside these profiles.
-Windows supports this group; native workspace and reference groups require Unix.
+The runtime group executes the same TCP wire and ownership scenarios on Windows
+and Unix. Complete Windows services, recovery and devices remain open work in
+[implementation status](../IMPLEMENTATION_STATUS.md); portable or runtime success
+does not establish complete workspace support.
 
 ## Tool controls
 
@@ -44,12 +49,13 @@ to `main`, version tags and manual dispatch.
 
 | Platform | Tests |
 | --- | --- |
-| Linux x86_64 / ARM64 | Native workspace |
-| macOS Intel / ARM64 | Native workspace |
+| Linux x86_64 / ARM64 | Native workspace, including shared runtime scenarios |
+| macOS Intel / ARM64 | Native workspace, including shared runtime scenarios |
 | FreeBSD 14.5 / 15.1 x86_64 | Native workspace, portable core and tool controls in an unprivileged VM |
-| Windows x86_64 / ARM64 | Portable core and facade allocation tiers |
+| Windows x86_64 / ARM64 | Shared native runtime, CLIENT/Resolver TCP IPC, portable core and facade allocation tiers |
 | Cortex-M0 / M4 | Compilation and no-allocation closure |
 
+All four OS families are full native targets; this table records current coverage.
 Linux also runs architecture, lint/docs, isolated core feature profiles and C
 comparisons. Python controls run on Linux and macOS. CI scans Git history for
 credentials and checks all tracked Cargo lockfiles against RustSec.
