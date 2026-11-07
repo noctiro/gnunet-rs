@@ -585,10 +585,7 @@ fn independent_management_snapshots_partial_loss_and_application_origins_stay_se
 -> Result<(), Failure> {
     runtime()?.block_on(async {
         tokio::time::timeout(Duration::from_secs(8), async {
-            let socket = tokio::net::TcpSocket::new_v4()?;
-            socket.set_send_buffer_size(1024)?;
-            socket.bind("127.0.0.1:0".parse()?)?;
-            let listener = socket.listen(4)?;
+            let listener = TcpListener::bind("127.0.0.1:0").await?;
             let listeners = [Listener::Tcp(&listener)];
             let mut instance = core::Instance::new();
             let mut clients = [core::ClientSlot::new(); 4];
@@ -621,14 +618,15 @@ fn independent_management_snapshots_partial_loss_and_application_origins_stay_se
             )?;
             let limits = management::Limits {
                 queries: 3,
-                records: 256,
-                path_identities: 512,
-                snapshot_bytes: 16384,
+                records: 8192,
+                path_identities: 8192,
+                snapshot_bytes: 262144,
             };
             server.enable_management(limits)?;
             let slow_socket = tokio::net::TcpSocket::new_v4()?;
             slow_socket.set_recv_buffer_size(1024)?;
             let mut slow = slow_socket.connect(listener.local_addr()?).await?;
+            socket2::SockRef::from(&slow).set_recv_buffer_size(1024)?;
             let accepted = poll_fn(|cx| listeners[0].poll_canonical_connection(cx)).await?;
             socket2::SockRef::from(accepted.connection()).set_send_buffer_size(1024)?;
             let _original_client = server
@@ -668,8 +666,12 @@ fn independent_management_snapshots_partial_loss_and_application_origins_stay_se
             );
             assert_eq!(server.report().written_bytes, 0);
             let mut directory = management::Directory::new([0; 32], limits)?;
-            for id in 1..=200_u8 {
-                directory.path(&[[id; 32]])?;
+            // Exceed the initial TCP window as well as the requested socket
+            // budgets. A small list can finish while the other MQ is delayed.
+            for index in 1..=4096_u32 {
+                let mut peer = [0; 32];
+                peer[..4].copy_from_slice(&index.to_be_bytes());
+                directory.path(&[peer])?;
             }
             let snapshot = directory.snapshot(management::Kind::Peers)?;
             let original_bytes = snapshot.bytes();
@@ -825,6 +827,26 @@ fn independent_management_snapshots_partial_loss_and_application_origins_stay_se
                 Response::PathsEnd
             );
 
+            assert_eq!(
+                server
+                    .management_report(original.client())?
+                    .ok_or("slow query lost before partial close")?
+                    .terminal,
+                management::Terminal::Pending
+            );
+            // Release one existing receive backlog before selecting the exact
+            // exposed partial frame. A kernel may stop at a frame boundary.
+            let mut prefix = Vec::new();
+            slow.readable().await?;
+            let mut buffer = [0; 4096];
+            loop {
+                match slow.try_read(&mut buffer) {
+                    Ok(0) => return Err("slow query closed before cancellation".into()),
+                    Ok(bytes) => prefix.extend_from_slice(&buffer[..bytes]),
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                    Err(error) => return Err(error.into()),
+                }
+            }
             until(
                 &mut server,
                 &listeners,
@@ -856,7 +878,6 @@ fn independent_management_snapshots_partial_loss_and_application_origins_stay_se
             assert_eq!(stopped.written_bytes, before.written_bytes);
             assert_eq!(stopped.terminal, management::Terminal::Interrupted);
             assert!(stopped.exposed);
-            let mut prefix = Vec::new();
             slow.read_to_end(&mut prefix).await?;
             assert_eq!(u64::try_from(prefix.len())?, stopped.written_bytes);
             let mut cursor = 0;
