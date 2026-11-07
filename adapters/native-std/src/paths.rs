@@ -562,7 +562,16 @@ mod tests {
         let mut original = create_private_file(&destination)?;
         original.write_all(b"original")?;
         original.sync_all()?;
-        restrict_execution(&original)?;
+        {
+            // Data handles request read/write only. The test's ACL setup owns
+            // a separate WRITE_DAC handle on this private fixture.
+            let security = File::options()
+                .access_mode(windows_sys::Win32::Storage::FileSystem::WRITE_DAC)
+                .open(&destination)?;
+            restrict_execution(&security).map_err(|error| {
+                io::Error::other(format!("protect test destination DACL: {error}"))
+            })?;
+        }
         let expected = windows_sys::Win32::Storage::FileSystem::FILE_ALL_ACCESS
             & !windows_sys::Win32::Storage::FileSystem::FILE_EXECUTE;
         assert_eq!(private_access(&original)?, (expected, true));
@@ -577,7 +586,9 @@ mod tests {
             execute().err().map(|e| e.kind()),
             Some(io::ErrorKind::PermissionDenied)
         );
-        publish_file(&prepared, &destination, Publication::Replace)?;
+        publish_file(&prepared, &destination, Publication::Replace).map_err(|error| {
+            io::Error::other(format!("publish over restricted destination: {error}"))
+        })?;
         assert_eq!(fs::read(&destination)?, b"replacement");
         assert!(!prepared.exists());
         let replaced = File::open(&destination)?;
