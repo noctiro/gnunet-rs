@@ -134,6 +134,12 @@ impl OutputDir {
                 return Err(Error::SourceChanged);
             }
             let mut file = File::from(openat(&parent, *name, REGULAR, Mode::empty())?);
+            // Settle pending filesystem metadata before anchoring the read fence.
+            #[cfg(target_os = "freebsd")]
+            file.sync_all().map_err(|source| Error::CommitUnknown {
+                query: expected.query,
+                source,
+            })?;
             let original = Stamp::file(&file)?;
             identity = Some(original.identity);
             if original.identity != expected_identity || original.bytes != expected.size {

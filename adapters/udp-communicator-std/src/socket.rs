@@ -2,7 +2,7 @@
 //! Waiting futures borrow this owner; cancellation cannot recreate or drop its packet.
 use gnunet_types::{Error, Rejected};
 use gnunet_udp_communicator_core::send::{Datagram, Policy};
-use socket2::{Domain, Protocol, Socket, Type};
+use socket2::{Domain, Protocol, SockRef, Socket, Type};
 use std::{
     io,
     net::SocketAddr,
@@ -203,6 +203,13 @@ impl DatagramSocket {
         };
         if local.port() == 0 || !profile.accepts(local) {
             return Err(Error::InvalidInput.into());
+        }
+        // BSD defaults can be smaller than one maximum UDP datagram. Reserve
+        // room for its payload and kernel accounting before publishing RX.
+        let native = SockRef::from(&socket);
+        let minimum = RECEIVE_BYTES * 2;
+        if native.recv_buffer_size()? < minimum {
+            native.set_recv_buffer_size(minimum)?;
         }
         let mut receive = Vec::new();
         receive

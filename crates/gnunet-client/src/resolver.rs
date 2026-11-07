@@ -21,6 +21,8 @@ impl FamilyProfile {
     pub const LINUX: Self = Self { inet: 2, inet6: 10 };
     /// Native Darwin AF_INET/AF_INET6.
     pub const DARWIN: Self = Self { inet: 2, inet6: 30 };
+    /// Native FreeBSD AF_INET/AF_INET6.
+    pub const FREEBSD: Self = Self { inet: 2, inet6: 28 };
     /// Explicit native profile. AF_UNSPEC is zero in this supported profile.
     pub const fn new(inet: i32, inet6: i32) -> Result<Self, Error> {
         if inet <= 0 || inet6 <= 0 || inet == inet6 {

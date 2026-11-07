@@ -2705,6 +2705,7 @@ const POLICIES: &[Policy] = &[
         core: false,
         dependencies: &[
             "libc",
+            "socket2",
             "gnunet-cadet",
             "zeroize",
             "gnunet-session-crypto",

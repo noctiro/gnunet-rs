@@ -70,7 +70,7 @@ impl fmt::Display for Error {
             Self::Limit => f.write_str("FS resource limit exceeded"),
             Self::Cancelled => f.write_str("FS operation cancelled"),
             Self::Corrupt => f.write_str("FS stored block is corrupt"),
-            Self::SourceChanged => f.write_str("FS input exceeds its declared size"),
+            Self::SourceChanged => f.write_str("FS source changed or exceeds its declared size"),
             Self::CleanupAfterCommit { source, .. } => {
                 write!(f, "FS file committed; temporary cleanup failed: {source}")
             }

@@ -397,6 +397,18 @@ impl Store {
             .parent()
             .filter(|p| !p.as_os_str().is_empty())
             .unwrap_or(Path::new("."));
+        #[cfg(target_os = "freebsd")]
+        let _initialization = {
+            let parent = OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+                .open(parent)
+                .map_err(|e| os("open-initialization-parent", e))?;
+            parent
+                .lock()
+                .map_err(|e| os("lock-initialization-parent", e))?;
+            parent
+        };
         let new = if namespace == Namespace::TransportTcp {
             tcp_directory::create(directory, mark_name, marker_data)?
         } else {
@@ -496,6 +508,8 @@ impl Store {
             None => writer_lease(&directory, lock_name)?,
         };
         dir.sync_all().map_err(|e| os("writer-directory-sync", e))?;
+        #[cfg(target_os = "freebsd")]
+        drop(_initialization);
         let mut store = Self {
             namespace,
             directory,

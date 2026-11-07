@@ -19,6 +19,7 @@ gnunet-wire.workspace = true
 tokio = { workspace = true, features = ["rt", "net", "time"] }
 
 [dev-dependencies]
+socket2.workspace = true
 gnunet-session-crypto.workspace = true
 zeroize = { workspace = true, features = ["alloc"] }
 gnunet-fs.workspace = true

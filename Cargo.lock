@@ -959,6 +959,7 @@ dependencies = [
  "gnunet-types",
  "gnunet-wire",
  "libc",
+ "socket2",
  "tokio",
  "zeroize",
 ]

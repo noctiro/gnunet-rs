@@ -27,6 +27,7 @@ async fn actual_short_write_reclaims_remaining_budget_without_changing_original_
     a.set_nonblocking(true)?;
     b.set_nonblocking(true)?;
     socket2::SockRef::from(&a).set_send_buffer_size(1024)?;
+    socket2::SockRef::from(&b).set_recv_buffer_size(1024)?;
     let connection = Connection::from_unix(tokio::net::UnixStream::from_std(a)?);
     let mut peer = tokio::net::UnixStream::from_std(b)?;
     let mut io = Framed::new(connection, 65535)?;

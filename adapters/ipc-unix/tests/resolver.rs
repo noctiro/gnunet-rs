@@ -291,7 +291,11 @@ fn tcp_reverse_uses_raw_ip_and_name_callback_cancel_suppresses_end() -> Result {
                 .concat(),
             )
             .await?;
-            assert_eq!(timeout(Duration::from_secs(1), s.read(&mut [0])).await??, 0);
+            match timeout(Duration::from_secs(1), s.read(&mut [0])).await? {
+                Ok(0) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => {}
+                result => return Err(format!("canceled socket stayed open: {result:?}").into()),
+            }
             Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
         });
         let (ctx, mut driver) = setup::<8, 128>(LiveConfiguration::new(cfg))?;

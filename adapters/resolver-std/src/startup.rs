@@ -29,6 +29,8 @@ pub fn native_family() -> Result<FamilyProfile, gnunet_types::Error> {
         Ok(FamilyProfile::DARWIN)
     } else if cfg!(target_os = "linux") {
         Ok(FamilyProfile::LINUX)
+    } else if cfg!(target_os = "freebsd") {
+        Ok(FamilyProfile::FREEBSD)
     } else {
         Err(gnunet_types::Error::Unsupported)
     }

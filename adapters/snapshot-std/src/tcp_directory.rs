@@ -1,4 +1,4 @@
-//! TransportTcp alone publishes a fully synchronized marker directory at once.
+//! Publish a synchronized TCP marker directory under the namespace writer contract.
 use super::{Failure, os};
 use std::{
     fs::{self, File, OpenOptions},
@@ -14,11 +14,19 @@ pub(super) fn create(directory: &Path, marker: &str, bytes: &[u8]) -> Result<boo
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
         Err(error) => return Err(os("inspect-tcp-directory", error)),
     }
-    #[cfg(any(all(target_os = "linux", target_env = "gnu"), target_os = "macos"))]
+    #[cfg(any(
+        all(target_os = "linux", target_env = "gnu"),
+        target_os = "macos",
+        target_os = "freebsd"
+    ))]
     {
         supported::create_missing(directory, marker, bytes)
     }
-    #[cfg(not(any(all(target_os = "linux", target_env = "gnu"), target_os = "macos")))]
+    #[cfg(not(any(
+        all(target_os = "linux", target_env = "gnu"),
+        target_os = "macos",
+        target_os = "freebsd"
+    )))]
     {
         let _ = (marker, bytes);
         Err(super::failure(
@@ -47,7 +55,11 @@ fn open_parent(path: &Path) -> io::Result<File> {
         .open(path)
 }
 
-#[cfg(any(all(target_os = "linux", target_env = "gnu"), target_os = "macos"))]
+#[cfg(any(
+    all(target_os = "linux", target_env = "gnu"),
+    target_os = "macos",
+    target_os = "freebsd"
+))]
 mod supported {
     use super::*;
     use crate::backend::{Exposure, Inode, failure, metadata, path_id};
@@ -245,6 +257,19 @@ mod supported {
             nix::fcntl::RenameFlags::RENAME_NOREPLACE,
         )
         .map_err(io::Error::from)
+    }
+
+    // Store::open holds the original parent's exclusive initialization lock
+    // across qualification, publication and sync on FreeBSD. All namespaces
+    // participate; a hostile same-UID path racer is outside the store contract.
+    #[cfg(target_os = "freebsd")]
+    fn publish(parent: &File, from: &OsStr, to: &OsStr) -> io::Result<()> {
+        match nix::sys::stat::fstatat(parent, to, nix::fcntl::AtFlags::AT_SYMLINK_NOFOLLOW) {
+            Ok(_) => return Err(io::Error::from_raw_os_error(libc::EEXIST)),
+            Err(Errno::ENOENT) => {}
+            Err(error) => return Err(error.into()),
+        }
+        nix::fcntl::renameat(parent, from, parent, to).map_err(io::Error::from)
     }
 
     #[cfg(target_os = "macos")]

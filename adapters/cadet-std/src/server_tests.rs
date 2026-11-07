@@ -629,6 +629,12 @@ fn independent_management_snapshots_partial_loss_and_application_origins_stay_se
             let slow_socket = tokio::net::TcpSocket::new_v4()?;
             slow_socket.set_recv_buffer_size(1024)?;
             let mut slow = slow_socket.connect(listener.local_addr()?).await?;
+            let accepted = poll_fn(|cx| listeners[0].poll_canonical_connection(cx)).await?;
+            socket2::SockRef::from(accepted.connection()).set_send_buffer_size(1024)?;
+            let _original_client = server
+                .admit(accepted, &mut |_| {})?
+                .ok_or("slow management client was rejected")?;
+
             request(&mut slow, Request::ListPeers).await?;
             until(
                 &mut server,

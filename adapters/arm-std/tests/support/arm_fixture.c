@@ -2,6 +2,7 @@
  * The isolated Rust launcher exclusively supplies exactly one readiness WRITE
  * descriptor to this newly exec'd process. Only that original owner is closed.
  */
+#define _XOPEN_SOURCE 700
 #define _POSIX_C_SOURCE 200809L
 #include <sys/stat.h>
 #include <fcntl.h>

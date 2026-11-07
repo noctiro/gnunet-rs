@@ -7,6 +7,24 @@ use std::{
 };
 type Failure = Box<dyn Error>;
 #[cfg(unix)]
+#[derive(Debug)]
+struct PhaseFailure {
+    stage: &'static str,
+    source: Failure,
+}
+#[cfg(unix)]
+impl std::fmt::Display for PhaseFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "statistics {}: {}", self.stage, self.source)
+    }
+}
+#[cfg(unix)]
+impl Error for PhaseFailure {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        Some(self.source.as_ref())
+    }
+}
+#[cfg(unix)]
 mod control;
 #[cfg(unix)]
 mod host;
@@ -136,6 +154,7 @@ fn run() -> Result<ExitCode, Failure> {
     }
     let result = {
         let reports = reporting::Reports::new(&mut logger, &clock);
+        let mut stage = "configuration";
         let result = (|| -> Result<(), Failure> {
             if let Some(notice) = notice {
                 reports.warning(
@@ -145,21 +164,27 @@ fn run() -> Result<ExitCode, Failure> {
                 reports.startup_check()?;
             }
             let config = settings::configuration(selected.configuration())?;
+            stage = "clock configuration";
             clock.testing_skew(&config)?;
+            stage = "settings";
             let settings = settings::Settings::read(&config)?;
+            stage = "process identity";
             let user = configured_user(&config, b"statistics")?
                 .as_deref()
                 .map(resolve_user)
                 .transpose()?;
+            stage = "runtime";
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()?;
             // Original activation/TCP preparation precedes the USER transition;
             // no Unix endpoint, database, signal or active service task exists here.
+            stage = "listener preparation";
             let listeners = {
                 let _entered = runtime.enter();
                 BoundListeners::prepare_before_identity(&config, b"statistics", activation)?
             };
+            stage = "process credentials";
             let privileges = apply_privileges(user.as_ref(), GroupsProfile::WithInitgroups)?;
             if user.is_some() {
                 reports.message(
@@ -171,6 +196,7 @@ fn run() -> Result<ExitCode, Failure> {
             }
             // Target account owns every new Unix socket. All original actual
             // listeners finish before database loading or service admission.
+            stage = "listener binding";
             let bound = runtime.block_on(listeners.finish_with_access(UnixListenerAccess {
                 match_uid: settings.access.match_uid,
                 match_gid: settings.access.match_gid,
@@ -182,6 +208,7 @@ fn run() -> Result<ExitCode, Failure> {
                 );
             }
             reports.startup_check()?;
+            stage = "service";
             runtime.block_on(host::run(host::Inputs {
                 bound: &bound,
                 parent,
@@ -190,7 +217,8 @@ fn run() -> Result<ExitCode, Failure> {
                 reports: &reports,
                 child: &mut child,
             }))
-        })();
+        })()
+        .map_err(|source| Box::new(PhaseFailure { stage, source }) as Failure);
         // Running-service diagnostic failures stay latched through every actual
         // source and store cleanup; do not replace those original error objects.
         service::retain_diagnostic(result, reports.take_failure())
