@@ -416,6 +416,93 @@ mod tests {
         Ok((file.content, source))
     }
     #[test]
+    fn revalidation_restarts_ctime_only_but_bounds_continuous_metadata_changes() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+        let root = Cleanup::new()?;
+        let path = root.0.join("plain");
+        let bytes = input();
+        fs::write(&path, &bytes)?;
+        File::open(&path)?.sync_all()?;
+        let output = OutputDir::open(&root.0)?;
+        let identity = output.inspect_file("plain")?.ok_or(Error::Corrupt)?;
+        let mut cache = crate::Repository::open(root.0.join("cache"))?;
+        let mut buffers = Buffers::new();
+        let content = buffers
+            .publish(
+                &mut bytes.as_slice(),
+                bytes.len() as u64,
+                &mut cache,
+                Limits::default(),
+                |_| Control::Continue,
+            )?
+            .content;
+        let mut changed = false;
+        let mut mutation_error = None;
+        let verified = output.revalidate_file(
+            "plain",
+            content,
+            identity,
+            None,
+            &mut buffers,
+            &mut cache,
+            Limits::default(),
+            |_| {
+                if !changed {
+                    changed = true;
+                    if let Err(error) =
+                        fs::set_permissions(&path, fs::Permissions::from_mode(0o400))
+                    {
+                        mutation_error = Some(error);
+                        return Control::Cancel;
+                    }
+                }
+                Control::Continue
+            },
+        );
+        if let Some(error) = mutation_error {
+            return Err(error.into());
+        }
+        let verified = verified.map_err(|error| io::Error::other(error.to_string()))?;
+        assert_eq!(verified.source_attempts, 2);
+        assert_eq!(verified.read.verified.content(), content);
+        assert_eq!(verified.identity, identity);
+        assert_eq!(fs::read(&path)?, bytes);
+
+        let mut mode = 0o600;
+        let refused = output.revalidate_file(
+            "plain",
+            content,
+            identity,
+            None,
+            &mut buffers,
+            &mut cache,
+            Limits::default(),
+            |_| {
+                if let Err(error) = fs::set_permissions(&path, fs::Permissions::from_mode(mode)) {
+                    mutation_error = Some(error);
+                    return Control::Cancel;
+                }
+                mode ^= 0o200;
+                Control::Continue
+            },
+        );
+        if let Some(error) = mutation_error {
+            return Err(error.into());
+        }
+        let refused = match refused {
+            Err(failure) => failure,
+            Ok(_) => return Err(Error::Corrupt),
+        };
+        assert_eq!(refused.source_attempts(), 2);
+        assert!(matches!(&refused.operation, Error::SourceChanged));
+        let previous = refused.previous.as_ref().ok_or(Error::Corrupt)?;
+        assert_eq!(previous.source_attempts(), 1);
+        assert!(matches!(&previous.operation, Error::SourceChanged));
+        assert!(previous.fence.is_some());
+        assert!(refused.fence.is_some());
+        Ok(())
+    }
+    #[test]
     fn nested_authenticated_output_stays_on_the_original_directory_descriptor() -> Result<()> {
         let root = Cleanup::new()?;
         let selected = root.0.join("selected");

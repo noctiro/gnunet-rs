@@ -670,8 +670,8 @@ def main(argv=None):
     args = parser.parse_args(argv)
     profile = selected_profile(args.cadet_backend)
     output = absolute(args.output)
-    if not within(output, Path("/private/tmp")) or output.exists():
-        raise Blocked("evidence output must be a fresh explicitly owned /private/tmp directory")
+    if output.exists() or not any(within(output, root) for root in (Path(tempfile.gettempdir()), Path("/tmp"))):
+        raise Blocked("evidence output must be a fresh private directory under a system temporary root")
     output.mkdir(mode=0o700)
     result = {"profile": profile, "cadet_backend": args.cadet_backend,
               "status": "blocked", "executed": False, "runtime_verified": False,

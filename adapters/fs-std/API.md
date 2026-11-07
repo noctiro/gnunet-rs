@@ -431,6 +431,14 @@ SKS content retains the original signed UBLOCK/update lineage and immutable
 CHK/LOC; replay verifies that proof against the parent namespace instead
 of querying a potentially changed label. Ordinary search retains no proof copy.
 
+Revalidation permits at most two source verification attempts. A ctime-only change,
+including deferred native unlink bookkeeping, starts one fresh verification;
+all identity, content and synchronization checks run again. `source_attempts`
+records the attempts in a successful result; its receipt and progress belong
+to the final pass. A repeated failure retains the earlier refusal in `previous`.
+Content, identity, size or mtime changes, cancellation and uncertain barriers
+are not retried. Metadata never substitutes for authenticated bytes.
+
 Exact temporary ownership and commit intent are synced before the final link. Known final commits and exact cleanup are independent facts. After interruption,
 a final name matching the original intent inode is fully authenticated before
 confirmation; an absent final name permits exact original temporary cleanup and

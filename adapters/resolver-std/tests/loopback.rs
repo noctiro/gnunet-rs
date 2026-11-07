@@ -415,6 +415,10 @@ fn genuine_socket_backpressure_retains_effect_ticket_across_canceled_drive() -> 
         host.add_dns_endpoint(udp.local_addr()?)?;
         let mut s = UnixStream::connect(&p).await?;
         socket2::SockRef::from(&s).set_recv_buffer_size(4096)?;
+        let listeners = [Listener::Unix(&listener)];
+        let accepted = poll_fn(|cx| listeners[0].poll_canonical_connection(cx)).await?;
+        socket2::SockRef::from(accepted.connection()).set_send_buffer_size(4096)?;
+        assert!(host.admit(accepted, |_| {})?);
         s.write_all(&req(1, Family::V4, b"large.example")).await?;
         let mut q = [0; 512];
         let (n, peer) = driven(
@@ -430,13 +434,26 @@ fn genuine_socket_backpressure_retains_effect_ticket_across_canceled_drive() -> 
             submitted.extend_from_slice(&req(id, Family::V4, b"large.example"));
         }
         s.write_all(&submitted).await?;
+        let pressure_deadline = Instant::now() + Duration::from_secs(2);
+        while host.current_effect().is_none() || host.pending_tx_bytes() == 0 {
+            if Instant::now() >= pressure_deadline {
+                return Err("native socket did not reach backpressure".into());
+            }
+            host.drive(
+                &listeners,
+                Some(Instant::now() + Duration::from_millis(5)),
+                |_| {},
+            )
+            .await?;
+        }
+        let original = host.current_effect();
         let canceled = tokio::time::timeout(
             Duration::from_millis(40),
-            host.drive(&[Listener::Unix(&listener)], None, |_| {}),
+            host.drive(&listeners, None, |_| {}),
         )
         .await;
         assert!(canceled.is_err());
-        assert!(host.current_effect().is_some());
+        assert_eq!(host.current_effect(), original);
         assert!(host.pending_tx_bytes() > 0);
         assert!(host.pending_tx_bytes() <= 8192);
         let before = host.report().requests;

@@ -23,6 +23,10 @@ stream writes and bounded RX dispatch. Other clients can reach EOF even
 while an unrelated output is blocked. Core admission capacity closes only the
 responsible physical client, never fabricates a successful result.
 
+`Host::admit` consumes a shared runtime `AcceptedConnection` for embedding with
+caller-owned acceptance. It uses the same ACL, Unix credential, capacity and
+native diagnostic path as `drive`; rejected connections close at that boundary.
+
 StartQuery calls stub admission and explicitly detaches Admission.evicted
 from the old lookup. If adoption fails, the newly admitted token is
 canceled before reporting unavailability/releasing the lease. Normal send errors
@@ -70,7 +74,7 @@ flags are false. Generic async embedding never changes process identity and
 verifies a configured account against real/effective IDs.
 
 `Host::set_runtime_clock` installs one RuntimeClock Arc and exclusive
-subscription immediately after Host::new, before machine data/endpoints/drive. All UTC cache/receive evaluation uses this original source; native epoch,
+subscription immediately after Host::new, before machine data/endpoints/admission/drive. All UTC cache/receive evaluation uses this original source; native epoch,
 entropy functions and original scheduling deadlines are unchanged. Once data or
 lookup work starts the source cannot be replaced. Logical changes are polled in
 the drive waiter, alongside native I/O/timers. Clock errors and all other
@@ -78,7 +82,7 @@ post-construction failures still take the same Immediate physical shutdown;
 subscription retirement and client/UDP closes require no new clock sample. `startup::foreground_listening_with_clock` consumes the finished listeners;
 Ready follows Host construction/loading. Original drive/Ready error and
 independent cleanup failure are retained together with the physical report. The existing foreground embedding delegates to that same implementation with
-native UTC and requires an already prepared identity. Linux/Darwin family selection is explicit; other native
+native UTC and requires an already prepared identity. Linux, Darwin and FreeBSD family selection is explicit; other native
 family ABIs return Unsupported.
 
 Default logical geometry is clients64/lookups128/hosts1024/buckets1025/records4096/

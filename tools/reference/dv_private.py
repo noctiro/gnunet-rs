@@ -267,7 +267,7 @@ class Inputs:
         if not dependency_prefix.is_dir():
             raise Blocked("actual private reference dependency prefix is missing")
         for prefix in (self.prefix, dependency_prefix):
-            if not any(within(prefix, root) for root in (REPO / "target", Path("/private/tmp"))):
+            if not any(within(prefix, root) for root in (REPO / "target", Path(tempfile.gettempdir()), Path("/tmp"))):
                 raise Blocked("reference/dependency prefix is not a selected private build root")
         self.library_dirs = [absolute(p) for p in manifest["library_directories"]]
         if not 1 <= len(self.library_dirs) <= 16 or any(not p.is_dir() for p in self.library_dirs):
@@ -667,7 +667,7 @@ def main(argv=None):
     if not args.execute:
         raise Blocked("explicit --execute is required; import/source preparation starts no product")
     output = absolute(args.output)
-    if output.exists() or not any(within(output, root) for root in (REPO / "target", Path("/private/tmp"))):
+    if output.exists() or not any(within(output, root) for root in (REPO / "target", Path(tempfile.gettempdir()), Path("/tmp"))):
         raise Blocked("output must be a fresh selected private evidence directory")
     output.mkdir(mode=0o700)
     result = {"schema": 1, "profile": PROFILE, "middle": args.middle, "official_revision": REVISION,

@@ -6,7 +6,10 @@ runtime closure. This builder does not download dependencies, patch C source,
 perform a system install or run GNUnet services/audio helpers.
 
 ```sh
-python3 tools/reference/conversation_build.py   --request /path/to/build-request.json   --approval /path/to/build-approval.json   --output /private/tmp/fresh-conversation-build
+python3 tools/reference/conversation_build.py \
+  --request /path/to/build-request.json \
+  --approval /path/to/build-approval.json \
+  --output /tmp/fresh-conversation-build
 ```
 
 ## Request

@@ -8,7 +8,11 @@ never a fallback after failure.
 ## Invocation
 
 ```sh
-python3 tools/reference/conversation_daemons.py   --manifest /path/to/manifest.json   --approval /path/to/approval.json   --output /private/tmp/fresh-conversation-evidence   --phase no-device
+python3 tools/reference/conversation_daemons.py \
+  --manifest /path/to/manifest.json \
+  --approval /path/to/approval.json \
+  --output /tmp/fresh-conversation-evidence \
+  --phase no-device
 ```
 
 For Rust CADET, add `--cadet-backend rust` and use the matching manifest/profile.

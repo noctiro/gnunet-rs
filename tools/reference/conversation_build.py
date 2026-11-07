@@ -15,6 +15,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 
 from conversation_build_stage import Blocked, Stager, digest, inside, metadata, target_index
@@ -326,8 +327,8 @@ def source_state(runner, git, source, label):
 
 
 def build(request_path, approval_path, output):
-    if output.exists() or not inside(output, '/private/tmp'):
-        raise Blocked('output must be a fresh private /private/tmp root')
+    if output.exists() or not any(inside(output, root) for root in (tempfile.gettempdir(), '/tmp')):
+        raise Blocked('output must be a fresh private directory under a system temporary root')
     output.mkdir(mode=0o700)
     report = {'schema': 1, 'kind': 'selected-unmodified-official-c-conversation-build',
               'status': 'blocked', 'commands': [], 'runtime_closure_staged': False,

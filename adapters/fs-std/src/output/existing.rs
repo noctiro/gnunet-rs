@@ -36,9 +36,50 @@ pub struct RevalidateFailure<R = ReadFile> {
     pub identity: Option<FileIdentity>,
     /// Real expected-content authentication receipt when actually obtained.
     pub receipt: Option<R>,
-    /// Original source/cache/protocol/cancellation or uncertain barrier failure.
+    /// Original source/cache/protocol/cancellation or uncertain barrier failure
+    /// of this attempt.
     pub operation: Error,
+    /// Earlier rejected attempt, if a fresh verification also failed. Its
+    /// receipt is historical authentication, never final-name success.
+    pub previous: Option<Box<Self>>,
     pub(super) fence: Fence,
+}
+impl<R> RevalidateFailure<R> {
+    /// Source verification attempts represented by this failure, at most two.
+    #[must_use]
+    pub fn source_attempts(&self) -> u8 {
+        if self.previous.is_some() { 2 } else { 1 }
+    }
+    fn can_stabilize(&self) -> bool {
+        matches!(&self.operation, Error::SourceChanged)
+            && self.fence.is_some_and(|(_, expected, observed)| {
+                expected != observed
+                    && Stamp {
+                        changed: observed.changed,
+                        changed_nanos: observed.changed_nanos,
+                        ..expected
+                    } == observed
+            })
+    }
+}
+// Soft updates may retire a prior unlink after fsync and update only ctime.
+// Never waive a fence: restart the complete read once against fresh metadata.
+// Other source changes, cancellation and uncertain barriers are not retried.
+pub(super) fn stabilize<T, R>(
+    mut operation: impl FnMut() -> std::result::Result<T, Box<RevalidateFailure<R>>>,
+) -> std::result::Result<(T, u8), Box<RevalidateFailure<R>>> {
+    let previous = match operation() {
+        Ok(value) => return Ok((value, 1)),
+        Err(failure) if failure.can_stabilize() => failure,
+        Err(failure) => return Err(failure),
+    };
+    match operation() {
+        Ok(value) => Ok((value, 2)),
+        Err(mut failure) => {
+            failure.previous = Some(previous);
+            Err(failure)
+        }
+    }
 }
 impl<R> fmt::Display for RevalidateFailure<R> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -52,6 +93,9 @@ impl<R> fmt::Display for RevalidateFailure<R> {
                 f,
                 "; {boundary}: expected {expected:?}, observed {observed:?}"
             )?;
+        }
+        if let Some(previous) = &self.previous {
+            write!(f, "; earlier refusal: {previous}")?;
         }
         Ok(())
     }
@@ -70,6 +114,9 @@ pub struct RevalidatedFile {
     pub identity: FileIdentity,
     /// Actual anchored parent whose naming barrier was refreshed.
     pub parent: FileIdentity,
+    /// Source verification attempts, at most two. The receipt belongs exclusively
+    /// to the final successful attempt; progress remains per encoding/read pass.
+    pub source_attempts: u8,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct Stamp {
@@ -129,6 +176,8 @@ impl OutputDir {
     ///
     /// File and parent fsync refresh uncertain barriers. Any failure preserves
     /// its actual receipt and original typed error, including CommitUnknown.
+    /// A ctime-only drift permits one fresh complete verification; every stamp
+    /// and barrier is checked again. Other changes/cancellation are not retried.
     #[expect(
         clippy::too_many_arguments,
         reason = "Expected content, original file/parent identity, bounded cache work and control have independent ownership"
@@ -144,12 +193,42 @@ impl OutputDir {
         limits: Limits,
         mut control: impl FnMut(Progress) -> Control,
     ) -> std::result::Result<RevalidatedFile, Box<RevalidateFailure>> {
+        let (mut verified, attempts) = stabilize(|| {
+            self.revalidate_file_once(
+                relative.as_ref(),
+                expected,
+                expected_identity,
+                expected_parent,
+                buffers,
+                cache,
+                limits,
+                &mut control,
+            )
+        })?;
+        verified.source_attempts = attempts;
+        Ok(verified)
+    }
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "One complete attempt preserves the original source, content, bounded work and caller control"
+    )]
+    fn revalidate_file_once(
+        &self,
+        relative: &Path,
+        expected: Content,
+        expected_identity: FileIdentity,
+        expected_parent: Option<FileIdentity>,
+        buffers: &mut Buffers,
+        cache: &mut Repository,
+        limits: Limits,
+        mut control: impl FnMut(Progress) -> Control,
+    ) -> std::result::Result<RevalidatedFile, Box<RevalidateFailure>> {
         let mut stage = RevalidateStage::Unopened;
         let mut identity = None;
         let mut receipt = None;
         let mut fence = None;
         let result = (|| -> Result<RevalidatedFile> {
-            let parts = components(relative.as_ref())?;
+            let parts = components(relative)?;
             let (name, ancestors) = parts.split_last().ok_or_else(invalid_name)?;
             let parent = self.parent_existing(ancestors)?;
             let parent_id = FileIdentity::of(&parent)?;
@@ -157,12 +236,6 @@ impl OutputDir {
                 return Err(Error::SourceChanged);
             }
             let mut file = File::from(openat(&parent, *name, REGULAR, Mode::empty())?);
-            // Settle pending filesystem metadata before anchoring the read fence.
-            #[cfg(target_os = "freebsd")]
-            file.sync_all().map_err(|source| Error::CommitUnknown {
-                query: expected.query,
-                source,
-            })?;
             let original = Stamp::file(&file)?;
             identity = Some(original.identity);
             if original.identity != expected_identity || original.bytes != expected.size {
@@ -205,6 +278,7 @@ impl OutputDir {
                 read,
                 identity: original.identity,
                 parent: parent_id,
+                source_attempts: 1,
             })
         })();
         result.map_err(|operation| {
@@ -213,6 +287,7 @@ impl OutputDir {
                 identity,
                 receipt,
                 operation,
+                previous: None,
                 fence,
             })
         })

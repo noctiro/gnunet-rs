@@ -634,20 +634,35 @@ impl<'a, 'i, I: Idna, const R: usize, const N: usize, const S: usize> Host<'a, '
             Settlement::Idle
         })
     }
-    fn admit(&mut self, stream: Stream, peer: PeerAddress) -> Result<(), HostError> {
+    /// Admit one canonically initialized accepted connection through the normal
+    /// ACL, Unix credential and capacity gates. Rejection closes that connection
+    /// and returns false; native diagnostics retain their original order.
+    pub fn admit(
+        &mut self,
+        connection: AcceptedConnection,
+        mut observe: impl FnMut(SocketEvent),
+    ) -> Result<bool, HostError> {
+        self.source_started = true;
+        let (stream, peer, diagnostics) = connection.into_parts();
+        for diagnostic in diagnostics {
+            observe(SocketEvent::Diagnostic(diagnostic));
+        }
+        self.admit_stream(stream, peer)
+    }
+    fn admit_stream(&mut self, stream: Stream, peer: PeerAddress) -> Result<bool, HostError> {
         inc(&mut self.report.accepted);
         if !self.accepting
             || matches!(peer, PeerAddress::Tcp(p) if !self.options.access.allows(p.ip()))
         {
             inc(&mut self.report.rejected);
-            return Ok(());
+            return Ok(false);
         }
         if stream.is_unix() {
             match self.unix_access.allows(&stream) {
                 Ok(true) => {}
                 Ok(false) => {
                     inc(&mut self.report.rejected);
-                    return Ok(());
+                    return Ok(false);
                 }
                 Err(error) => {
                     inc(&mut self.report.rejected);
@@ -657,13 +672,13 @@ impl<'a, 'i, I: Idna, const R: usize, const N: usize, const S: usize> Host<'a, '
         }
         let Some(i) = self.sessions.iter().position(Option::is_none) else {
             inc(&mut self.report.rejected);
-            return Ok(());
+            return Ok(false);
         };
         let client = match self.core.connect() {
             Ok(c) => c,
             Err(Error::Capacity | Error::Closed) => {
                 inc(&mut self.report.rejected);
-                return Ok(());
+                return Ok(false);
             }
             Err(e) => return Err(e.into()),
         };
@@ -671,7 +686,7 @@ impl<'a, 'i, I: Idna, const R: usize, const N: usize, const S: usize> Host<'a, '
             Ok(s) => {
                 self.sessions[i] = Some(s);
                 inc(&mut self.report.admitted);
-                Ok(())
+                Ok(true)
             }
             Err(e) => {
                 self.core.disconnect(&mut self.stage, client)?;
@@ -993,11 +1008,7 @@ impl<'a, 'i, I: Idna, const R: usize, const N: usize, const S: usize> Host<'a, '
             };
             match event {
                 NetEvent::Accept(connection) => {
-                    let (stream, peer, diagnostics) = connection.into_parts();
-                    for diagnostic in diagnostics {
-                        observe(SocketEvent::Diagnostic(diagnostic));
-                    }
-                    self.admit(stream, peer)?;
+                    self.admit(connection, &mut observe)?;
                 }
                 NetEvent::AcceptFailure(failure) => {
                     if matches!(&failure, AcceptError::Initialization(_)) {

@@ -198,9 +198,9 @@ With that separate runtime scope authorized and a current normal build bound:
 
 ```sh
 python3 -B tools/reference/statistics_runtime.py \
-  --reference /private/tmp/C-build/build-result.json \
-  --rust-service /private/tmp/Rust-build/gnunet-service-statistics \
-  --output /private/tmp/new-statistics-listener-evidence
+  --reference /tmp/C-build/build-result.json \
+  --rust-service /tmp/Rust-build/gnunet-service-statistics \
+  --output /tmp/new-statistics-listener-evidence
 ```
 
 The result applies only to its executed C-client/service listener observations.

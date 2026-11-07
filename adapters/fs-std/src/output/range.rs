@@ -1,7 +1,7 @@
 //! Absolute-coordinate selected output and cache-backed selected revalidation.
 use super::{
     FileIdentity, ObservedFailure, OutputDir, RevalidateFailure, RevalidateStage, components,
-    existing::{REGULAR, Stamp},
+    existing::{REGULAR, Stamp, stabilize},
     invalid_name,
     observed::{FinalName, OutputObservation, finish},
 };
@@ -25,6 +25,9 @@ pub struct RevalidatedRange {
     pub identity: FileIdentity,
     /// Actual final parent whose naming barrier was refreshed.
     pub parent: FileIdentity,
+    /// Source verification attempts, at most two. Only the final attempt establishes
+    /// this result; progress remains per authenticated cache-read pass.
+    pub source_attempts: u8,
 }
 /// Original refusal, actual phase and independently obtained selected receipt.
 pub type RevalidateRangeFailure = RevalidateFailure<ReadRange>;
@@ -155,6 +158,8 @@ impl OutputDir {
     /// absolute offset. Never re-encode unselected sparse bytes or trust saved
     /// progress. Empty selection in a nonempty file retains EmptySelection and
     /// no authentication/flush receipt; physical barriers are separate facts.
+    /// A ctime-only drift permits one fresh selected verification with all
+    /// original identity, byte comparisons and barriers checked again.
     #[expect(
         clippy::too_many_arguments,
         reason = "Original content, selection, inode, parent, bounded cache and control retain independent provenance"
@@ -162,6 +167,38 @@ impl OutputDir {
     pub fn revalidate_range(
         &self,
         relative: impl AsRef<Path>,
+        content: Content,
+        selection: Range<u64>,
+        expected_identity: FileIdentity,
+        expected_parent: Option<FileIdentity>,
+        buffers: &mut Buffers,
+        cache: &mut Repository,
+        limits: Limits,
+        mut control: impl FnMut(Progress) -> Control,
+    ) -> std::result::Result<RevalidatedRange, Box<RevalidateRangeFailure>> {
+        let (mut verified, attempts) = stabilize(|| {
+            self.revalidate_range_once(
+                relative.as_ref(),
+                content,
+                selection.clone(),
+                expected_identity,
+                expected_parent,
+                buffers,
+                cache,
+                limits,
+                &mut control,
+            )
+        })?;
+        verified.source_attempts = attempts;
+        Ok(verified)
+    }
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "One selected attempt retains original content, source identity, cache bounds and caller control"
+    )]
+    fn revalidate_range_once(
+        &self,
+        relative: &Path,
         content: Content,
         selection: Range<u64>,
         expected_identity: FileIdentity,
@@ -183,7 +220,7 @@ impl OutputDir {
             if control(Progress::default()) == Control::Cancel {
                 return Err(Error::Cancelled);
             }
-            let parts = components(relative.as_ref())?;
+            let parts = components(relative)?;
             let (name, ancestors) = parts.split_last().ok_or_else(invalid_name)?;
             let parent = self.parent_existing(ancestors)?;
             let parent_id = FileIdentity::of(&parent)?;
@@ -191,12 +228,6 @@ impl OutputDir {
                 return Err(Error::SourceChanged);
             }
             let file = File::from(openat(&parent, *name, REGULAR, Mode::empty())?);
-            // Settle pending filesystem metadata before anchoring the read fence.
-            #[cfg(target_os = "freebsd")]
-            file.sync_all().map_err(|source| Error::CommitUnknown {
-                query: content.query,
-                source,
-            })?;
             let original = Stamp::file(&file)?;
             identity = Some(original.identity);
             if original.identity != expected_identity || original.bytes != content.size {
@@ -244,6 +275,7 @@ impl OutputDir {
                 read,
                 identity: original.identity,
                 parent: parent_id,
+                source_attempts: 1,
             })
         })();
         result.map_err(|operation| {
@@ -252,6 +284,7 @@ impl OutputDir {
                 identity,
                 receipt,
                 operation,
+                previous: None,
                 fence,
             })
         })
