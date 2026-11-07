@@ -349,13 +349,22 @@ mod tests {
         if text.0.is_null() || count == 0 || count > 65536 {
             return Err(io::ErrorKind::InvalidData.into());
         }
-        // SAFETY: count is the successful native allocation's WCHAR extent, including NUL.
-        let wide = unsafe { std::slice::from_raw_parts(text.0, count as usize) };
-        if wide.last() != Some(&0) {
+        // Native SID aliases can leave spare WCHARs after the terminator.
+        let mut length = 0;
+        while length < count as usize {
+            // SAFETY: conversion guarantees an initialized NUL-terminated string;
+            // stop at its first terminator without reading spare capacity.
+            if unsafe { *text.0.add(length) } == 0 {
+                break;
+            }
+            length += 1;
+        }
+        if length == count as usize {
             return Err(io::ErrorKind::InvalidData.into());
         }
-        let text =
-            String::from_utf16(&wide[..wide.len() - 1]).map_err(|_| io::ErrorKind::InvalidData)?;
+        // SAFETY: the bounded scan read every unit in this initialized prefix.
+        let wide = unsafe { std::slice::from_raw_parts(text.0, length) };
+        let text = String::from_utf16(wide).map_err(|_| io::ErrorKind::InvalidData)?;
         Ok((control, text))
     }
 
@@ -447,6 +456,76 @@ mod tests {
         Ok((ace.Mask, same))
     }
 
+    #[expect(
+        unsafe_code,
+        reason = "Generated bounded SDDL owns a guarded descriptor; SetSecurityInfo copies its protected DACL onto this original privately owned test file only"
+    )]
+    fn restrict_execution(file: &File) -> io::Result<()> {
+        use crate::identity::{SecurityDescriptor, process_user};
+        use windows_sys::Win32::Security::{
+            Authorization::{
+                ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+                SE_FILE_OBJECT, SetSecurityInfo,
+            },
+            DACL_SECURITY_INFORMATION, GetSecurityDescriptorDacl,
+            PROTECTED_DACL_SECURITY_INFORMATION,
+        };
+        use windows_sys::Win32::Storage::FileSystem::{FILE_ALL_ACCESS, FILE_EXECUTE};
+        let text: Vec<_> = format!(
+            "D:P(A;;0x{:x};;;{})",
+            FILE_ALL_ACCESS & !FILE_EXECUTE,
+            process_user()?
+        )
+        .encode_utf16()
+        .chain(Some(0))
+        .collect();
+        let mut raw = ptr::null_mut();
+        // SAFETY: generated NUL text contains only native numeric rights/SID.
+        if unsafe {
+            ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                text.as_ptr(),
+                SDDL_REVISION_1,
+                &mut raw,
+                ptr::null_mut(),
+            )
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        let descriptor = SecurityDescriptor(raw);
+        let mut acl = ptr::null_mut();
+        let mut present = 0;
+        let mut defaulted = 0;
+        // SAFETY: the retained native descriptor owns this DACL view.
+        if unsafe {
+            GetSecurityDescriptorDacl(descriptor.0, &mut present, &mut acl, &mut defaulted)
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        if present == 0 || acl.is_null() {
+            return Err(io::ErrorKind::InvalidData.into());
+        }
+        // SAFETY: test owns WRITE_DAC on this exact file handle; no native
+        // descriptor pointer is retained after the synchronous security update.
+        let code = unsafe {
+            SetSecurityInfo(
+                file.as_raw_handle(),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                ptr::null_mut(),
+                ptr::null_mut(),
+                acl,
+                ptr::null_mut(),
+            )
+        };
+        if code == 0 {
+            Ok(())
+        } else {
+            Err(io::Error::from_raw_os_error(code as i32))
+        }
+    }
+
     #[test]
     #[expect(
         clippy::panic_in_result_fn,
@@ -480,12 +559,34 @@ mod tests {
         private.write_all(b"replacement")?;
         private.sync_all()?;
         drop(private);
-        fs::write(&destination, b"original")?;
-        let original = security_snapshot(&File::open(&destination)?)?;
+        let mut original = create_private_file(&destination)?;
+        original.write_all(b"original")?;
+        original.sync_all()?;
+        restrict_execution(&original)?;
+        let expected = windows_sys::Win32::Storage::FileSystem::FILE_ALL_ACCESS
+            & !windows_sys::Win32::Storage::FileSystem::FILE_EXECUTE;
+        assert_eq!(private_access(&original)?, (expected, true));
+        assert_ne!(security_snapshot(&original)?.0 & SE_DACL_PROTECTED, 0);
+        drop(original);
+        let execute = || {
+            File::options()
+                .access_mode(windows_sys::Win32::Storage::FileSystem::FILE_GENERIC_EXECUTE)
+                .open(&destination)
+        };
+        assert_eq!(
+            execute().err().map(|e| e.kind()),
+            Some(io::ErrorKind::PermissionDenied)
+        );
         publish_file(&prepared, &destination, Publication::Replace)?;
         assert_eq!(fs::read(&destination)?, b"replacement");
         assert!(!prepared.exists());
-        assert_eq!(security_snapshot(&File::open(&destination)?)?, original);
+        let replaced = File::open(&destination)?;
+        assert_eq!(private_access(&replaced)?, (expected, true));
+        assert_ne!(security_snapshot(&replaced)?.0 & SE_DACL_PROTECTED, 0);
+        assert_eq!(
+            execute().err().map(|e| e.kind()),
+            Some(io::ErrorKind::PermissionDenied)
+        );
         Ok(())
     }
 
