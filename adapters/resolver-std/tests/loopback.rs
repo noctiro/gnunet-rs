@@ -418,6 +418,8 @@ fn genuine_socket_backpressure_retains_effect_ticket_across_canceled_drive() -> 
         let listeners = [Listener::Unix(&listener)];
         let accepted = poll_fn(|cx| listeners[0].poll_canonical_connection(cx)).await?;
         socket2::SockRef::from(accepted.connection()).set_send_buffer_size(4096)?;
+        let send_buffer = socket2::SockRef::from(accepted.connection()).send_buffer_size()?;
+        let receive_buffer = socket2::SockRef::from(&s).recv_buffer_size()?;
         assert!(host.admit(accepted, |_| {})?);
         s.write_all(&req(1, Family::V4, b"large.example")).await?;
         let mut q = [0; 512];
@@ -429,6 +431,15 @@ fn genuine_socket_backpressure_retains_effect_ticket_across_canceled_drive() -> 
         .await??;
         let payload = vec![0xa7; 8000];
         udp.send_to(&answer(&q[..n], 1, &payload), peer).await?;
+        // Finish the real DNS response/cache insertion before flooding cached
+        // requests. Otherwise read-ready IPC can race the UDP response and fill
+        // lookup admission instead of exercising transmit backpressure.
+        driven(&mut host, &listeners, async {
+            assert_eq!(data(&frame(&mut s).await?), payload);
+            assert!(data(&frame(&mut s).await?).is_empty());
+            Ok::<_, E>(())
+        })
+        .await??;
         let mut submitted = Vec::new();
         for id in 2..=30 {
             submitted.extend_from_slice(&req(id, Family::V4, b"large.example"));
@@ -437,7 +448,10 @@ fn genuine_socket_backpressure_retains_effect_ticket_across_canceled_drive() -> 
         let pressure_deadline = Instant::now() + Duration::from_secs(2);
         while host.current_effect().is_none() || host.pending_tx_bytes() == 0 {
             if Instant::now() >= pressure_deadline {
-                return Err("native socket did not reach backpressure".into());
+                return Err(format!(
+                    "native socket did not reach backpressure: send={send_buffer}, receive={receive_buffer}, connections={}, queued={}, effect={:?}, report={:?}",
+                    host.connections(), host.pending_tx_bytes(), host.current_effect(), host.report()
+                ).into());
             }
             host.drive(
                 &listeners,
@@ -458,7 +472,7 @@ fn genuine_socket_backpressure_retains_effect_ticket_across_canceled_drive() -> 
         assert!(host.pending_tx_bytes() <= 8192);
         let before = host.report().requests;
         driven(&mut host, &[Listener::Unix(&listener)], async {
-            for id in 1u32..=30 {
+            for id in 2u32..=30 {
                 let b = frame(&mut s).await?;
                 assert_eq!(&b[4..8], &id.to_ne_bytes());
                 assert_eq!(data(&b), payload);
