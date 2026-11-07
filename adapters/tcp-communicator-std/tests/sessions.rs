@@ -69,16 +69,84 @@ async fn frame(s: &mut UnixStream) -> io::Result<Vec<u8>> {
     s.read_exact(&mut b[4..]).await?;
     Ok(b)
 }
-async fn ps(mut s: UnixStream, done: Rc<Cell<bool>>) -> io::Result<()> {
+async fn next_frame(s: &mut UnixStream, done: &Cell<bool>) -> io::Result<Option<Vec<u8>>> {
+    // Keep one read future across timer observations so a fragmented header
+    // cannot lose its consumed prefix when the peer has not finished yet.
+    let reading = frame(s);
+    tokio::pin!(reading);
     loop {
-        tokio::select! {b=frame(&mut s)=>{let b=b?;let k=u16::from_be_bytes([b[2],b[3]]);if k==821||k==820{let at=if k==821{36}else{44};let mut end=[0;12];end[..2].copy_from_slice(&12u16.to_be_bytes());end[2..4].copy_from_slice(&(if k==821{823u16}else{827u16}).to_be_bytes());end[4..8].copy_from_slice(&b[at..at+4]);end[8..].copy_from_slice(&1i32.to_be_bytes());for fragment in end.chunks(3){s.write_all(fragment).await?;tokio::task::yield_now().await;}}},()=tokio::time::sleep(Duration::from_millis(1))=>{if done.get(){return Ok(())}}}
+        tokio::select! {
+            result = &mut reading => return result.map(Some),
+            () = tokio::time::sleep(Duration::from_millis(1)) => {
+                if done.get() { return Ok(None); }
+            }
+        }
     }
 }
-async fn tr(mut s: UnixStream, send: bool, done: Rc<Cell<bool>>) -> io::Result<Vec<u8>> {
-    let mut result = Vec::new();
-    loop {
-        tokio::select! {b=frame(&mut s)=>{let b=b?;let k=u16::from_be_bytes([b[2],b[3]]);if k==1204{assert_eq!(&b[64..],b"tcp-127.0.0.1:1234\0");assert_eq!(u32::from_be_bytes(b[44..48].try_into().map_err(|_|io::ErrorKind::InvalidData)?),65535);if send{let mut m=vec![0;56];m[..2].copy_from_slice(&56u16.to_be_bytes());m[2..4].copy_from_slice(&1209u16.to_be_bytes());m[4..8].copy_from_slice(&b[4..8]);m[8..16].copy_from_slice(&[1,2,3,4,5,6,7,8]);m[16..48].copy_from_slice(&b[8..40]);m[48..].copy_from_slice(&[0,8,0,17,1,2,3,4]);s.write_all(&m).await?;}}else if k==1202{assert!(!send);assert_eq!(b.len(),96);result=b[88..].to_vec();let mut ack=[0;48];ack[..2].copy_from_slice(&48u16.to_be_bytes());ack[2..4].copy_from_slice(&1203u16.to_be_bytes());ack[8..16].copy_from_slice(&b[8..16]);ack[16..].copy_from_slice(&b[24..56]);s.write_all(&ack).await?;done.set(true);}else if k==1210{assert!(send);assert_eq!(&b[8..16],&[1,2,3,4,5,6,7,8]);assert_eq!(&b[4..8],&1i32.to_be_bytes());}},()=tokio::time::sleep(Duration::from_millis(1))=>{if done.get(){return Ok(result)}}}
+async fn ps(mut s: UnixStream, done: Rc<Cell<bool>>) -> io::Result<UnixStream> {
+    while let Some(b) = next_frame(&mut s, &done).await? {
+        let kind = u16::from_be_bytes([b[2], b[3]]);
+        if kind == 821 || kind == 820 {
+            let at = if kind == 821 { 36 } else { 44 };
+            let mut end = [0; 12];
+            end[..2].copy_from_slice(&12u16.to_be_bytes());
+            end[2..4].copy_from_slice(&(if kind == 821 { 823u16 } else { 827u16 }).to_be_bytes());
+            end[4..8].copy_from_slice(&b[at..at + 4]);
+            end[8..].copy_from_slice(&1i32.to_be_bytes());
+            for fragment in end.chunks(3) {
+                s.write_all(fragment).await?;
+                tokio::task::yield_now().await;
+            }
+        }
     }
+    Ok(s)
+}
+async fn tr(
+    mut s: UnixStream,
+    send: bool,
+    done: Rc<Cell<bool>>,
+) -> io::Result<(Vec<u8>, UnixStream)> {
+    let mut result = Vec::new();
+    while let Some(b) = next_frame(&mut s, &done).await? {
+        let kind = u16::from_be_bytes([b[2], b[3]]);
+        if kind == 1204 {
+            assert_eq!(&b[64..], b"tcp-127.0.0.1:1234\0");
+            assert_eq!(
+                u32::from_be_bytes(
+                    b[44..48]
+                        .try_into()
+                        .map_err(|_| io::ErrorKind::InvalidData)?
+                ),
+                65535
+            );
+            if send {
+                let mut message = vec![0; 56];
+                message[..2].copy_from_slice(&56u16.to_be_bytes());
+                message[2..4].copy_from_slice(&1209u16.to_be_bytes());
+                message[4..8].copy_from_slice(&b[4..8]);
+                message[8..16].copy_from_slice(&[1, 2, 3, 4, 5, 6, 7, 8]);
+                message[16..48].copy_from_slice(&b[8..40]);
+                message[48..].copy_from_slice(&[0, 8, 0, 17, 1, 2, 3, 4]);
+                s.write_all(&message).await?;
+            }
+        } else if kind == 1202 {
+            assert!(!send);
+            assert_eq!(b.len(), 96);
+            result = b[88..].to_vec();
+            let mut ack = [0; 48];
+            ack[..2].copy_from_slice(&48u16.to_be_bytes());
+            ack[2..4].copy_from_slice(&1203u16.to_be_bytes());
+            ack[8..16].copy_from_slice(&b[8..16]);
+            ack[16..].copy_from_slice(&b[24..56]);
+            s.write_all(&ack).await?;
+            done.set(true);
+        } else if kind == 1210 {
+            assert!(send);
+            assert_eq!(&b[8..16], &[1, 2, 3, 4, 5, 6, 7, 8]);
+            assert_eq!(&b[4..8], &1i32.to_be_bytes());
+        }
+    }
+    Ok((result, s))
 }
 async fn drive(d: &mut Driver<'_>, r: &mut Random, done: Rc<Cell<bool>>) -> Result<(), HostError> {
     loop {
@@ -184,10 +252,11 @@ async fn actual_tcp_fragmented_service_replies_box_and_original_completion()
     .await?;
     results.0?;
     results.1?;
-    results.2?;
-    results.3?;
-    let _sent = results.4?;
-    assert_eq!(results.5?, [0, 8, 0, 17, 1, 2, 3, 4]);
+    let _a_peerstore = results.2?;
+    let _b_peerstore = results.3?;
+    let (_sent, _a_transport) = results.4?;
+    let (received, _b_transport) = results.5?;
+    assert_eq!(received, [0, 8, 0, 17, 1, 2, 3, 4]);
     assert_eq!(a.core().phase(), Phase::Established);
     assert_eq!(b.core().phase(), Phase::Established);
     assert_eq!(b.core().backpressure(), 0);

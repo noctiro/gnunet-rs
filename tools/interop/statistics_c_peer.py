@@ -211,6 +211,9 @@ def run_case(root, work, endpoint, binary, case, expect_success):
     directory = root / case
     directory.mkdir()
     socket = work / (case + ".sock")
+    defaults = work / (case + "-config")
+    defaults.mkdir(mode=0o700)
+    environment = {**os.environ, "GNUNET_BASE_CONFIG": str(defaults)}
     started = time.monotonic()
     result = {"case": case, "expected_rust_success": expect_success, "passed": False}
     server = None
@@ -231,7 +234,7 @@ def run_case(root, work, endpoint, binary, case, expect_success):
             if action == "set":
                 command.extend(["-7", "--relative", "--persistent"])
             result["rust_command"] = command
-            child = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=15)
+            child = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=15, env=environment)
             (directory / "rust.stdout.txt").write_bytes(child.stdout)
             (directory / "rust.stderr.txt").write_bytes(child.stderr)
             result["rust_exit_code"] = child.returncode

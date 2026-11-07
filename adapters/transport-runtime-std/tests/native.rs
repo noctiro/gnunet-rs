@@ -1113,15 +1113,32 @@ async fn service_eof_cancels_partial_old_operation_before_same_key_new_epoch_wit
     Ok(())
 }
 
-fn provider_addresses(service: &gnunet_pils_host::Host<4096>) -> Result<Vec<Vec<u8>>, Failure> {
-    let update = gnunet_wire::official::pils::PeerUpdate::decode(service.service().announcement())?;
+#[derive(Default)]
+struct AddressObserver {
+    announcement: Vec<u8>,
+    addresses: Vec<Vec<u8>>,
+}
+impl AddressObserver {
+    fn read(&mut self, service: &gnunet_pils_host::Host<4096>) -> Result<Vec<Vec<u8>>, Failure> {
+        // Verify each changed signed announcement. Repeating signature checks
+        // for every one-byte IO turn makes the pump depend on CPU throughput.
+        if self.announcement != service.service().announcement() {
+            self.addresses = verify_provider_addresses(service)?;
+            self.announcement = service.service().announcement().to_vec();
+        }
+        Ok(self.addresses.clone())
+    }
+}
+fn verify_provider_addresses(
+    service: &gnunet_pils_host::Host<4096>,
+) -> Result<Vec<Vec<u8>>, Failure> {
     let mut scratch = [0; 4096];
-    let hello = gnunet_hello::Hello::parse_block(update.block, &mut scratch, hello())?;
-    let verified = hello.verify_at(Profile::Reference029.hello(), SystemClock.sample()?.now)?;
-    assert_eq!(
-        verified.hello().peer(),
-        service.service().identity().public_key()
-    );
+    let hello = service.service().verify_update(
+        service.service().announcement(),
+        &mut scratch,
+        SystemClock.sample()?.now.as_micros(),
+    )?;
+    assert_eq!(hello.peer(), service.service().identity().public_key());
     Ok(hello.addresses().map(|a| a.as_bytes().to_vec()).collect())
 }
 fn local_address(id: u32, address: &[u8]) -> Vec<u8> {
@@ -1141,6 +1158,7 @@ fn comm_registration() -> Vec<u8> {
 #[tokio::test(flavor = "current_thread")]
 async fn actual_partial_feed_keeps_original_revision_and_other_communicator_through_withdrawal()
 -> Result<(), Failure> {
+    let mut addresses = AddressObserver::default();
     let d = Directory::new()?;
     let pp = d.0.join("pils");
     let mut service = pils(&pp, 17)?;
@@ -1174,7 +1192,7 @@ async fn actual_partial_feed_keeps_original_revision_and_other_communicator_thro
             Instant::now() < end,
             "actual FEED progress: {:?}; provider addresses: {:?}",
             runtime.report(),
-            provider_addresses(&service)?
+            addresses.read(&service)?
         );
         let _original = step(&mut runtime, &mut service, &tr, &ps).await?;
     }
@@ -1183,7 +1201,7 @@ async fn actual_partial_feed_keeps_original_revision_and_other_communicator_thro
     }
     assert_eq!(runtime.report().address_publication_requests, 1);
     assert_eq!(runtime.report().address_publication_writes, 0);
-    assert!(provider_addresses(&service)?.is_empty());
+    assert!(addresses.read(&service)?.is_empty());
     let mut b = UnixStream::connect(d.0.join("tr")).await?;
     b.write_all(&comm_registration()).await?;
     b.write_all(&local_address(0, b"tcp-127.0.0.1:43")).await?;
@@ -1196,7 +1214,7 @@ async fn actual_partial_feed_keeps_original_revision_and_other_communicator_thro
             "original partial feed blocked current aggregate"
         );
         let _original = step(&mut runtime, &mut service, &tr, &ps).await?;
-        let actual = provider_addresses(&service)?;
+        let actual = addresses.read(&service)?;
         if observations.last() != Some(&actual) {
             observations.push(actual.clone());
         }
@@ -1223,10 +1241,10 @@ async fn actual_partial_feed_keeps_original_revision_and_other_communicator_thro
             Instant::now() < end,
             "actual FEED progress: {:?}; provider addresses: {:?}",
             runtime.report(),
-            provider_addresses(&service)?
+            addresses.read(&service)?
         );
         let _original = step(&mut runtime, &mut service, &tr, &ps).await?;
-        let actual = provider_addresses(&service)?;
+        let actual = addresses.read(&service)?;
         if actual.contains(&b"tcp://127.0.0.1:43".to_vec())
             && actual.contains(&b"tcp://127.0.0.1:44".to_vec())
             && runtime.report().pending_address_publications == 0
@@ -1241,10 +1259,10 @@ async fn actual_partial_feed_keeps_original_revision_and_other_communicator_thro
             Instant::now() < end,
             "actual FEED progress: {:?}; provider addresses: {:?}",
             runtime.report(),
-            provider_addresses(&service)?
+            addresses.read(&service)?
         );
         let _original = step(&mut runtime, &mut service, &tr, &ps).await?;
-        if provider_addresses(&service)?.is_empty()
+        if addresses.read(&service)?.is_empty()
             && runtime.report().pending_address_publications == 0
         {
             break;
@@ -1263,6 +1281,7 @@ async fn actual_partial_feed_keeps_original_revision_and_other_communicator_thro
 #[tokio::test(flavor = "current_thread")]
 async fn actual_partial_feed_pils_eof_returns_original_loss_before_same_key_epoch_and_no_old_body_replay()
 -> Result<(), Failure> {
+    let mut addresses = AddressObserver::default();
     let d = Directory::new()?;
     let pp = d.0.join("pils");
     let mut service = pils(&pp, 17)?;
@@ -1301,7 +1320,7 @@ async fn actual_partial_feed_pils_eof_returns_original_loss_before_same_key_epoc
     }
     assert_eq!(runtime.report().address_publication_requests, 1);
     assert_eq!(runtime.report().address_publication_writes, 0);
-    assert!(provider_addresses(&service)?.is_empty());
+    assert!(addresses.read(&service)?.is_empty());
     drop(service);
     std::fs::remove_file(&pp)?;
     let mut replacement = pils(&pp, 17)?;
@@ -1350,7 +1369,7 @@ async fn actual_partial_feed_pils_eof_returns_original_loss_before_same_key_epoc
             }
         }
         assert!(
-            provider_addresses(&replacement)?.is_empty(),
+            addresses.read(&replacement)?.is_empty(),
             "old address body replayed into replacement PILS service"
         );
         if activated_again
@@ -1374,6 +1393,7 @@ async fn actual_partial_feed_pils_eof_returns_original_loss_before_same_key_epoc
 #[tokio::test(flavor = "current_thread")]
 async fn actual_later_pils_observation_gets_fresh_current_snapshot_not_old_operation_replay()
 -> Result<(), Failure> {
+    let mut addresses = AddressObserver::default();
     let d = Directory::new()?;
     let pp = d.0.join("pils");
     let mut service = pils(&pp, 17)?;
@@ -1407,7 +1427,7 @@ async fn actual_later_pils_observation_gets_fresh_current_snapshot_not_old_opera
         {
             originals.push(w.operation);
         }
-        if provider_addresses(&service)? == desired
+        if addresses.read(&service)? == desired
             && !originals.is_empty()
             && runtime.report().pending_address_publications == 0
         {
@@ -1446,7 +1466,7 @@ async fn actual_later_pils_observation_gets_fresh_current_snapshot_not_old_opera
             runtime.report()
         );
         let _native = service.poll_once(SystemClock.sample()?.now.as_micros())?;
-        let state = provider_addresses(&service)?;
+        let state = addresses.read(&service)?;
         observed_stale |= state == vec![b"tcp://127.0.0.1:99".to_vec()];
         if let Some(Progress::Pils(gnunet_pils_host::client::Progress::Written(w))) =
             step(&mut runtime, &mut service, &tr, &ps).await?
@@ -1459,7 +1479,7 @@ async fn actual_later_pils_observation_gets_fresh_current_snapshot_not_old_opera
             let _progress = f.as_mut().poll(&mut cx);
         }
         if observed_stale
-            && provider_addresses(&service)? == desired
+            && addresses.read(&service)? == desired
             && runtime.report().address_reconciliations > 0
             && runtime.report().pending_address_publications == 0
             && originals.len() >= 2
@@ -1483,6 +1503,7 @@ async fn original_feed_partial(
     tr: &UnixListener,
     ps: &UnixListener,
 ) -> Result<(), Failure> {
+    let mut addresses = AddressObserver::default();
     let until = Instant::now() + Duration::from_secs(3);
     loop {
         assert!(Instant::now() < until, "no original positive partial write");
@@ -1498,7 +1519,7 @@ async fn original_feed_partial(
             assert_eq!(written_bytes, 1);
             assert_eq!(runtime.report().address_publication_requests, 1);
             assert_eq!(runtime.report().address_publication_writes, 0);
-            assert!(provider_addresses(service)?.is_empty());
+            assert!(addresses.read(service)?.is_empty());
             return Ok(());
         }
     }
@@ -1507,6 +1528,7 @@ async fn original_feed_partial(
 #[tokio::test(flavor = "current_thread")]
 async fn graceful_shutdown_finishes_original_partial_then_empty_and_returns_original_writes()
 -> Result<(), Failure> {
+    let mut addresses = AddressObserver::default();
     let d = Directory::new()?;
     let pp = d.0.join("pils");
     let mut service = pils(&pp, 17)?;
@@ -1543,7 +1565,7 @@ async fn graceful_shutdown_finishes_original_partial_then_empty_and_returns_orig
     }
     original_feed_partial(&mut runtime, &mut service, &tr, &ps).await?;
     assert_eq!(runtime.report().address_publication_writes, 0);
-    assert!(provider_addresses(&service)?.is_empty());
+    assert!(addresses.read(&service)?.is_empty());
     runtime.begin_shutdown(std::num::NonZeroU64::new(8_000_000).ok_or("budget")?)?;
     let _unadmitted = UnixStream::connect(d.0.join("tr")).await?;
     // Original service clients are physically closed before any drain progress.
@@ -1562,7 +1584,7 @@ async fn graceful_shutdown_finishes_original_partial_then_empty_and_returns_orig
             runtime.report()
         );
         let progress = step(&mut runtime, &mut service, &tr, &ps).await?;
-        seen_original_set |= provider_addresses(&service)? == vec![b"tcp://127.0.0.1:42".to_vec()];
+        seen_original_set |= addresses.read(&service)? == vec![b"tcp://127.0.0.1:42".to_vec()];
         match progress {
             Some(Progress::Pils(gnunet_pils_host::client::Progress::Written(w)))
                 if w.kind == gnunet_pils::client::OperationKind::Feed =>
@@ -1602,7 +1624,7 @@ async fn graceful_shutdown_finishes_original_partial_then_empty_and_returns_orig
     // Local fullwrite alone was the runtime promise. Separately poll the actual
     // service until it applies that already submitted complete empty frame.
     let until = Instant::now() + Duration::from_secs(2);
-    while !provider_addresses(&service)?.is_empty() {
+    while !addresses.read(&service)?.is_empty() {
         assert!(Instant::now() < until);
         service.poll_once(SystemClock.sample()?.now.as_micros())?;
         tokio::time::sleep(Duration::from_millis(1)).await;
@@ -1624,6 +1646,7 @@ async fn graceful_shutdown_clock_refusal_retires_original_partial_without_empty_
 }
 
 async fn failed_partial_drain(refused_clock: bool) -> Result<(), Failure> {
+    let mut addresses = AddressObserver::default();
     let d = Directory::new()?;
     let pp = d.0.join("pils");
     let mut service = pils(&pp, 17)?;
@@ -1694,7 +1717,7 @@ async fn failed_partial_drain(refused_clock: bool) -> Result<(), Failure> {
     assert_eq!(runtime.report().address_publication_writes, 0);
     assert_eq!(runtime.report().address_publication_retirements, 1);
     assert_eq!(tracking.active(), 0);
-    assert!(provider_addresses(&service)?.is_empty());
+    assert!(addresses.read(&service)?.is_empty());
     Ok(())
 }
 
@@ -1782,6 +1805,7 @@ async fn graceful_shutdown_original_pils_eof_keeps_unknown_result_and_never_acti
 
 #[tokio::test(flavor = "current_thread")]
 async fn address_quota_is_local_and_original_owners_can_delete_then_reuse() -> Result<(), Failure> {
+    let mut addresses = AddressObserver::default();
     let d = Directory::new()?;
     let pp = d.0.join("pils");
     let mut service = pils(&pp, 17)?;
@@ -1814,8 +1838,7 @@ async fn address_quota_is_local_and_original_owners_can_delete_then_reuse() -> R
     b.write_all(&local_address(7, b"tcp-127.0.0.1:1007"))
         .await?;
     let until = Instant::now() + Duration::from_secs(5);
-    while provider_addresses(&service)?.len() != 8
-        || runtime.report().pending_address_publications != 0
+    while addresses.read(&service)?.len() != 8 || runtime.report().pending_address_publications != 0
     {
         assert!(Instant::now() < until);
         let _original = step(&mut runtime, &mut service, &tr, &ps).await?;
@@ -1833,7 +1856,7 @@ async fn address_quota_is_local_and_original_owners_can_delete_then_reuse() -> R
     loop {
         assert!(Instant::now() < until);
         let _original = step(&mut runtime, &mut service, &tr, &ps).await?;
-        let actual = provider_addresses(&service)?;
+        let actual = addresses.read(&service)?;
         if actual.len() == 8
             && actual.contains(&b"tcp://127.0.0.1:1008".to_vec())
             && !actual.contains(&b"tcp://127.0.0.1:1000".to_vec())
@@ -1847,7 +1870,7 @@ async fn address_quota_is_local_and_original_owners_can_delete_then_reuse() -> R
     assert_eq!(runtime.identity(), Some(peer));
     drop(a);
     let until = Instant::now() + Duration::from_secs(5);
-    while provider_addresses(&service)? != vec![b"tcp://127.0.0.1:1007".to_vec()]
+    while addresses.read(&service)? != vec![b"tcp://127.0.0.1:1007".to_vec()]
         || runtime.report().pending_address_publications != 0
     {
         assert!(Instant::now() < until);
@@ -1856,8 +1879,7 @@ async fn address_quota_is_local_and_original_owners_can_delete_then_reuse() -> R
     b.write_all(&local_address(9, b"tcp-127.0.0.1:1009"))
         .await?;
     let until = Instant::now() + Duration::from_secs(5);
-    while provider_addresses(&service)?.len() != 2
-        || runtime.report().pending_address_publications != 0
+    while addresses.read(&service)?.len() != 2 || runtime.report().pending_address_publications != 0
     {
         assert!(Instant::now() < until);
         let _original = step(&mut runtime, &mut service, &tr, &ps).await?;
@@ -1872,6 +1894,7 @@ async fn address_quota_is_local_and_original_owners_can_delete_then_reuse() -> R
 #[tokio::test(flavor = "current_thread")]
 async fn address_quota65_uses_configured_publication_and_real_pils_observation()
 -> Result<(), Failure> {
+    let mut addresses = AddressObserver::default();
     let d = Directory::new()?;
     let pp = d.0.join("pils");
     let large = gnunet_pils::HelloLimits {
@@ -1931,14 +1954,10 @@ async fn address_quota65_uses_configured_publication_and_real_pils_observation()
     loop {
         assert!(Instant::now() < until);
         let _original = step(&mut runtime, &mut service, &tr, &ps).await?;
-        let mut scratch = [0; 4096];
-        let hello = service.service().verify_update(
-            service.service().announcement(),
-            &mut scratch,
-            SystemClock.sample()?.now.as_micros(),
-        )?;
-        if hello.address_count() == 65 && runtime.report().pending_address_publications == 0 {
-            assert_eq!(*hello.peer().as_bytes(), peer);
+        if addresses.read(&service)?.len() == 65
+            && runtime.report().pending_address_publications == 0
+        {
+            assert_eq!(*service.service().identity().public_key().as_bytes(), peer);
             break;
         }
     }
@@ -1987,6 +2006,7 @@ async fn address_quota_frame176_is_refused_before_subscribing_or_connecting() ->
 #[tokio::test(flavor = "current_thread")]
 async fn shutdown_forever_sentinel_is_rejected_without_retiring_original_owners()
 -> Result<(), Failure> {
+    let mut addresses = AddressObserver::default();
     #[derive(Clone)]
     struct FrozenClock {
         tracking: Clock,
@@ -2031,7 +2051,7 @@ async fn shutdown_forever_sentinel_is_rejected_without_retiring_original_owners(
         .write_all(&local_address(1, b"tcp-127.0.0.1:42"))
         .await?;
     let until = Instant::now() + Duration::from_secs(4);
-    while provider_addresses(&service)? != vec![b"tcp://127.0.0.1:42".to_vec()]
+    while addresses.read(&service)? != vec![b"tcp://127.0.0.1:42".to_vec()]
         || runtime.report().pending_address_publications != 0
     {
         assert!(Instant::now() < until);
@@ -2059,8 +2079,7 @@ async fn shutdown_forever_sentinel_is_rejected_without_retiring_original_owners(
         .write_all(&local_address(2, b"tcp-127.0.0.1:43"))
         .await?;
     let until = Instant::now() + Duration::from_secs(4);
-    while provider_addresses(&service)?.len() != 2
-        || runtime.report().pending_address_publications != 0
+    while addresses.read(&service)?.len() != 2 || runtime.report().pending_address_publications != 0
     {
         assert!(Instant::now() < until);
         let _event = step(&mut runtime, &mut service, &tr, &ps).await?;

@@ -405,6 +405,7 @@ fn genuine_socket_backpressure_retains_effect_ticket_across_canceled_drive() -> 
     rt().block_on(async {
         let p = path("backpressure");
         let listener = UnixListener::bind(&p)?;
+        socket2::SockRef::from(&listener).set_send_buffer_size(4096)?;
         let udp = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await?;
         let limits = Limits {
             max_pending_bytes: 8192,

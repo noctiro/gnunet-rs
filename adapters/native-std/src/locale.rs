@@ -7,10 +7,14 @@ use std::{
     ptr::NonNull,
     sync::{Arc, RwLock},
 };
-#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+#[cfg(any(
+    target_os = "macos",
+    target_os = "freebsd",
+    all(target_os = "linux", target_env = "gnu")
+))]
 #[expect(
     unsafe_code,
-    reason = "Exact POSIX/Darwin declarations missing from the pinned libc crate; SDK headers and native comparison proof bind this ABI"
+    reason = "POSIX locale declarations absent from libc; Darwin SDK, FreeBSD xlocale headers and glibc define these signatures"
 )]
 unsafe extern "C" {
     fn strncasecmp_l(
@@ -33,7 +37,11 @@ unsafe extern "C" {
     ) -> libc::c_ulonglong;
 }
 #[cfg_attr(
-    not(any(target_os = "macos", all(target_os = "linux", target_env = "gnu"))),
+    not(any(
+        target_os = "macos",
+        target_os = "freebsd",
+        all(target_os = "linux", target_env = "gnu")
+    )),
     expect(
         dead_code,
         reason = "Unvalidated native ABI constructors return Unsupported, so private locale ownership cannot be created or read"
@@ -56,7 +64,11 @@ unsafe impl Send for Handle {}
 unsafe impl Sync for Handle {}
 impl Drop for Handle {
     fn drop(&mut self) {
-        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+        #[cfg(any(
+            target_os = "macos",
+            target_os = "freebsd",
+            all(target_os = "linux", target_env = "gnu")
+        ))]
         #[expect(
             unsafe_code,
             reason = "One successful newlocale/duplocale result is uniquely owned by the final Arc; no pointer/function use remains live"
@@ -73,7 +85,11 @@ impl Drop for Handle {
 #[derive(Clone)]
 pub struct LocaleSnapshot {
     #[cfg_attr(
-        not(any(target_os = "macos", all(target_os = "linux", target_env = "gnu"))),
+        not(any(
+            target_os = "macos",
+            target_os = "freebsd",
+            all(target_os = "linux", target_env = "gnu")
+        )),
         expect(
             dead_code,
             reason = "Native ownership is unreachable on unvalidated ABI targets, while pure C-byte contexts stay available"
@@ -94,7 +110,11 @@ impl LocaleSnapshot {
         }
         let name = CString::new(name)
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "locale name contains NUL"))?;
-        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+        #[cfg(any(
+            target_os = "macos",
+            target_os = "freebsd",
+            all(target_os = "linux", target_env = "gnu")
+        ))]
         {
             #[expect(
                 unsafe_code,
@@ -106,12 +126,16 @@ impl LocaleSnapshot {
                 unsafe { libc::newlocale(libc::LC_ALL_MASK, name.as_ptr(), std::ptr::null_mut()) };
             Self::owned(raw)
         }
-        #[cfg(not(any(target_os = "macos", all(target_os = "linux", target_env = "gnu"))))]
+        #[cfg(not(any(
+            target_os = "macos",
+            target_os = "freebsd",
+            all(target_os = "linux", target_env = "gnu")
+        )))]
         {
             drop(name);
             Err(io::Error::new(
                 io::ErrorKind::Unsupported,
-                "native locale ABI requires ordinary Darwin libc or glibc",
+                "native locale ABI requires Darwin, FreeBSD libc or glibc",
             ))
         }
     }
@@ -128,7 +152,11 @@ impl LocaleSnapshot {
         reason = "Capturing native process/thread locale requires explicit external quiescence; successful duplocale creates independent ownership"
     )]
     pub unsafe fn capture_current_thread() -> io::Result<Self> {
-        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+        #[cfg(any(
+            target_os = "macos",
+            target_os = "freebsd",
+            all(target_os = "linux", target_env = "gnu")
+        ))]
         {
             // SAFETY: NULL queries rather than changes the current thread's
             // locale. The caller keeps its selected/global native owner stable.
@@ -138,15 +166,23 @@ impl LocaleSnapshot {
             let raw = unsafe { libc::duplocale(current) };
             Self::owned(raw)
         }
-        #[cfg(not(any(target_os = "macos", all(target_os = "linux", target_env = "gnu"))))]
+        #[cfg(not(any(
+            target_os = "macos",
+            target_os = "freebsd",
+            all(target_os = "linux", target_env = "gnu")
+        )))]
         {
             Err(io::Error::new(
                 io::ErrorKind::Unsupported,
-                "native locale ABI requires ordinary Darwin libc or glibc",
+                "native locale ABI requires Darwin, FreeBSD libc or glibc",
             ))
         }
     }
-    #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+    #[cfg(any(
+        target_os = "macos",
+        target_os = "freebsd",
+        all(target_os = "linux", target_env = "gnu")
+    ))]
     fn owned(raw: libc::locale_t) -> io::Result<Self> {
         let pointer = NonNull::new(raw).ok_or_else(io::Error::last_os_error)?;
         // POSIX global sentinel is never new owned storage; reject a violated
@@ -174,7 +210,11 @@ impl LocaleSnapshot {
         if first.is_empty() {
             return true;
         }
-        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+        #[cfg(any(
+            target_os = "macos",
+            target_os = "freebsd",
+            all(target_os = "linux", target_env = "gnu")
+        ))]
         {
             #[expect(
                 unsafe_code,
@@ -191,7 +231,11 @@ impl LocaleSnapshot {
                 ) == 0
             }
         }
-        #[cfg(not(any(target_os = "macos", all(target_os = "linux", target_env = "gnu"))))]
+        #[cfg(not(any(
+            target_os = "macos",
+            target_os = "freebsd",
+            all(target_os = "linux", target_env = "gnu")
+        )))]
         {
             false
         }
@@ -199,7 +243,11 @@ impl LocaleSnapshot {
     /// Exact native unsigned-byte isspace classification in this snapshot.
     #[must_use]
     pub fn is_space(&self, value: u8) -> bool {
-        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+        #[cfg(any(
+            target_os = "macos",
+            target_os = "freebsd",
+            all(target_os = "linux", target_env = "gnu")
+        ))]
         {
             #[expect(
                 unsafe_code,
@@ -210,7 +258,11 @@ impl LocaleSnapshot {
                 isspace_l(i32::from(value), self.handle.0.as_ptr()) != 0
             }
         }
-        #[cfg(not(any(target_os = "macos", all(target_os = "linux", target_env = "gnu"))))]
+        #[cfg(not(any(
+            target_os = "macos",
+            target_os = "freebsd",
+            all(target_os = "linux", target_env = "gnu")
+        )))]
         {
             let _value = value;
             false
@@ -220,7 +272,11 @@ impl LocaleSnapshot {
     /// unchecked scanf conversion whose mathematical result may not fit float.
     pub fn scan_float(&self, input: &[u8]) -> io::Result<FloatScan> {
         let source = c_string(input)?;
-        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+        #[cfg(any(
+            target_os = "macos",
+            target_os = "freebsd",
+            all(target_os = "linux", target_env = "gnu")
+        ))]
         {
             let mut end = std::ptr::null_mut();
             let errno = Errno::clear();
@@ -239,12 +295,16 @@ impl LocaleSnapshot {
                 range_error,
             })
         }
-        #[cfg(not(any(target_os = "macos", all(target_os = "linux", target_env = "gnu"))))]
+        #[cfg(not(any(
+            target_os = "macos",
+            target_os = "freebsd",
+            all(target_os = "linux", target_env = "gnu")
+        )))]
         {
             drop(source);
             Err(io::Error::new(
                 io::ErrorKind::Unsupported,
-                "native locale ABI requires ordinary Darwin libc or glibc",
+                "native locale ABI requires Darwin, FreeBSD libc or glibc",
             ))
         }
     }
@@ -252,7 +312,11 @@ impl LocaleSnapshot {
     /// consumption while returning ERANGE separately from a representable value.
     pub fn scan_number(&self, input: &[u8]) -> io::Result<NumberScan> {
         let source = c_string(input)?;
-        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+        #[cfg(any(
+            target_os = "macos",
+            target_os = "freebsd",
+            all(target_os = "linux", target_env = "gnu")
+        ))]
         {
             let mut end = std::ptr::null_mut();
             let errno = Errno::clear();
@@ -271,12 +335,16 @@ impl LocaleSnapshot {
                 range_error,
             })
         }
-        #[cfg(not(any(target_os = "macos", all(target_os = "linux", target_env = "gnu"))))]
+        #[cfg(not(any(
+            target_os = "macos",
+            target_os = "freebsd",
+            all(target_os = "linux", target_env = "gnu")
+        )))]
         {
             drop(source);
             Err(io::Error::new(
                 io::ErrorKind::Unsupported,
-                "native locale ABI requires ordinary Darwin libc or glibc",
+                "native locale ABI requires Darwin, FreeBSD libc or glibc",
             ))
         }
     }
@@ -318,6 +386,11 @@ fn c_string(input: &[u8]) -> io::Result<CString> {
     CString::from_vec_with_nul(bytes)
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid owned C string"))
 }
+#[cfg(any(
+    target_os = "macos",
+    target_os = "freebsd",
+    all(target_os = "linux", target_env = "gnu")
+))]
 fn consumed(source: &CString, end: *mut libc::c_char) -> io::Result<usize> {
     let start = source.as_ptr().addr();
     let end = end.addr();
@@ -332,13 +405,25 @@ fn consumed(source: &CString, end: *mut libc::c_char) -> io::Result<usize> {
     }
     Ok(end - start)
 }
-#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+#[cfg(any(
+    target_os = "macos",
+    target_os = "freebsd",
+    all(target_os = "linux", target_env = "gnu")
+))]
 struct Errno(i32);
-#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+#[cfg(any(
+    target_os = "macos",
+    target_os = "freebsd",
+    all(target_os = "linux", target_env = "gnu")
+))]
 fn last_errno() -> i32 {
     io::Error::last_os_error().raw_os_error().unwrap_or(0)
 }
-#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+#[cfg(any(
+    target_os = "macos",
+    target_os = "freebsd",
+    all(target_os = "linux", target_env = "gnu")
+))]
 fn set_errno(value: i32) {
     #[expect(
         unsafe_code,
@@ -346,7 +431,7 @@ fn set_errno(value: i32) {
     )]
     // SAFETY: the pointer is libc's thread-local errno storage.
     unsafe {
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "freebsd"))]
         {
             *libc::__error() = value;
         }
@@ -356,7 +441,11 @@ fn set_errno(value: i32) {
         }
     }
 }
-#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+#[cfg(any(
+    target_os = "macos",
+    target_os = "freebsd",
+    all(target_os = "linux", target_env = "gnu")
+))]
 impl Errno {
     fn clear() -> Self {
         let old = Self(last_errno());
@@ -364,7 +453,11 @@ impl Errno {
         old
     }
 }
-#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+#[cfg(any(
+    target_os = "macos",
+    target_os = "freebsd",
+    all(target_os = "linux", target_env = "gnu")
+))]
 impl Drop for Errno {
     fn drop(&mut self) {
         set_errno(self.0);
@@ -490,11 +583,19 @@ impl ThreadLocale {
         reason = "Current global/thread native state requires an explicit lifetime-long external mutation and ownership contract"
     )]
     pub unsafe fn acquire() -> io::Result<Self> {
-        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+        #[cfg(any(
+            target_os = "macos",
+            target_os = "freebsd",
+            all(target_os = "linux", target_env = "gnu")
+        ))]
         {
             Ok(Self { _private: () })
         }
-        #[cfg(not(any(target_os = "macos", all(target_os = "linux", target_env = "gnu"))))]
+        #[cfg(not(any(
+            target_os = "macos",
+            target_os = "freebsd",
+            all(target_os = "linux", target_env = "gnu")
+        )))]
         {
             Err(io::Error::new(
                 io::ErrorKind::Unsupported,
@@ -527,7 +628,11 @@ impl ThreadLocale {
         if a.is_empty() {
             return true;
         }
-        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+        #[cfg(any(
+            target_os = "macos",
+            target_os = "freebsd",
+            all(target_os = "linux", target_env = "gnu")
+        ))]
         {
             #[expect(
                 unsafe_code,
@@ -539,7 +644,11 @@ impl ThreadLocale {
                 libc::strncasecmp(a.as_ptr().cast(), b.as_ptr().cast(), a.len()) == 0
             }
         }
-        #[cfg(not(any(target_os = "macos", all(target_os = "linux", target_env = "gnu"))))]
+        #[cfg(not(any(
+            target_os = "macos",
+            target_os = "freebsd",
+            all(target_os = "linux", target_env = "gnu")
+        )))]
         {
             false
         }
@@ -547,7 +656,11 @@ impl ThreadLocale {
     /// Native unsigned-byte space classification for the calling thread.
     #[must_use]
     pub fn is_space(&self, byte: u8) -> bool {
-        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+        #[cfg(any(
+            target_os = "macos",
+            target_os = "freebsd",
+            all(target_os = "linux", target_env = "gnu")
+        ))]
         {
             #[expect(
                 unsafe_code,
@@ -558,7 +671,11 @@ impl ThreadLocale {
                 libc::isspace(i32::from(byte)) != 0
             }
         }
-        #[cfg(not(any(target_os = "macos", all(target_os = "linux", target_env = "gnu"))))]
+        #[cfg(not(any(
+            target_os = "macos",
+            target_os = "freebsd",
+            all(target_os = "linux", target_env = "gnu")
+        )))]
         {
             let _byte = byte;
             false
@@ -567,7 +684,11 @@ impl ThreadLocale {
     /// Defined strtoull conversion under the calling thread's current locale.
     pub fn scan_number(&self, input: &[u8]) -> io::Result<NumberScan> {
         let input = c_string(input)?;
-        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+        #[cfg(any(
+            target_os = "macos",
+            target_os = "freebsd",
+            all(target_os = "linux", target_env = "gnu")
+        ))]
         {
             let mut end = std::ptr::null_mut();
             let errno = Errno::clear();
@@ -585,7 +706,11 @@ impl ThreadLocale {
                 range_error,
             })
         }
-        #[cfg(not(any(target_os = "macos", all(target_os = "linux", target_env = "gnu"))))]
+        #[cfg(not(any(
+            target_os = "macos",
+            target_os = "freebsd",
+            all(target_os = "linux", target_env = "gnu")
+        )))]
         {
             drop(input);
             Err(io::Error::new(
@@ -597,7 +722,11 @@ impl ThreadLocale {
     /// Source CONFIG float setter formatting in a temporary numeric-C locale,
     /// restoring the original thread selection before returning owned bytes.
     pub fn format_configuration_float(&self, value: f32) -> io::Result<Vec<u8>> {
-        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+        #[cfg(any(
+            target_os = "macos",
+            target_os = "freebsd",
+            all(target_os = "linux", target_env = "gnu")
+        ))]
         {
             #[expect(
                 unsafe_code,
@@ -639,7 +768,11 @@ impl ThreadLocale {
             owned.extend_from_slice(&output[..used]);
             Ok(owned)
         }
-        #[cfg(not(any(target_os = "macos", all(target_os = "linux", target_env = "gnu"))))]
+        #[cfg(not(any(
+            target_os = "macos",
+            target_os = "freebsd",
+            all(target_os = "linux", target_env = "gnu")
+        )))]
         {
             let _value = value;
             Err(io::Error::new(
@@ -655,7 +788,11 @@ impl ThreadLocale {
     /// thread until a later explicit change or thread exit. Success restores the
     /// original locale. Neither path changes other threads' selected locale.
     pub fn configuration_float(&self, input: &[u8]) -> io::Result<ConfigurationFloat> {
-        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+        #[cfg(any(
+            target_os = "macos",
+            target_os = "freebsd",
+            all(target_os = "linux", target_env = "gnu")
+        ))]
         {
             #[expect(
                 unsafe_code,
@@ -701,7 +838,11 @@ impl ThreadLocale {
                 range_error: false,
             })
         }
-        #[cfg(not(any(target_os = "macos", all(target_os = "linux", target_env = "gnu"))))]
+        #[cfg(not(any(
+            target_os = "macos",
+            target_os = "freebsd",
+            all(target_os = "linux", target_env = "gnu")
+        )))]
         {
             let _input = input;
             Err(io::Error::new(
@@ -722,11 +863,19 @@ pub struct ConfigurationFloat {
     /// A defined strtof_l range error rejected before any scanf/effect.
     pub range_error: bool,
 }
-#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+#[cfg(any(
+    target_os = "macos",
+    target_os = "freebsd",
+    all(target_os = "linux", target_env = "gnu")
+))]
 struct RetainedThreadLocale {
     locale: LocaleSnapshot,
 }
-#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+#[cfg(any(
+    target_os = "macos",
+    target_os = "freebsd",
+    all(target_os = "linux", target_env = "gnu")
+))]
 impl Drop for RetainedThreadLocale {
     fn drop(&mut self) {
         #[expect(
@@ -745,17 +894,29 @@ impl Drop for RetainedThreadLocale {
         }
     }
 }
-#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+#[cfg(any(
+    target_os = "macos",
+    target_os = "freebsd",
+    all(target_os = "linux", target_env = "gnu")
+))]
 std::thread_local! {
     static RETAINED_THREAD_LOCALE:std::cell::RefCell<Option<RetainedThreadLocale>>=const{std::cell::RefCell::new(None)};
 }
-#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+#[cfg(any(
+    target_os = "macos",
+    target_os = "freebsd",
+    all(target_os = "linux", target_env = "gnu")
+))]
 struct InstalledLocale {
     locale: LocaleSnapshot,
     previous: libc::locale_t,
     restore: bool,
 }
-#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+#[cfg(any(
+    target_os = "macos",
+    target_os = "freebsd",
+    all(target_os = "linux", target_env = "gnu")
+))]
 impl InstalledLocale {
     fn new(locale: LocaleSnapshot) -> io::Result<Self> {
         #[expect(
@@ -793,7 +954,11 @@ impl InstalledLocale {
         Ok(())
     }
 }
-#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+#[cfg(any(
+    target_os = "macos",
+    target_os = "freebsd",
+    all(target_os = "linux", target_env = "gnu")
+))]
 impl Drop for InstalledLocale {
     fn drop(&mut self) {
         if self.restore {

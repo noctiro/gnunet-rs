@@ -585,7 +585,10 @@ fn independent_management_snapshots_partial_loss_and_application_origins_stay_se
 -> Result<(), Failure> {
     runtime()?.block_on(async {
         tokio::time::timeout(Duration::from_secs(8), async {
-            let listener = TcpListener::bind("127.0.0.1:0").await?;
+            let socket = tokio::net::TcpSocket::new_v4()?;
+            socket.set_send_buffer_size(1024)?;
+            socket.bind("127.0.0.1:0".parse()?)?;
+            let listener = socket.listen(4)?;
             let listeners = [Listener::Tcp(&listener)];
             let mut instance = core::Instance::new();
             let mut clients = [core::ClientSlot::new(); 4];
@@ -623,7 +626,9 @@ fn independent_management_snapshots_partial_loss_and_application_origins_stay_se
                 snapshot_bytes: 16384,
             };
             server.enable_management(limits)?;
-            let mut slow = TcpStream::connect(listener.local_addr()?).await?;
+            let slow_socket = tokio::net::TcpSocket::new_v4()?;
+            slow_socket.set_recv_buffer_size(1024)?;
+            let mut slow = slow_socket.connect(listener.local_addr()?).await?;
             request(&mut slow, Request::ListPeers).await?;
             until(
                 &mut server,
@@ -657,7 +662,7 @@ fn independent_management_snapshots_partial_loss_and_application_origins_stay_se
             );
             assert_eq!(server.report().written_bytes, 0);
             let mut directory = management::Directory::new([0; 32], limits)?;
-            for id in 1..=100_u8 {
+            for id in 1..=200_u8 {
                 directory.path(&[[id; 32]])?;
             }
             let snapshot = directory.snapshot(management::Kind::Peers)?;

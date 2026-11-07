@@ -27,6 +27,7 @@ impl Directory {
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         fs::DirBuilder::new().mode(0o700).create(&path)?;
+        fs::create_dir(path.join("config.d"))?;
         fs::write(
             path.join("service.conf"),
             format!(
@@ -46,6 +47,7 @@ impl Directory {
         let child = Command::new(env!("CARGO_BIN_EXE_gnunet-service-statistics"))
             .arg("-c")
             .arg(self.file("service.conf"))
+            .env("GNUNET_BASE_CONFIG", self.file("config.d"))
             .stdin(Stdio::null())
             .stdout(File::create(&output)?)
             .stderr(File::create(&errors)?)
