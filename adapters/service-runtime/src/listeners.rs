@@ -124,6 +124,14 @@ fn access_parents(path: &std::path::Path, mode: u32) -> io::Result<()> {
     let mut component = PathBuf::new();
     for part in parent.components() {
         component.push(part.as_os_str());
+        // FreeBSD reports EISDIR for mkdir("/"). Existing directories need
+        // no creation syscall and must retain their current permissions.
+        match fs::metadata(&component) {
+            Ok(metadata) if metadata.is_dir() => continue,
+            Ok(_) => return Err(io::ErrorKind::NotADirectory.into()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
         match fs::DirBuilder::new().mode(mode).create(&component) {
             Ok(()) => {
                 // Initial creation is at most this restrictive under the current
@@ -131,7 +139,12 @@ fn access_parents(path: &std::path::Path, mode: u32) -> io::Result<()> {
                 // to its requested mode; existing parents are never changed.
                 fs::set_permissions(&component, fs::Permissions::from_mode(mode))?;
             }
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::AlreadyExists | io::ErrorKind::IsADirectory
+                ) =>
+            {
                 if !fs::metadata(&component)?.is_dir() {
                     return Err(io::ErrorKind::NotADirectory.into());
                 }
