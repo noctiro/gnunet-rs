@@ -320,9 +320,13 @@ impl Installation {
         let found = if let Some(value) = override_value {
             let location = bytes_path(&value)?;
             #[cfg(windows)]
-            let location = environment
-                .absolute_path(&location)
-                .map_err(|error| crate::io_error(&location, error))?;
+            let location = if location.as_os_str().is_empty() {
+                location
+            } else {
+                environment
+                    .absolute_path(&location)
+                    .map_err(|error| crate::io_error(&location, error))?
+            };
             Some((location, InstallationOrigin::Environment))
         } else {
             #[cfg(target_os = "linux")]

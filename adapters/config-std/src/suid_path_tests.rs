@@ -53,9 +53,13 @@ fn supplied_installation_is_lazy_and_first_successful_fallback_owns_cache() -> R
         calls.set(calls.get() + 1);
         Ok(installation)
     })?;
-    let mut expected = path_bytes(&directory.0)?.to_vec();
-    expected.extend_from_slice(b"/lib//supplied-b/libexec/helper");
-    assert_eq!(path_bytes(&first)?, expected);
+    assert_eq!(first, directory.0.join("lib/supplied-b/libexec/helper"));
+    #[cfg(unix)]
+    {
+        let mut expected = path_bytes(&directory.0)?.to_vec();
+        expected.extend_from_slice(b"/lib//supplied-b/libexec/helper");
+        assert_eq!(path_bytes(&first)?, expected);
+    }
     let next = cfg.suid_binary_path_resolve(b"helper", &mut cache, || {
         calls.set(calls.get() + 1);
         Err(Error::Unsupported)
@@ -83,9 +87,14 @@ fn absolute_and_rejected_program_do_not_discover_or_poison_cache() -> Result<()>
         ..ProjectData::default()
     };
     let mut cache = BinaryPathCache::new();
+    let absolute = std::env::temp_dir().join("gnunet-owned-no-execution-helper");
     assert_eq!(
-        cfg.suid_binary_path_for_project_with(&invalid_project, b"/owned/plain", &mut cache)?,
-        Path::new("/owned/plain")
+        cfg.suid_binary_path_for_project_with(
+            &invalid_project,
+            path_bytes(&absolute)?,
+            &mut cache
+        )?,
+        absolute
     );
     assert!(cache.suid.is_none() && cache.libexec.is_none());
     assert!(matches!(
@@ -121,6 +130,6 @@ fn unavailable_fallback_is_not_a_cached_negative_result() -> Result<()> {
             .installation(&project)
             .map_err(|_| Error::InvalidValue)
     })?;
-    assert!(path_bytes(&resolved)?.ends_with(b"/available-next/libexec/helper"));
+    assert!(resolved.ends_with("available-next/libexec/helper"));
     Ok(())
 }
