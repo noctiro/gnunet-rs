@@ -174,6 +174,7 @@ impl OutputDir {
         let mut stage = RevalidateStage::Unopened;
         let mut identity = None;
         let mut receipt = None;
+        let mut fence = None;
         let result = (|| -> Result<RevalidatedRange> {
             if selection.start > selection.end || selection.end > content.size {
                 return Err(invalid_name());
@@ -216,21 +217,17 @@ impl OutputDir {
             if matches!(read.completion, Completion::Verified(_)) {
                 stage = RevalidateStage::Verified;
             }
-            let check = || -> Result<()> {
-                if Stamp::file(&file)? != original {
-                    return Err(Error::SourceChanged);
-                }
+            let mut check = |source_boundary, name_boundary| -> Result<()> {
+                original.check(&file, source_boundary, &mut fence)?;
                 let current_parent = self.parent_existing(ancestors)?;
                 if FileIdentity::of(&current_parent)? != parent_id {
                     return Err(Error::SourceChanged);
                 }
                 let current = File::from(openat(&current_parent, *name, REGULAR, Mode::empty())?);
-                if Stamp::file(&current)? != original {
-                    return Err(Error::SourceChanged);
-                }
+                original.check(&current, name_boundary, &mut fence)?;
                 Ok(())
             };
-            check()?;
+            check("source-before-sync", "name-before-sync")?;
             if control(read.authenticated) == Control::Cancel {
                 return Err(Error::Cancelled);
             }
@@ -242,7 +239,7 @@ impl OutputDir {
                 query: content.query,
                 source,
             })?;
-            check()?;
+            check("source-after-sync", "name-after-sync")?;
             Ok(RevalidatedRange {
                 read,
                 identity: original.identity,
@@ -255,6 +252,7 @@ impl OutputDir {
                 identity,
                 receipt,
                 operation,
+                fence,
             })
         })
     }

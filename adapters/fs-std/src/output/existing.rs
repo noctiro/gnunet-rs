@@ -38,6 +38,7 @@ pub struct RevalidateFailure<R = ReadFile> {
     pub receipt: Option<R>,
     /// Original source/cache/protocol/cancellation or uncertain barrier failure.
     pub operation: Error,
+    pub(super) fence: Fence,
 }
 impl<R> fmt::Display for RevalidateFailure<R> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -45,7 +46,14 @@ impl<R> fmt::Display for RevalidateFailure<R> {
             f,
             "FS existing-file revalidation {:?}: {}",
             self.stage, self.operation
-        )
+        )?;
+        if let Some((boundary, expected, observed)) = &self.fence {
+            write!(
+                f,
+                "; {boundary}: expected {expected:?}, observed {observed:?}"
+            )?;
+        }
+        Ok(())
     }
 }
 impl<R: fmt::Debug> std::error::Error for RevalidateFailure<R> {
@@ -63,7 +71,7 @@ pub struct RevalidatedFile {
     /// Actual anchored parent whose naming barrier was refreshed.
     pub parent: FileIdentity,
 }
-#[derive(Clone, Copy, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct Stamp {
     pub(super) identity: FileIdentity,
     pub(super) bytes: u64,
@@ -72,6 +80,7 @@ pub(super) struct Stamp {
     changed: i64,
     changed_nanos: i64,
 }
+pub(super) type Fence = Option<(&'static str, Stamp, Stamp)>;
 impl Stamp {
     fn metadata(metadata: Metadata) -> Result<Self> {
         if !metadata.is_file() {
@@ -91,6 +100,19 @@ impl Stamp {
     }
     pub(super) fn file(file: &File) -> Result<Self> {
         Self::metadata(file.metadata()?)
+    }
+    pub(super) fn check(
+        self,
+        file: &File,
+        boundary: &'static str,
+        fence: &mut Fence,
+    ) -> Result<()> {
+        let observed = Self::file(file)?;
+        if observed != self {
+            *fence = Some((boundary, self, observed));
+            return Err(Error::SourceChanged);
+        }
+        Ok(())
     }
 }
 pub(super) const REGULAR: OFlag = OFlag::O_RDONLY
@@ -125,6 +147,7 @@ impl OutputDir {
         let mut stage = RevalidateStage::Unopened;
         let mut identity = None;
         let mut receipt = None;
+        let mut fence = None;
         let result = (|| -> Result<RevalidatedFile> {
             let parts = components(relative.as_ref())?;
             let (name, ancestors) = parts.split_last().ok_or_else(invalid_name)?;
@@ -148,27 +171,24 @@ impl OutputDir {
             stage = RevalidateStage::Opened;
             let encoded = buffers.publish(&mut file, expected.size, cache, limits, &mut control)?;
             stage = RevalidateStage::Encoded;
-            if encoded.content != expected || Stamp::file(&file)? != original {
+            if encoded.content != expected {
                 return Err(Error::SourceChanged);
             }
+            original.check(&file, "source-after-encoding", &mut fence)?;
             let read = buffers.copy_to(cache, expected, &mut io::sink(), limits, &mut control)?;
             receipt = Some(read);
             stage = RevalidateStage::Verified;
-            let check = || -> Result<()> {
-                if Stamp::file(&file)? != original {
-                    return Err(Error::SourceChanged);
-                }
+            let mut check = |source_boundary, name_boundary| -> Result<()> {
+                original.check(&file, source_boundary, &mut fence)?;
                 let current_parent = self.parent_existing(ancestors)?;
                 if FileIdentity::of(&current_parent)? != parent_id {
                     return Err(Error::SourceChanged);
                 }
                 let current = File::from(openat(&current_parent, *name, REGULAR, Mode::empty())?);
-                if Stamp::file(&current)? != original {
-                    return Err(Error::SourceChanged);
-                }
+                original.check(&current, name_boundary, &mut fence)?;
                 Ok(())
             };
-            check()?;
+            check("source-before-sync", "name-before-sync")?;
             if control(read.progress) == Control::Cancel {
                 return Err(Error::Cancelled);
             }
@@ -180,7 +200,7 @@ impl OutputDir {
                 query: expected.query,
                 source,
             })?;
-            check()?;
+            check("source-after-sync", "name-after-sync")?;
             Ok(RevalidatedFile {
                 read,
                 identity: original.identity,
@@ -193,6 +213,7 @@ impl OutputDir {
                 identity,
                 receipt,
                 operation,
+                fence,
             })
         })
     }

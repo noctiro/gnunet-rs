@@ -29,7 +29,8 @@ pub enum Error {
     Cancelled,
     /// Stored bytes have a wrong length, shape or content-addressed identity.
     Corrupt,
-    /// Input contains bytes beyond its declared file length.
+    /// Source identity, length, contents or metadata changed during verification,
+    /// or input contains bytes beyond its declared file length.
     SourceChanged,
     /// The final file is known durable, but temporary cleanup needs attention.
     CleanupAfterCommit {

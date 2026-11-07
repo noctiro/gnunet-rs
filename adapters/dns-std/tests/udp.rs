@@ -499,10 +499,14 @@ fn early_return_between_lazy_open_and_send_retains_exact_effect() -> Result {
 #[test]
 fn ordinary_send_error_is_observed_without_cancelling_retry_or_closing_socket() -> Result {
     runtime()?.block_on(async {
-        let mut h = Stub::start(1, 64)?;
-        h.add_dns_sa(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))?;
+        let server = server4().await?;
+        // One byte beyond IPv4's maximum UDP payload must fail before sending,
+        // unlike port zero, which some kernels accept as a destination.
+        const TOO_LARGE: usize = 65_508;
+        let mut h = DnsStub::<1, TOO_LARGE, 8>::start(1, 64)?;
+        h.add_dns_sa(server.local_addr()?)?;
         h.set_retry(Duration(10_000))?;
-        let request = h.resolve(b"unreachable port zero")?.request;
+        let request = h.resolve(&vec![0; TOO_LARGE])?.request;
         let (mut attempts, mut failures) = (0, 0);
         let mut cache = None;
         h.drive(
@@ -531,7 +535,12 @@ fn ordinary_send_error_is_observed_without_cancelling_retry_or_closing_socket() 
         )
         .await?;
         assert_eq!(attempts, 2);
-        assert_eq!(failures, 2); // actual native sendto(127.0.0.1:0) rejects here
+        assert_eq!(failures, 2);
+        assert!(
+            server
+                .try_recv(&mut [0; 1])
+                .is_err_and(|error| error.kind() == io::ErrorKind::WouldBlock)
+        );
         assert!(h.owns_request(request));
         assert_eq!(h.cached_socket_count(), 1);
         assert!(h.next_wakeup().is_some());
@@ -606,20 +615,24 @@ fn readable_backlog_cannot_starve_due_retry_even_across_early_returns() -> Resul
         let (mut events, mut first_send) = (0, None);
         assert_eq!(
             h.drive(
-                Some(Instant::now() + StdDuration::from_millis(3)),
+                Some(Instant::now() + StdDuration::from_secs(2)),
                 |event, _| {
                     if let Event::Sent { .. } = event {
                         first_send.get_or_insert(events);
                     }
                     events += 1;
-                    Flow::Continue // only caller budget terminates the drive
+                    if events == 4 {
+                        Flow::Return
+                    } else {
+                        Flow::Continue
+                    }
                 }
             )
             .await?,
-            Progress::WaitDeadline
+            Progress::Activity
         );
         assert!(first_send.is_some_and(|at| at <= 1));
-        assert!(events > 2); // real queued receive work followed the due send
+        assert_eq!(events, 4); // real queued receive work followed the due send
         Ok::<(), Box<dyn std::error::Error>>(())
     })
 }
