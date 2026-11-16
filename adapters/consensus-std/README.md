@@ -1,157 +1,114 @@
 # Native CONSENSUS bridge
 
-Bridge owns one original core Session and generic SET Factory, Listener,
-Set, Prepared, MutationId and OperationId owners. It does not spawn a service,
-background task, Resolver or private CONSENSUS peer transport. The normal process
-owns its configured PILS Client and its original IPC connection. Current
-PILS epoch+peer must match the original verified Identity before each normal
-bridge turn. A lost/changed source cancels that original session instead of
-silently replacing its local identity. Same-source, same-peer verified metadata
-refresh is allowed within the unchanged original session/native bounds.
+This adapter connects a caller-driven CONSENSUS session to the generic SET SDK
+and normal service IPC. It owns the original Session, SET Factory, Listener,
+source populations, preparations and operation tokens. The foreground service
+owns configuration, Resolver, process control and PILS. No background task is
+spawned. The [core](../../crates/gnunet-consensus/README.md) defines wire,
+grading and application-value contracts.
 
-Fixed C consensus calls GNUNET_CRYPTO_get_peer_identity, whose util implementation
-loads PEER/PRIVATE_KEY and derives its public identity. It does not itself use
-PILS. Rust's PILS observation is an explicit internal identity provider
-choice, never guessed from participant order or a configured public string. The caller reports PILS events first; metadata-only HELLO coverage makes
-no authenticated address/dial capability claim. Configuration snapshots across
-MQs do not prove a remote SET daemon restart generation.
+## Identity and configuration
 
-PrepareSet creates an empty UNION source and serially admits each frozen
-population element, waiting for its exact mutation whole-write before advancing. The aggregate core Written occurs only after CREATE and every original
-ADD whole-write. Reconcile binds prepare/accept/commit to the same core
-TaskId/SetId/OfferId and original hard bound. OperationBound exposes the real
-native OperationId/epoch association after admission, without a write/ACK claim. OperationWritten whole activates the original core task. Actual ADD_LOCAL,
-ADD_REMOTE and only DONE/FAILURE drive semantic results; HALF_DONE never
-terminates a task. Every native progress/loss/receipt remains exposed.
+The configured PILS client must retain the original verified identity's epoch
+and peer before every normal bridge turn. A same-source, same-peer metadata
+refresh is allowed within the original bounds; source replacement or identity
+change cancels that session. Metadata-only HELLO coverage grants no address or
+dial authority. Official C CONSENSUS instead derives identity from its configured
+`PEER/PRIVATE_KEY`; Rust's identity provider is an internal implementation choice.
 
-A valid future incoming context is accepted only into an offline original
-Prepared. Its domain, epoch and accept id stay unchanged. Before first successful
-commit, Prepared::with_options supplies that task's standard options; it
-cannot reconfigure an already consumed committed preparation. Invalid incoming
-contexts produce native rejection writes and independent Rejected events. Dropping an offline preparation alone is not a peer rejection/retirement proof. An uncommitted offer on a retired SET is rejected through that original
-Prepared's exact factory domain, listener epoch and accept id. Admission retains
-the same preparation on failure; successful queueing retains a rejection token
-until the exact original listener's whole REJECT write, or that listener's real
-physical closure. A committed preparation cannot be recovered as a rejection:
-its operation belongs to its original SET loss/cancellation. This permits
-other leaders to keep their listener and immutable sources. The original
-listener still physically closes before public523/525 completion. No private nonce/ACK is invented for
-sequential reuse of a standard global session hash.
+`Sources::new` takes one coherent configuration snapshot and selects explicit
+fixed endpoints. Later copies share selected `Arc` payloads. The shared clock,
+Resolver and temporary native paths retain separate owners. An endpoint snapshot
+does not identify a remote daemon restart generation.
 
-Normal native sources use original per-effect bounds clamped to the outer
-unchanged canonical/native limits. Actual source/clock failure is retained in
-its original native event or Fault; core classifications never erase that cause. Closing uses native close and bounded original loss work. Historical
-last_now is used only for matching failure metadata, never a fake clock read,
-new deadline or new IO permission. Already admitted writes retain their actual
-known whole/prefix disposition. One source's loss is applied to all its
-original tasks, including plans without native OperationIds. Pending commit
-exposure remains Written, Unsent or Lost according to its original
-receipt. The failed core set is no longer ready/live and cannot admit another
-PrepareSet/Reconcile. Its host row and logical CloseSet debt remain until their
-exact retirement settles; other sources and leader frontiers can continue with
-the original bounds. No partial result is relabeled as a new epoch, peer DONE
-or replay. A pending source-effect window expiry stops new IO and physically
-retires that source before settlement; it does not renew the target or alone
-manufacture a native loss receipt. Identifiable native EOF, native hard expiry
-and original socket IO losses are source-scoped. Shared clock/selector failures,
-ambiguous Protocol failures, listener/PILS loss and the original whole-session
-deadline remain global fences. PrepareSet reserves and records its never-created population row before any
-fallible deadline/Factory admission. A refusal at that boundary retires only the
-exact original source with Unsent, retaining its empty row through CloseSet;
-it creates no synthetic SET loss. An already-created source's local admission
-refusal physically closes that same owner and retains its Requested loss
-separately from the business refusal supplied to source_retired. An uncommitted
-incoming preparation remains owned for rejection on the original listener. SourceRefused carries a single bounded original diagnostic; SessionReport keeps
-its count and first cause without passing it through the global Fault channel. Ledger allocation failures, shared Clock/selector failures and ownership
-invariant failures remain whole-session fences. Before a global Unsent closes
-its logical population, the proven never-created host row is removed as well;
-no nonexistent physical owner or unreachable CloseSet debt remains. Deadline and cancellation
-classification is taken once from the SDK cancellation intent, independent
-of whether another pure effect happens to be pending. The current SDK produces
-Requested cancellations; the Deadline-intent unit case verifies only the typed
-mapping and is not evidence of a native deadline-cancellation event. The final
-bounded-cleanup fallback also moves any unconsumed SourceRefused diagnostic into
-the report, without upgrading unresolved retirement to success.
+## SET operations and task results
 
-All normal-source IO gates are checked again after pure deadline/cancel progress.
+`PrepareSet` creates an empty UNION source and streams its immutable population,
+waiting for each ADD whole-write. Core `Written` follows CREATE and all original
+ADD writes. No second complete encoded population is retained.
 
-ClientFrame gives the standard523/525 bytes and original EffectId to the
-normal IPC owner. That caller retains its physical cursor and reports only its
-Written/Unsent/Lost via complete_client. CloseClient similarly waits for
-physical retirement. EOF/deadline/cancel cannot manufacture525. Ordinary
-C destroys its MQ after525: a known original whole write must be settled before
-classifying that later EOF. All original listener/offers and SET sources retire
-before completion; the wire has no global run epoch or remote port-close ACK,
-so delayed same-id/context and full-SYMMETRIC profiles still require evidence.
+`Reconcile` binds the original TaskId, SetId, OfferId and deadline to the SDK
+prepare/accept/commit owners. `OperationBound` reports the actual native operation
+and epoch; `OperationWritten` activates the core task. ADD_LOCAL, ADD_REMOTE and
+matching DONE/FAILURE drive results. HALF_DONE does not terminate a task. Partial
+union, leader and inventory results remain task-bound until DONE; failed tasks
+cannot publish them. Every native event and loss receipt remains observable.
 
-Limits separately bound the pure session, native SET queues/sources and actual
-bridge token-slot metadata. Population is streamed; no complete second encoded
-set is retained. A single bounded scan turn polls at most32 sources, rotates
-fairly, and parks after a complete blocked pass since the last Ready
-source event. Ready renews that finite scan debt while preserving the fair
-cursor: for example, Attached queues CREATE and does not prove that source's
-new local write is drained. Successful local ADD/commit/cancellation queue
-admissions also renew that debt, including for a source already visited in a
-pass spanning more than32 sources. The next turn must revisit it even if the
-remainder of the previous pass contains only idle sources. Physical source loss
-work visits at most one original native task row per turn after the bounded
-core source-retirement metadata pass. These source bounds are not measured
-RSS/time claims. The core's public-vs-C grading choices and mixed-C full-transfer behavior remain
-required profiles. Current Rust SET supplies reciprocal full-transfer information;
-C notification/Byzantine/snapshot limits remain explicit, with no BFT or whole
-interoperability proof.
+Future incoming contexts retain an offline original preparation. Options may be
+set before its first successful commit. Invalid or unclaimed offers are rejected
+through their exact factory domain, listener epoch and accept id. Queue admission
+retains the rejection token until that listener's whole REJECT write or physical
+closure. A committed preparation belongs to its original SET operation and
+cannot become a new rejection. Dropping a preparation is not a peer receipt.
 
-The SERVICE Server layer uses accepted/credentials/service/Framed
-facilities and locally pinned futures. No future is spawned. Each original IPC
-owner has stack-local PILS/core domains, current PILS Client, SET Factory
-and Bridge. It consumes actual520 first, then521/524 complete frames, and writes
-original523/525 with one retained physical cursor. PILS is polled first on every
-normal turn. Before every new syscall the same original native/partial bounds,
-original identity epoch+peer and core output gate are checked again. Admitted whole output facts are settled before later EOF/deadline classification.
+The [listener owner](src/bridge/listener.rs) keeps native write observations
+separate from core cleanup. Only a whole rejection write matching both the
+original epoch and accept id retires that offer; a partial write retains it.
+The resulting core terminal is `Retired`, while the native `Written` event
+remains independently observable. Other offers and the listener remain usable.
 
-Sources::new first takes one coherent snapshot_all, then chooses explicit
-fixed endpoints. Their getter must return Some selected storage; both
-role selections are charged once outside the per-session aggregate reservation. All later copies share selected Arc payloads, not complete Configurations. Shared clock/Resolver and temporary native shortened paths remain separately
-owned. No fixed profile is silently treated as a live resampling configuration,
-and these reservations make no allocator-overhead or measured RSS guarantee.
+## Failures, bounds and retirement
 
-ServerLimits keeps bridge limits separate from clients, conservative session and
-aggregate reservations, frame/slice limits, fixed first/partial/whole lifetimes,
-independent retirement grace and identity-only PILS/HELLO/profile bounds. READY means IPC admission; it does not pretend PILS/SET is online or peers
-have accepted a session. The original shared global-id lease remains held until
-its dependencies retire. Duplicate overlapping joins fail that client;
-no private run nonce or ACK is used to make a stale same-id callback fresh.
+Each source uses its original effect deadline clamped to unchanged outer bounds.
+IO gates are checked again after pure deadline or cancellation progress. A phase
+expiry stops new IO and requires actual retirement of published populations.
+Never-published core snapshots have no native close obligation.
 
-Shutdown first marks every original owner. Each local future closes IPC,
-all original SET/Listener sources and PILS without a clock sample, preserving
-loss receipts in already owned slots. A separate pass drains bounded pure
-bookkeeping within the original retirement grace. Before any incomplete receipt
-list is extracted, lack of quiescence is recorded as undrained; physical_closed
-is independent. Exact original native failures, unknown/exposed operation
-receipts and cleanup causes remain in SessionReport, with bounded first/count
-summaries explicitly distinguished from exhaustive logs. Normal empty requested
-closes are counted rather than retaining full successful phase histories.
+The bridge reserves its population ledger before fallible native admission.
+A proven never-created source settles Unsent and retains its logical CloseSet
+obligation. Refusal after creation physically retires that owner and preserves
+its native loss separately from the business cause. `SourceRefused` reports the
+bounded original diagnostic without turning a source refusal into a global fault.
 
-The normal application policy explicitly chooses public opaque payload labels,
-without an authentication claim; wrapper/marker/USER_MAX checks remain in core. It does not reinterpret an application label as an implicit BLOCK plugin type. The optional bridge Validator API permits an independently selected
-application policy. DHT BLOCK24/25 registration and nested checks remain separate.
+Transport loss, source protocol failure and invalid mode/terminal results retire
+the identified source and all its unfinished tasks. Pending effects retain their
+actual Written, Unsent or Lost disposition. Completed tasks keep their matching
+DONE results; failed sources cannot be recreated under the same core capability.
+Other leader sources may advance within their original bounds. Shared clock,
+selector, listener, PILS and ownership failures fence the whole session.
 
-The ordinary process entry/configuration/Resolver/signals/parent control is a
-separate foreground service package. Core public-vs-C grading, mixed-C full-transfer
-behavior, legacy private-derived vs PILS identity and same-global
-reuse profiles remain explicit unverified requirements. No whole CONSENSUS,
-secretsharing or GNUnet completion/Byzantine/performance acceptance credit.
+The core source-retirement metadata pass is bounded by task limits; subsequent
+native loss work visits at most one task row per turn. Source polling rotates
+fairly, visits at most32 sources per turn and parks after a complete blocked
+pass. Ready events and local queue admissions renew polling debt, including
+CREATE queued by Attached and writes queued on already-visited sources.
 
-server/owner/registry capacities and fixed endpoint storage are
-deducted before session permits. Native and canonical admission origins precede
-fallible ACL/diagnostic work; the unchanged hard target covers all provider time. Original author non-execution and required semantic qualification remain unchanged.
+Cancellation intent is captured from the SDK receipt. Deadlines, EOF and local
+queue admission do not manufacture remote DONE, successful writes or retirement
+receipts. Original first causes and partial-write exposure remain in the report.
 
-A two-node C public-API component profile after the SET corrections reached
-four normal DONEs and zero failed SET operations at each endpoint, then stalled
-while preparing the next gradecast population. The source scan could consume
-its last old debt on an idle source after another source's Attached event had
-just queued CREATE, parking before that original CREATE was ever polled. This
-source correction preserves all original ownership, memory and time bounds; it
-does not relabel that failed run or claim the complete agreement succeeded. No full Bridge fixture using an invented PILS Identity was introduced. The
-source author only inspected the finite causal trace and formatted the patch;
-unchanged normal-service API qualification remains separate.
+## Service IPC and completion
+
+The SERVICE layer uses accepted credentials, framed IPC and locally pinned
+futures. Each client owns its PILS and core domains, SET Factory and Bridge.
+It consumes JOIN520 before INSERT521/CONCLUDE524 and emits standard523/525 frames.
+PILS is polled first; identity and output gates are checked before new syscalls.
+
+`ClientFrame` retains its EffectId until the IPC owner supplies the actual whole
+Written, Unsent or Lost disposition. `CloseClient` waits for physical retirement.
+A known whole525 write is settled before classifying later client EOF. The
+original listener, offers and SET sources retire before public completion. The
+shared global-id lease remains held through dependency retirement. Overlapping
+joins fail that client; sequential reuse introduces no private nonce or ACK.
+
+Shutdown first marks every owner and closes original IPC, SET, listener and PILS
+objects without requiring a clock sample. A separate bounded pass drains pure
+bookkeeping within the original retirement grace. `physical_closed` and
+quiescence are independent. Incomplete cleanup remains undrained; diagnostics
+retain bounded first-cause/count summaries and exposed operation receipts.
+
+## Resource limits and qualification
+
+`ServerLimits` separates client counts, bridge limits, aggregate session
+reservations, frame/slice limits, first/partial/whole lifetimes, retirement grace
+and identity profile bounds. Server, registry and endpoint capacity is deducted
+before session permits. Native and canonical admission origins precede fallible
+ACL work. READY means IPC admission, not remote service or participant readiness.
+Allocation limits do not claim measured resident memory or throughput.
+
+The normal service accepts opaque application labels explicitly; it does not
+reinterpret them as BLOCK plugin types. Applications can supply an independent
+`Validator`. DHT BLOCK registration remains a separate boundary.
+
+Current-source mixed-C grading, full-transfer, identity and same-global reuse
+qualification remains in [implementation status](../../IMPLEMENTATION_STATUS.md).

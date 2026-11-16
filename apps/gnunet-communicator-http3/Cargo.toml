@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
-[target.'cfg(unix)'.dependencies]
+[dependencies]
 gnunet-ipc-unix.workspace = true
 gnunet-quic-communicator-host = { workspace = true, features = ["program", "fresh-tls", "h3-profile"] }
 gnunet-service-startup.workspace = true

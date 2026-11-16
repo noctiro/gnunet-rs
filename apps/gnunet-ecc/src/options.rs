@@ -4,7 +4,7 @@ use gnunet_program_host::{
     getopt::Options,
     helpers::{self, Target},
 };
-use std::{ffi::OsString, os::unix::ffi::OsStringExt, path::PathBuf, time::Duration};
+use std::{path::PathBuf, time::Duration};
 
 pub(super) struct Arguments {
     examples: Target<i32>,
@@ -113,7 +113,8 @@ impl Arguments {
         } else {
             timeout
         };
-        let lifetime = (timeout != 0).then_some(Duration::from_micros(timeout));
+        let lifetime =
+            (timeout != 0 && timeout != u64::MAX).then_some(Duration::from_micros(timeout));
         if lifetime.is_some_and(|d| std::time::Instant::now().checked_add(d).is_none()) {
             return Err("ECC original native timeout cannot be represented".into());
         }
@@ -138,10 +139,10 @@ impl Arguments {
             let path = args
                 .first()
                 .ok_or("ECC operation requires an explicit key filename")?;
-            if path.is_empty() || path.len() > 4096 || path.contains(&0) {
+            if path.is_empty() || path.contains(&0) {
                 return Err("invalid ECC key filename".into());
             }
-            let path = PathBuf::from(OsString::from_vec(path.clone()));
+            let path = gnunet_program_host::program::native_path(path)?.into_owned();
             if self.iterate.get()? != 0 {
                 if args.len() != 1 {
                     return Err("ECC -i accepts exactly one key filename".into());

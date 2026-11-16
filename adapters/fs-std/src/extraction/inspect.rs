@@ -1,7 +1,7 @@
 //! Metadata-only descriptor walk. No repository, payload encoder or task exists.
 use super::*;
 use crate::input_tree::{self as source, FrameSource, Kind};
-use std::{fmt, os::unix::ffi::OsStringExt};
+use std::fmt;
 
 /// One actual extraction result. Ownership crosses the caller's bounded sink;
 /// no CHK, publication task or service acknowledgement is represented here.
@@ -91,7 +91,7 @@ impl Frame {
                 .checked_mul(std::mem::size_of::<source::Name>())
                 .and_then(|n| n.checked_add(self.path.capacity()))
                 .ok_or(Error::Policy)?,
-            |n, name| n.checked_add(name.bytes.capacity()).ok_or(Error::Policy),
+            |n, name| n.checked_add(name.native.capacity()).ok_or(Error::Policy),
         )
     }
 }
@@ -142,9 +142,9 @@ fn emit<C: FnMut(Progress) -> Control>(
         return Err(Error::SourceChanged);
     }
     let object = ExtractedObject {
-        relative: PathBuf::from(std::ffi::OsString::from_vec(copy(
-            relative.as_os_str().as_bytes(),
-        )?)),
+        relative: PathBuf::from(gnunet_native::os_bytes::decode_owned(copy(
+            &gnunet_native::os_bytes::encode(relative.as_os_str()),
+        )?)?),
         directory,
         source_bytes: if directory { 0 } else { original.bytes },
         metadata: object.wire,
@@ -224,24 +224,12 @@ pub fn inspect_with_metadata(
             }),
         };
         context.check()?;
-        let observed = fs::symlink_metadata(input)?;
-        if observed.file_type().is_symlink() || (!observed.is_file() && !observed.is_dir()) {
-            return Err(Error::Policy);
-        }
-        let selected = source::Stamp {
-            kind: if observed.is_file() {
-                Kind::File
-            } else {
-                Kind::Directory
-            },
-            device: observed.dev(),
-            inode: observed.ino(),
-            bytes: observed.len(),
-            modified: observed.mtime(),
-            modified_nanos: observed.mtime_nsec(),
-            changed: observed.ctime(),
-            changed_nanos: observed.ctime_nsec(),
+        let selected_file = if input.file_name().is_none() {
+            InputDir::open(input)?.descriptor().try_clone()?
+        } else {
+            source::open_source(input)?
         };
+        let selected = source::stamp(&selected_file).map_err(source_error)?;
         let mut extractor = Extractor::new(
             input,
             policy,
@@ -252,8 +240,8 @@ pub fn inspect_with_metadata(
         extractor.manual = metadata.manual();
         extractor.provider = metadata.open(&context, policy, limits.max_file_bytes)?;
         let result = (|| -> Result<(), Error> {
-            if observed.is_file() {
-                let file = source::open_regular(input)?;
+            if selected.kind == Kind::File {
+                let file = selected_file;
                 if source::stamp(&file).map_err(source_error)? != selected {
                     return Err(source_error(source::SourceError::Changed));
                 }
@@ -268,7 +256,7 @@ pub fn inspect_with_metadata(
                 );
             }
             let cap = limits.tree;
-            let directory = InputDir::open(input).map_err(source_error)?;
+            let directory = InputDir::from_file(selected_file).map_err(source_error)?;
             let original = source::stamp(directory.descriptor()).map_err(source_error)?;
             if original != selected {
                 return Err(source_error(source::SourceError::Changed));
@@ -353,9 +341,9 @@ pub fn inspect_with_metadata(
                 let path_bytes = parent
                     .path
                     .as_os_str()
-                    .as_bytes()
+                    .as_encoded_bytes()
                     .len()
-                    .checked_add(name.bytes.len())
+                    .checked_add(name.native.as_encoded_bytes().len())
                     .and_then(|n| n.checked_add(usize::from(!parent.path.as_os_str().is_empty())))
                     .ok_or(Error::Policy)?;
                 if path_bytes > cap.max_path_bytes || depth > cap.max_depth {
@@ -365,7 +353,7 @@ pub fn inspect_with_metadata(
                 path.try_reserve_exact(path_bytes)
                     .map_err(|_| Error::Policy)?;
                 path.push(&parent.path);
-                path.push(std::ffi::OsStr::from_bytes(&name.bytes));
+                path.push(&name.native);
                 let child = parent.source.open(index).map_err(source_error)?;
                 let directory = name.kind == Kind::Directory;
                 let original = name.stamp;

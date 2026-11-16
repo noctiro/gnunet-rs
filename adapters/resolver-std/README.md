@@ -14,17 +14,27 @@ are integrated with workspace dependency policy and the optional SDK feature.
 
 ## Platforms and entry points
 
-`startup::foreground_tcp` runs the same bounded service engine on Linux, macOS,
-Windows and FreeBSD. It accepts configured TCP listeners, explicit `MachineFiles`
+`startup::foreground_configured` runs the same bounded service engine on Linux,
+macOS, Windows and FreeBSD with configured local and TCP listeners.
+`foreground_tcp` explicitly selects TCP alone. Both accept `MachineInputs`
 and DNS endpoints, a readiness callback and the caller's shutdown future. Windows
 validates configured process identity with native token/account SIDs; Unix uses
 native UID/GID observations. TCP admission always uses address ACLs, never a
 substituted local process identity.
 
-Unix startup additionally supports activation and local sockets. Windows system
-hosts/DNS configuration discovery and standard executable startup remain in
-[implementation status](../../IMPLEMENTATION_STATUS.md). Windows embeddings must
-provide explicit machine inputs and DNS endpoints to this entry point.
+Unix startup additionally supports activation. Windows uses the shared real
+AF_UNIX transport and native endpoint ACL/cleanup owner. Standard Windows
+foreground startup connects the private parent byte channel and console events.
+Detached startup, remaining system configuration coverage and native execution
+qualification remain in [implementation status](../../IMPLEMENTATION_STATUS.md).
+
+`foreground_listening_with_async_ready` awaits native readiness publication after
+Host construction and before drive. The synchronous `foreground_listening_with_clock`
+entry returns that same future directly, avoiding an extra large async frame.
+Publication failure follows the same explicit Host/listener cleanup and error
+retention path. Cancellation retains no detached notification task; Drop cleanup
+remains best effort. Write submission and parent-observed readiness are separate
+[bootstrap facts](../service-startup/README.md#windows-parent-bootstrap).
 
 ## Ownership and cancellation
 
@@ -65,16 +75,41 @@ monotonic deadlines are Host fields. Canceling a drive future drops only wait
 futures, without replaying submitted frames or resetting timers. DropClient first
 drops its stream and TX queue, then releases the close lease. Stop closes
 all client streams and stub sockets before releasing Stop. The caller owns
-listeners; the foreground assembly drops BoundListeners and its created path
-guards after stopping the host. Inherited Unix paths keep parent ownership.
+listeners; the foreground assembly closes BoundListeners after stopping the
+host. Failed endpoint cleanup retains the original owner in
+`startup::ForegroundFailure::listener_cleanup`, alongside independent drive and
+host cleanup failures. Callers can downcast the returned error and retry the
+remaining owner's `close`. Cancellation and Drop cleanup remain best effort.
+Inherited Unix paths keep parent ownership.
 
 ## Native startup and explicit resource scope
 
-The production binary reads only literal `/etc/hosts` and `/etc/resolv.conf` once. Each file has a caller-selected 16 MiB byte ceiling in the foreground profile;
-file or resource failures produce path-qualified diagnostics and an empty
-failed-file input, preserving upstream startup continuation. It never writes
-these files or calls system NSS/DNS for resolver requests. Parsed literal
-nameserver addresses are added in file order at port53. Invalid IP syntax is
+`MachineInputs::production` samples machine inputs once. Unix reads literal
+`/etc/hosts` and `/etc/resolv.conf`; Windows reads hosts from the native configured
+Internet database directory (`DatabasePath`) and queries operational adapters'
+DNS servers. Only an absent registry path selects the system directory's
+`drivers/etc`; discovery failures stay distinct from hosts-file read failures. Native server tuples retain their ports, IPv6 scopes and first-attempt
+order. File reads have a caller-selected byte ceiling (16 MiB in the Unix binary)
+and grow backing geometrically within that ceiling. `MachineDiagnostic` retains
+the actual source and read/query/resource error, with that failed input empty.
+No machine file is written and no system NSS/DNS lookup handles service requests.
+Windows obtains the primary DNS domain separately; an empty primary domain uses
+the first nonempty operational-adapter suffix. Domain errors have a distinct
+`MachineSource::DnsDomain` diagnostic and leave valid server inputs available.
+`MachineInputs::search_domain` installs this single domain after literal file
+loading. Explicit embedding inputs do not trigger discovery. Native
+qualification is tracked in the [implementation status](../../IMPLEMENTATION_STATUS.md).
+
+`Host::set_search_domain` uses the pure core's existing GNUnet expansion rule:
+original cache first, append the configured domain only to a name without dots,
+then preserve the original lookup, family sequence, stub token and deadline.
+C-string prefix and source name bounds remain unchanged. None clears an explicitly
+installed domain; `MachineInputs::search_domain = None` instead leaves the file's
+domain unchanged. Changes after client admission or with pending effects are
+refused, preventing a new domain from relabeling live queries or cached results.
+Windows search-list, devolution and NRPT policies are outside this single-domain
+profile.
+Parsed Unix nameserver addresses use port 53. Invalid IP syntax is
 counted; server-array exhaustion is an explicit error. Missing upstreams keep the
 original 30-second service timer, without early END.
 
@@ -94,9 +129,10 @@ lookup work starts the source cannot be replaced. Logical changes are polled in
 the drive waiter, alongside native I/O/timers. Clock errors and all other
 post-construction failures still take the same Immediate physical shutdown;
 subscription retirement and client/UDP closes require no new clock sample. `startup::foreground_listening_with_clock` consumes the finished listeners;
-Ready follows Host construction/loading. Original drive/Ready error and
-independent cleanup failure are retained together with the physical report. The existing foreground embedding delegates to that same implementation with
-native UTC and requires an already prepared identity. Linux, Darwin and FreeBSD family selection is explicit; other native
+Ready follows Host construction/loading. Original construction/drive/Ready error
+and independent host/node cleanup failures are retained together; an actual
+physical report is present only after host construction. The foreground embedding delegates to that same implementation with
+native UTC and requires an already prepared identity. Linux, Darwin, FreeBSD and Windows family selection is explicit; other native
 family ABIs return Unsupported.
 
 Default logical geometry is clients64/lookups128/hosts1024/buckets1025/records4096/

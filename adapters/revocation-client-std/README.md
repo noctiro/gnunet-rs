@@ -9,5 +9,3 @@ Cancel/close/drop physically stop the dedicated original MQ independently of clo
 One immutable outbound frame and one bounded inbound frame are retained. Default maximum is380 bytes and the default syscall quantum380. The `Instance` uses checked allocation IDs, so bounded fresh jobs can share a stable domain while old tokens remain distinct. The public certificate/key bytes here are not secret; this adapter does not obtain any private signing material.
 
 The ignored `tests/original_mq.rs` is one prepared controlled Unix IPC ownership model: a7-byte reply remains incomplete until the original deadline physically closes that MQ, then a distinct fresh job receives raw QUERY0. This package has only been parsed/formatted with rustfmt, not qualified against a C service or process profile.
-
-Central integration registered the SDK/CLI/foreground and passed affected all-target/all-feature strict compilation plus SDK/architecture checks.

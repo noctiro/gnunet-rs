@@ -9,11 +9,11 @@ use tokio::{
     net::TcpStream,
 };
 
-#[cfg(unix)]
-use tokio::net::UnixStream;
+#[cfg(any(unix, windows))]
+use crate::local::Stream as UnixStream;
 
 pub(crate) enum Stream {
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     Unix(UnixStream),
     Tcp(TcpStream),
 }
@@ -34,21 +34,21 @@ pub(crate) fn retry_interrupted<T>(
 impl Stream {
     pub(crate) fn poll_write_ready(&self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         match self {
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             Self::Unix(s) => s.poll_write_ready(cx),
             Self::Tcp(s) => s.poll_write_ready(cx),
         }
     }
     pub(crate) fn try_write_vectored(&self, slices: &[io::IoSlice<'_>]) -> io::Result<usize> {
         match self {
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             Self::Unix(s) => s.try_write_vectored(slices),
             Self::Tcp(s) => s.try_write_vectored(slices),
         }
     }
     pub(crate) fn try_write(&self, bytes: &[u8]) -> io::Result<usize> {
         match self {
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             Self::Unix(s) => s.try_write(bytes),
             Self::Tcp(s) => s.try_write(bytes),
         }
@@ -61,7 +61,7 @@ impl AsyncRead for Stream {
         buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
         let result = match self.get_mut() {
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             Self::Unix(s) => Pin::new(s).poll_read(cx, buf),
             Self::Tcp(s) => Pin::new(s).poll_read(cx, buf),
         };
@@ -89,14 +89,14 @@ impl AsyncWrite for Stream {
     }
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         match self.get_mut() {
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             Self::Unix(s) => Pin::new(s).poll_flush(cx),
             Self::Tcp(s) => Pin::new(s).poll_flush(cx),
         }
     }
     fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         match self.get_mut() {
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             Self::Unix(s) => Pin::new(s).poll_shutdown(cx),
             Self::Tcp(s) => Pin::new(s).poll_shutdown(cx),
         }

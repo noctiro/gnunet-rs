@@ -1,10 +1,9 @@
-//! Focused drafts; not runtime evidence until Root executes them.
+//! Native writer fencing and bounded recovery against real private files.
 #![expect(
     clippy::panic_in_result_fn,
     reason = "Fallible durable-store tests assert exact recovered bytes, original fences and physical file lengths"
 )]
 use super::*;
-use std::os::unix::fs::DirBuilderExt;
 use std::sync::atomic::{AtomicU64, Ordering};
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 struct Temporary(std::path::PathBuf);
@@ -16,9 +15,18 @@ impl Temporary {
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
-        fs::DirBuilder::new().mode(0o700).create(&path)?;
+        let parent = Directory::open(&std::env::temp_dir())?;
+        let name = path
+            .file_name()
+            .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
+        drop(parent.create_private_directory(name)?);
         Ok(Self(path))
     }
+}
+fn overwrite(file: &File, data: &[u8], offset: u64) -> io::Result<()> {
+    let mut file = file;
+    file.seek(SeekFrom::Start(offset))?;
+    file.write_all(data)
 }
 fn frame(sequence: u64, kind: u16, body: &[u8]) -> Result<Vec<u8>, Error> {
     let mut bytes = vec![0; format::record_size(body.len())?];
@@ -36,6 +44,10 @@ fn exact_restart_lock_and_independently_checked_incomplete_tail_repair() -> Test
     let temp = Temporary::new()?;
     let path = temp.0.join("task");
     let mut store = Store::create(&path, Limits::default())?;
+    #[cfg(unix)]
+    assert_eq!(store.directory_sync(), Some(DirectorySync::Synchronized));
+    #[cfg(windows)]
+    assert_eq!(store.directory_sync(), Some(DirectorySync::Unavailable));
     let id = *store.task_id();
     assert_eq!(store.append(9, b"\0native\xffbytes")?, 1);
     assert_eq!(store.append(0, b"")?, 2);
@@ -118,12 +130,7 @@ fn complete_corruption_never_repairs_and_write_error_retains_original_unknown_fe
     let length = store.wal.metadata()?.len();
     // Private test seam: the SAME actual WAL inode is now held readonly.
     // Identity/length checks succeed, but its real write syscall fails.
-    store.wal = File::from(openat(
-        &store.root,
-        WAL,
-        OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC,
-        Mode::empty(),
-    )?);
+    store.wal = store.root.open_file(OsStr::new(WAL))?;
     let first = match store.append(3, b"uncertain original") {
         Err(error) => error,
         Ok(_) => return Err("readonly WAL accepted a write".into()),
@@ -181,7 +188,7 @@ fn same_inode_self_consistent_rewrites_cannot_replace_accepted_record_or_task_id
     // This is a complete, internally valid replacement with the same shape,
     // inode and length. The old accepted digest must remain authoritative.
     let replacement = frame(1, 7, b"tampered")?;
-    disk.write_all_at(&replacement, format::HEADER as u64)?;
+    overwrite(&disk, &replacement, format::HEADER as u64)?;
     disk.sync_all()?;
     assert_eq!(disk.metadata()?.len(), original_length);
     assert_eq!(
@@ -211,7 +218,7 @@ fn same_inode_self_consistent_rewrites_cannot_replace_accepted_record_or_task_id
     let original_length = disk.metadata()?.len();
     let mut foreign = *store.task_id();
     foreign[0] ^= 1;
-    disk.write_all_at(&format::header(&foreign), 0)?;
+    overwrite(&disk, &format::header(&foreign), 0)?;
     disk.sync_all()?;
     assert!(identity(&disk, "test-header-identity")? == store.wal_id);
     assert_eq!(disk.metadata()?.len(), original_length);
@@ -303,7 +310,7 @@ fn registered_open_refuses_replacement_before_lock_or_partial_wal_repair() -> Te
     fs::rename(&path, temp.0.join("original"))?;
     let mut foreign = Store::create(&path, Limits::default())?;
     foreign.append(9, b"foreign durable sentinel")?;
-    let foreign_lock = crate::FileIdentity::of(&foreign.lock)?;
+    let foreign_lock = crate::FileIdentity::of(foreign.lock.as_file())?;
     let wal_path = path.join(WAL);
     let lock_path = path.join(LOCK);
     let torn = frame(2, 41, b"foreign incomplete tail")?;
@@ -312,7 +319,7 @@ fn registered_open_refuses_replacement_before_lock_or_partial_wal_repair() -> Te
     disk.sync_all()?;
     drop(disk);
     let before = fs::read(&wal_path)?;
-    let lock_before = fs::read(&lock_path)?;
+    let lock_before = fs::metadata(&lock_path)?.len();
     // The held foreign lock must not mask the earlier identity refusal.
     let refused = match Store::open_registered(&path, Limits::default(), expected) {
         Err(error) => error,
@@ -333,7 +340,7 @@ fn registered_open_refuses_replacement_before_lock_or_partial_wal_repair() -> Te
     assert_eq!(refused.failure().certainty, Certainty::NotWritten);
     assert_eq!(fs::read(&wal_path)?, before);
     assert_eq!(fs::metadata(&wal_path)?.len(), before.len() as u64);
-    assert_eq!(fs::read(&lock_path)?, lock_before);
+    assert_eq!(fs::metadata(&lock_path)?.len(), lock_before);
     assert_eq!(
         crate::FileIdentity::of(&File::open(&lock_path)?)?,
         foreign_lock

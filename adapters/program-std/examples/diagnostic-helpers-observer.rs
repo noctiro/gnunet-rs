@@ -90,18 +90,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             )?;
         }
     }
-    let mut un = vec![
-        0;
-        std::mem::size_of::<libc::sockaddr_un>()
-            - std::mem::offset_of!(libc::sockaddr_un, sun_path)
-    ];
+    let layout = gnunet_native::network::unix_address_layout();
+    let mut un = vec![0; layout.sockaddr_bytes - layout.path_offset];
     un[..12].copy_from_slice(b"/owned/file\0");
     row(
         &mut out,
         "UNIX",
         &diagnostics::address(Address::Unix {
             path: &un,
-            length: std::mem::size_of::<libc::sockaddr_un>(),
+            length: layout.sockaddr_bytes,
         })?,
     )?;
     un.fill(0);
@@ -111,7 +108,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         "ABSTRACT",
         &diagnostics::address(Address::Unix {
             path: &un,
-            length: std::mem::size_of::<libc::sockaddr_un>(),
+            length: layout.sockaddr_bytes,
         })?,
     )?;
     row(
@@ -119,7 +116,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         "UNBOUND",
         &diagnostics::address(Address::Unix {
             path: &un,
-            length: std::mem::size_of::<libc::sa_family_t>(),
+            length: layout.family_bytes,
         })?,
     )?;
     let mut logger = Logger::new(b"owned-helper", std::process::id(), true)?;

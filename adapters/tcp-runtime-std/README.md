@@ -11,8 +11,9 @@ numeric IPv4/bracketed IPv6 or a hostname with optional port. Hostname lookup us
 that same official Resolver, with a fixed 60-second native/logical budget and up
 to 16 callbacks/listeners. Each callback performs its bind before returning
 its lease; excess is explicit refusal, never silent truncation. Inherited FDs are
-adopted once. All listener binding precedes configured `USERNAME`; the original
-FDs and Services context survive that switch and enter the normal PROGRAM task. The original foreground future is retained outside the scheduler so a scheduler
+adopted once. All listener binding precedes the configured Unix identity switch or Windows
+process-token identity check. The original listeners and Services context enter
+the same normal PROGRAM task. The original foreground future is retained outside the scheduler so a scheduler
 failure can drive its cleanup instead of dropping its resources.
 
 The configured `KEY_PROVIDER` is `existing-local`. It reads the existing
@@ -43,9 +44,28 @@ supervisor retains its original observer, listeners, writer fence, Resolver and
 statistics publisher. Successive generations exist one at a time; their buffers
 and keys are released before the next generation is allocated. The first observed
 cut starts one native/canonical 30-second recovery window. Repeated updates and
-superseded replay preparation share it until a matched generation is ready. Actual source loss, uncertain history or failed retirement prevents replacement. Lifetime counters survive once, while queue gauges describe the current
+superseded replay preparation share it until a matched generation is ready.
+Uncertain history or failed retirement prevents replacement. Lifetime counters survive once, while queue gauges describe the current
 owner. Only the first generation emits process READY; typed diagnostics report
 subsequent local readiness without claiming reachability.
+
+PILS EOF and connection I/O loss fence the current generation and retire its
+peer sockets before new provider work. The retained PILS client stays unpolled
+while original callbacks, address publications and the replay worker finish.
+The supervisor resumes acquisition only after this actual retirement and join;
+loss during replay bootstrap also drains that original worker before retry.
+An unsigned socket attachment grants no key or generation. Replacement requires
+a signed, unexpired identity on a strictly newer epoch of the same client and a
+newer identity revision. The configured existing key is read only after this
+check when the cached master does not match; a mismatch still fails.
+
+Repeated losses preserve the first connection failure and the original
+native/canonical recovery bound. PILS guards run after clock providers and
+before connect/read/write; key access and generation construction use the same
+bound. Physical service acquisitions made before a loss are dropped without
+replaying requests. Listeners, namespace fences, Resolver and statistics stay
+with the process; old session buffers, keys and workers do not overlap the next
+generation. Protocol, resource and clock failures remain terminal.
 
 PublishedPool merges listeners, native interface snapshots and official
 NAT ADDRESSES into canonical multi-source claims admitted to the original
@@ -99,6 +119,29 @@ minimum. Reconnecting PEERSTORE, changing a PID/key or creating an empty directo
 cannot substitute for that recovery. This pairing does not claim protection
 against hostile simultaneous rollback of the entire trusted persistent state.
 
+The epoch owner separates the fixed codec, writer fence, staging file and
+publication/reconciliation modules. A settled snapshot retains its original file
+alongside its decoded image. Unknown publication accepts only that held
+candidate at the canonical name; byte-identical replacements cannot settle it.
+The original predecessor plus the original still-staged candidate can establish
+nonpublication. Failed stage cleanup retains one original file and blocks new
+work until `Store::reconcile` removes that same file. Primary and cleanup errors
+remain separate.
+
+`Store::directory_sync`, `Ledger::synchronization` and catalog lease observations
+report actual native directory barriers. Windows reports `Unavailable` and
+flushes the held file. These observations grant no epoch, floor or quiescence
+proof and do not claim directory crash persistence.
+
+## Native platform boundaries
+
+The shared runtime uses native directory/file identity and local stream adapters
+on Linux, macOS, FreeBSD and Windows. Nonblocking connect starts once on the
+original socket, then observes writability, its stored error and actual peer
+association. Unix listeners use their reuse policy; Windows listeners request
+exclusive address use. The normal PROGRAM separates early activation capture,
+stop subscription and identity handling from the common protocol task.
+
 ## Statistics and shutdown
 
 The standard executable publishes the six nonpersistent official
@@ -119,9 +162,6 @@ can finish that epoch. A blocked filesystem operation can delay join beyond
 the diagnostic deadline; it is never reported as a stopped worker prematurely. The statistics publisher has its own fixed five-second final drain, polled fairly
 alongside the same worker future and Resolver. Independent TCP, worker, frontier,
 statistics and Resolver failures survive the final report.
-
-Compiler and architecture checks are recorded separately from execution evidence. Historical source1197/baseRoot1184 C v0.29.1 TCP profiles and older component runs
-retain their original source graphs; they are not acceptance of this revision.
 
 ## Local TRANSPORT service recovery
 
@@ -156,11 +196,12 @@ operation. `TransportRetired` reports old FIFO retirement, while normal
 Diagnostics separate source loss, replacement attachment, old CREATE
 retirement and locally completed current queue announcements. The latter requires
 the IPC FIFO to be empty after REGISTER/reannouncement flags settle;
-it neither grants remote acceptance nor gates continued service reads/writes. Stop, selected Logger failure, physical PILS source loss, protocol refusal,
-clock failure and uncertain replay history still fence recovery and retire the
-original epoch. PEERSTORE recovery remains separate. Cancellation drops only
-the retained native Dial attempt and preserves its unobserved failure/notice. This increment is source implementation; normal restart/runtime interoperability
-is not established by these methods or diagnostics alone.
+it neither grants remote acceptance nor gates continued service reads/writes.
+PILS source loss replaces the complete identity generation as described above.
+Stop, selected Logger failure, protocol refusal, clock failure and uncertain
+replay history stop recovery and retire the original epoch. PEERSTORE recovery remains separate. Cancellation drops only
+the retained native Dial attempt and preserves its unobserved failure/notice. Runtime and official peer qualification are tracked in the
+[implementation status](../../IMPLEMENTATION_STATUS.md).
 
 The normal startup selects the PILS identity/HELLO interpretation from
 `[PILS] PROFILE` (default `reference029`, alias `reference-0.29.1`). An explicit
@@ -173,3 +214,8 @@ never falls back. TCP handshake/rekey policy is independent. A healthy changed-k
 announcement on the original observer selects a fresh generation only after
 original retirement. It never replays old SEND/CREATE, NAT mutations,
 handshake bytes or unknown STORE work.
+
+## Statistics publication
+
+See [statistics ownership and shutdown](STATISTICS.md) for metric semantics,
+independent publisher failure and bounded final drain.

@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
-[target.'cfg(unix)'.dependencies]
+[dependencies]
 gnunet-program-host = { workspace = true, features = ["resolver-broker"] }
 gnunet-dns2gns-host.workspace = true
 gnunet-client-host.workspace = true
@@ -14,7 +14,6 @@ gnunet-resolver-broker.workspace = true
 gnunet-service-runtime.workspace = true
 gnunet-service-startup.workspace = true
 gnunet-types.workspace = true
-nix.workspace = true
 tokio = { workspace = true, features = ["rt", "net", "time", "signal"] }
 
 [[bin]]

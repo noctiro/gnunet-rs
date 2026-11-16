@@ -22,7 +22,12 @@ impl<'a, E: crypto::Entropy, const N: usize> Api<'a, E, N> {
         self.decrypt_remaining = self
             .rooms
             .iter()
-            .map(|r| self.core.deferred(r.room).map(|v| v.count()).unwrap_or(0))
+            .map(|r| {
+                self.core
+                    .pending_decryption(r.room)
+                    .map(|v| v.count())
+                    .unwrap_or(0)
+            })
             .fold(0, usize::saturating_add);
     }
     pub(crate) fn observe_rooms(&mut self) -> Result<(), Error> {
@@ -137,6 +142,16 @@ impl<'a, E: crypto::Entropy, const N: usize> Api<'a, E, N> {
         let Some(source) = self.rooms[index].source else {
             return Ok(false);
         };
+        // Signing changes the Core job into a wire job before JOIN/ID is
+        // echoed. Retain the original initialization across that phase change;
+        // another room scan must not mint a second JOIN on the same source.
+        if self
+            .leases
+            .iter()
+            .any(|lease| lease.source == source && matches!(lease.intent, Intent::Initialization))
+        {
+            return Ok(false);
+        }
         let epoch = self.rooms[index].epoch.ok_or(Fault::StaleGeneration)?;
         if !matches!(
             self.core.phase(self.rooms[index].room)?,
@@ -433,12 +448,14 @@ impl<'a, E: crypto::Entropy, const N: usize> Api<'a, E, N> {
                 continue;
             }
             let source = self.rooms[i].source.ok_or(Fault::StaleGeneration)?;
-            match self.core.retire_room_lease(source, child) {
+            let leave = self.rooms[i].close_after.ok_or(Fault::Conflict)?;
+            match self.core.retire_room_lease(source, child, Some(leave)) {
                 Ok(()) => {}
                 Err(domain::Error::Protocol(Fault::NotReady)) => continue,
                 Err(e) => return Err(e.into()),
             }
-            let leave = self.rooms[i].close_after.ok_or(Fault::Conflict)?;
+            self.leases
+                .retain(|lease| lease.operation != leave && lease.operation != child);
             let room = self.rooms[i].room;
             self.rooms[i].source = None;
             self.rooms[i].epoch = None;
@@ -461,7 +478,7 @@ impl<'a, E: crypto::Entropy, const N: usize> Api<'a, E, N> {
         let mut total: usize = 0;
         for r in &self.rooms {
             total = total
-                .checked_add(self.core.deferred(r.room)?.count())
+                .checked_add(self.core.pending_decryption(r.room)?.count())
                 .ok_or(Fault::Overflow)?;
         }
         if total == 0 {
@@ -473,26 +490,27 @@ impl<'a, E: crypto::Entropy, const N: usize> Api<'a, E, N> {
         self.decrypt_remaining -= 1;
         let mut candidate = None;
         for r in &self.rooms {
-            let count = self.core.deferred(r.room)?.count();
+            let count = self.core.pending_decryption(r.room)?.count();
             if offset < count {
                 candidate = self
                     .core
-                    .deferred(r.room)?
+                    .pending_decryption(r.room)?
                     .nth(offset)
-                    .map(|(h, p)| (r.room, *h, p));
+                    .map(|hash| (r.room, *hash));
                 break;
             }
             offset -= count;
         }
-        let Some((room, hash, phase)) = candidate else {
+        let Some((room, hash)) = candidate else {
             return Ok(false);
         };
-        if phase != domain::MessagePhase::AwaitingEpoch {
-            return Ok(false);
-        }
         let scratch = self.buffers.first_mut().ok_or(Fault::Conflict)?;
         match self.core.decrypt_message(room, &hash, scratch) {
             Ok(()) => {
+                // Opening queues plaintext back into Core. If this was the
+                // final crypto step after room scans drained, schedule that
+                // queued semantic work without waiting for another socket.
+                self.wake_domain();
                 self.reset_decryption();
                 Ok(true)
             }
@@ -551,6 +569,9 @@ impl<'a, E: crypto::Entropy, const N: usize> Api<'a, E, N> {
                     && self.changing.is_none()
                     && self.free_jobs() > 0
                     && self.rooms[i].auto_epoch
+                    && !self.leases.iter().any(|lease| {
+                        lease.room == self.rooms[i].room && matches!(lease.intent, Intent::Epoch)
+                    })
                     && let (Some(member), Some(source), Some(epoch)) = (
                         self.rooms[i].member,
                         self.rooms[i].source,

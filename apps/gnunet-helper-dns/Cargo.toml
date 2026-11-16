@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
-[target.'cfg(target_os = "linux")'.dependencies]
+[target.'cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))'.dependencies]
 gnunet-dns-service-host.workspace = true
 tokio = { workspace = true, features = ["rt", "net", "time", "process", "signal", "io-util"] }
 

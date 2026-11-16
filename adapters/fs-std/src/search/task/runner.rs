@@ -267,7 +267,14 @@ impl Run<'_> {
                             )?;
                             // The original raw record is durable before any new
                             // aggregate result/update child or caller event.
-                            let step = session.accept_staged()?;
+                            let step = match session.accept_staged() {
+                                Ok(step) => step,
+                                Err(error) if is_deadline(&error) => {
+                                    deadline_observation = Some(error);
+                                    return self.request(StopReason::Deadline, &stats);
+                                }
+                                Err(error) => return Err(error.into()),
+                            };
                             stats.counts.observations += 1;
                             step
                         }

@@ -6,122 +6,22 @@ use crate::{
     settings::{Settings, TunMode},
 };
 use gnunet_tun_host::{
-    Action, Ipv6Progress, Ipv6State, Ipv6Watch, Ipv6WatchOptions, NativeRoute, OwnedTun,
-    RouteCompletion, RouteOutcome, RouteProgress, Timing,
+    Action, Ipv6Progress, Ipv6State, Ipv6Watch, Ipv6WatchOptions, NativeRoute, RouteCompletion,
+    RouteOutcome, RouteProgress, Timing,
 };
-use std::{future::poll_fn, os::fd::OwnedFd, task::Poll};
+use std::{future::poll_fn, task::Poll};
 use tokio::time::Instant;
 pub(super) fn target(d: std::time::Duration) -> Result<Instant, Failure> {
     Instant::now()
         .checked_add(d)
         .ok_or_else(|| "native deadline overflow".into())
 }
-pub(super) async fn open(
-    settings: &Settings,
-    inherited: Option<OwnedFd>,
-    stop: &mut Stop,
-    startup: Instant,
-) -> Result<(Option<gnunet_exit_host::runtime::PacketSource>, String), Failure> {
-    let limits = gnunet_tun_host::Limits {
-        packet_bytes: settings.core.packet_bytes,
-    };
-    stop.check_now().await?;
-    if settings.mode == TunMode::Fresh && cfg!(target_os = "linux") {
-        if inherited.is_some() {
-            return Err("fresh helper refuses transferred TUN descriptor".into());
-        }
-        if settings.unit.is_some() {
-            return Err("UTUN_UNIT is not a Linux helper option".into());
-        }
-        let name = settings
-            .name
-            .clone()
-            .ok_or("official EXIT TUN_IFNAME required for helper")?;
-        let ipv4 = settings.ipv4.map(|(address, mask, _)| (address, mask));
-        let options = gnunet_tun_host::helper::Options {
-            executable: settings
-                .helper
-                .clone()
-                .ok_or("official EXIT helper path unavailable")?,
-            interface: name.clone(),
-            ipv4,
-            ipv6: settings.ipv6,
-            mtu: settings.helper_mtu,
-            until: target(settings.configuration)?.min(startup),
-            partial_lifetime: settings.helper_partial,
-        };
-        stop.check()?;
-        let link =
-            gnunet_tun_host::helper::Link::spawn_exit(options, settings.egress.clone(), limits)?;
-        return Ok((
-            Some(gnunet_exit_host::runtime::PacketSource::helper(link)),
-            format!(
-                "{name} helper-pipes; kernel identity pending; helper-ownership/NAT-ACK=unasserted"
-            ),
-        ));
-    }
-    let device = match settings.mode {
-        TunMode::None => {
-            if inherited.is_some() {
-                return Err("TUN_MODE=none refuses a transferred TUN descriptor".into());
-            }
-            return Ok((None, "none (DNS-only)".to_owned()));
-        }
-        TunMode::Preopened => OwnedTun::from_fd(
-            inherited
-                .ok_or("preopened mode requires GNUNET_EXIT_TUN_FD parent ownership transfer")?,
-            limits,
-        )?,
-        TunMode::Fresh | TunMode::Direct => {
-            if inherited.is_some() {
-                return Err("fresh mode refuses a transferred TUN descriptor".into());
-            }
-            if settings.packet_information && !cfg!(target_os = "linux") {
-                return Err("LINUX_TUN_PI requires Linux TUN".into());
-            }
-            #[cfg(target_os = "linux")]
-            {
-                if settings.unit.is_some() {
-                    return Err("UTUN_UNIT is not a Linux TUN option".into());
-                }
-                OwnedTun::open_linux(
-                    settings.name.as_deref(),
-                    settings.packet_information,
-                    limits,
-                )?
-            }
-            #[cfg(target_os = "macos")]
-            {
-                OwnedTun::open_utun(settings.unit, limits)?
-            }
-            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-            {
-                return Err("fresh TUN requires Linux or macOS".into());
-            }
-        }
-    };
-    if settings
-        .name
-        .as_ref()
-        .is_some_and(|name| *name != device.info().name)
-    {
-        return Err(format!(
-            "verified interface {} differs from configured TUN_IFNAME",
-            device.info().name
-        )
-        .into());
-    }
-    let description = format!(
-        "{} index={} verified mode={:?}",
-        device.info().name,
-        device.info().index,
-        settings.mode
-    );
-    Ok((
-        Some(gnunet_exit_host::runtime::PacketSource::native(device)?),
-        description,
-    ))
-}
+pub(super) mod device;
+#[cfg(windows)]
+pub(super) mod recovery;
+mod verification;
+pub(super) use device::open;
+
 struct RouteGuard {
     owner: NativeRoute,
     complete: bool,
@@ -220,22 +120,42 @@ pub(super) async fn configure(
     settings: &Settings,
     stop: &mut Stop,
     added: &mut Vec<Action>,
+    startup: Instant,
 ) -> Result<Option<Ipv6Watch>, Failure> {
     if settings.mode == TunMode::None {
         return Ok(None);
     }
-    let configuration_until = target(settings.configuration)?;
+    let configuration_until = target(settings.configuration)?.min(startup);
     let until = driver
         .helper_initial_deadline()
         .map_or(configuration_until, |original| {
             original.min(configuration_until)
         });
-    if driver.uses_helper() {
-        return helper_configure(driver, settings, stop, until).await;
+    let readonly = driver.uses_helper();
+    #[cfg(windows)]
+    let readonly = readonly || settings.mode == TunMode::Existing;
+    if readonly {
+        return verify_existing(driver, settings, stop, until).await;
     }
     let mut actions = Vec::new();
-    actions.try_reserve_exact(5)?;
+    actions.try_reserve_exact(6)?;
+    #[cfg(unix)]
     actions.push(Action::Mtu(settings.mtu));
+    #[cfg(windows)]
+    {
+        if settings.ipv4.is_some() {
+            actions.push(Action::IpMtu {
+                version: gnunet_tun_host::Version::V4,
+                bytes: settings.mtu,
+            });
+        }
+        if settings.ipv6.is_some() {
+            actions.push(Action::IpMtu {
+                version: gnunet_tun_host::Version::V6,
+                bytes: settings.mtu,
+            });
+        }
+    }
     if let Some((a, m, _)) = settings.ipv4 {
         actions.push(Action::Ipv4Address(a));
         actions.push(Action::Ipv4Netmask(m));
@@ -253,9 +173,7 @@ pub(super) async fn configure(
             format_args!("EXIT actual native interface applied: {applied:?}"),
         );
         if applied.timing() != Timing::Timely {
-            return Err(
-                "interface ioctl completed after its original configuration deadline".into(),
-            );
+            return Err(Box::new(InterfaceFailure(applied)));
         }
     }
     for action in &settings.routes {
@@ -263,7 +181,7 @@ pub(super) async fn configure(
         let effect = driver.plan_tun_action(action.clone(), until)?;
         let completion = route(driver.route_tun_action(effect)?, stop, true).await?;
         // A late successful ACK still changed the kernel and requires cleanup.
-        if matches!(&completion.outcome, RouteOutcome::KernelAck(Ok(()))) {
+        if completion.outcome.is_success() {
             added.push(undo(&completion.action)?);
         }
         let timely = completion.timing == Timing::Timely;
@@ -271,10 +189,7 @@ pub(super) async fn configure(
             "exit.route.complete",
             format_args!("EXIT actual route result: {completion:?}"),
         );
-        if !matches!(&completion.outcome, RouteOutcome::KernelAck(Ok(())))
-            || completion.close_error.is_some()
-            || !timely
-        {
+        if !completion.outcome.is_success() || completion.close_error.is_some() || !timely {
             return Err(Box::new(RouteFailure(completion)));
         }
     }
@@ -282,7 +197,7 @@ pub(super) async fn configure(
         let watcher = driver.watch_tun_ipv6(
             address,
             prefix,
-            target(settings.dad)?,
+            target(settings.dad)?.min(until),
             Ipv6WatchOptions::default(),
         )?;
         let mut guarded = WatchGuard {
@@ -344,7 +259,12 @@ pub(super) async fn cleanup(
     until: Instant,
 ) -> Result<(), Failure> {
     let mut failure = None;
-    while let Some(action) = added.pop() {
+    let mut remaining = added.len();
+    while remaining != 0 {
+        remaining -= 1;
+        // Keep the original cleanup obligation through errors and cancellation.
+        // There are at most 32 routes; preserving reverse order needs no new allocation.
+        let action = added[remaining].clone();
         // Each deletion uses the same global shutdown target; no per-route extension.
         let result = async {
             let effect = driver.plan_tun_action(action, until)?;
@@ -353,9 +273,7 @@ pub(super) async fn cleanup(
                 "exit.route.removed",
                 format_args!("EXIT actual route cleanup: {value:?}"),
             );
-            if !matches!(&value.outcome, RouteOutcome::KernelAck(Ok(())))
-                || value.close_error.is_some()
-            {
+            if !value.outcome.is_success() || value.close_error.is_some() {
                 return Err(Box::new(RouteFailure(value)) as Failure);
             }
             Ok(())
@@ -370,6 +288,8 @@ pub(super) async fn cleanup(
             if failure.is_none() {
                 failure = Some(gnunet_types::Error::OutcomeUnknown.into());
             }
+        } else {
+            added.remove(remaining);
         }
     }
     match failure {
@@ -409,86 +329,53 @@ impl std::error::Error for SnapshotFailure {
         self.0.close_error().map(|e| e as &dyn std::error::Error)
     }
 }
-async fn helper_configure(
+async fn verify_existing(
     driver: &mut Exit<'_, '_, '_>,
     settings: &Settings,
     stop: &mut Stop,
     until: Instant,
 ) -> Result<Option<Ipv6Watch>, Failure> {
-    poll_fn(|cx| {
-        match stop.poll(cx) {
-            Poll::Ready(Ok(())) => {
+    if driver.uses_helper() {
+        poll_fn(|cx| {
+            match stop.poll(cx) {
+                Poll::Ready(Ok(())) => {
+                    return Poll::Ready(Err(
+                        "EXIT stopped during original helper qualification".into()
+                    ));
+                }
+                Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+                Poll::Pending => {}
+            }
+            driver.poll_native_guard(cx, &mut |e| {
+                crate::foreground::observe(e, &stop.reports, &stop.cleanup)
+            })?;
+            if stop.reports.failed() {
                 return Poll::Ready(Err(
-                    "EXIT stopped during original helper qualification".into()
+                    "EXIT selected Logger failed during helper qualification".into(),
                 ));
             }
-            Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
-            Poll::Pending => {}
-        }
-        driver.poll_native_guard(cx, &mut |e| {
-            crate::foreground::observe(e, &stop.reports, &stop.cleanup)
-        })?;
-        if stop.reports.failed() {
-            return Poll::Ready(Err(
-                "EXIT selected Logger failed during helper qualification".into(),
-            ));
-        }
-        driver
-            .poll_helper_prepare(cx)
-            .map_err(|e| Box::new(e) as Failure)
-    })
-    .await?;
-    stop.check()?;
-    let snapshot = driver.snapshot_tun(until)?;
-    let v4 = settings.ipv4.is_none_or(|(address, mask, _)| {
-        snapshot.ipv4_address() == gnunet_tun_host::Ipv4Observation::Present(address)
-            && snapshot.ipv4_netmask() == gnunet_tun_host::Ipv4Observation::Present(mask)
-    });
-    if !snapshot.up() || !v4 || snapshot.close_error().is_some() {
-        return Err(Box::new(SnapshotFailure(snapshot)));
+            driver
+                .poll_helper_prepare(cx)
+                .map_err(|e| Box::new(e) as Failure)
+        })
+        .await?;
     }
+    stop.check()?;
+    let plan = verification::Plan::new(settings)?;
+    let snapshot = plan.snapshot(
+        driver.snapshot_tun(until, plan.options())?,
+        driver.uses_helper(),
+    )?;
     stop.reports.debug(
-        "exit.helper.kernel",
+        "exit.interface.kernel",
         format_args!(
-            "EXIT actual kernel snapshot={snapshot:?}; not a child ownership/configuration ACK"
+            "EXIT actual kernel snapshot={snapshot:?}; read-only observation; no configuration or ownership receipt"
         ),
     );
     stop.check()?;
-    let mut queries = Vec::new();
-    queries.try_reserve_exact(settings.routes.len() + 2)?;
-    if let Some((address, mask, bits)) = settings.ipv4 {
-        queries.push((
-            std::net::IpAddr::V4((u32::from(address) & u32::from(mask)).into()),
-            bits,
-            None,
-        ));
-    }
-    if let Some((address, bits)) = settings.ipv6 {
-        let mask = if bits == 0 {
-            0
-        } else {
-            u128::MAX << (128 - bits)
-        };
-        queries.push((
-            std::net::IpAddr::V6((u128::from(address) & mask).into()),
-            bits,
-            None,
-        ));
-    }
-    for action in &settings.routes {
-        match action {
-            Action::Route {
-                destination,
-                prefix,
-                gateway,
-                ..
-            } => queries.push((*destination, *prefix, *gateway)),
-            _ => return Err("EXIT route observation expects Route action".into()),
-        }
-    }
-    for (destination, bits, gateway) in queries {
+    for key in &plan.routes {
         stop.check()?;
-        let mut query = driver.query_tun_route(destination, bits, gateway, until)?;
+        let mut query = driver.query_tun_route(key.destination, key.prefix, key.gateway, until)?;
         let result = loop {
             let step = poll_fn(|cx| {
                 match stop.poll(cx) {
@@ -531,13 +418,7 @@ async fn helper_configure(
                 return Err(error);
             }
         };
-        if !matches!(done.outcome(), gnunet_tun_host::RouteQueryOutcome::Exact(_))
-            || done.write_error().is_some()
-            || done.close_error().is_some()
-            || done.observed_at() >= until
-        {
-            return Err(Box::new(QueryFailure(done)));
-        }
+        let done = verification::route(done, until)?;
         stop.reports.debug(
             "exit.route.observed",
             format_args!("EXIT actual exact readonly route={done:?}; no route-add receipt"),
@@ -603,6 +484,19 @@ async fn helper_configure(
 }
 
 #[derive(Debug)]
+struct InterfaceFailure(gnunet_tun_host::NativeApplied);
+impl std::fmt::Display for InterfaceFailure {
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            out,
+            "EXIT interface completion after its original deadline: {:?}",
+            self.0
+        )
+    }
+}
+impl std::error::Error for InterfaceFailure {}
+
+#[derive(Debug)]
 struct RouteFailure(gnunet_tun_host::RouteCompletion);
 impl std::fmt::Display for RouteFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -613,6 +507,7 @@ impl std::error::Error for RouteFailure {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match &self.0.outcome {
             RouteOutcome::KernelAck(Err(e))
+            | RouteOutcome::NativeReturn(Err(e))
             | RouteOutcome::Unsent(e)
             | RouteOutcome::Uncertain(e) => Some(e),
             _ => self

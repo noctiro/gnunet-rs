@@ -10,10 +10,10 @@ use crate::{
     shared_clock::SharedClock,
 };
 use gnunet_config::{Configuration, ProjectData};
+use gnunet_native::os_bytes;
 use std::{
     ffi::OsString,
     io::{self, Write},
-    os::unix::ffi::OsStrExt,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -96,7 +96,7 @@ impl Environment {
     #[must_use]
     pub fn capture() -> Self {
         Self {
-            arguments: std::env::var_os("GNUNET_ARGS").map(|v| v.as_os_str().as_bytes().to_vec()),
+            arguments: std::env::var_os("GNUNET_ARGS").map(|v| os_bytes::encode(&v).into_owned()),
             posixly_correct: std::env::var_os("POSIXLY_CORRECT").is_some(),
             logging: LogEnvironment::capture(),
         }
@@ -209,8 +209,23 @@ impl Prepared {
         Ok(1)
     }
 }
-fn bytes(path: &Path) -> &[u8] {
-    path.as_os_str().as_bytes()
+fn bytes(path: &Path) -> std::borrow::Cow<'_, [u8]> {
+    os_bytes::encode(path.as_os_str())
+}
+
+/// Decode local PROGRAM/getopt argument bytes into a lossless native path.
+/// This performs no I/O, expansion or authorization. Consumers enforce their
+/// own NUL, absolute/relative spelling and native resource admission rules.
+///
+/// # Errors
+/// Windows rejects malformed or noncanonical local byte encodings. Unix retains
+/// ordinary native bytes, including non-UTF-8 names.
+pub fn native_path(argument: &[u8]) -> io::Result<std::borrow::Cow<'_, Path>> {
+    use std::borrow::Cow;
+    Ok(match os_bytes::decode(argument)? {
+        Cow::Borrowed(value) => Cow::Borrowed(Path::new(value)),
+        Cow::Owned(value) => Cow::Owned(PathBuf::from(value)),
+    })
 }
 fn prefix(v: &[u8]) -> &[u8] {
     &v[..v.iter().position(|&b| b == 0).unwrap_or(v.len())]
@@ -373,7 +388,7 @@ pub fn prepare<'a>(
         None
     };
     let arguments = arguments.into_iter().collect::<Vec<_>>();
-    let arguments = getopt::append_environment(arguments, environment.arguments.as_deref());
+    let arguments = getopt::append_environment(arguments, environment.arguments.as_deref())?;
     let mut parsed = crate::config_observer::operation(logger, clock, stderr, |observer| {
         Ok::<_, std::convert::Infallible>(options.run_translated_observed(
             invocation.binary_name,
@@ -408,7 +423,7 @@ pub fn prepare<'a>(
     if let Err(error) = logger.setup_routed(
         component,
         loglevel.as_deref(),
-        logfile.path.as_deref().map(bytes),
+        logfile.path.as_deref().map(bytes).as_deref(),
         &environment.logging,
         &Stamp::setup_now()?,
         stderr,
@@ -424,7 +439,7 @@ pub fn prepare<'a>(
     if explicit {
         let mut body = b"Loading configuration from entry point specified as option (".to_vec();
         if let Some(path) = &filename {
-            body.extend_from_slice(bytes(path));
+            body.extend_from_slice(&bytes(path));
         }
         body.extend_from_slice(b")\n");
         program_log(
@@ -450,7 +465,7 @@ pub fn prepare<'a>(
             Message::Translated {
                 domain: Some(b"gnunet"),
                 template: b"Unreadable configuration file `%s', exiting ...\n",
-                arguments: &[Value::Bytes(bytes(path))],
+                arguments: &[Value::Bytes(&bytes(path))],
             },
             clock,
             stderr,
@@ -499,7 +514,7 @@ pub fn prepare<'a>(
                 Message::Translated {
                     domain: Some(b"gnunet"),
                     template: b"Malformed configuration file `%s', exiting ...\n",
-                    arguments: &[Value::Bytes(bytes(path))],
+                    arguments: &[Value::Bytes(&bytes(path))],
                 },
                 clock,
                 stderr,
@@ -537,7 +552,7 @@ pub fn prepare<'a>(
     .unwrap_or_else(|never| match never {});
     if !have_arm_config && let Some(path) = &filename {
         crate::config_observer::operation(logger, clock, stderr, |observer| {
-            config.set_value_observed(b"arm", b"CONFIG", Some(bytes(path)), Some(observer))
+            config.set_value_observed(b"arm", b"CONFIG", Some(&bytes(path)), Some(observer))
         })??;
     }
     let remaining = parsed
@@ -607,12 +622,12 @@ pub fn conf_and_options(
     options.add(helpers::logfile(logfile.clone()));
     options.add(helpers::version(&project.version));
     let default_filename = if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
-        let mut bytes = xdg.as_os_str().as_bytes().to_vec();
-        bytes.push(b'/');
-        bytes.extend_from_slice(&project.config_file);
-        PathBuf::from(std::ffi::OsStr::from_bytes(&bytes))
+        let mut path = xdg;
+        path.push("/");
+        path.push(&*os_bytes::decode(&project.config_file)?);
+        PathBuf::from(path)
     } else {
-        PathBuf::from(std::ffi::OsStr::from_bytes(&project.user_config_file))
+        PathBuf::from(&*os_bytes::decode(&project.user_config_file)?)
     };
     let translations = logger.translations();
     let mut parsed = crate::config_observer::operation(logger, clock, stderr, |observer| {
@@ -644,7 +659,7 @@ pub fn conf_and_options(
     if let Err(error) = logger.setup_routed(
         b"libgnunet",
         Some(b"DEBUG"),
-        logfile.path.as_deref().map(bytes),
+        logfile.path.as_deref().map(bytes).as_deref(),
         &environment.logging,
         &Stamp::setup_now()?,
         stderr,
@@ -694,7 +709,7 @@ pub fn conf_and_options(
                     Message::Translated {
                         domain: Some(b"gnunet"),
                         template: b"Malformed configuration file `%s', exit ...\n",
-                        arguments: &[Value::Bytes(bytes(path))],
+                        arguments: &[Value::Bytes(&bytes(path))],
                     },
                     clock,
                     stderr,

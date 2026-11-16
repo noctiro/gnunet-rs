@@ -1,7 +1,6 @@
 //! Actual bounded caller-driven DV LEARN/BOX actor. This owns one real PILS MQ
 //! and one independent durable DV worker, not a per-peer crypto connection. It
 //! never sends raw TRANSPORT_DV_LEARN/BOX into CORE or fabricates write/FC results.
-#![cfg(unix)]
 #![forbid(unsafe_code)]
 use gnunet_crypto::{EddsaPublicKey, EddsaSignature, Entropy};
 use gnunet_pils::client::{Completion, Identity, Inbound, KeyTarget, OperationId};

@@ -1,6 +1,6 @@
 //! Test-only public-client actor for one controlled official-C NAMECACHE MQ.
 //! Static published ciphertext/query only; no key input or decryption.
-#![cfg(unix)]
+#![cfg(any(unix, windows))]
 use gnunet_namecache_client_host::{
     Cancellation, Client, Completion, EndpointSource, Instance, Limits, LocalReason, Operation,
     Outcome, Progress, Submission,

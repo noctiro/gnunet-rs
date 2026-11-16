@@ -1,5 +1,4 @@
 //! Actual kernel TCP/Unix admission without driving or inventing CORE/PILS/NSE effects.
-#![cfg(unix)]
 #![expect(
     clippy::panic_in_result_fn,
     reason = "Actual native admission must retain exact denial, capacity, EOF and inactive-owner observations"
@@ -13,30 +12,18 @@ use gnunet_service_runtime::{
     service::{Listener, ShutdownMode},
     service_options,
 };
-use std::{error::Error, future::poll_fn, path::PathBuf, sync::Arc, time::Duration};
+use std::{error::Error, future::poll_fn, sync::Arc, time::Duration};
 use tokio::{
     io::AsyncReadExt,
-    net::{TcpListener, TcpStream, UnixListener, UnixStream},
+    net::{TcpListener, TcpStream},
 };
-struct Scratch(PathBuf);
-impl Scratch {
-    fn new() -> Result<Self, Box<dyn Error>> {
-        let stamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?
-            .as_nanos();
-        let path =
-            std::env::temp_dir().join(format!("gnrs-nse-admission-{}-{stamp}", std::process::id()));
-        std::fs::create_dir(&path)?;
-        Ok(Self(path))
-    }
-}
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _cleanup = std::fs::remove_dir_all(&self.0);
-    }
-}
+#[path = "../src/test_support.rs"]
+mod support;
+use gnunet_service_runtime::local::Stream as UnixStream;
+use support::{Directory as Scratch, Listener as UnixListener};
+
 #[test]
-fn actual_kernel_admission_precedes_framing_and_pure_start() -> Result<(), Box<dyn Error>> {
+fn actual_native_admission_precedes_framing_and_pure_start() -> Result<(), Box<dyn Error>> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
@@ -44,11 +31,16 @@ fn actual_kernel_admission_precedes_framing_and_pure_start() -> Result<(), Box<d
         let scratch = Scratch::new()?;
         let mut config = Configuration::default();
         config.set_value(b"NSE", b"REJECT_FROM", Some(b"127.0.0.1;"))?;
-        config.set_value(b"NSE", b"UNIX_MATCH_UID", Some(b"YES"))?;
-        config.set_value(b"NSE", b"UNIX_MATCH_GID", Some(b"YES"))?;
+        let credentials = if cfg!(unix) {
+            b"YES".as_slice()
+        } else {
+            b"NO".as_slice()
+        };
+        config.set_value(b"NSE", b"UNIX_MATCH_UID", Some(credentials))?;
+        config.set_value(b"NSE", b"UNIX_MATCH_GID", Some(credentials))?;
         let options = service_options(&config, b"NSE", ShutdownMode::Immediate)?;
         let access = startup::unix_access(&config)?;
-        assert!(access.match_uid && access.match_gid);
+        assert_eq!(access.match_uid && access.match_gid, cfg!(unix));
         let clock: Arc<dyn RuntimeClock> = Arc::new(SystemClock);
         let mut nse_instance = owner::Instance::new();
         let mut core_instance = gnunet_core_client_host::Instance::new();
@@ -86,12 +78,24 @@ fn actual_kernel_admission_precedes_framing_and_pure_start() -> Result<(), Box<d
         assert_eq!(host.report().accepted, 0);
         assert_eq!(host.report().rejected, 1);
 
-        // Same actual effective UID is accepted with both flags selected. This
-        // uses kernel credentials; it does not assert a foreign-account matrix.
+        // Unix checks the actual effective UID. Windows uses the protected local
+        // endpoint and explicitly refuses an unavailable Unix UID/GID check.
         let unix_path = scratch.0.join("nse");
-        let unix = UnixListener::bind(&unix_path)?;
+        let unix = UnixListener::bind(&unix_path).await?;
         let mut first = UnixStream::connect(&unix_path).await?;
-        let accepted = poll_fn(|cx| Listener::Unix(&unix).poll_canonical_connection(cx)).await?;
+        let accepted =
+            poll_fn(|cx| Listener::Unix(&unix.socket).poll_canonical_connection(cx)).await?;
+        #[cfg(windows)]
+        assert_eq!(
+            gnunet_service_runtime::credentials::UnixAccess {
+                match_uid: true,
+                match_gid: true
+            }
+            .allows(accepted.connection())
+            .err()
+            .map(|cause| cause.kind()),
+            Some(std::io::ErrorKind::Unsupported)
+        );
         assert!(host.admit(accepted, &mut |_| {})?);
         assert_eq!(host.report().accepted, 1);
         assert_eq!(host.identity(), None);
@@ -104,7 +108,8 @@ fn actual_kernel_admission_precedes_framing_and_pure_start() -> Result<(), Box<d
         // The public external-accept port also refuses a full original slot.
         // It closes only the new stream and retains the first physical MQ.
         let mut extra = UnixStream::connect(&unix_path).await?;
-        let accepted = poll_fn(|cx| Listener::Unix(&unix).poll_canonical_connection(cx)).await?;
+        let accepted =
+            poll_fn(|cx| Listener::Unix(&unix.socket).poll_canonical_connection(cx)).await?;
         assert!(matches!(
             host.admit(accepted, &mut |_| {}),
             Err(HostError::Protocol(gnunet_types::Error::Capacity))

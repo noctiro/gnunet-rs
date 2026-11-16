@@ -363,3 +363,25 @@ fn newly_opened_second_family_is_not_readable_until_its_send_attempt() -> Result
     );
     Ok(())
 }
+
+#[test]
+fn prepared_cache_preserves_original_socket_across_requests() -> Result<(), Error> {
+    let mut owner = Core::start(2)?;
+    owner.add_dns_sa(endpoint(1))?;
+    let original = owner.prepare_socket(0, Family::V4)?;
+    assert!(!owner.owns_socket(original));
+    assert_eq!(owner.next_action(MonoInstant(0))?, None);
+    owner.socket_opened(original, true)?;
+    assert!(owner.owns_socket(original));
+    assert_eq!(owner.readable_sockets().count(), 0);
+    let request = admit(&mut owner, b"original", 0, 10)?.request;
+    assert_eq!(owner.prepare_socket(1, Family::V4), Err(Error::Conflict));
+    assert_eq!(send(&mut owner, 10)?.1, original);
+    owner.resolve_cancel(request)?;
+    let replacement = admit(&mut owner, b"next", 0, 20)?.request;
+    assert_eq!(send(&mut owner, 20)?.1, original);
+    owner.resolve_cancel(replacement)?;
+    owner.stop();
+    assert!(!owner.owns_socket(original));
+    Ok(())
+}

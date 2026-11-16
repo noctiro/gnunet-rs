@@ -1,7 +1,10 @@
 //! Real Unix stream framing, connection isolation, FIFO and host drop regressions.
-#![expect(
-    clippy::panic_in_result_fn,
-    reason = "Fallible protocol and real resource regressions assert independent expected outcomes"
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::panic_in_result_fn,
+        reason = "Fallible protocol and real resource regressions assert independent expected outcomes"
+    )
 )]
 #![cfg(unix)]
 use gnunet_pils::{HelloLimits, MasterKey, Profile, Service};

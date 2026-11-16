@@ -83,6 +83,7 @@ impl<'id> Core<'id> {
         self.charge(capacity)?;
         let row = OperationRow {
             binding,
+            signed_kind: Some(body.kind()),
             recipient,
             job: Job::Sign {
                 body: owned,
@@ -503,6 +504,7 @@ impl<'id> Core<'id> {
             .operations
             .insert(OperationRow {
                 binding,
+                signed_kind: None,
                 recipient: None,
                 job,
                 phase: OperationPhase::Prepared,
@@ -1253,13 +1255,7 @@ impl<'id> Core<'id> {
         let s = row.sources.get(source.slot)?;
         if row.operations.iter().any(|(_, o)| {
             o.binding.source == source
-                && matches!(
-                    &o.job,
-                    Job::Sign {
-                        kind: Kind::JOIN | Kind::ID,
-                        ..
-                    }
-                )
+                && matches!(o.signed_kind, Some(Kind::JOIN | Kind::ID))
                 && !matches!(
                     o.phase,
                     OperationPhase::Complete | OperationPhase::Failed | OperationPhase::Cancelled
@@ -1467,6 +1463,7 @@ impl<'id> Core<'id> {
             .operations
             .insert(OperationRow {
                 binding,
+                signed_kind: None,
                 recipient: None,
                 job: Job::EpochRecord { public },
                 phase: OperationPhase::Prepared,

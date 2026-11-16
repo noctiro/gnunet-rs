@@ -1,5 +1,8 @@
 //! Actual PROGRAM configuration/options and one explicitly owned runtime task.
-use crate::Tool;
+use crate::{
+    Tool,
+    lifecycle::{Cleanup, OutputAbandoned, Resolver},
+};
 use gnunet_client_host::{EndpointSource, LiveConfiguration};
 use gnunet_pils::Profile;
 use gnunet_program_host::{
@@ -7,13 +10,16 @@ use gnunet_program_host::{
     helpers::{self, Filename, Target},
     logging::Logger,
     program::{self, Defaults, Invocation, NlsDisabled, Preparation, Prepared},
+    reporting::Reporter,
     shared_clock::SharedClock,
 };
 use gnunet_service_runtime::clock::RuntimeClock;
+use gnunet_service_startup::{ClientStartup, StopSignals};
 use std::{
     cell::RefCell,
     error::Error,
     io::{self, Write},
+    process::ExitCode,
     rc::Rc,
     sync::Arc,
     time::Duration,
@@ -21,8 +27,8 @@ use std::{
 use tokio::time::Instant;
 mod session;
 type Failure = Box<dyn Error>;
-fn diagnostic(args: std::fmt::Arguments<'_>) {
-    let _diagnostic = writeln!(io::stderr().lock(), "{args}");
+fn diagnostic(reports: &Reporter, args: std::fmt::Arguments<'_>) {
+    reports.debug("peer.cli.activity", args);
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Mode {
@@ -60,20 +66,11 @@ fn selected_profile(
         None => Profile::configured(config.get(b"PILS", b"PROFILE"), None),
     }
 }
-/// Run the current installed gnunet-hello or gnunet-pils PROGRAM. Crypto/public
-/// verification calls in this production source execute only when the user runs
-/// the actual program, never during source construction or option parsing.
-pub fn run(tool: Tool) -> Result<(), Failure> {
-    let result = prepare_and_run(tool);
-    let flush = io::stdout().flush().err();
-    Failures {
-        task: result.err(),
-        flush,
-        ..Default::default()
-    }
-    .finish()
-}
-fn prepare_and_run(tool: Tool) -> Result<(), Failure> {
+/// Run HELLO or PILS with the original fresh-process client startup.
+/// Selected configuration, diagnostics and native resources remain owned until
+/// operation retirement. Failures handled by the selected Logger return a
+/// failure exit code; errors before diagnostic selection remain in the Result.
+pub fn run(tool: Tool, startup: ClientStartup) -> Result<ExitCode, Failure> {
     let export = Target::new(0i32);
     let import = Target::new(0i32);
     let dump = Target::new(0i32);
@@ -183,65 +180,94 @@ fn prepare_and_run(tool: Tool) -> Result<(), Failure> {
         b"gnunet-pils"
     };
     let mut logger = Logger::new(name, std::process::id(), false)?;
-    let prepared=program::prepare(config,Invocation{binary_name:name,help:Some(b"Current installed official HELLO/PILS public-peer tools. HELLO -e exports real public announcement; -b binary; -E uses original actual PILS purpose7 result; -i imports URL or binary stdin with scan/newer/REPLACE; -D lists HELLOs to real iterator END. PILS -1 prints one public identity; default finite continuous observation. No private-key path/file, generation, local signer, fake identity or peerinfo protocol."),select_default_filename:true,defaults:Defaults::Native},options,std::env::args_os(),&program::Environment::capture(),&mut NlsDisabled,&mut logger,&clock,&mut io::stdout().lock(),&mut io::stderr().lock())?;
-    let prepared = match prepared {
-        Preparation::Ready(p) => *p,
-        Preparation::Stopped(s) => {
-            return if s.code == 0 && matches!(&s.reason, program::StoppedReason::Options) {
-                Ok(())
-            } else {
-                Err(format!("public peer PROGRAM stopped {:?} code={}", s.reason, s.code).into())
-            };
+    let prepared=program::prepare(config,Invocation{binary_name:name,help:Some(b"Current installed official HELLO/PILS public-peer tools. HELLO -e exports real public announcement; -b binary; -E uses original actual PILS purpose7 result; -i imports URL or binary stdin with scan/newer/REPLACE; -D lists HELLOs to real iterator END. PILS -1 prints one public identity; default finite continuous observation. No private-key path/file, generation, local signer, fake identity or peerinfo protocol."),select_default_filename:true,defaults:Defaults::Native},options,std::env::args_os(),&program::Environment::capture(),&mut NlsDisabled,&mut logger,&clock,&mut io::stdout().lock(),&mut io::stderr().lock());
+    let reports = Reporter::new(logger, clock.clone());
+    #[cfg(unix)]
+    if let Some(notice) = startup.notice {
+        reports.warning(
+            "peer.cli.parent",
+            format_args!("Original parent-control declaration: {notice:?}"),
+        );
+    }
+    let outcome = (|| -> Result<ExitCode, Failure> {
+        let prepared = match prepared? {
+            Preparation::Ready(p) => *p,
+            Preparation::Stopped(stopped) => {
+                io::stdout().flush()?;
+                return Ok(if stopped.code == 0 {
+                    ExitCode::SUCCESS
+                } else {
+                    ExitCode::FAILURE
+                });
+            }
+        };
+        if !prepared.main().arguments.is_empty() {
+            return Err("public peer tools accept no positional arguments".into());
         }
-    };
-    if !prepared.main().arguments.is_empty() {
-        return Err("public peer tools accept no positional arguments".into());
-    }
-    let mode = if tool == Tool::Pils {
-        Mode::Identity
-    } else {
-        match (export.get()? != 0, import.get()? != 0, dump.get()? != 0) {
-            (true, false, false) => Mode::Export,
-            (false, true, false) => Mode::Import,
-            (false, false, true) => Mode::Dump,
-            _ => return Err("select exactly one HELLO action: -e, -i or -D".into()),
+        let mode = if tool == Tool::Pils {
+            Mode::Identity
+        } else {
+            match (export.get()? != 0, import.get()? != 0, dump.get()? != 0) {
+                (true, false, false) => Mode::Export,
+                (false, true, false) => Mode::Import,
+                (false, false, true) => Mode::Dump,
+                _ => return Err("select exactly one HELLO action: -e, -i or -D".into()),
+            }
+        };
+        let expiry = expiry
+            .get()?
+            .map(|value| gnunet_config::parse_relative_time(&value))
+            .transpose()?;
+        if (expiry.is_some() || binary.get()? != 0) && mode != Mode::Export {
+            return Err("--binary/--expiration require --export-hello".into());
         }
-    };
-    let expiry = expiry
-        .get()?
-        .map(|value| gnunet_config::parse_relative_time(&value))
-        .transpose()?;
-    if (expiry.is_some() || binary.get()? != 0) && mode != Mode::Export {
-        return Err("--binary/--expiration require --export-hello".into());
+        let profile = selected_profile(prepared.main().config, profile.get()?.as_deref())?;
+        let ms = duration.get()?;
+        let slice = slice.get()?;
+        if ms == 0 || ms > 86_400_000 || slice == 0 || slice > 65535 {
+            return Err("invalid finite public-peer resource/time policy".into());
+        }
+        let duration = Duration::from_millis(u64::from(ms));
+        if Instant::now()
+            .checked_add(duration + Duration::from_secs(5))
+            .is_none()
+        {
+            return Err("public peer original deadline overflow".into());
+        }
+        let settings = Settings {
+            mode,
+            binary: binary.get()? != 0,
+            expiry,
+            once: once.get()? != 0,
+            duration,
+            profile,
+            pils_socket: filename(pils_socket)?,
+            peerstore_socket: filename(peerstore_socket)?,
+            slice: slice as usize,
+        };
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?
+            .block_on(scheduled(
+                prepared,
+                clock,
+                settings,
+                startup,
+                reports.clone(),
+            ))?;
+        Ok(ExitCode::SUCCESS)
+    })();
+    if let Err(error) = &outcome {
+        reports.message(
+            gnunet_program_host::policy::Level::ERROR,
+            "peer.cli.failure",
+            format_args!("{error}"),
+        );
     }
-    let profile = selected_profile(prepared.main().config, profile.get()?.as_deref())?;
-    let ms = duration.get()?;
-    let slice = slice.get()?;
-    if ms == 0 || ms > 86_400_000 || slice == 0 || slice > 65535 {
-        return Err("invalid finite public-peer resource/time policy".into());
-    }
-    let duration = Duration::from_millis(u64::from(ms));
-    if Instant::now()
-        .checked_add(duration + Duration::from_secs(5))
-        .is_none()
-    {
-        return Err("public peer original deadline overflow".into());
-    }
-    let settings = Settings {
-        mode,
-        binary: binary.get()? != 0,
-        expiry,
-        once: once.get()? != 0,
-        duration,
-        profile,
-        pils_socket: filename(pils_socket)?,
-        peerstore_socket: filename(peerstore_socket)?,
-        slice: slice as usize,
-    };
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?
-        .block_on(scheduled(prepared, clock, settings))
+    Ok(
+        gnunet_program_host::service::retain_diagnostic(outcome, reports.take_error())
+            .unwrap_or(ExitCode::FAILURE),
+    )
 }
 #[derive(Debug, Default)]
 struct Failures {
@@ -250,17 +276,28 @@ struct Failures {
     client: Option<Failure>,
     resolver: Option<Failure>,
     flush: Option<io::Error>,
+    output: Option<OutputAbandoned>,
 }
 impl std::fmt::Display for Failures {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "public peer program failures program={:?} task={:?} client-cleanup={:?} resolver-cleanup={:?} independent-stdio-flush={:?}",
-            self.program, self.task, self.client, self.resolver, self.flush
+            "public peer program failures program={:?} task={:?} client-cleanup={:?} resolver-cleanup={:?} independent-stdio-flush={:?} unflushed-output={:?}",
+            self.program, self.task, self.client, self.resolver, self.flush, self.output
         )
     }
 }
-impl Error for Failures {}
+impl Error for Failures {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        self.program
+            .as_deref()
+            .or(self.task.as_deref())
+            .or(self.client.as_deref())
+            .or(self.resolver.as_deref())
+            .or_else(|| self.flush.as_ref().map(|e| e as &dyn Error))
+            .or_else(|| self.output.as_ref().map(|e| e as &dyn Error))
+    }
+}
 impl Failures {
     fn finish(self) -> Result<(), Failure> {
         if self.program.is_none()
@@ -268,6 +305,7 @@ impl Failures {
             && self.client.is_none()
             && self.resolver.is_none()
             && self.flush.is_none()
+            && self.output.is_none()
         {
             Ok(())
         } else {
@@ -278,8 +316,15 @@ impl Failures {
 async fn scheduled(
     prepared: Prepared,
     clock: SharedClock,
-    settings: Settings,
+    mut settings: Settings,
+    startup: ClientStartup,
+    reports: Reporter,
 ) -> Result<(), Failure> {
+    if reports.failed() {
+        return Err("selected public-peer Logger failed".into());
+    }
+    let signals = StopSignals::for_client(startup.parent)?;
+    let cleanup = Cleanup::default();
     let config = prepared.main().config.duplicate()?;
     let runtime_clock: Arc<dyn RuntimeClock> = Arc::new(clock.clone());
     let live = LiveConfiguration::new(config);
@@ -289,15 +334,16 @@ async fn scheduled(
         gnunet_resolver_broker::native_profile()?,
         runtime_clock.clone(),
     )?;
+    let resolver = Resolver::new(resolver, reports.clone(), cleanup.clone());
     let source = match settings.mode {
         Mode::Export | Mode::Identity => settings
             .pils_socket
-            .clone()
+            .take()
             .map(|path| EndpointSource::unix_with_clock(path, runtime_clock.clone()))
             .unwrap_or_else(|| EndpointSource::live(live, b"pils", context.resolution_context())),
         Mode::Import | Mode::Dump => settings
             .peerstore_socket
-            .clone()
+            .take()
             .map(|path| EndpointSource::unix_with_clock(path, runtime_clock.clone()))
             .unwrap_or_else(|| {
                 EndpointSource::live(live, b"peerstore", context.resolution_context())
@@ -305,13 +351,23 @@ async fn scheduled(
     };
     let result = Rc::new(RefCell::new(None));
     let receiving = Rc::clone(&result);
+    let task_cleanup = cleanup.clone();
     let program = prepared
         .run_scheduled(&mut context, clock, 1, move |_main, scope| {
             let destination = Rc::clone(&receiving);
             let stopping = scope.clone();
             if let Err(error) = scope.spawn(async move {
-                *destination.borrow_mut() =
-                    Some(session::run(source, resolver, runtime_clock, settings).await);
+                *destination.borrow_mut() = Some(
+                    session::run(
+                        source,
+                        resolver,
+                        runtime_clock,
+                        settings,
+                        signals,
+                        task_cleanup,
+                    )
+                    .await,
+                );
                 if let Err(error) = stopping.shutdown() {
                     let previous = destination.borrow_mut().take().and_then(Result::err);
                     *destination.borrow_mut() = Some(
@@ -349,9 +405,13 @@ async fn scheduled(
         Ok(code) => Some(format!("PROGRAM returned source code{code}").into()),
         Err(error) => Some(Box::new(error) as Failure),
     };
+    let deferred = cleanup.take();
     Failures {
         program,
         task,
+        client: deferred.client,
+        resolver: deferred.resolver,
+        output: deferred.output,
         ..Default::default()
     }
     .finish()

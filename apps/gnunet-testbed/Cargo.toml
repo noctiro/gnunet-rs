@@ -9,11 +9,13 @@ license.workspace = true
 name = "gnunet-testbed"
 path = "src/main.rs"
 
-[target.'cfg(unix)'.dependencies]
+[dependencies]
 gnunet-testbed-host.workspace = true
 gnunet-program-host.workspace = true
 gnunet-config.workspace = true
 gnunet-types.workspace = true
+gnunet-service-startup.workspace = true
+tokio = { workspace = true, features = ["rt", "net", "time", "signal"] }
 
 [lints]
 workspace = true

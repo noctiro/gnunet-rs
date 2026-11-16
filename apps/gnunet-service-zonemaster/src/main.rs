@@ -1,4 +1,4 @@
-//! Official ZONEMASTER foreground; active defaults come from [zonemaster].
+//! Official ZONEMASTER foreground; active defaults come from `[zonemaster]`.
 #![deny(unsafe_code)]
 use std::{
     error::Error,
@@ -13,14 +13,13 @@ fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
+            if e.downcast_ref::<Reported>().is_some() {
+                return ExitCode::FAILURE;
+            }
             diagnostic(format_args!("gnunet-service-zonemaster: {e}"));
             ExitCode::FAILURE
         }
     }
-}
-#[cfg(not(unix))]
-fn run() -> Result<(), Failure> {
-    Err("ZONEMASTER native clients/foreground require Unix".into())
 }
 #[cfg(unix)]
 #[expect(
@@ -47,14 +46,12 @@ fn inherited() -> Result<gnunet_zonemaster_host::foreground::Inherited, Failure>
         parent: captured.parent_control,
     })
 }
-#[cfg(unix)]
 fn run() -> Result<(), Failure> {
     use gnunet_program_host::{
         logging::Logger,
         program::{self, Defaults, Invocation, NlsDisabled, Preparation},
         shared_clock::SharedClock,
     };
-    use gnunet_service_startup::{GroupsProfile, apply_privileges, configured_user, resolve_user};
     use std::sync::Arc;
     let inherited = inherited()?;
     let clock = SharedClock::native(4096)?;
@@ -76,21 +73,71 @@ fn run() -> Result<(), Failure> {
     if !prepared.main().arguments.is_empty() {
         return Err("ZONEMASTER accepts no positional arguments".into());
     }
-    let settings = gnunet_zonemaster_host::settings::Settings::read(prepared.main().config)?;
-    let factory: Option<Box<dyn gnunet_zonemaster_host::publish::Factory>> =
-        Some(Box::new(gnunet_zonemaster_host::publish::DhtFactory::new()));
-    let user = configured_user(prepared.main().config, b"zonemaster")?
-        .map(|name| resolve_user(&name))
-        .transpose()?;
-    let _actual = apply_privileges(user.as_ref(), GroupsProfile::WithInitgroups)?;
-    tokio::runtime::Builder::new_current_thread()
+    let reports = gnunet_program_host::reporting::Reporter::new(logger, clock.clone());
+    let result = (|| -> Result<(), Failure> {
+        let settings = gnunet_zonemaster_host::settings::Settings::read(prepared.main().config)?;
+        let factory: Option<Box<dyn gnunet_zonemaster_host::publish::Factory>> =
+            Some(Box::new(gnunet_zonemaster_host::publish::DhtFactory::new()));
+        #[cfg(unix)]
+        {
+            use gnunet_service_startup::{
+                GroupsProfile, apply_privileges, configured_user, resolve_user,
+            };
+            let user = configured_user(prepared.main().config, b"zonemaster")?
+                .map(|name| resolve_user(&name))
+                .transpose()?;
+            apply_privileges(user.as_ref(), GroupsProfile::WithInitgroups)?;
+        }
+        #[cfg(windows)]
+        gnunet_service_startup::verify_configured_identity(prepared.main().config, b"zonemaster")?;
+        tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?
         .block_on(gnunet_zonemaster_host::foreground::scheduled(
-            prepared, clock, settings, inherited, factory,
+            prepared, clock, settings, inherited, factory, reports.clone(),
         ))
         .map(|report| {
             let local_written = report.publications.iter().filter(|notice| matches!(notice, gnunet_zonemaster_host::publish::Event::Submitted { .. })).count();
-            diagnostic(format_args!("ZONEMASTER stopped: {} original public notices, {} local submission notices; no remote-storage acknowledgement", report.publications.len(), local_written));
+            reports.message(gnunet_program_host::policy::Level::INFO, "zonemaster.stopped", format_args!("ZONEMASTER stopped: {} original public notices, {} local submission notices; no remote-storage acknowledgement", report.publications.len(), local_written));
         })
+    })();
+    if let Err(error) = &result {
+        reports.message(
+            gnunet_program_host::policy::Level::ERROR,
+            "zonemaster.failure",
+            format_args!("gnunet-service-zonemaster: {error}"),
+        );
+    }
+    gnunet_program_host::service::retain_diagnostic(result, reports.take_error())
+        .map_err(|error| Box::new(Reported(error)) as Failure)
+}
+#[derive(Debug)]
+struct Reported(Failure);
+impl std::fmt::Display for Reported {
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(out)
+    }
+}
+impl Error for Reported {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        Some(self.0.as_ref())
+    }
+}
+#[cfg(windows)]
+#[expect(
+    unsafe_code,
+    reason = "Sole fresh-process capture transfers inherited native resources before competing owners"
+)]
+fn inherited() -> Result<gnunet_zonemaster_host::foreground::Inherited, Failure> {
+    // SAFETY: run invokes this first, before logger, runtime, threads or native resource creation.
+    let captured = unsafe { gnunet_service_startup::capture_from_environment() }?;
+    let activation = captured
+        .activation
+        .map(|incoming| gnunet_service_runtime::Activation::from_imported(incoming.materialize()?))
+        .transpose()?
+        .unwrap_or_default();
+    Ok(gnunet_zonemaster_host::foreground::Inherited {
+        activation,
+        parent: captured.parent_control,
+    })
 }

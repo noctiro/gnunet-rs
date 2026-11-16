@@ -100,7 +100,7 @@ async fn plaintext_waits_for_real_transport_credit_and_admitted_ciphertext_is_or
             timeout: 30_000_000,
         },
     );
-    let (connection, mut stream) = pair()?;
+    let (connection, mut stream) = pair().await?;
     host.attach_transport(connection)?;
     init(&mut host.applications, 1, 0, &[0])?;
     connected(&mut host.applications, id);
@@ -339,7 +339,7 @@ async fn actual_pils_feed_binds_expiration_context_hash_and_explicit_profile_bef
         limits,
     )?;
     let clock = Arc::new(ManualClock::new(10_000_000));
-    let (connection, mut stream) = pair()?;
+    let (connection, mut stream) = pair().await?;
     let mut feed = startup::PilsFeed::with_clock(connection, clock.clone())?;
     for part in service.announcement().chunks(3) {
         stream.write_all(part).await?;
@@ -388,7 +388,7 @@ async fn actual_pils_feed_binds_expiration_context_hash_and_explicit_profile_bef
         .await?,
         Err(HostError::Protocol(Error::Timeout))
     ));
-    let (connection, mut stream) = pair()?;
+    let (connection, mut stream) = pair().await?;
     let mut other = startup::PilsFeed::with_profile(
         connection,
         Arc::new(ManualClock::new(10_000_000)),

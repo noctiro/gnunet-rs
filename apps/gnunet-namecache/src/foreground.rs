@@ -7,6 +7,7 @@ use gnunet_namecache_client_host::{
 use gnunet_program_host::{program::Prepared, reporting::Reporter, shared_clock::SharedClock};
 use gnunet_resolver_broker::{BrokerError, Driver};
 use gnunet_service_runtime::clock::RuntimeClock;
+use gnunet_service_startup::{ParentControl, StopSignals};
 use std::{
     cell::Cell,
     fmt,
@@ -15,13 +16,10 @@ use std::{
     pin::Pin,
     rc::Rc,
     sync::Arc,
-    task::{Context, Poll},
+    task::Poll,
     time::Duration,
 };
-use tokio::{
-    signal::unix::{Signal, SignalKind},
-    time::{Instant, Sleep},
-};
+use tokio::time::{Instant, Sleep};
 
 #[derive(Debug)]
 pub(super) struct ProgramFailure {
@@ -221,39 +219,12 @@ impl fmt::Debug for Report {
             .finish()
     }
 }
-struct Signals {
-    interrupt: Signal,
-    terminate: Signal,
-}
-impl Signals {
-    fn new() -> io::Result<Self> {
-        Ok(Self {
-            interrupt: tokio::signal::unix::signal(SignalKind::interrupt())?,
-            terminate: tokio::signal::unix::signal(SignalKind::terminate())?,
-        })
-    }
-    fn poll(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        for signal in [&mut self.interrupt, &mut self.terminate] {
-            match signal.poll_recv(cx) {
-                Poll::Ready(Some(())) => return Poll::Ready(Ok(())),
-                Poll::Ready(None) => {
-                    return Poll::Ready(Err(io::Error::new(
-                        io::ErrorKind::UnexpectedEof,
-                        "original signal stream ended",
-                    )));
-                }
-                Poll::Pending => {}
-            }
-        }
-        Poll::Pending
-    }
-}
-
 pub(super) async fn scheduled(
     prepared: Prepared,
     clock: SharedClock,
     settings: Settings,
     reporter: Reporter,
+    parent: Option<ParentControl>,
 ) -> Result<(), Cause> {
     let live = LiveConfiguration::new(prepared.main().config.duplicate()?);
     let actual: Arc<dyn RuntimeClock> = Arc::new(clock.clone());
@@ -269,7 +240,15 @@ pub(super) async fn scheduled(
         .map(|path| EndpointSource::unix_with_clock(path, actual.clone()))
         .unwrap_or_else(|| EndpointSource::live(live, b"namecache", context.resolution_context()));
     let stop = Rc::new(Cell::new(false));
-    let original = run(source, resolver, actual, settings, reporter, stop.clone());
+    let original = run(
+        source,
+        resolver,
+        actual,
+        settings,
+        reporter,
+        stop.clone(),
+        parent,
+    );
     let _report =
         gnunet_program_host::foreground::run(prepared, &mut context, clock, stop, original).await?;
     Ok(())
@@ -282,6 +261,7 @@ async fn run(
     settings: Settings,
     reporter: Reporter,
     stop: Rc<Cell<bool>>,
+    parent: Option<ParentControl>,
 ) -> Result<Report, Cause> {
     let instance = gnunet_namecache_client_host::Instance::new();
     let mut client = None;
@@ -289,7 +269,7 @@ async fn run(
     let mut report = Report::default();
     let mut output = display::Output::new(io::stdout());
     let original: Result<(), Cause> = async {
-        let mut signals = Signals::new()?;
+        let mut signals = StopSignals::for_client(parent)?;
         // This exact pre-admission stop gate also protects public-key derivation
         // when PROGRAM itself failed before admitting its original task.
         if stop.get() || reporter.failed() {
@@ -489,7 +469,7 @@ async fn run(
 async fn wait<'id>(
     client: &mut Client<'id>,
     resolver: &mut Driver<8, 1024>,
-    signals: &mut Signals,
+    signals: &mut StopSignals,
     reporter: &Reporter,
     stop: &Cell<bool>,
     original: Operation<'id>,
@@ -513,17 +493,13 @@ async fn wait<'id>(
             if stop.get() || reporter.failed() {
                 return Poll::Ready(Err("NAMECACHE original task stopped".into()));
             }
-            if let Poll::Ready(result) = signals.poll(cx) {
-                return Poll::Ready(
-                    result
-                        .and_then(|()| {
-                            Err(io::Error::new(
-                                io::ErrorKind::Interrupted,
-                                "NAMECACHE interrupted",
-                            ))
-                        })
-                        .map_err(|error| Box::new(error) as Cause),
-                );
+            if let Poll::Ready(result) = signals.poll_stop(cx) {
+                result?;
+                return Poll::Ready(Err(io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "NAMECACHE interrupted",
+                )
+                .into()));
             }
             resolver_first = !resolver_first;
             for native in [!resolver_first, resolver_first] {

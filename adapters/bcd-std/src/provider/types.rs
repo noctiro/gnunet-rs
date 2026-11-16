@@ -1,8 +1,8 @@
+use super::{Exit, StopMethod};
+#[cfg(unix)]
 use gnunet_config::Configuration;
-use gnunet_service_runtime::process::ChildExit;
 use std::{
     fmt,
-    os::unix::ffi::OsStrExt,
     path::PathBuf,
     sync::{
         Arc,
@@ -131,14 +131,16 @@ impl Limits {
 /// Explicit selected tools and parent-owned configuration. Validation is pure.
 pub struct Settings {
     /// Selected absolute pdflatex executable; checked only for a render invocation.
-    pub pdflatex: PathBuf,
+    pub pdflatex: Option<PathBuf>,
     /// Selected absolute Ghostscript executable; only PNG invokes it.
-    pub ghostscript: PathBuf,
+    pub ghostscript: Option<PathBuf>,
     /// Selected absolute shared GNUnet native spawn helper.
+    #[cfg(unix)]
     pub launcher: PathBuf,
     /// Explicit existing parent for exclusive mode0700 job directories.
     pub temp_root: PathBuf,
     /// Original selected PROGRAM configuration for the shared process port.
+    #[cfg(unix)]
     pub configuration: Arc<Configuration>,
     /// Explicit finite application-owned limits.
     pub limits: Limits,
@@ -147,16 +149,14 @@ impl Settings {
     /// Validate finite values and literal paths without probing tools or files.
     pub fn validate(&self) -> Result<(), Cause> {
         self.limits.validate()?;
-        for path in [
-            &self.pdflatex,
-            &self.ghostscript,
-            &self.launcher,
-            &self.temp_root,
-        ] {
-            if !path.is_absolute()
-                || path.as_os_str().as_bytes().contains(&0)
-                || path.as_os_str().as_bytes().len() > 4096
-            {
+        let mut paths = vec![&self.temp_root];
+        paths.extend(self.pdflatex.iter());
+        paths.extend(self.ghostscript.iter());
+        #[cfg(unix)]
+        paths.push(&self.launcher);
+        for path in paths {
+            let bytes = gnunet_native::os_bytes::encode(path.as_os_str());
+            if !path.is_absolute() || bytes.contains(&0) {
                 return Err(Cause::Input);
             }
         }
@@ -180,12 +180,27 @@ pub enum Cause {
     Io(std::io::Error),
     /// Original shared launch boundary failure.
     Launch(gnunet_service_runtime::process::LaunchError),
+    /// Original Windows process-registry failure.
+    #[cfg(windows)]
+    Registry(gnunet_service_runtime::process::RegistryError),
+    /// No native tool was configured for this rendering phase.
+    MissingTool {
+        /// Whether PNG conversion selected Ghostscript.
+        png: bool,
+    },
+    /// Original file error and independent original writer-close failure.
+    FileClose {
+        /// Original write or guard failure.
+        original: Box<Cause>,
+        /// Independent native close failure.
+        close: std::io::Error,
+    },
     /// An actually reaped renderer/converter exited unsuccessfully.
     Tool {
         /// Whether this was the selected converter phase.
         png: bool,
         /// Actual original consuming-wait exit.
-        exit: ChildExit,
+        exit: Exit,
     },
     /// Current-job file shape/ownership or output format is invalid.
     Artifact,
@@ -201,6 +216,9 @@ impl std::error::Error for Cause {
             Self::Clock(error) => Some(error),
             Self::Io(error) => Some(error),
             Self::Launch(error) => Some(error),
+            #[cfg(windows)]
+            Self::Registry(error) => Some(error),
+            Self::FileClose { original, .. } => Some(original.as_ref()),
             _ => None,
         }
     }
@@ -218,20 +236,22 @@ pub struct Report {
     /// An actual consuming wait returned the original TeX child exit.
     pub tex_reaped: bool,
     /// Actual original TeX invocation exit, never inferred from file presence.
-    pub tex_exit: Option<ChildExit>,
+    pub tex_exit: Option<Exit>,
     /// The original selected PNG converter child was admitted.
     pub gs_spawned: bool,
     /// An actual consuming wait returned that converter exit.
     pub gs_reaped: bool,
     /// Actual original converter exit.
-    pub gs_exit: Option<ChildExit>,
+    pub gs_exit: Option<Exit>,
     /// This renderer observed cooperative cancellation.
     pub stop_requested: bool,
     /// The original canonical or native job bound was observed expired.
     pub deadline: bool,
-    /// A real original-child TERM syscall was attempted.
-    pub term_attempted: bool,
-    /// A real original-child KILL syscall was attempted.
+    /// The original platform child-stop operation was attempted.
+    pub stop_attempted: bool,
+    /// Actual original platform stop mechanism, separately from exit.
+    pub stop_method: Option<StopMethod>,
+    /// The original child force-stop operation was attempted.
     pub kill_attempted: bool,
     /// Actual checked artifact length, not a peer delivery observation.
     pub output_bytes: usize,

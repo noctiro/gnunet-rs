@@ -1,5 +1,5 @@
 //! Feature-only SDK entrypoint. No socket, Runtime or Resolver is started.
-#![cfg(all(feature = "official-dht-client", unix))]
+#![cfg(all(feature = "official-dht-client", any(unix, windows)))]
 #![expect(
     clippy::panic_in_result_fn,
     reason = "SDK entrypoint exercises original owners and offline admission."

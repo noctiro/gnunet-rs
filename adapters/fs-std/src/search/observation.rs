@@ -126,6 +126,7 @@ where
         if self.closed {
             return Err(ProtocolError::Closed.into());
         }
+        self.check_time()?;
         let mut pending = self.pending.take().ok_or(ProtocolError::NotReady)?;
         let Some(incoming) = pending.incoming.take() else {
             self.pending = Some(pending);
@@ -219,9 +220,11 @@ where
             Err(cause) => Step::Rejected { query: id, cause },
         };
         self.last_replayed = Some(observation.observed_at);
-        // Historical verification does not read the current clock. The first
-        // live poll must nevertheless preserve the same UTC lower bound.
-        self.last_now = Some(observation.observed_at);
+        // Replay does not replace the live scope's source-clock observation or
+        // native target; its historical sample remains a separate lower bound.
+        self.last_now = Some(self.last_now.map_or(observation.observed_at, |previous| {
+            previous.max(observation.observed_at)
+        }));
         Ok(accepted)
     }
 }

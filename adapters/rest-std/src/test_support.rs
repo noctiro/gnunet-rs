@@ -1,14 +1,14 @@
-//! Actual private Unix transport fixtures with source-constructed public IPC
+//! Actual private native AF_UNIX transport fixtures with source-constructed public IPC
 //! replies. These are client/handler regressions, not official-service receipts.
 use crate::{ConsumeProfile, Context, Error, Instances, Limits, OwnedRequest, Sources};
 use gnunet_client_host::EndpointSource;
 use gnunet_gnsrecord::ZoneKey;
 use gnunet_reclaim::{AttributeList, PresentationList, ipc};
 use gnunet_service_runtime::clock::{RuntimeClock, SystemClock};
+use gnunet_service_runtime::local::Listener;
 use gnunet_types::Error as Fault;
 use std::{
-    io::{self, Read, Write},
-    os::unix::{fs::DirBuilderExt, net::UnixListener},
+    io::{self, Write},
     path::PathBuf,
     sync::{
         Arc,
@@ -17,6 +17,7 @@ use std::{
     thread,
     time::Duration,
 };
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use zeroize::Zeroizing;
 pub(crate) type Failure = Box<dyn std::error::Error>;
 static NEXT: AtomicUsize = AtomicUsize::new(0);
@@ -100,12 +101,17 @@ impl Drop for Peer {
 }
 impl Setup {
     pub fn new() -> Result<Self, Failure> {
-        let directory = std::env::temp_dir().join(format!(
+        let base = std::env::temp_dir().canonicalize()?;
+        let directory = base.join(format!(
             "rest-consume-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
-        std::fs::DirBuilder::new().mode(0o700).create(&directory)?;
+        gnunet_native::filesystem::Directory::open(&base)?.create_private_directory(
+            directory
+                .file_name()
+                .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?,
+        )?;
         Ok(Self {
             directory,
             clock: Arc::new(SystemClock),
@@ -144,102 +150,133 @@ impl Setup {
         .with_consume_profile(profile))
     }
     pub fn peer(&self, identity: ZoneKey, replies: Vec<Reply>) -> io::Result<Peer> {
-        let listener = UnixListener::bind(self.directory.join("reclaim"))?;
-        listener.set_nonblocking(true)?;
+        let path = self.directory.join("reclaim");
+        let (bound, ready) = std::sync::mpsc::sync_channel(1);
         let stop = Arc::new(AtomicBool::new(false));
         let worker_stop = Arc::clone(&stop);
         let thread = thread::spawn(move || {
-            let end = std::time::Instant::now() + Duration::from_secs(5);
-            for reply in replies {
-                let mut stream = loop {
-                    if worker_stop.load(Ordering::Acquire) {
-                        return Err(io::Error::new(
-                            io::ErrorKind::Interrupted,
-                            "fixture peer stopped before its expected connection",
-                        ));
-                    }
-                    match listener.accept() {
-                        Ok((stream, _)) => break stream,
-                        Err(error)
-                            if error.kind() == io::ErrorKind::WouldBlock
-                                && std::time::Instant::now() < end =>
-                        {
-                            thread::sleep(Duration::from_millis(1))
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?
+                .block_on(async {
+                    let listener = match Listener::bind(&path) {
+                        Ok(listener) => {
+                            bound.send(Ok(())).map_err(io::Error::other)?;
+                            listener
                         }
-                        Err(error) => return Err(error),
-                    }
-                };
-                // The listener's bounded accept loop is nonblocking; this
-                // distinct worker uses bounded blocking stream IO explicitly.
-                stream.set_nonblocking(false)?;
-                stream.set_read_timeout(Some(Duration::from_secs(3)))?;
-                stream.set_write_timeout(Some(Duration::from_secs(3)))?;
-                let mut header = [0u8; 4];
-                stream.read_exact(&mut header)?;
-                let size = usize::from(u16::from_be_bytes([header[0], header[1]]));
-                if !(4..=65535).contains(&size) {
-                    return Err(io::Error::other("invalid fixture request size"));
-                }
-                let mut frame = Zeroizing::new(vec![0; size]);
-                frame[..4].copy_from_slice(&header);
-                stream.read_exact(&mut frame[4..])?;
-                let request = ipc::Request::decode(&frame).map_err(io::Error::other)?;
-                let ipc::Request::ConsumeTicket { ticket, .. } = request else {
-                    return Err(io::Error::other("expected actual consume request"));
-                };
-                if ticket.capability().map_err(io::Error::other)?.1 != identity {
-                    return Err(io::Error::other("fixture consume issuer mismatch"));
-                }
-                let rid = request.request_id();
-                match reply {
-                    Reply::Disconnect => continue,
-                    Reply::NoResponse => {}
-                    Reply::Status(result) | Reply::LargeAttribute(result) => {
-                        let mut attribute = Zeroizing::new(Vec::new());
-                        if matches!(reply, Reply::LargeAttribute(_)) {
-                            let mut value = [b'x'; 257];
-                            value[256] = 0;
-                            let item = gnunet_reclaim::Attribute::new(
-                                gnunet_reclaim::Identifier::new([1; 32]),
-                                gnunet_reclaim::Identifier::ZERO,
-                                gnunet_reclaim::AttributeType::STRING,
-                                gnunet_reclaim::Name::new(b"claim").map_err(io::Error::other)?,
-                                gnunet_reclaim::Sensitive::new(&value),
-                            );
-                            attribute.resize(item.encoded_len().map_err(io::Error::other)?, 0);
-                            item.encode(&mut attribute).map_err(io::Error::other)?;
-                        }
-                        let attributes =
-                            AttributeList::new(&attribute, gnunet_reclaim::ListLimits::IPC)
+                        Err(error) => {
+                            bound
+                                .send(Err(io::Error::new(error.kind(), "fixture bind failed")))
                                 .map_err(io::Error::other)?;
-                        let response = ipc::Response::Consumed {
-                            rid,
-                            result,
-                            reserved: 0,
-                            identity: Some(identity),
-                            attributes,
-                            presentations: PresentationList::empty(),
+                            return Err(error);
+                        }
+                    };
+                    let end = std::time::Instant::now() + Duration::from_secs(5);
+                    for reply in replies {
+                        let mut stream = loop {
+                            if worker_stop.load(Ordering::Acquire) {
+                                return Err(io::Error::new(
+                                    io::ErrorKind::Interrupted,
+                                    "fixture peer stopped before its expected connection",
+                                ));
+                            }
+                            match tokio::time::timeout(Duration::from_millis(1), listener.accept())
+                                .await
+                            {
+                                Ok(Ok((stream, _))) => break stream,
+                                Ok(Err(error)) => return Err(error),
+                                Err(_) if std::time::Instant::now() < end => {}
+                                Err(_) => return Err(io::ErrorKind::TimedOut.into()),
+                            }
                         };
-                        let mut bytes =
-                            Zeroizing::new(vec![
-                                0;
-                                response.encoded_len().map_err(io::Error::other)?
-                            ]);
-                        response.encode(&mut bytes).map_err(io::Error::other)?;
-                        stream.write_all(&bytes)?;
+                        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+                        tokio::time::timeout_at(deadline, async {
+                            let mut header = [0u8; 4];
+                            stream.read_exact(&mut header).await?;
+                            let size = usize::from(u16::from_be_bytes([header[0], header[1]]));
+                            if !(4..=65535).contains(&size) {
+                                return Err(io::Error::other("invalid fixture request size"));
+                            }
+                            let mut frame = Zeroizing::new(vec![0; size]);
+                            frame[..4].copy_from_slice(&header);
+                            stream.read_exact(&mut frame[4..]).await?;
+                            let request = ipc::Request::decode(&frame).map_err(io::Error::other)?;
+                            let ipc::Request::ConsumeTicket { ticket, .. } = request else {
+                                return Err(io::Error::other("expected actual consume request"));
+                            };
+                            if ticket.capability().map_err(io::Error::other)?.1 != identity {
+                                return Err(io::Error::other("fixture consume issuer mismatch"));
+                            }
+                            let rid = request.request_id();
+                            match reply {
+                                Reply::Disconnect => return Ok(()),
+                                Reply::NoResponse => {}
+                                Reply::Status(result) | Reply::LargeAttribute(result) => {
+                                    let mut attribute = Zeroizing::new(Vec::new());
+                                    if matches!(reply, Reply::LargeAttribute(_)) {
+                                        let mut value = [b'x'; 257];
+                                        value[256] = 0;
+                                        let item = gnunet_reclaim::Attribute::new(
+                                            gnunet_reclaim::Identifier::new([1; 32]),
+                                            gnunet_reclaim::Identifier::ZERO,
+                                            gnunet_reclaim::AttributeType::STRING,
+                                            gnunet_reclaim::Name::new(b"claim")
+                                                .map_err(io::Error::other)?,
+                                            gnunet_reclaim::Sensitive::new(&value),
+                                        );
+                                        attribute.resize(
+                                            item.encoded_len().map_err(io::Error::other)?,
+                                            0,
+                                        );
+                                        item.encode(&mut attribute).map_err(io::Error::other)?;
+                                    }
+                                    let attributes = AttributeList::new(
+                                        &attribute,
+                                        gnunet_reclaim::ListLimits::IPC,
+                                    )
+                                    .map_err(io::Error::other)?;
+                                    let response = ipc::Response::Consumed {
+                                        rid,
+                                        result,
+                                        reserved: 0,
+                                        identity: Some(identity),
+                                        attributes,
+                                        presentations: PresentationList::empty(),
+                                    };
+                                    let mut bytes =
+                                        Zeroizing::new(vec![
+                                            0;
+                                            response
+                                                .encoded_len()
+                                                .map_err(io::Error::other)?
+                                        ]);
+                                    response.encode(&mut bytes).map_err(io::Error::other)?;
+                                    stream.write_all(&bytes).await?;
+                                }
+                            }
+                            let mut eof = [0];
+                            if stream.read(&mut eof).await? != 0 {
+                                return Err(io::Error::other(
+                                    "consume source replayed after its result",
+                                ));
+                            }
+                            Ok::<_, io::Error>(())
+                        })
+                        .await
+                        .map_err(|_| io::ErrorKind::TimedOut)??;
                     }
-                }
-                let mut eof = [0];
-                if stream.read(&mut eof)? != 0 {
-                    return Err(io::Error::other("consume source replayed after its result"));
-                }
-            }
-            Ok(())
+                    Ok(())
+                })
         });
-        Ok(Peer {
+        let mut peer = Peer {
             stop,
             thread: Some(thread),
-        })
+        };
+        if let Err(error) = ready.recv().map_err(io::Error::other)? {
+            let _joined = peer.join();
+            return Err(error);
+        }
+        Ok(peer)
     }
 }
 impl Drop for Setup {

@@ -5,6 +5,8 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 [dependencies]
+gnunet-crypto.workspace = true
+gnunet-native.workspace = true
 libc.workspace = true
 nix = { workspace = true, features = ["signal", "process", "fs", "ioctl"] }
 socket2.workspace = true

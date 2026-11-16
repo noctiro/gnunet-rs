@@ -340,6 +340,7 @@ pub enum Completion {
     /// Actual whole local write or completed native operation.
     Written,
     /// Original operation provably never exposed its bytes/effect.
+    /// OpenChannel also requires release of any allocated native reservation.
     Unsent(Error),
     /// Actual operation ended with an independent cause and exposure fact.
     Lost {
@@ -372,8 +373,9 @@ pub struct CallReport<'id> {
     pub peer: Peer,
     /// First causal reason ending this call.
     pub reason: EndReason,
-    /// First actual Unsent/Lost/source cause, including a normal cancellation
-    /// classification; this is independent of the initiating end reason.
+    /// First actual setup, failed Unsent/Lost or source failure, independent
+    /// of the initiating end reason. Expected cancellation of an unwritten
+    /// effect and closing an already retired channel create no failure.
     pub failure: Option<Error>,
     /// Actual whole PeerRing740 write was observed.
     pub ring_written: bool,

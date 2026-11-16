@@ -1,3 +1,14 @@
 # gnunet-dns-redirector
 
-thin PROGRAM executable over `gnunet-dns-tools-host`; see [shared utility behavior](../../adapters/dns-tools-std/README.md) for official options, finite lifecycle and explicit source/write boundaries. Standard `-c CONFIG` or `--socket PATH` selects the DNS SERVICE. No service/helper/network setup or C wrapper is embedded.
+Replace answer-section A/AAAA addresses received from the DNS interception
+service. The native PROGRAM entry shares configuration and lifecycle handling.
+
+## Usage
+
+```sh
+gnunet-dns-redirector -c node.conf --ipv4 192.0.2.10
+```
+
+See [DNS tools](../../adapters/dns-tools-std/README.md) for options, exact packet
+preservation, endpoint selection and resource limits. A DNS interception service
+must already be running.

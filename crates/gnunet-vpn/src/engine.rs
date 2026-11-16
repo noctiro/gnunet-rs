@@ -2,6 +2,7 @@
 mod effects;
 mod forward;
 mod leases;
+mod tun_recovery;
 use crate::*;
 use core::ptr;
 use gnunet_types::{AbsoluteTime, Error, MonoInstant};
@@ -333,7 +334,7 @@ impl<'id, 'store, 'bytes> Engine<'id, 'store, 'bytes> {
         if t.routing_action == RouteAction::Install && t.routes.is_borrowed() {
             return Err(Error::PermissionDenied);
         }
-        if w.queued || w.revoked || (t.dead && t.routing_action == RouteAction::Install) {
+        if w.queued || w.revoked || (t.dead && t.routing_action != RouteAction::Remove) {
             return Err(Error::Closed);
         }
         Ok(())
@@ -477,7 +478,7 @@ impl<'id, 'store, 'bytes> Engine<'id, 'store, 'bytes> {
         {
             t.routes = RouteState::Unknown;
         }
-        if t.routing_action == RouteAction::Install
+        if t.routing_action != RouteAction::Remove
             && let Some(w) = t.routing.as_mut()
         {
             w.revoked = true;

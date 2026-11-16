@@ -1,8 +1,8 @@
 //! Actual finite GNUnet NAT-auto reachability test caller. A matched public
 //! two-byte challenge is an unauthenticated network-path observation, not peer
 //! identity or a cryptographic proof. No test-server ACK/cancel message exists.
-#![cfg(unix)]
 #![forbid(unsafe_code)]
+mod sockets;
 use gnunet_client_host::channel::{Channel, ConnectionStep};
 pub use gnunet_client_host::{EndpointSource, LiveConfiguration, resolution};
 /// Actual native-client PROGRAM command-line implementations.
@@ -304,11 +304,11 @@ impl<'id> Test<'id> {
         let (tcp, udp, port) = if request.transport == Transport::Tcp
             || matches!(request.transport, Transport::Reversal { protocol: 6 })
         {
-            let listener = gate.run(TcpListener::bind(local)).await?;
+            let listener = gate.run(async { sockets::tcp(local) }).await?;
             let port = listener.local_addr()?.port();
             (Some(listener), None, port)
         } else {
-            let socket = gate.run(UdpSocket::bind(local)).await?;
+            let socket = gate.run(async { sockets::udp(local) }).await?;
             let port = socket.local_addr()?.port();
             (None, Some(socket), port)
         };
@@ -878,12 +878,7 @@ impl<'id> Test<'id> {
         let result = self.poll_inner(cx, until);
         match result {
             Poll::Ready(Err(error)) => {
-                let deadline = error.downcast_ref::<Fault>() == Some(&Fault::Deadline)
-                    || error
-                        .downcast_ref::<gnunet_nat_host::Error>()
-                        .is_some_and(|e| {
-                            matches!(e, gnunet_nat_host::Error::Protocol(Fault::Deadline))
-                        });
+                let deadline = gnunet_nat_host::deadline::is_expired(error.as_ref());
                 let outcome = if deadline {
                     Outcome::Timeout
                 } else {

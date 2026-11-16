@@ -1,34 +1,84 @@
-# GNUnet NAT test caller and command-line API (N4)
+# GNUnet NAT tests and commands
 
-caller-polled production implementation over gnunet-nat-client-host, the shared generic CLIENT/framing/Resolver/clock, and N2/N3 NAT network ports.
+`gnunet-nat-test-host` provides caller-driven reachability tests and the shared
+implementation of `gnunet-nat` and `gnunet-nat-auto` on Linux, macOS, FreeBSD and
+Windows. It uses the official NAT registration, autoconfiguration and test
+messages through the shared CLIENT and Resolver adapters.
 
-## finite test caller
+## Test interface
 
-`Test::start(instance, Sources, Request, Limits)` binds a TCP listener/UDP socket before registering that local endpoint. `Test::from_configuration` reads the official adapter section PORT/protocol and freezes NAT +gnunet-nat-server endpoints coherently. Constructors establish owners and socket binding; they do not claim reachability. The caller drives the existing shared Resolver broker and `Test::poll`/`drive`.
+`Test::start(instance, sources, request, limits)` binds the challenge listener
+before registering its endpoint. `Test::from_configuration` reads the selected
+section's `PORT` and protocol and freezes the NAT and test-server endpoints
+together. Drive `Test::poll` or `drive` and the process Resolver in an I/O-enabled
+Tokio runtime. Construction alone does not establish reachability.
 
-Each IPv4 address-add callback opens a dedicated original test-server MQ, encodes the official16-byte NAT_TEST and tracks partial/whole write bytes. There is no RID, ACK, cancellation frame or mutation replay. A zero service-advertised port in normal TCP/UDP testing uses the bound local port as the attempted target, without claiming this is an observed mapped port. IPv6 address hints remain valid in Registration but are not converted to an invented IPv6 test frame: the active official test wire is IPv4-only.
+Every IPv4 address callback gets a dedicated test-server connection and the
+official 16-byte `NAT_TEST` request. The active test format is IPv4-only; IPv6
+registration hints remain valid without creating an alternative test message.
+An advertised zero port in an ordinary TCP/UDP test uses the bound local port
+as the attempted target, without claiming that it is an observed mapping.
 
-Every original address allocation/epoch gets a different public two-byte challenge, with bounded non-reused tombstones for removed addresses. A success observation requires the dedicated request's full local write, the original UDP/TCP listener or NAT reversal callback, exact challenge match, the same live registration epoch and still-current AddressId. A late old-address callback cannot be relabeled as a new target. TCP preserves partial two-byte reads and per-accepted-stream original native deadlines; oversized UDP challenge payloads are rejected by the3-byte receive sentinel. Source, target, stream, datagram-work and deadline bounds are explicit. No local send, EOF, timeout, allocation success or address hint creates a received observation.
+A received result requires a complete local request write, a matching two-byte
+challenge, the original live registration epoch and address allocation, and
+input from the original listener or reversal callback. TCP retains partial
+reads; UDP rejects oversized challenge payloads. Removed addresses retain bounded
+challenge tombstones. The challenge and ICMP reversal are unauthenticated:
+`Observation` describes a network-path observation, never a peer identity.
 
-The two-byte challenge and ICMP reversal are unauthenticated. `Observation` is sealed metadata of an matched network-path observation, not a peer identity or cryptographic proof. Outcomes distinguish Received/Timeout/Cancelled/failure. Terminal address/callback and per-target byte-exposure owners are transferred; terminal metadata is pre-reserved before native work rather than allocated after physical close. Explicit cancel/drop physically stops original MQs/listeners/streams and never pretends to undo an already-admitted remote test action.
+`Outcome` distinguishes received, timeout, cancellation and failure. Canonical
+clock failure remains a failure even when its cause is `Deadline`. Original
+canonical and monotonic deadlines never renew. Dropping a borrowed drive future
+retains partial progress; cancellation or dropping the owner closes its original
+connections, streams and listeners without retracting remote effects.
 
-For official PORT0 reversal testing, Rust owns a ephemeral binding of the requested TCP/UDP protocol and registers its wildcard endpoint. Reversal-mode success only consumes the NAT callback; an unrelated TCP/UDP listener response cannot be relabeled as ICMP traversal. The pinned C test registers no bindings (so its service does not consider it NATed) and leaves its challenge zero (its raw helper rejects port0). Rust sends the unchanged official dport0 test format with a valid nonzero per-target challenge/advertised port, then consumes the original reverse callback. No private malformed fallback or fake binding is used. A corrected Rust service and ordinary official NAT service can recognize the natted registration flags; this does not force a defective official helper/daemon to succeed.
+## Reversal tests
 
-All original absolute and native targets remain fixed. Native hard/input/target alarms and physical expiration run before canonical clock stabilization; normal clock rollback never refreshes old work. Incoming data cannot bind to a target lacking an whole request write. Source loss retires old address/callback authority. Dropping a borrowed waiting future retains original partial cursors; it does not create a new epoch.
+For `PORT = 0`, the caller binds an ephemeral TCP/UDP endpoint and registers its
+wildcard address. Only the original NAT reversal callback can complete this test;
+ordinary challenge traffic cannot become an ICMP traversal result.
 
-## commands
+The selected official C test leaves its challenge at zero and registers no
+bindings, which conflicts with its helper's nonzero-port requirement and NATed
+registration policy. Rust sends the unchanged official reversal format with a
+nonzero challenge and an actual binding. It does not emulate these C defects or
+fall back to a private message.
 
-`gnunet-nat` uses standard --in/-i, --remote/-r, --section/-S, --stun/-s, --tcp/-t, --udp/-u and --watch/-W plus shared PROGRAM defaults. It uses the native Registration, never another registration MQ implementation. STUN binds a supplied UDP endpoint, uses original transactions on that same socket, receives whole datagrams in a bounded65536-byte owner, and forwards only matching current-epoch responses. Original reversal intent is one-shot, retains its initial deadline across reconnect, and is not replayed. Every queued higher-level write also retains its original independent native bound; expiration removes only unexposed writes or physically closes an exposed original MQ, using the native client's cancellation receipt. Ongoing monitoring explicitly creates fresh finite registration leases; old app-context/address owners and one-shot writes are not rebound. A clock/process-port refusal stops the owner instead of silently replacing the clock or recovering a refused port.
+## Commands and configuration
 
-`gnunet-nat-auto` uses standard --auto/-a, --section/-S, --tcp/-t, --udp/-u and --write/-w plus shared PROGRAM defaults. It executes AutoQuery and/or the test caller. It preserves raw status/type (including type0); proposals are not connectivity evidence. Only a successful config response can be applied, and only proposed NAT section values are published when --write was requested. It uses the shared configuration write_diffs port and selected original filename; no file publication/daemon activation is claimed before that call succeeds. The test uses the original running service/config snapshot; writing a proposal does not secretly reconfigure a running daemon.
+The optional `program` feature supplies `cli::scheduled` with one PROGRAM task,
+canonical clock, explicitly driven Resolver, selected Logger and original native
+stop source. Entries capture `ClientStartup` before other native resources.
+Action owners are dropped before Resolver disconnect; cancellation, scheduling,
+disconnect and diagnostic failures remain independently reportable.
 
-Both commands share one PROGRAM task, canonical clock and explicitly driven official Resolver broker. Original action sockets/providers are dropped before Resolver cleanup, and independent errors remain visible. Signal cancellation is local, no fake GNUNET success status. PROGRAM's GNUNET_OK1 is separate from process exit0. TCP and UDP are mutually exclusive. An absent action or unexpected closure without an result is an error rather than a no-op success.
+- `gnunet-nat` accepts `--in/-i`, `--remote/-r`, `--section/-S`, `--stun/-s`,
+  `--tcp/-t`, `--udp/-u` and `--watch/-W`. STUN uses the same bound UDP socket and
+  forwards only matching current-epoch responses. Reversal intent is one-shot;
+  reconnect does not replay it. Monitoring uses explicit fresh registration
+  leases and preserves every queued write's original bounds.
+- `gnunet-nat-auto` accepts `--auto/-a`, `--section/-S`, `--tcp/-t`, `--udp/-u`
+  and `--write/-w`. It prints actual status/type and proposed configuration.
+  `--write` publishes only a successful proposal's NAT values through the shared
+  configuration writer. A proposal does not establish connectivity or reconfigure
+  a running service.
 
-## Interfaces and limits
+Both commands accept shared PROGRAM options. TCP and UDP are mutually exclusive.
+Missing actions and unexpected completion are errors. Process exit zero and the
+PROGRAM result are distinct. See the [command](../../apps/gnunet-nat/README.md)
+and [autoconfiguration](../../apps/gnunet-nat-auto/README.md) examples.
 
-The SDK exports `clients::nat_test` separately from `clients::nat`, which
-provides registration and automatic-configuration queries.
+`[nat-rust]` keys `TEST_TIMEOUT`, `SEND_TIMEOUT`, `SESSION_LIFETIME` and
+`STUN_REQUEST_TIMEOUT` bound work; durations must be finite and nonzero.
+`[nat] STUN_SERVERS` and `STUN_FREQUENCY` select STUN endpoints and refresh timing.
+Native sockets use exclusive binding and suppress UDP connection-reset receives
+on Windows. Unix TCP listeners enable address reuse for restart.
 
-The public util burst API is supplied separately by gnunet-nat-burst-host. Current production helper entry points include Linux, Darwin and modern FreeBSD, and the shared IGD transport supports HTTP and verified HTTPS. Other helper targets remain explicit capability refusals. These existing source paths supersede the earlier N3 Linux-only/HTTPS limitations; no complete official-C interoperability, packet checksum/crypto runtime or system integration acceptance is claimed here.
+## Related interfaces
 
-No Cargo/compiler/model/test/native/socket/network/helper/process/permission/route/storage/configuration-write/entropy/cryptography/key execution. No existing or newly generated private key was read or hashed; no stopped GNS/DHT/UDP owner or directory was accessed.
+The SDK exports `clients::nat_test` separately from registration and query API
+`clients::nat`. Primitive test/client builds do not require IGD providers or HTTP.
+Full services select the [NAT provider feature](../nat-std/README.md).
+The independent [burst utility](../nat-burst-std/README.md) supplies port scanning.
+Runtime and interoperability qualification is tracked in the central
+[implementation status](../../IMPLEMENTATION_STATUS.md).

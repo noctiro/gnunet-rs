@@ -1,14 +1,8 @@
 //! Standard DNS2GNS PROGRAM through the actual bounded gateway owner.
 #![deny(unsafe_code)]
-#[cfg(unix)]
 mod control;
-#[cfg(unix)]
-mod early;
-#[cfg(unix)]
 mod options;
-#[cfg(unix)]
 mod run;
-#[cfg(unix)]
 mod settings;
 use std::{
     error::Error,
@@ -16,20 +10,17 @@ use std::{
     process::ExitCode,
 };
 type Cause = Box<dyn Error>;
-#[cfg(unix)]
 #[derive(Debug)]
 struct SelectedFailure {
     code: u8,
     original: Option<Cause>,
     logging: Option<io::Error>,
 }
-#[cfg(unix)]
 impl std::fmt::Display for SelectedFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "DNS2GNS PROGRAM: {self:?}")
     }
 }
-#[cfg(unix)]
 impl Error for SelectedFailure {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         self.original
@@ -37,10 +28,8 @@ impl Error for SelectedFailure {
             .or_else(|| self.logging.as_ref().map(|error| error as _))
     }
 }
-#[cfg(unix)]
 #[derive(Debug)]
 struct PreparationFailure(gnunet_program_host::program::Stopped);
-#[cfg(unix)]
 impl std::fmt::Display for PreparationFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
@@ -50,7 +39,6 @@ impl std::fmt::Display for PreparationFailure {
         )
     }
 }
-#[cfg(unix)]
 impl Error for PreparationFailure {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         use gnunet_program_host::program::StoppedReason;
@@ -61,11 +49,18 @@ impl Error for PreparationFailure {
         }
     }
 }
+#[expect(
+    unsafe_code,
+    reason = "First fresh-process capture before competing native owners"
+)]
 fn main() -> ExitCode {
-    match execute() {
+    // SAFETY: first and only capture in this fresh single-threaded executable.
+    let result = unsafe { gnunet_service_startup::ClientStartup::capture() }
+        .map_err(|error| Box::new(error) as Cause)
+        .and_then(execute);
+    match result {
         Ok(code) => ExitCode::from(code),
         Err(error) => {
-            #[cfg(unix)]
             if let Some(selected) = error.downcast_ref::<SelectedFailure>() {
                 return ExitCode::from(selected.code);
             }
@@ -74,12 +69,7 @@ fn main() -> ExitCode {
         }
     }
 }
-#[cfg(not(unix))]
-fn execute() -> Result<u8, Cause> {
-    Err("native DNS2GNS PROGRAM requires Unix".into())
-}
-#[cfg(unix)]
-fn execute() -> Result<u8, Cause> {
+fn execute(startup: gnunet_service_startup::ClientStartup) -> Result<u8, Cause> {
     use gnunet_program_host::{
         foreground,
         logging::Logger,
@@ -88,7 +78,6 @@ fn execute() -> Result<u8, Cause> {
         shared_clock::SharedClock,
     };
     use std::{cell::Cell, rc::Rc, sync::Arc};
-    let early = early::capture()?;
     let clock = SharedClock::native(4096)?;
     let config = gnunet_config::Configuration::create(
         Arc::new(gnunet_config::ProjectData::default()),
@@ -102,7 +91,8 @@ fn execute() -> Result<u8, Cause> {
         select_default_filename:true,defaults:Defaults::Native,
     },selection.options(),std::env::args_os(),&program::Environment::capture(),&mut NlsDisabled,&mut logger,&clock,&mut io::stdout().lock(),&mut io::stderr().lock());
     let reporter = Reporter::new(logger, clock.clone());
-    if let Some(notice) = early.notice {
+    #[cfg(unix)]
+    if let Some(notice) = startup.notice {
         reporter.debug(
             "dns2gns.parent.notice",
             format_args!("parent-control: {notice:?}"),
@@ -123,6 +113,8 @@ fn execute() -> Result<u8, Cause> {
         };
         let upstream = selection.finish(prepared.main().arguments)?;
         let settings = settings::Settings::read(prepared.main().config, upstream)?;
+        #[cfg(windows)]
+        gnunet_service_startup::verify_configured_identity(prepared.main().config, b"dns2gns")?;
         let configuration = prepared.main().config.duplicate()?;
         Ok(Some((prepared, settings, configuration)))
     })();
@@ -160,7 +152,7 @@ fn execute() -> Result<u8, Cause> {
                         source,
                         reporter: reporter.clone(),
                         stop: stop.clone(),
-                        parent: early.parent,
+                        parent: startup.parent,
                     });
                     foreground::run(prepared, &mut context, clock.clone(), stop, product)
                         .await

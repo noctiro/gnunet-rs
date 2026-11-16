@@ -7,12 +7,20 @@ license.workspace = true
 
 [dependencies]
 gnunet-config.workspace = true
+gnunet-native.workspace = true
 gnunet-program-host = { workspace = true, features = ["service-runtime"] }
 gnunet-service-runtime.workspace = true
 gnunet-service-startup.workspace = true
 gnunet-types.workspace = true
-nix = { workspace = true, features = ["signal", "process"] }
 tokio = { workspace = true, features = ["rt", "time", "signal"] }
+
+[target.'cfg(unix)'.dependencies]
+nix = { workspace = true, features = ["signal", "process"] }
 
 [lints]
 workspace = true
+
+[[test]]
+name = "dispatch"
+path = "tests/dispatch.rs"
+harness = false

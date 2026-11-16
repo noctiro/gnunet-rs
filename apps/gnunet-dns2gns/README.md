@@ -1,13 +1,67 @@
 # DNS2GNS PROGRAM
 
-`gnunet-dns2gns -d IP` runs the bounded DNS2GNS gateway. `-d/--dns` is the required numeric recursive DNS upstream, using port 53; it is not a SERVICE daemon option. The shared PROGRAM handles `-c`, `-L`, `-l`, `-h` and `-v` with the selected configuration and Reporter. No private protocol, implicit Resolver, packet converter or routing copy is added by this front end.
+`gnunet-dns2gns` runs the bounded DNS2GNS UDP gateway on Linux, macOS,
+FreeBSD and Windows. The [gateway host](../../adapters/dns2gns-std/README.md)
+owns GNS routing, ordinary DNS forwarding and VPN allocation.
 
-Both `[DNS2GNS] BIND_TO` and `BIND_TO6` must be present and parse as IPv4 and IPv6 respectively. They do not accept a disable placeholder. Missing `PORT` falls back to 53, while an explicit port must fit `u16`; port zero is retained as an ephemeral bind request. The normal installed gns.conf supplies loopback addresses and PORT 15353, separately from that fallback, with OPTIONS `-d9.9.9.9` for its launcher. Manual invocations still require `-d`; this command does not silently reinterpret the launcher's OPTIONS. The gateway tries both UDP binds. Either may run; every failed original bind and every assigned local address remains in its report. Logging a bound address does not claim that GNS, VPN or an upstream DNS server has processed a request.
+## Configuration and invocation
 
-One SharedClock Arc and one shared Resolver context supply the GNS, IDENTITY and VPN EndpointSources. With-TLD routing, NotGns-only DNS forwarding, packet/response association and VPN allocation are owned by the host adapter. Its default profile retains at most 64 requests, a fixed 60-second original query lifetime, and a 30-minute requested VPN lease; request progress does not renew the original hard. Temporary IDNA scratch stays inside the original request and is released before asynchronous waiting. The PROGRAM clock subscription ceiling is 4096 and the shared Resolver remains bounded to its declared 16 request slots and 64 name slots.
+```sh
+gnunet-dns2gns -c gateway.conf -d 127.0.0.1
+```
 
-Native guards run before canonical waits and normal provider effects. Runtime and Resolver classes rotate, and any emitted event returns through the permanent Reporter gate. Diagnostics contain addresses, counts and static original causes, never DNS packet/name/body data. The gateway's first failed request remains in its report; the app retains at most four additional request reports with diagnostic facts and counts further omitted reports. These are observations rather than reusable tokens or service ACKs. Per-request failures do not shut down a healthy listener.
+`-d/--dns` is the required numeric recursive DNS upstream, using port 53.
+The example requires a recursive DNS server on localhost. Standard PROGRAM
+options `-c`, `-L`, `-l`, `-h` and `-v` select configuration, diagnostics,
+help and version.
 
-Ctrl-C, TERM, parent control, scheduler cancellation and fatal errors reach the same gateway's `begin_close` and `poll_close`. One five-second native observation window is captured for that original close; it is never renewed. Logger or fatal source failure blocks new normal Resolver polling, while original clock-free cleanup continues. Finally the app consumes the gateway report, disconnects and physically releases the same Resolver, and retains independent body, signal, gateway-close, Resolver and Logger errors, including Logger-only failures. A deadline or consuming report does not claim a worker join, a completed remote DNS exchange or revocation of a previously allocated VPN lease. No worker, hidden reader, spawned request task or new Resolver is created by the app.
+```ini
+[DNS2GNS]
+BIND_TO = 127.0.0.1
+BIND_TO6 = ::1
+PORT = 15353
+```
 
-Source contract: fixed GNUnet v0.29.1 commit `346358e26d4dcc2dc4f51bef5d52dca29c7d8165`, ordinary `src/service/gns/gnunet-dns2gns.c` run 824–975 and options/main 990–1017. Rust keeps the typed errors rather than copying the C run function's silent setup exits.
+Both listener addresses are required and numeric. Each family binds independently;
+either may run, and each original bind error remains available. Missing `PORT`
+falls back to 53; explicit zero requests an ephemeral port. Installed `gns.conf`
+selects port 15353 separately. Its launcher `OPTIONS` do not replace the manual
+command's required upstream argument. GNS, IDENTITY and VPN IPC endpoints use the
+shared GNUnet configuration.
+
+## Native startup and shutdown
+
+The executable captures original process inheritance before other native owners,
+refuses inherited service listeners, and uses the shared native termination and
+parent-control subscriptions. Windows checks a configured `USERNAME` against the
+primary process-token SID before starting the gateway. An already observed stop
+prevents listener creation.
+
+Ctrl-C, native termination, parent control, scheduler cancellation and fatal
+errors stop the same gateway and Resolver owners. The first close fixes a
+five-second native observation bound. Remaining work is reported as unresolved;
+that bound does not prove remote DNS completion or revoke an allocated VPN lease.
+Selected logging and original signal, gateway, Resolver and cleanup errors remain
+independent. Native standard-stream calls retain OS blocking semantics.
+
+## Resource and routing constraints
+
+One SharedClock and Resolver context supply all CLIENT selectors. Defaults retain
+64 requests, a fixed 60-second query lifetime and a requested 30-minute VPN lease.
+Resolver capacity is 16 request slots and 64 name slots; the process clock permits
+4096 subscriptions. Progress does not renew original deadlines. Temporary IDNA
+scratch is released before asynchronous waiting.
+
+Only a `NotGns` result permits ordinary DNS forwarding. Per-request errors leave
+healthy listeners running. Isolated native UDP errors retain their listener and
+bounded diagnostics; Windows disables ICMP-induced connection resets before bind.
+Diagnostics contain metadata and causes, without DNS names or packet bodies.
+The process retains four additional diagnostic request reports and counts omitted
+reports without retaining an unbounded history.
+
+## Source contract
+
+The ordinary command profile follows GNUnet v0.29.1
+`346358e26d4dcc2dc4f51bef5d52dca29c7d8165`,
+`src/service/gns/gnunet-dns2gns.c`. Protocol qualification follows the shared
+[compatibility contract](../../spec/gnunet/compatibility.md).

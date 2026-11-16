@@ -4,69 +4,48 @@ use crate::{
 };
 use gnunet_fs::directory::{self, Parser, Segment, Status};
 use gnunet_fs_codec::Inflate;
+use gnunet_native::filesystem::{EntryInfo, FileInfo, file_info};
+mod native;
 use std::{
     fmt,
-    fs::{self, File, Metadata, OpenOptions},
+    fs::File,
     io::{self, Read, Write},
-    os::unix::fs::{MetadataExt, OpenOptionsExt},
     path::{Path, PathBuf},
 };
 
-#[derive(Clone, Copy, Eq, PartialEq)]
-struct Snapshot {
-    device: u64,
-    inode: u64,
-    len: u64,
-    mode: u32,
-    mtime: (i64, i64),
-    ctime: (i64, i64),
-}
-impl Snapshot {
-    fn new(m: &Metadata) -> Self {
-        Self {
-            device: m.dev(),
-            inode: m.ino(),
-            len: m.len(),
-            mode: m.mode(),
-            mtime: (m.mtime(), m.mtime_nsec()),
-            ctime: (m.ctime(), m.ctime_nsec()),
-        }
+fn observe(file: &File) -> io::Result<FileInfo> {
+    match file_info(file)? {
+        EntryInfo::File(info) => Ok(info),
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "regular directory input required",
+        )),
     }
 }
 struct Input {
     file: File,
     path: PathBuf,
-    original: Snapshot,
+    original: FileInfo,
     read: u64,
 }
 impl Input {
     fn open(path: &Path) -> Result<Self, Failure> {
         // Normal public-file symlinks may be followed. The resulting original
         // regular inode/path snapshot is then checked throughout this read.
-        let file = OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC)
-            .open(path)?;
-        let held = file.metadata()?;
-        let named = fs::metadata(path)?;
-        if !held.is_file() || !named.is_file() || Snapshot::new(&held) != Snapshot::new(&named) {
+        let file = native::open(path)?;
+        let held = observe(&file)?;
+        if held != native::named(path)? {
             return Err("directory input is not the original regular file".into());
         }
         Ok(Self {
             file,
             path: path.to_owned(),
-            original: Snapshot::new(&held),
+            original: held,
             read: 0,
         })
     }
     fn verify(&self) -> Result<(), Failure> {
-        let held = self.file.metadata()?;
-        let named = fs::metadata(&self.path)?;
-        if !held.is_file()
-            || !named.is_file()
-            || Snapshot::new(&held) != self.original
-            || Snapshot::new(&named) != self.original
-        {
+        if observe(&self.file)? != self.original || native::named(&self.path)? != self.original {
             return Err("original directory input changed during inspection".into());
         }
         Ok(())
@@ -82,7 +61,7 @@ impl Input {
         guard.check().await?;
         let remaining = self
             .original
-            .len
+            .bytes
             .checked_sub(self.read)
             .ok_or("directory input extent overflow")?;
         if remaining == 0 {
@@ -114,7 +93,7 @@ impl Input {
     }
     async fn finish(&mut self, guard: &mut Guard, facts: &mut Facts) -> Result<(), Failure> {
         guard.check().await?;
-        if self.read != self.original.len {
+        if self.read != self.original.bytes {
             return Err("parser completed without reading the original extent".into());
         }
         self.verify()?;
@@ -181,7 +160,7 @@ pub(super) async fn inspect(
     // A complete record cannot exceed this original file's whole extent.
     // Keep at least the header, cap at the selected record policy, and reuse
     // any longer arena from a previous file without shrinking or resetting it.
-    let extent = usize::try_from(input.original.len).unwrap_or(usize::MAX);
+    let extent = usize::try_from(input.original.bytes).unwrap_or(usize::MAX);
     let required = limits.max_record_bytes.min(extent.max(12));
     if carry.len() < required {
         let additional = required - carry.len();
@@ -203,7 +182,7 @@ pub(super) async fn inspect(
                     Segment {
                         base: parser.offset(),
                         bytes: &block[at..length],
-                        final_extent: Some(input.original.len)
+                        final_extent: Some(input.original.bytes)
                     },
                     plain,
                     &mut inflater
@@ -244,7 +223,7 @@ pub(super) async fn inspect(
                     Status::NeedRecord { required } => return Err(format!("directory record requires {required} bytes beyond the selected carry resource profile").into()),
                     Status::Partial(summary) => return Err(format!("directory is partial: extent={} entries={} root={} recovered={}", summary.end, summary.entries, summary.root_seen, summary.recovered).into()),
                     Status::Complete(summary) => {
-                        if at != length || summary.end != input.original.len {
+                        if at != length || summary.end != input.original.bytes {
                             return Err("directory completion did not consume the original file extent".into());
                         }
                         input.finish(guard, facts).await?;

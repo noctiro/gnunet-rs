@@ -4,9 +4,10 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-[target.'cfg(unix)'.dependencies]
+[dependencies]
 gnunet-nse-client-host = { workspace = true, features = ["program"] }
 gnunet-config.workspace = true
+gnunet-service-startup.workspace = true
 gnunet-program-host = { workspace = true, features = ["runtime", "resolver-broker"] }
 tokio = { workspace = true, features = ["rt", "time", "net", "signal"] }
 [lints]
@@ -15,3 +16,7 @@ workspace = true
 [[bin]]
 name = "gnunet-nse"
 path = "src/main.rs"
+
+[dev-dependencies]
+gnunet-native.workspace = true
+gnunet-wire.workspace = true

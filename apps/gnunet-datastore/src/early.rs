@@ -1,40 +1,11 @@
-//! Sole initial parent-declared descriptor transfer; this PROGRAM owns no listener.
+//! First-operation capture for a client with no listening-service role.
 use crate::Failure;
-use gnunet_service_startup::{InheritedMode, InheritedResources, ParentControl};
-pub(super) struct Inherited {
-    pub parent: Option<ParentControl>,
-    pub notice: Option<String>,
-}
+pub(super) use gnunet_service_startup::ClientStartup as Inherited;
 #[expect(
     unsafe_code,
-    reason = "Sole single-threaded capture of explicitly inherited descriptors before any unrelated native owner or concurrent descriptor reuse"
+    reason = "Sole fresh-process inheritance capture before any competing native owner"
 )]
 pub(super) fn capture() -> Result<Inherited, Failure> {
-    // SAFETY: first operation in run, before logging/config/runtime/resources,
-    // no concurrent environment mutation or second descriptor capture exists.
-    let captured = unsafe {
-        gnunet_service_startup::capture_from_environment(InheritedMode::CloseAfterConfiguredBind)?
-    };
-    let notice = captured
-        .control_notice
-        .map(|notice| format!("parent control declaration: {notice:?}"));
-    match captured.inherited {
-        InheritedResources::CloseAfterBind(hold) => {
-            let nonempty = !hold.is_empty();
-            let report = hold.abort();
-            if nonempty {
-                return Err(format!(
-                    "DATASTORE CLI has no service listener/readiness descriptor: {report:?}"
-                )
-                .into());
-            }
-        }
-        InheritedResources::Listeners(_) => {
-            return Err("unexpected DATASTORE CLI descriptor mode".into());
-        }
-    }
-    Ok(Inherited {
-        parent: captured.parent_control,
-        notice,
-    })
+    // SAFETY: first action in run, before configuration, logging, runtime or threads.
+    Ok(unsafe { Inherited::capture() }?)
 }

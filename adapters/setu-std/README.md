@@ -4,6 +4,8 @@ Drives the `gnunet-setu` service over shared application IPC and one CADET
 client MQ. See the [service guide](../../apps/gnunet-service-setu/README.md)
 for configuration and process lifecycle.
 
+## Public interface
+
 `Server::new(core, cadet, limits, options, unix)` owns one pure service, one real
 CADET client and fixed native metadata slots. The foreground owns the CADET
 Instance/PortSlot/ChannelSlot vectors outside the server, avoiding self references

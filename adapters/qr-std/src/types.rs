@@ -9,14 +9,12 @@ pub enum Error {
     Protocol(Fault),
     /// Actual native provider return value.
     Provider(ProviderFailure),
-    /// Original loader diagnostic, bounded and escaped when displayed.
+    /// Original loader error, including bounded native diagnostic storage.
     Loader {
         /// Actual failing operation.
         operation: &'static str,
-        /// Original diagnostic bytes rendered safely.
-        detail: String,
-        /// Original diagnostic exceeded the copied limit.
-        truncated: bool,
+        /// Exact original native error and its diagnostic source.
+        source: io::Error,
     },
     /// Original camera preparation failure and independent native retirement.
     Acquisition {
@@ -44,11 +42,7 @@ impl fmt::Display for Error {
             Self::Io(e) => e.fmt(f),
             Self::Protocol(e) => e.fmt(f),
             Self::Provider(e) => e.fmt(f),
-            Self::Loader {
-                operation,
-                detail,
-                truncated,
-            } => write!(f, "{operation}: {detail:?}; truncated={truncated}"),
+            Self::Loader { operation, source } => write!(f, "{operation}: {source}"),
             Self::Acquisition { original, cleanup } => {
                 write!(f, "{original}; independent camera close={cleanup:?}")
             }
@@ -62,8 +56,9 @@ impl std::error::Error for Error {
             Self::Io(e) => Some(e),
             Self::Protocol(e) => Some(e),
             Self::Provider(e) => Some(e),
+            Self::Loader { source, .. } => Some(source),
             Self::Acquisition { original, .. } => Some(original.as_ref()),
-            _ => None,
+            Self::NoSymbol => None,
         }
     }
 }
@@ -193,4 +188,14 @@ impl Limits {
         }
         Ok(pixels)
     }
+}
+
+/// Explicit provider locations. Windows requires the selected DLL paths; Unix
+/// None selects the standard basename search through the trusted loader context.
+#[derive(Clone, Debug, Default)]
+pub struct LibraryPaths {
+    /// Libpng1.6 provider, required only for PNG input.
+    pub png: Option<std::path::PathBuf>,
+    /// ZBar provider for image scanning or camera processing.
+    pub zbar: Option<std::path::PathBuf>,
 }

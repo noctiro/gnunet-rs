@@ -60,14 +60,19 @@ impl<'id> RoomRow<'id> {
         {
             return Ok(());
         }
-        let (parents, hash) = (n.parents, n.hash);
+        let (parents, hash, epoch) = (n.parents, n.hash, n.epoch);
         self.frontier
             .retain(|h| *h != parents[0] && *h != parents[1] && *h != hash);
         if self.frontier.len() == self.frontier.capacity() {
             return Err(Fault::Capacity.into());
         }
         self.frontier.push(hash);
-        self.last_message = self.frontier[0];
+        // The outgoing predecessor and its carried epoch are one observation.
+        // The first surviving frontier may be an older concurrent branch with
+        // a different epoch; combining that predecessor with the latest key
+        // snapshot produces valid signatures for undecryptable messages.
+        self.last_message = hash;
+        self.current_epoch = epoch;
         Ok(())
     }
     /// Actual graph complete observation or bounded operation.

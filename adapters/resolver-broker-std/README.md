@@ -1,61 +1,69 @@
 # Shared Resolver broker
 
-This package implements one caller-owned process Resolver domain. It
-uses official type4/type5 messages and contains no production GNUnet FFI or
-system-DNS fallback. `Context` clones share one queue, IDs, backoff, selected
-configuration and MQ; one `Driver` owns I/O. PROGRAM supplies an explicit
-clock and selects configuration before main. A callback `Delivery` borrows its
-query until return. Successful CLIENT TCP connections retain a DNS drain lease
-until END/timeout or connection destruction.
+This package owns one process Resolver domain using official Resolver IPC.
+`Context` clones share bounded requests, IDs, configuration, backoff and MQ state;
+one caller-driven `Driver` owns physical I/O. PROGRAM can supply the selected
+configuration and clock to all CLIENT, ARM and STATISTICS consumers.
 
-The current source-based design is in `DESIGN.md`, the complete seven-function
-Resolver public inventory and remaining acceptance scope in `inventory.json`,
-and the concrete constructor migration in `INTEGRATION.json`. The workspace replaces configured CLIENT, ARM, monitor and STATISTICS
-constructors with a required shared context. Direct Unix-only constructors need
-no Resolver. The caller must drive the returned unique owner alongside its host
-reactors; production spawns no hidden task. Full PROGRAM composition is a
-separate developing component.
+## Public interfaces
 
-The independent verifier accepts existing immutable normal C build receipts and
-rebuilds only its small public callers/component in the output directory. It
-runs exact nonempty named Rust tests, strict package lints, no_std embedded
-compilation, both lifetime UI cases (negative must emit E0505), owned literal
-peer pairs, a generic CLIENT TCP/DNS lifetime pair, a selected-config readpoint
-pair, a normal C Resolver daemon local-hosts pair, and a public ARM/STATISTICS
-two-service pair using one explicitly verified normal util image. The daemon and
-non-TCP actors have IP output denied; the TCP lifecycle peer binds only its own
-127.0.0.1 socket. No /etc file is modified; local hosts evidence is refused when
-the explicit broadcasthost fixture is absent. The original daemon PID is reaped. The exact reconnect-body component has observer-only scheduler shims. The
-numeric CLIENT component executes original numeric and address callback bodies
-with normal util sockets and a owned loopback accept; it records the
-5s write registration without executing a fabricated completion callback. Neither component claims full scheduler/daemon integration. Internal CLIENT
-returns its address callback only after the native connect starts, then
-continues only that original local callback stack to NULL/free. Public callback
-leases retain their explicit Driver return boundary.
+`broker` returns the shared `Context` and its unique `Driver`. Construction creates
+no socket, task or runtime. The caller drives that owner alongside client hosts.
+A callback `Delivery` borrows its original query until return. `Query` and native
+CLIENT resolution subscriptions preserve original cancellation authority.
 
-Declared R/N, immutable MQ credits and address-probe limits are resource bounds,
-not official config keys. Capacity/OS errors remain visible rather than becoming
-synthetic DNS success or timeout. A successful TCP probe keeps its original DNS
-subscription until END/timeout or connection destruction.
+```rust
+use gnunet_resolver_broker::{broker, native_profile, Limits, LiveConfiguration, SystemClock};
+use std::sync::Arc;
 
-Run from this package with fixed parameters and an output directory disjoint
-from the package, repository, upstream and old build receipts:
-
-```sh
-python3 -B tools/verify.py --repo /absolute/repository \
-  --upstream /absolute/pinned/gnunet \
-  --normal-receipt /absolute/arm-normal/build-result.json \
-  --normal-statistics-receipt /absolute/statistics-normal/build-result.json \
-  --normal-resolver-base /absolute/resolver-normal/build-result.json \
-  --normal-resolver-receipt /absolute/resolver-normal/resolver-build-result.json \
-  --reference-helper /absolute/repository/tools/reference/build_reference.py \
-  --output /absolute/new-proof
+// `configuration` belongs to the embedding program.
+let (context, driver) = broker::<32, 4096>(
+    LiveConfiguration::new(configuration),
+    Limits::default(),
+    native_profile()?,
+    Arc::new(SystemClock),
+)?;
 ```
 
-The verifier uses pinned Cargo1.99.1, offline locked metadata/builds, jobs2 and an
-output-local target. It snapshots every reachable local package's sources,
-fixtures, tests/tools/docs/manifests plus repository settings and lock before
-and after. Normal C source, receipt libraries/configs and actor binaries
-are checked before and after execution. Historical trial receipts certify only
-their original recorded source/tool/binary snapshots. A new source edit requires
-a fresh receipt; an old passed count is never promoted to the current owner.
+Pass `context.resolution_context()` to configured client constructors and retain
+the returned driver. See [design and contracts](DESIGN.md) for FIFO, timeout,
+configuration sampling and callback ownership.
+
+## Configuration and lifetime
+
+`[resolver]` selects native local IPC through `UNIXPATH` or a directly addressable
+TCP `HOSTNAME`/`PORT`. Resolver endpoint selection cannot recursively depend on
+that same Resolver. Direct local-only CLIENT constructors need no DNS domain.
+The broker does not substitute system DNS when a required Resolver fails.
+
+Successful CLIENT TCP establishment retains its DNS drain lease until original
+END/timeout or connection destruction. Cancellation does not replay requests or
+retarget an already admitted connection. Live configuration, queued requests and
+original retry targets retain their distinct sampling points. Limits charge all
+owned names, frames and slots, including reserved internal lookup capacity.
+
+## Native verification
+
+Resolver stream, retry, clock and multi-host suites use real native local/TCP
+peers. [Local fixture ownership](tests/support/local.rs) pairs each native listener
+with its original path guard; [private roots](tests/support/directory.rs) are shared
+across suites. The same stream contracts compile on Windows and Unix systems.
+Error-retention cases compare against a real failed native connection, preserving
+both its error class and OS code across retry/clock failures.
+
+```sh
+cargo test --locked -p gnunet-resolver-broker --all-features
+```
+
+## Reference verifier
+
+`tools/verify.py` copies the complete workspace and validates package roles,
+settings, locks and declared witnesses before executing comparisons against the
+supplied normal C builds. Use `--help` for required build inputs. Output must be
+new and disjoint from the repository and reference trees.
+
+`--preflight` checks preparation and tool controls without compiling or running
+Rust/C participants. Full mode records literal-peer, extracted-component and
+normal-daemon observations separately. `--profile` selects its explicit witness
+inventory; a missing or changed witness fails validation. The integrated workspace
+needs no overlay. Generated receipts and transcripts belong under `target/`.

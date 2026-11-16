@@ -5,18 +5,21 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
-[target.'cfg(unix)'.dependencies]
+[dependencies]
 gnunet-zoneimport-host.workspace = true
-gnunet-program-host = { workspace = true, features = ["resolver-broker"] }
+gnunet-program-host = { workspace = true, features = ["resolver-broker", "binary-io"] }
 gnunet-client-host.workspace = true
 gnunet-config.workspace = true
+gnunet-native.workspace = true
 gnunet-resolver-broker.workspace = true
 gnunet-service-runtime.workspace = true
 gnunet-service-startup.workspace = true
 gnunet-ipc-unix.workspace = true
 gnunet-wire.workspace = true
-nix = { workspace = true, features = ["poll"] }
 tokio = { workspace = true, features = ["rt", "net", "time", "signal"] }
+
+[target.'cfg(unix)'.dependencies]
+nix = { workspace = true, features = ["poll"] }
 
 [lints]
 workspace = true

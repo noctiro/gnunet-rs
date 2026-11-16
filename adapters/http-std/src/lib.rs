@@ -1,6 +1,5 @@
 //! Bounded caller-driven HTTP/HTTPS GET/HEAD and SOAP POST. Explicit shared
 //! Resolver, clock, original deadlines and owned TLS; no pools or hidden tasks.
-#![cfg(unix)]
 #![forbid(unsafe_code)]
 /// Explicit bounded native-byte/expiry guard for a caller's accepted HTTP server.
 /// These guards report IO only and do not construct transport response receipts.
@@ -75,4 +74,16 @@ impl std::fmt::Display for Error {
         write!(f, "HTTP transport: {self:?}")
     }
 }
-impl std::error::Error for Error {}
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(match self {
+            Self::Fault(error) | Self::Clock(error) => error,
+            Self::Io(error) => error,
+            Self::Http(error) => error,
+            Self::HttpBuild(error) => error,
+            Self::Url(error) => error,
+            Self::Tls(error) => error,
+            Self::Initialization(error) => error,
+        })
+    }
+}

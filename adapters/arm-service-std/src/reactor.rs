@@ -1,24 +1,27 @@
 //! Actual ARM IPC/native reactor. All OS owners survive a canceled Driver::drive.
 //! Managed listener readiness never accepts; accepted control sockets use a
 //! different owner. Ordinary work precedes source IDLE restart callbacks.
+mod children;
+mod clients;
+mod drive;
+mod timers;
+
 use crate::{
     framed::{self, FramedConnection, Received},
     listeners::ManagedListeners,
-    registry::{Recipe, Registry},
+    process::{
+        self, ChildRegistry, LaunchError, OriginalChild, ProcessLimits, Reaped, SpawnResult,
+    },
+    registry::Registry,
 };
 use gnunet_arm_core::wire::ServiceInfo;
 use gnunet_arm_service_core::{
     ChildId, ClientId, NativeEffect, NativeTicket, Owner, OwnerId, Phase, ServiceId, SpawnOutcome,
     TimerAction, TimerEffect, TimerId,
 };
-use gnunet_config::Configuration;
 use gnunet_service_runtime::{
     BoundListeners,
-    process::{
-        self, ChildExit, ChildRegistry, EnvironmentSnapshot, LaunchError, NativeCommand,
-        OriginalChild, ProcessLimits, Reaped, SpawnResult,
-    },
-    service::{Listener, PeerAddress, ServiceOptions},
+    service::{PeerAddress, ServiceOptions},
 };
 use gnunet_service_runtime::{
     accepted::{AcceptError, AcceptState, SocketEvent},
@@ -29,8 +32,6 @@ use std::{
     fmt,
     future::Future,
     io,
-    os::fd::AsFd,
-    path::Path,
     pin::Pin,
     task::{Context, Poll},
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -65,7 +66,16 @@ impl fmt::Display for Error {
         write!(f, "ARM reactor: {self:?}")
     }
 }
-impl std::error::Error for Error {}
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Listener(error) => Some(error),
+            Self::Native(error) => Some(error),
+            Self::Io(error) | Self::Clock(error) => Some(error),
+            _ => None,
+        }
+    }
+}
 impl From<gnunet_arm_service_core::Error> for Error {
     fn from(e: gnunet_arm_service_core::Error) -> Self {
         Self::Core(e)
@@ -136,6 +146,12 @@ impl Default for Limits {
 /// Actual native/stream observations; no application readiness is inferred.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Counters {
+    /// Actual qualified child '.' observations on the native startup transport.
+    /// This is independent of formal STARTED and is not inferred on Unix.
+    pub startup_ready: u64,
+    /// Native termination requests accepted after post-admission setup failure;
+    /// neither process death nor consuming reap is implied.
+    pub preparation_retired: u64,
     /// Actually admitted control streams.
     pub accepted: u64,
     /// Actual control descriptor closes.
@@ -152,7 +168,7 @@ pub struct Counters {
     pub spawn_refused: u64,
     /// Actual pipe/native TERM attempts, including OS refusal.
     pub term_attempts: u64,
-    /// Actual forced native SIGKILL attempts; never a death/reap receipt.
+    /// Actual forced native termination attempts; never a death/reap receipt.
     pub kill_attempts: u64,
     /// Actual consuming wait observations acknowledged by core.
     pub reaped: u64,
@@ -175,8 +191,10 @@ pub enum Diagnostic {
     Spawn(Option<io::Error>),
     /// Actual finite host preparation refusal, before any child existed.
     Admission(Error),
-    /// A real signal attempt failed; source still transitions after the attempt.
+    /// Original cooperative-control, exit-observation or native stop diagnostic.
     Signal(LaunchError),
+    /// Original native startup/bootstrap failure, distinct from process admission.
+    Startup(LaunchError),
     /// A malformed/truncated/native-failed peer was logically retired. The
     /// self-stop requester's persisted descriptor remains in external State.
     Peer(framed::Error),
@@ -189,6 +207,7 @@ struct Session<'scope> {
 struct Child<'scope> {
     core: ChildId<'scope>,
     original: OriginalChild,
+    control: process::Control,
     service: usize,
 }
 #[derive(Clone, Copy)]
@@ -220,12 +239,14 @@ pub struct State<'scope, 'registry> {
     sessions: Vec<Session<'scope>>,
     next_session: usize,
     next_ordinary: usize,
+    next_child: usize,
     persisted: Vec<Connection>,
     children: Vec<Child<'scope>>,
     services: Vec<ServiceId<'scope>>,
     pending_native: Option<Native<'scope>>,
     spawn_outcome: Option<SpawnOutcome>,
     term_attempted: bool,
+    native_waiting: bool,
     pending_reap: Option<Reaped>,
     pending_usage: Option<process::ResourceUsage>,
     resource_event: Option<ResourceEvent>,
@@ -283,12 +304,14 @@ impl<'scope, 'registry> State<'scope, 'registry> {
             sessions,
             next_session: 0,
             next_ordinary: 0,
+            next_child: 0,
             persisted,
             children,
             services,
             pending_native: None,
             spawn_outcome: None,
             term_attempted: false,
+            native_waiting: false,
             pending_reap: None,
             pending_usage: None,
             resource_event: None,
@@ -334,10 +357,27 @@ impl<'scope, 'registry> State<'scope, 'registry> {
         self.pending_timer = None;
         report
     }
-    /// One real consuming wait4 observation retained independently from the
+    /// One real consuming exit/resource observation retained independently from the
     /// formal acknowledgment. No later reap proceeds until caller takes it.
     pub fn take_resource_event(&mut self) -> Option<ResourceEvent> {
         self.resource_event.take()
+    }
+    /// Move auxiliary native owners out of scoped core mappings after terminal
+    /// service failure. The caller reserves backing before starting children.
+    #[cfg(feature = "service")]
+    pub(crate) fn retain_native(
+        &mut self,
+        registry: &ChildRegistry,
+        retained: &mut Vec<process::RetainedChild>,
+    ) {
+        for child in self.children.drain(..) {
+            if registry.owns(&child.original) {
+                retained.push(process::RetainedChild {
+                    original: child.original,
+                    _control: child.control,
+                });
+            }
+        }
     }
     /// Actual cumulative observations, retained across temporary driver borrows.
     pub fn counters(&self) -> Counters {
@@ -386,7 +426,7 @@ pub struct RetiredIo {
     /// Actual control BoundListeners owner was consumed.
     pub control: bool,
 }
-/// Exact original wait4 resource receipt. Service is an immutable registry index;
+/// Exact original native resource observation. Service is an immutable registry index;
 /// no arbitrary PID/name can be substituted by the foreground logger.
 #[derive(Debug)]
 pub struct ResourceEvent {
@@ -394,7 +434,7 @@ pub struct ResourceEvent {
     pub service: usize,
     /// Actual consuming wait observation for its original child.
     pub event: Reaped,
-    /// Actual OS-native rusage, never estimated from signals or elapsed time.
+    /// Actual native counters/query errors, never inferred from signals or elapsed time.
     pub usage: process::ResourceUsage,
 }
 /// One completed source callback settlement or completed generic runtime cleanup.
@@ -412,9 +452,7 @@ pub struct Driver<'view, 'scope, 'spec, 'slots, 'bytes, C> {
     managed: &'view mut ManagedListeners<'scope>,
     children: &'view mut ChildRegistry,
     state: &'view mut State<'scope, 'spec>,
-    config: &'view Configuration,
-    helper: &'view Path,
-    environment: &'view EnvironmentSnapshot,
+    launch: process::LaunchContext<'view>,
     options: &'view ServiceOptions,
     rows: &'view mut [ServiceInfo<'spec>],
     clock: &'view mut C,
@@ -422,14 +460,14 @@ pub struct Driver<'view, 'scope, 'spec, 'slots, 'bytes, C> {
 impl<'view, 'scope, 'spec, 'slots, 'bytes, C: Clock>
     Driver<'view, 'scope, 'spec, 'slots, 'bytes, C>
 {
-    /// Bind exact original service identities and prepare real SIGCHLD observation.
+    /// Bind exact service identities and prepare native child-exit observation.
     /// ChildRegistry is dedicated to this daemon for the complete State lifetime:
     /// do not mix another launcher/consumer's children or completed-event queue.
     /// Unrelated visible live children are refused before any consuming wait;
     /// unexpected completed credit is returned as Error::ForeignCompletion.
-    /// The caller must call ChildRegistry::prepare before registry enumeration to
-    /// reproduce the source's complete startup order; this call only validates it
-    /// again. No privilege/daemon/readiness success is implied.
+    /// LaunchContext carries the native platform's explicit inputs. Unix callers
+    /// prepare SIGCHLD before registry enumeration; Windows retains individual
+    /// original-handle waits. No privilege, daemon or readiness success is implied.
     #[expect(
         clippy::too_many_arguments,
         reason = "Explicit borrowed owners avoid a self-referential runtime"
@@ -440,9 +478,7 @@ impl<'view, 'scope, 'spec, 'slots, 'bytes, C: Clock>
         managed: &'view mut ManagedListeners<'scope>,
         children: &'view mut ChildRegistry,
         state: &'view mut State<'scope, 'spec>,
-        config: &'view Configuration,
-        helper: &'view Path,
-        environment: &'view EnvironmentSnapshot,
+        launch: process::LaunchContext<'view>,
         options: &'view ServiceOptions,
         rows: &'view mut [ServiceInfo<'spec>],
         clock: &'view mut C,
@@ -465,7 +501,7 @@ impl<'view, 'scope, 'spec, 'slots, 'bytes, C: Clock>
         }) {
             return Err(Error::Mapping);
         }
-        children.prepare()?;
+        process::prepare(children)?;
         if let Some(original) = state.registry {
             if !std::ptr::eq(original, registry) {
                 return Err(Error::Mapping);
@@ -511,9 +547,7 @@ impl<'view, 'scope, 'spec, 'slots, 'bytes, C: Clock>
             managed,
             children,
             state,
-            config,
-            helper,
-            environment,
+            launch,
             options,
             rows,
             clock,
@@ -524,55 +558,9 @@ impl<'view, 'scope, 'spec, 'slots, 'bytes, C: Clock>
     pub fn shutdown(&mut self) {
         self.state.shutdown_requested = true;
     }
-    /// Escalate only the original still-owned children through the shared
-    /// native signal port. The control pipe is bypassed: signal9 cannot be
-    /// delegated to an application handler. Actual waits remain separate.
-    pub fn kill_remaining(&mut self) {
-        for index in 0..self.state.children.len() {
-            let original = self.state.children[index].original.clone();
-            if self.children.owns(&original) {
-                if let Err(error) = self.children.signal_native(&original, libc::SIGKILL) {
-                    self.state.diagnostic(Diagnostic::Signal(error))
-                }
-                self.state.counters.kill_attempts =
-                    self.state.counters.kill_attempts.saturating_add(1);
-            }
-        }
-    }
     /// Borrow current observations without transferring native authority.
     pub fn counters(&self) -> Counters {
         self.state.counters
-    }
-    /// Admit one already accepted physical connection after peer policy. This is
-    /// also a safe embedding port; it performs no fake listener readiness.
-    pub fn admit(&mut self, stream: Connection, peer: PeerAddress) -> Result<bool, Error> {
-        if matches!(peer, PeerAddress::Unix)
-            && !self.state.unix_access.allows(&stream).map_err(Error::Io)?
-        {
-            drop(stream);
-            return Ok(false);
-        }
-        if let PeerAddress::Tcp(address) = peer
-            && !self.options.access.allows(address.ip())
-        {
-            drop(stream);
-            return Ok(false);
-        }
-        if self.state.sessions.len() + self.state.persisted.len() >= self.state.limits.clients {
-            drop(stream);
-            return Err(Error::Capacity);
-        }
-        let l = self.state.limits;
-        let io = FramedConnection::new(stream, l.frame_bytes, l.tx_bytes, l.tx_frames, l.io_slice)
-            .map_err(|_| Error::Capacity)?;
-        let id = self.owner.connect()?;
-        self.state.sessions.push(Session {
-            id,
-            io,
-            send_first: false,
-        });
-        self.state.counters.accepted = self.state.counters.accepted.saturating_add(1);
-        Ok(true)
     }
     /// Consume one bounded nonfatal actual diagnostic.
     pub fn take_diagnostic(&mut self) -> Option<Diagnostic> {
@@ -599,739 +587,7 @@ impl<'view, 'scope, 'spec, 'slots, 'bytes, C: Clock>
     pub fn client_count(&self) -> usize {
         self.state.sessions.len()
     }
-    fn close(&mut self, index: usize, resource: bool) -> Result<(), Error> {
-        let session = self.state.sessions.remove(index);
-        if self.state.next_session > index {
-            self.state.next_session -= 1;
-        }
-        if self.state.next_session >= self.state.sessions.len() {
-            self.state.next_session = 0;
-        }
-        let persisted = self.owner.client_persisted(session.id)?;
-        self.owner.disconnect(session.id)?;
-        if persisted {
-            // service.c:finish_client_drop frees only the network handle for a
-            // persisted requester. Retain its actual descriptor until the
-            // enclosing process State ends, without resuming EMFILE acceptance.
-            self.state.persisted.push(session.io.into_connection());
-        } else {
-            drop(session);
-            self.state.control_accept.client_closed();
-            self.state.counters.closed = self.state.counters.closed.saturating_add(1);
-            self.state.counters.resource_closes = self
-                .state
-                .counters
-                .resource_closes
-                .saturating_add(u64::from(resource));
-        }
-        Ok(())
-    }
     fn utc(&mut self) -> Result<u64, Error> {
         self.clock.utc().map_err(Error::Clock)
-    }
-    fn spawn_service(
-        &mut self,
-        service: ServiceId<'scope>,
-        pipe: bool,
-    ) -> Result<SpawnResult, Error> {
-        let index = self
-            .state
-            .services
-            .iter()
-            .position(|id| *id == service)
-            .ok_or(Error::Mapping)?;
-        let entry = self.registry.services().get(index).ok_or(Error::Mapping)?;
-        let (filename, argv) = match &entry.recipe {
-            Recipe::Gnunet(command) => {
-                let argv = process::parse_command(
-                    command,
-                    self.state.limits.process.launch.max_arguments,
-                )?;
-                let filename = argv.first().cloned().unwrap_or_default();
-                (filename, argv)
-            }
-            Recipe::Simple {
-                filename,
-                argv0,
-                options,
-            } => (filename.clone(), vec![argv0.clone(), options.clone()]),
-        };
-        if self.state.children.len() == self.state.limits.services {
-            return Err(Error::Capacity);
-        }
-        let mut listeners = Vec::new();
-        listeners
-            .try_reserve_exact(self.managed.len())
-            .map_err(|_| Error::Capacity)?;
-        for i in 0..self.managed.len() {
-            if self.managed.service_index(i) == Some(index) {
-                let id = self.managed.id(i).ok_or(Error::Mapping)?;
-                listeners.push(self.managed.descriptor(id).ok_or(Error::Mapping)?);
-            }
-        }
-        let command = NativeCommand {
-            filename,
-            argv,
-            environment: self.environment.clone(),
-            environment_changes: Vec::new(),
-            cwd: None,
-            stdio: 6 | if pipe { 8 } else { 0 },
-            stdio_snapshot: None,
-            listeners,
-            mappings: Vec::new(),
-        };
-        process::spawn(
-            self.config,
-            self.helper,
-            command,
-            self.state.limits.process,
-            self.children,
-        )
-        .map_err(|error| match error {
-            LaunchError::Capacity => Error::AdmissionCapacity,
-            other => Error::Native(other),
-        })
-    }
-    fn native(&mut self) -> Result<bool, Error> {
-        if self.state.pending_native.is_none() {
-            self.state.pending_native = self.owner.take_native()?.map(|effect| match effect {
-                NativeEffect::Spawn {
-                    ticket,
-                    child,
-                    service,
-                    pipe_control,
-                    ..
-                } => Native::Spawn {
-                    ticket,
-                    child,
-                    service,
-                    pipe: pipe_control,
-                },
-                NativeEffect::Term { ticket, child } => Native::Term { ticket, child },
-            });
-        }
-        let Some(effect) = self.state.pending_native else {
-            return Ok(false);
-        };
-        match effect {
-            Native::Spawn {
-                ticket,
-                child,
-                service,
-                pipe,
-            } => {
-                if !self.owner.native_current(ticket) {
-                    return Err(Error::Mapping);
-                }
-                if self.state.spawn_outcome.is_none() {
-                    match self.spawn_service(service, pipe) {
-                        Ok(SpawnResult::Admitted(receipt)) => {
-                            self.state.children.push(Child {
-                                core: child,
-                                original: receipt.child,
-                                service: self
-                                    .state
-                                    .services
-                                    .iter()
-                                    .position(|id| *id == service)
-                                    .ok_or(Error::Mapping)?,
-                            });
-                            self.state.spawn_outcome = Some(SpawnOutcome::Admitted);
-                            self.state.counters.spawned =
-                                self.state.counters.spawned.saturating_add(1);
-                        }
-                        Ok(SpawnResult::Refused { error }) => {
-                            self.state.spawn_outcome = Some(SpawnOutcome::Failed);
-                            self.state.counters.spawn_refused =
-                                self.state.counters.spawn_refused.saturating_add(1);
-                            self.state.diagnostic(Diagnostic::Spawn(error));
-                        }
-                        Err(error @ Error::AdmissionCapacity) => {
-                            // A real no-child resource/preparation refusal is a
-                            // visible host profile, never a retry that blocks
-                            // original child cleanup or a manufactured admission.
-                            self.state.spawn_outcome = Some(SpawnOutcome::Failed);
-                            self.state.counters.spawn_refused =
-                                self.state.counters.spawn_refused.saturating_add(1);
-                            self.state.diagnostic(Diagnostic::Admission(error));
-                        }
-                        Err(error) => return Err(error),
-                    }
-                }
-                let utc = self.utc()?;
-                let outcome = self.state.spawn_outcome.ok_or(Error::State)?;
-                let report = self.owner.spawned(ticket, outcome, utc)?;
-                self.state.spawn_outcome = None;
-                self.state.pending_native = None;
-                let _closures = report.resource_closures;
-            }
-            Native::Term { ticket, child } => {
-                if !self.owner.native_current(ticket) {
-                    return Err(Error::Mapping);
-                }
-                if !self.state.term_attempted {
-                    let original = self
-                        .state
-                        .children
-                        .iter()
-                        .find(|c| c.core == child)
-                        .ok_or(Error::Mapping)?
-                        .original
-                        .clone();
-                    if !self.children.owns(&original) {
-                        return Err(Error::Mapping);
-                    }
-                    match self.children.signal(&original, libc::SIGTERM) {
-                        Ok(_attempt) => {}
-                        Err(error) => self.state.diagnostic(Diagnostic::Signal(error)),
-                    }
-                    self.state.term_attempted = true;
-                    self.state.counters.term_attempts =
-                        self.state.counters.term_attempts.saturating_add(1);
-                }
-                self.owner.term_attempted(ticket)?;
-                self.state.term_attempted = false;
-                self.state.pending_native = None;
-            }
-        }
-        Ok(true)
-    }
-    fn timer(&mut self, cx: &mut Context<'_>) -> Result<bool, Error> {
-        if self.state.pending_timer.is_none() {
-            self.state.pending_timer = self.owner.take_timer()?;
-        }
-        let Some(effect) = self.state.pending_timer else {
-            return Ok(false);
-        };
-        if !self.owner.timer_current(effect.ticket) {
-            return Err(Error::Mapping);
-        }
-        match effect.action {
-            TimerAction::Arm { at_utc } => {
-                if self.state.timer.is_none() {
-                    let now = self.utc()?;
-                    let sleep = if at_utc == u64::MAX {
-                        None
-                    } else {
-                        let duration = Duration::from_micros(at_utc.saturating_sub(now));
-                        let deadline = Instant::now()
-                            .checked_add(duration)
-                            .ok_or(Error::Capacity)?;
-                        Some(Box::pin(tokio::time::sleep_until(deadline)))
-                    };
-                    self.state.timer = Some(Timer {
-                        id: effect.id,
-                        at_utc,
-                        sleep,
-                    });
-                    if let Some(timer) = self.state.timer.as_mut()
-                        && let Some(sleep) = timer.sleep.as_mut()
-                    {
-                        // Poll installs the actual timer entry before acknowledging
-                        // the registration. A ready result is still IDLE work.
-                        let _readiness = sleep.as_mut().poll(cx);
-                    }
-                } else if self.state.timer.as_ref().is_none_or(|t| t.id != effect.id) {
-                    return Err(Error::Mapping);
-                }
-            }
-            TimerAction::Cancel => {
-                if self.state.timer.as_ref().is_some_and(|t| t.id != effect.id) {
-                    return Err(Error::Mapping);
-                }
-                drop(self.state.timer.take());
-            }
-        }
-        self.owner.timer_applied(effect.ticket)?;
-        self.state.pending_timer = None;
-        Ok(true)
-    }
-    fn reap(&mut self) -> Result<bool, Error> {
-        if self.state.resource_event.is_some() {
-            return Ok(false);
-        }
-        if self.state.pending_reap.is_none() {
-            // This is a dedicated daemon registry. A visible unrelated original
-            // must not be consumed by a different source service owner.
-            if self.children.children().any(|original| {
-                !self
-                    .state
-                    .children
-                    .iter()
-                    .any(|owned| owned.original == *original)
-            }) {
-                return Err(Error::Mapping);
-            }
-            let _observed = self.children.reap_completed()?;
-            if let Some((event, usage)) = self.children.take_completed_with_usage() {
-                self.state.pending_reap = Some(event);
-                self.state.pending_usage = usage;
-            }
-        }
-        let Some(reap) = self.state.pending_reap.as_ref() else {
-            return Ok(false);
-        };
-        let Some(index) = self
-            .state
-            .children
-            .iter()
-            .position(|c| c.original == reap.child)
-        else {
-            // Preserve the actual observation as an explicit error capability;
-            // never silently count it as this formal daemon's successful reap.
-            let event = self.state.pending_reap.take().ok_or(Error::State)?;
-            return Err(Error::ForeignCompletion(event));
-        };
-        let id = self.state.children[index].core;
-        if let Some(usage) = self.state.pending_usage.take() {
-            self.state.resource_event = Some(ResourceEvent {
-                service: self.state.children[index].service,
-                event: reap.clone(),
-                usage,
-            });
-        }
-        let exit = match reap.exit {
-            ChildExit::Exited(code) => gnunet_arm_service_core::Exit::Exited(code as u32),
-            ChildExit::Signaled { signal, .. } => {
-                gnunet_arm_service_core::Exit::Signaled(signal as u32)
-            }
-        };
-        let utc = self.utc()?;
-        let report = self.owner.reaped(id, exit, utc)?;
-        let _closures = report.resource_closures;
-        self.state.children.remove(index);
-        self.state.pending_reap = None;
-        self.state.counters.reaped = self.state.counters.reaped.saturating_add(1);
-        // Actual reaped(nonzero) requested an IDLE task; settle its cancellation
-        // before allowing any unrelated callback to run.
-        Ok(true)
-    }
-    fn handoff(&mut self) -> Result<bool, Error> {
-        let Some(frame) = self.owner.frame() else {
-            return Ok(false);
-        };
-        let id = frame.client;
-        let ticket = frame.ticket;
-        let index = self
-            .state
-            .sessions
-            .iter()
-            .position(|session| session.id == id)
-            .ok_or(Error::Mapping)?;
-        if let Err(error) = self.state.sessions[index].io.enqueue(frame.bytes) {
-            self.state.diagnostic(Diagnostic::Peer(error));
-            self.close(index, true)?;
-        } else {
-            self.owner.release_frame(ticket)?;
-            self.state.counters.handed_off = self.state.counters.handed_off.saturating_add(1);
-            self.owner
-                .set_mq_length(id, self.state.sessions[index].io.mq_length())?;
-        }
-        Ok(true)
-    }
-    fn settle(&mut self, cx: &mut Context<'_>) -> Result<bool, Error> {
-        let resource_client = self.owner.resource_closures().next();
-        if let Some(client) = resource_client {
-            let index = self
-                .state
-                .sessions
-                .iter()
-                .position(|s| s.id == client)
-                .ok_or(Error::Mapping)?;
-            self.close(index, true)?;
-            return Ok(true);
-        }
-        if self.managed.apply_next(self.owner)? {
-            return Ok(true);
-        }
-        if self.timer(cx)? {
-            return Ok(true);
-        }
-        let source_callback = matches!(self.owner.phase(), Phase::Configuring | Phase::Starting)
-            || self.state.scanning
-            || self.state.shutdown_sending;
-        // A request/demand callback's actual native effect completes before an
-        // unrelated child-death callback, just like the source synchronous body.
-        if self.native()? {
-            return Ok(true);
-        }
-        if self.state.shutdown_sending {
-            // shutdown_task's complete synchronous TERM pass precedes the
-            // next child_death callback; no consuming wait runs in its middle.
-            self.state.shutdown_sending = false;
-            return Ok(true);
-        }
-        if !source_callback && self.reap()? {
-            return Ok(true);
-        }
-        if self.handoff()? {
-            return Ok(true);
-        }
-        if self.owner.take_shutdown_request() {
-            self.state.shutdown_requested = true;
-        }
-        if self.state.shutdown_requested
-            && !matches!(self.owner.phase(), Phase::Draining | Phase::Closed)
-        {
-            let utc = self.utc()?;
-            self.state.scanning = false;
-            self.state.shutdown_sending = true;
-            self.owner.begin_shutdown(utc);
-            return Ok(true);
-        }
-        if matches!(self.owner.phase(), Phase::Configuring | Phase::Starting) {
-            let _more = self.owner.startup_next()?;
-            return Ok(true);
-        }
-        if self.state.scanning && self.owner.phase() == Phase::Serving {
-            let utc = self.utc()?;
-            let _next = self.owner.restart(utc)?;
-            // An automatic spawn pauses this source scan until its real native
-            // acknowledgment. Do not reinterpret Some(now) as a timer callback.
-            self.state.pending_native = self.owner.take_native()?.map(|effect| match effect {
-                NativeEffect::Spawn {
-                    ticket,
-                    child,
-                    service,
-                    pipe_control,
-                    ..
-                } => Native::Spawn {
-                    ticket,
-                    child,
-                    service,
-                    pipe: pipe_control,
-                },
-                NativeEffect::Term { ticket, child } => Native::Term { ticket, child },
-            });
-            self.state.scanning = self.state.pending_native.is_some();
-            return Ok(true);
-        }
-        if let Some(ticket) = self.owner.take_runtime_shutdown() {
-            drop(self.state.control.take());
-            while let Some(session) = self.state.sessions.first() {
-                let persisted = self.owner.client_persisted(session.id)?;
-                let session = self.state.sessions.remove(0);
-                if persisted {
-                    self.state.persisted.push(session.io.into_connection());
-                } else {
-                    drop(session);
-                    self.state.counters.closed = self.state.counters.closed.saturating_add(1);
-                }
-            }
-            self.state.timer = None;
-            self.owner.runtime_shutdown_applied(ticket)?;
-            return Ok(true);
-        }
-        Ok(false)
-    }
-    fn poll_accept(&mut self, cx: &mut Context<'_>) -> Poll<Result<bool, Error>> {
-        if !self.state.control_accept.ready() {
-            return Poll::Pending;
-        }
-        let Some(control) = self.state.control.as_ref() else {
-            return Poll::Pending;
-        };
-        for listener in control.listeners() {
-            if let Poll::Ready(result) = listener.poll_canonical_connection(cx) {
-                let accepted = match result {
-                    Ok(accepted) => accepted,
-                    Err(error) => {
-                        match self.state.control_accept.failed(error) {
-                            SocketEvent::Failed(AcceptError::Initialization(error)) => self
-                                .state
-                                .diagnostic(Diagnostic::AcceptedSocketFailure(error)),
-                            SocketEvent::Failed(error @ AcceptError::Accept(_))
-                                if error.is_emfile() => {}
-                            SocketEvent::Failed(AcceptError::Accept(error)) => {
-                                self.state.diagnostic(Diagnostic::Accept(error))
-                            }
-                            SocketEvent::Diagnostic(diagnostic) => self
-                                .state
-                                .diagnostic(Diagnostic::AcceptedSocket(diagnostic)),
-                        }
-                        return Poll::Ready(Ok(true));
-                    }
-                };
-                let (stream, peer, diagnostics) = accepted.into_parts();
-                for diagnostic in diagnostics {
-                    self.state
-                        .diagnostic(Diagnostic::AcceptedSocket(diagnostic));
-                }
-                match self.admit(stream, peer) {
-                    Ok(_admitted) => return Poll::Ready(Ok(true)),
-                    Err(
-                        Error::Capacity
-                        | Error::Core(
-                            gnunet_arm_service_core::Error::Capacity
-                            | gnunet_arm_service_core::Error::Exhausted,
-                        ),
-                    ) => return Poll::Ready(Ok(true)),
-                    Err(error) => return Poll::Ready(Err(error)),
-                }
-            }
-        }
-        Poll::Pending
-    }
-    fn ordinary_ready(&self) -> Result<bool, Error> {
-        use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
-        for session in &self.state.sessions {
-            if session.io.ordinary_ready().map_err(Error::Io)? {
-                return Ok(true);
-            }
-        }
-        if matches!(self.owner.phase(), Phase::Serving | Phase::Draining) {
-            if self.owner.phase() == Phase::Serving && self.managed.ordinary_ready()? {
-                return Ok(true);
-            }
-            if self.state.control_accept.ready()
-                && let Some(control) = self.state.control.as_ref()
-            {
-                for listener in control.listeners() {
-                    let fd = match listener {
-                        Listener::Unix(s) => s.as_fd(),
-                        Listener::Tcp(s) => s.as_fd(),
-                    };
-                    let mut descriptors = [PollFd::new(fd, PollFlags::POLLIN)];
-                    poll(&mut descriptors, PollTimeout::ZERO).map_err(|e| Error::Io(e.into()))?;
-                    let flags = descriptors[0].revents().unwrap_or(PollFlags::empty());
-                    if flags.contains(PollFlags::POLLNVAL) {
-                        return Err(Error::Io(io::Error::from_raw_os_error(
-                            nix::errno::Errno::EBADF as i32,
-                        )));
-                    }
-                    if flags.intersects(PollFlags::POLLIN | PollFlags::POLLHUP | PollFlags::POLLERR)
-                    {
-                        return Ok(true);
-                    }
-                }
-            }
-        }
-        Ok(false)
-    }
-    fn receive_session(&mut self, index: usize, cx: &mut Context<'_>) -> Result<bool, Error> {
-        let id = self.state.sessions[index].id;
-        let now = self.utc()?;
-        let buffered = self.state.sessions[index].io.buffered_bytes();
-        match self.state.sessions[index].io.poll_receive(cx) {
-            Poll::Ready(Ok(Received::Frame(bytes))) => {
-                match self.owner.receive(id, bytes, now, self.rows) {
-                    Ok(()) => {
-                        if let Err(error) = self.state.sessions[index].io.consume_frame() {
-                            self.state.diagnostic(Diagnostic::Peer(error));
-                            self.close(index, false)?;
-                        }
-                        self.state.counters.received =
-                            self.state.counters.received.saturating_add(1);
-                    }
-                    Err(gnunet_arm_service_core::Error::Busy) => {
-                        return Ok(self.state.sessions[index].io.buffered_bytes() != buffered);
-                    }
-                    Err(gnunet_arm_service_core::Error::Malformed) => self.close(index, false)?,
-                    Err(
-                        gnunet_arm_service_core::Error::Capacity
-                        | gnunet_arm_service_core::Error::Exhausted,
-                    ) => self.close(index, true)?,
-                    Err(error) => return Err(error.into()),
-                }
-                Ok(true)
-            }
-            Poll::Ready(Ok(Received::Eof { partial })) => {
-                if partial {
-                    self.state
-                        .diagnostic(Diagnostic::Peer(framed::Error::Malformed));
-                }
-                self.close(index, false)?;
-                Ok(true)
-            }
-            Poll::Ready(Err(error)) => {
-                self.state.diagnostic(Diagnostic::Peer(error));
-                self.close(index, false)?;
-                Ok(true)
-            }
-            Poll::Pending => Ok(self.state.sessions[index].io.buffered_bytes() != buffered),
-        }
-    }
-    fn send_session(&mut self, index: usize, cx: &mut Context<'_>) -> Result<bool, Error> {
-        let id = self.state.sessions[index].id;
-        match self.state.sessions[index].io.poll_send(cx) {
-            Poll::Ready(Ok(true)) => {
-                self.owner
-                    .set_mq_length(id, self.state.sessions[index].io.mq_length())?;
-                Ok(true)
-            }
-            Poll::Ready(Err(error)) => {
-                self.state.diagnostic(Diagnostic::Peer(error));
-                self.close(index, false)?;
-                Ok(true)
-            }
-            _ => Ok(false),
-        }
-    }
-    fn poll_sessions(&mut self, cx: &mut Context<'_>) -> Result<bool, Error> {
-        let count = self.state.sessions.len();
-        let first = self.state.next_session;
-        for index in (first..count).chain(0..first) {
-            let id = self.state.sessions[index].id;
-            let send_first = self.state.sessions[index].send_first;
-            for receive in [!send_first, send_first] {
-                let progress = if receive {
-                    self.receive_session(index, cx)?
-                } else {
-                    self.send_session(index, cx)?
-                };
-                if progress {
-                    let count = self.state.sessions.len();
-                    self.state.next_session = if count == 0 {
-                        0
-                    } else if self.state.sessions.get(index).is_some_and(|s| s.id == id) {
-                        self.state.sessions[index].send_first = receive;
-                        if index + 1 == count { 0 } else { index + 1 }
-                    } else {
-                        index % count
-                    };
-                    return Ok(true);
-                }
-            }
-        }
-        Ok(false)
-    }
-    /// Poll one full ordinary callback settlement. At a cooperative budget yield,
-    /// no unrelated I/O or IDLE callback is polled ahead of unfinished effects.
-    pub fn poll_drive(&mut self, cx: &mut Context<'_>) -> Poll<Result<Activity, Error>> {
-        let mut progressed = false;
-        loop {
-            for _ in 0..self.state.limits.settlement_budget {
-                match self.settle(cx) {
-                    Ok(true) => progressed = true,
-                    Ok(false) => break,
-                    Err(error) => return Poll::Ready(Err(error)),
-                }
-            }
-            // Check settlement once more to distinguish budget from idle. It
-            // performs at most one operation and retains all effects on errors.
-            match self.settle(cx) {
-                Ok(true) => {
-                    cx.waker().wake_by_ref();
-                    return Poll::Pending;
-                }
-                Err(error) => return Poll::Ready(Err(error)),
-                Ok(false) => {}
-            }
-            if self.owner.phase() == Phase::Closed {
-                return Poll::Ready(Ok(Activity::Closed));
-            }
-            if progressed {
-                return Poll::Ready(Ok(Activity::Progress));
-            }
-            // C appends each continuation to its ready FIFO. Rotate ordinary
-            // sources and stream directions after actual work, retaining this
-            // scheduling state in the caller-owned State across cancellation.
-            let first = self.state.next_ordinary;
-            for lane in (first..3).chain(0..first) {
-                let work = match lane {
-                    0 if matches!(self.owner.phase(), Phase::Serving | Phase::Draining) => {
-                        match self.poll_accept(cx) {
-                            Poll::Ready(result) => result,
-                            Poll::Pending => Ok(false),
-                        }
-                    }
-                    1 => self.poll_sessions(cx),
-                    2 if self.owner.phase() == Phase::Serving => {
-                        match self.managed.poll_event(cx) {
-                            Poll::Ready(Ok(_event)) => self
-                                .managed
-                                .deliver(self.owner)
-                                .map(|()| true)
-                                .map_err(Error::from),
-                            Poll::Ready(Err(error)) => Err(error.into()),
-                            Poll::Pending => Ok(false),
-                        }
-                    }
-                    _ => Ok(false),
-                };
-                match work {
-                    Ok(true) => {
-                        self.state.next_ordinary = (lane + 1) % 3;
-                        progressed = true;
-                        break;
-                    }
-                    Ok(false) => {}
-                    Err(error) => return Poll::Ready(Err(error)),
-                }
-            }
-            if progressed {
-                continue;
-            }
-            if let Poll::Ready(signal) = self.children.poll_child_signal(cx) {
-                if let Err(error) = signal {
-                    return Poll::Ready(Err(error.into()));
-                }
-                match self.reap() {
-                    Ok(true) => {
-                        progressed = true;
-                        continue;
-                    }
-                    Ok(false) => {}
-                    Err(error) => return Poll::Ready(Err(error)),
-                }
-            }
-            // Source IDLE priority: only after no ordinary ready callback.
-            // Tokio's cached hint may lag a real queued descriptor. Give the
-            // runtime a chance to refresh it before dispatching IDLE. This
-            // probes only enabled tasks, never an empty always-writable stream.
-            if self.state.timer.is_some() {
-                match self.ordinary_ready() {
-                    Ok(true) => {
-                        cx.waker().wake_by_ref();
-                        return Poll::Pending;
-                    }
-                    Ok(false) => {}
-                    Err(error) => return Poll::Ready(Err(error)),
-                }
-            }
-            let due = if let Some(timer) = self.state.timer.as_ref() {
-                timer.at_utc != u64::MAX
-            } else {
-                false
-            };
-            if due {
-                let now = match self.utc() {
-                    Ok(now) => now,
-                    Err(error) => return Poll::Ready(Err(error)),
-                };
-                if let Some(timer) = self.state.timer.as_mut() {
-                    if now >= timer.at_utc {
-                        let id = timer.id;
-                        if let Err(error) = self.owner.timer_fired(id) {
-                            return Poll::Ready(Err(error.into()));
-                        }
-                        self.state.timer = None;
-                        self.state.scanning = true;
-                        self.state.counters.timer_callbacks =
-                            self.state.counters.timer_callbacks.saturating_add(1);
-                        progressed = true;
-                        continue;
-                    }
-                    if let Some(sleep) = timer.sleep.as_mut()
-                        && sleep.as_mut().poll(cx).is_ready()
-                    {
-                        // A backward source UTC change does not expire the
-                        // registration. Retain its identity and re-arm its hint.
-                        let delta = Duration::from_micros(timer.at_utc.saturating_sub(now));
-                        let Some(deadline) = Instant::now().checked_add(delta) else {
-                            return Poll::Ready(Err(Error::Capacity));
-                        };
-                        sleep.as_mut().reset(deadline);
-                        let _registered = sleep.as_mut().poll(cx);
-                    }
-                }
-            }
-            return Poll::Pending;
-        }
-    }
-    /// Wait for one actual complete callback settlement. Cancellation retains all
-    /// owned RX/TX, timer registrations, native leases and consuming wait events.
-    pub async fn drive(&mut self) -> Result<Activity, Error> {
-        std::future::poll_fn(|cx| self.poll_drive(cx)).await
     }
 }

@@ -27,8 +27,11 @@ mod effects;
 mod identity;
 mod input;
 mod peers;
+#[cfg(test)]
+mod recovery_tests;
 mod retire;
 mod session;
+mod transport;
 
 struct Packet<'c> {
     received: cadet::Received<'c>,
@@ -58,6 +61,7 @@ enum NativeKind<'s, 'c> {
     Effect(EffectId<'s>),
     Reject(cadet::Channel<'c>),
     Internal,
+    RestorePort,
 }
 struct PendingNative<'s, 'c> {
     call: Option<CallId<'s>>,
@@ -69,6 +73,32 @@ struct PendingNative<'s, 'c> {
     known_written: bool,
     closing: bool,
     bound: Bounds,
+}
+impl<'s, 'c> PendingNative<'s, 'c> {
+    fn io_allowed(
+        &self,
+        core: &Session<'s>,
+        calls: &[Option<Call<'s, 'c>>],
+        now: u64,
+    ) -> Result<bool, Fault> {
+        let NativeKind::Effect(id) = self.kind else {
+            return Ok(true);
+        };
+        if self.known_written {
+            return Ok(true);
+        }
+        let call = self
+            .call
+            .and_then(|id| calls.iter().flatten().find(|call| call.id == id));
+        if core.effect_io_allowed(id, &core.identity(), now)?
+            && (self.closing || call.is_none_or(|call| !call.gone && call.retiring.is_none()))
+        {
+            return Ok(true);
+        }
+        Ok(self.exposed
+            && call.is_none_or(|call| !call.gone)
+            && core.effect_drain_allowed(id, &core.identity(), now)?)
+    }
 }
 struct PendingClient<'s> {
     effect: EffectId<'s>,
@@ -103,6 +133,8 @@ struct State<'s, 'p, 'c, 'slots> {
     scan_end: bool,
     first: Option<Bounds>,
     startup: Option<Bounds>,
+    recovery: Option<Bounds>,
+    cadet_recovery: Option<transport::Recovery>,
     client_input: Option<Bounds>,
     pils_input: Option<Bounds>,
     cadet_input: Option<Bounds>,
@@ -139,6 +171,8 @@ impl<'s, 'p, 'c, 'slots> State<'s, 'p, 'c, 'slots> {
             .first
             .into_iter()
             .chain(self.startup)
+            .chain(self.recovery)
+            .chain(self.cadet_recovery.as_ref().map(|recovery| recovery.bound))
             .chain(self.client_input)
             .chain(self.pils_input)
             .chain(self.cadet_input)
@@ -191,9 +225,11 @@ impl<'s, 'p, 'c, 'slots> State<'s, 'p, 'c, 'slots> {
             return Err(Fault::NotReady.into());
         }
         self.refresh()?;
-        self.control
-            .check(self.sources.clock.as_ref(), self.session.core().is_some())?;
-        if self.session.core().is_some() {
+        self.control.check(
+            self.sources.clock.as_ref(),
+            self.session.observed().is_some(),
+        )?;
+        if !self.session.waiting() && self.session.core().is_some() {
             identity::current(&self.pils, self.session.observed())?;
         }
         let _ = cx;
@@ -274,15 +310,6 @@ impl<'s, 'p, 'c, 'slots> State<'s, 'p, 'c, 'slots> {
         if !self.pending_allowed()? {
             return Err(Fault::Cancelled.into());
         }
-        if let Some(pending) = &self.pending_native
-            && let NativeKind::Effect(id) = pending.kind
-        {
-            let core = self.session.core().ok_or(Fault::NotReady)?;
-            let current = core.identity();
-            if !core.effect_io_allowed(id, &current, self.origin.now()?)? {
-                return Err(Fault::Cancelled.into());
-            }
-        }
         Ok(())
     }
     fn pending_allowed(&self) -> Result<bool, Fault> {
@@ -293,25 +320,14 @@ impl<'s, 'p, 'c, 'slots> State<'s, 'p, 'c, 'slots> {
         let now = self.origin.now()?;
         if let Some(pending) = &self.pending_native
             && !pending.known_written
-            && let NativeKind::Effect(id) = pending.kind
+            && !pending.io_allowed(core, &self.calls, now)?
         {
-            if !core.effect_io_allowed(id, &current, now)? {
-                return Ok(false);
-            }
-            if !pending.closing
-                && pending.call.is_some_and(|id| {
-                    self.calls
-                        .iter()
-                        .flatten()
-                        .any(|c| c.id == id && (c.gone || c.retiring.is_some()))
-                })
-            {
-                return Ok(false);
-            }
+            return Ok(false);
         }
         if let Some(pending) = &self.pending_client
             && !pending.known_written
             && !core.effect_io_allowed(pending.effect, &current, now)?
+            && !(pending.written > 0 && core.effect_drain_allowed(pending.effect, &current, now)?)
         {
             return Ok(false);
         }
@@ -405,6 +421,7 @@ impl<'s, 'p, 'c, 'slots> State<'s, 'p, 'c, 'slots> {
         if let Some(error) = core.failure() {
             return Err(error.into());
         }
+        let progress = self.reconcile_cancelled()? || progress;
         if !self.pending_allowed()? {
             return Err(Fault::Cancelled.into());
         }
@@ -422,6 +439,15 @@ impl<'s, 'p, 'c, 'slots> State<'s, 'p, 'c, 'slots> {
         self.account()?;
         if self.session.core().is_some() && self.collect_reports()? {
             return Poll::Ready(Ok(true));
+        }
+        if self.session.waiting() {
+            let progressed = self.poll_identity(cx)?;
+            self.arm(cx)?;
+            return if progressed {
+                Poll::Ready(Ok(true))
+            } else {
+                Poll::Pending
+            };
         }
         for offset in 0..6 {
             self.guard(cx)?;
@@ -557,6 +583,8 @@ pub(crate) async fn run(
             scan_end: true,
             first: Some(first),
             startup: Some(startup),
+            recovery: None,
+            cadet_recovery: None,
             client_input: None,
             pils_input: None,
             cadet_input: None,

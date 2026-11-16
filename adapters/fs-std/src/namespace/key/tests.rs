@@ -8,11 +8,10 @@ use gnunet_fs::{
     Content, Uri, metadata,
     ublock::{Context, Limits, Publisher},
 };
-use nix::{sys::stat::Mode, unistd::mkfifo};
+use gnunet_native::filesystem::Directory;
 use std::{
     fs::{self, OpenOptions},
-    io::{self, Write},
-    os::unix::fs::{FileExt, MetadataExt, OpenOptionsExt, PermissionsExt, symlink},
+    io::{self, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
 };
@@ -26,7 +25,11 @@ impl Temporary {
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
-        fs::create_dir(&path)?;
+        let parent = Directory::open(&std::env::temp_dir())?;
+        drop(
+            parent
+                .create_private_directory(path.file_name().ok_or(io::ErrorKind::InvalidInput)?)?,
+        );
         Ok(Self(path))
     }
 }
@@ -36,11 +39,9 @@ impl Drop for Temporary {
     }
 }
 fn fixture(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(path)?;
+    let parent = Directory::open(path.parent().ok_or(io::ErrorKind::InvalidInput)?)?;
+    let mut file =
+        parent.create_private_file(path.file_name().ok_or(io::ErrorKind::InvalidInput)?)?;
     file.write_all(bytes)?;
     file.sync_all()
 }
@@ -50,12 +51,26 @@ fn generated_raw_seed_reopens_and_signs_the_official_namespace_ublock() -> TestR
     let path = temporary.0.join("namespace.seed");
     let key = KeyFile::create(&path)?;
     assert_eq!(fs::metadata(&path)?.len(), 32);
-    assert_eq!(fs::metadata(&path)?.mode() & 0o7777, 0o600);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        assert_eq!(fs::metadata(&path)?.mode() & 0o7777, 0o600);
+        assert_eq!(
+            key.directory_sync(),
+            Some(gnunet_native::DirectorySync::Synchronized)
+        );
+    }
+    #[cfg(windows)]
+    assert_eq!(
+        key.directory_sync(),
+        Some(gnunet_native::DirectorySync::Unavailable)
+    );
     key.revalidate()?;
     let public = key.public_key();
     let reopened = KeyFile::open(&path)?;
     assert_eq!(reopened.public_key(), public);
     reopened.revalidate()?;
+    assert_eq!(reopened.directory_sync(), None);
     let publisher = Publisher::namespace(reopened.secret(), b"raw-\xff-label", Limits::default())?;
     let content = Content {
         key: [31; 64],
@@ -80,24 +95,46 @@ fn unsafe_or_changed_seed_authority_is_refused_without_overwrite_or_unlink() -> 
     let temporary = Temporary::new()?;
     let path = temporary.0.join("key");
     fixture(&path, &[7; 32])?;
-    let linked = temporary.0.join("symlink");
-    symlink(&path, &linked)?;
-    assert!(KeyFile::open(&linked).is_err());
-    assert!(KeyFile::create(&linked).is_err());
-    let fifo = temporary.0.join("fifo");
-    mkfifo(&fifo, Mode::S_IRUSR | Mode::S_IWUSR)?;
-    assert!(matches!(KeyFile::open(&fifo),Err(error) if matches!(error.cause,Cause::Private)));
-    fs::set_permissions(&path, fs::Permissions::from_mode(0o644))?;
-    assert!(matches!(KeyFile::open(&path),Err(error) if matches!(error.cause,Cause::Private)));
-    fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
+    #[cfg(unix)]
+    {
+        use nix::{sys::stat::Mode, unistd::mkfifo};
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let linked = temporary.0.join("symlink");
+        symlink(&path, &linked)?;
+        assert!(KeyFile::open(&linked).is_err());
+        assert!(KeyFile::create(&linked).is_err());
+        let fifo = temporary.0.join("fifo");
+        mkfifo(&fifo, Mode::S_IRUSR | Mode::S_IWUSR)?;
+        assert!(
+            matches!(KeyFile::open(&fifo),Err(error) if matches!(error.cause,Cause::Private(_)))
+        );
+        for mode in [0o644, 0o700, 0o200] {
+            fs::set_permissions(&path, fs::Permissions::from_mode(mode))?;
+            let refused = KeyFile::open(&path)
+                .err()
+                .ok_or_else(|| format!("accepted unqualified seed mode {mode:o}"))?;
+            match refused.cause {
+                Cause::Private(_) => {}
+                Cause::Io(error) if error.kind() == io::ErrorKind::PermissionDenied => {}
+                cause => return Err(format!("unexpected mode {mode:o} refusal: {cause}").into()),
+            }
+        }
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
+    }
+    let alias = temporary.0.join("alias");
+    fs::hard_link(&path, &alias)?;
+    assert!(matches!(KeyFile::open(&path),Err(error) if matches!(error.cause,Cause::Private(_))));
+    fs::remove_file(alias)?;
     let mut writer = OpenOptions::new().write(true).truncate(true).open(&path)?;
     writer.write_all(&[7; 31])?;
     writer.sync_all()?;
     assert!(matches!(KeyFile::open(&path),Err(error) if matches!(error.cause,Cause::Length)));
-    writer.write_all_at(&[7; 32], 0)?;
+    writer.seek(SeekFrom::Start(0))?;
+    writer.write_all(&[7; 32])?;
     writer.sync_all()?;
     let changed = KeyFile::open(&path)?;
-    writer.write_all_at(&[8], 0)?;
+    writer.seek(SeekFrom::Start(0))?;
+    writer.write_all(&[8])?;
     writer.sync_all()?;
     assert!(matches!(changed.revalidate(),Err(error) if matches!(error.cause,Cause::Changed)));
     assert_eq!(fs::read(&path)?[0], 8);

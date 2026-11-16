@@ -9,37 +9,16 @@ use std::{
     error::Error,
     future::{Future, poll_fn},
     io,
-    path::{Path, PathBuf},
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
+    path::Path,
+    sync::Arc,
     task::Poll,
     time::Duration,
 };
 use tokio::{io::AsyncReadExt, time::Instant};
+#[path = "directory.rs"]
+mod directory;
+pub use directory::Directory as Dir;
 pub type Result<T = ()> = std::result::Result<T, Box<dyn Error + Send + Sync>>;
-static NEXT: AtomicU64 = AtomicU64::new(0);
-pub struct Dir(PathBuf);
-impl Dir {
-    pub fn new() -> io::Result<Self> {
-        let p = std::env::temp_dir().join(format!(
-            "rb-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::create_dir(&p)?;
-        Ok(Self(p))
-    }
-    pub fn socket(&self, n: &str) -> PathBuf {
-        self.0.join(n)
-    }
-}
-impl Drop for Dir {
-    fn drop(&mut self) {
-        drop(std::fs::remove_dir_all(&self.0));
-    }
-}
 pub fn runtime() -> io::Result<tokio::runtime::Runtime> {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -57,7 +36,7 @@ pub fn cfg(path: &Path) -> Result<Configuration> {
     c.set_value(
         b"resolver",
         b"UNIXPATH",
-        Some(path.as_os_str().as_encoded_bytes()),
+        Some(&gnunet_native::os_bytes::encode(path.as_os_str())),
     )?;
     Ok(c)
 }

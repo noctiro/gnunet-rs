@@ -5,6 +5,8 @@ state and IPC contract. It is `no_std`, uses no allocator or native FFI, and
 forbids unsafe code. It does not provide a DNS daemon, native gethostname /
 getaddrinfo helper, cache or a system DNS fallback.
 
+## Wire format
+
 `resolver.rs` provides borrowed codecs for the official 4/5 messages. The host
 supplies an explicit native `FamilyProfile`: IPv6 is 30 on Darwin and 10 on
 Linux; IDs are four opaque echoed bytes. A maximum-length forward frame is
@@ -12,6 +14,8 @@ Linux; IDs are four opaque echoed bytes. A maximum-length forward frame is
 65536 cannot be encoded. Capacity/validation failure leaves output unchanged.
 Decoded names retain their raw bytes; reverse callback strings use the first
 NUL after validating the required final NUL, matching C.
+
+## Request ownership
 
 `ResolverHandle<R,N>` owns R slots, each with N bytes of forward-name storage.
 Slots cover pending local tasks, queued requests, sent/canceled drains and
@@ -28,6 +32,8 @@ Native hostname resolution calls the host gethostname helper then admits
 that name through `ip_get`. The separate synchronous FQDN helper must use the
 normal build's getaddrinfo behavior; returning a raw hostname would not
 complete that API.
+
+## Driving the client
 
 Drive the owner as follows:
 
@@ -62,6 +68,8 @@ Drive the owner as follows:
    when no MQ exists. Close only the returned epoch. `next_wakeup` accounts for
    tasks, deadlines, reconnect and idle close; backoff caps at 15 minutes.
 
+## Cancellation
+
 Cancellation never creates a wire cancel message or a completion callback.
 Unsent/local requests are reclaimed immediately. A sent cancel suppresses
 callbacks and stays at the FIFO head until END, connection failure, or the
@@ -79,6 +87,8 @@ and malformed forward AF values are errors, not the C daemon's assertion.
 Local `Completion` reasons explain lifecycle state; they are not added wire
 fields or remote error acknowledgments. Host numeric fallback formatting still
 needs the native inet_ntop-compatible behavior, including mapped IPv6 forms.
+
+## Reference
 
 The pinned source is revision `346358e26d4dcc2dc4f51bef5d52dca29c7d8165`:
 `gnunet_resolver_service.h`, `resolver.h`, `resolver_api.c`,

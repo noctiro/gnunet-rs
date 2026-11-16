@@ -21,7 +21,7 @@ path = "src/bin/paillier_alice.rs"
 name = "gnunet-service-scalarproduct-bob"
 path = "src/bin/paillier_bob.rs"
 
-[target.'cfg(unix)'.dependencies]
+[dependencies]
 gnunet-scalarproduct-paillier = { workspace = true, features = ["alloc"] }
 gnunet-scalarproduct = { workspace = true, features = ["alloc"] }
 gnunet-scalarproduct-host.workspace = true

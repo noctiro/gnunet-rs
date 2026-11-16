@@ -1,5 +1,5 @@
 //! Bounded actual GNUnet v0.29.1 IDENTITY SERVICE with independent marked store.
-#![cfg(unix)]
+#![cfg(any(unix, windows))]
 #![forbid(unsafe_code)]
 /// Actual private Rust store, durable snapshot publication and retained uncertainty.
 pub mod backend;

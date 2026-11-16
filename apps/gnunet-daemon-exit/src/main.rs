@@ -6,19 +6,14 @@ use std::{
     process::ExitCode,
 };
 type Failure = Box<dyn Error>;
-#[cfg(unix)]
 mod announcement;
-#[cfg(unix)]
 mod dns_advertisement;
-#[cfg(unix)]
 mod early;
-#[cfg(unix)]
 mod foreground;
-#[cfg(unix)]
 mod lifecycle;
-#[cfg(unix)]
 mod network;
-#[cfg(unix)]
+#[cfg(windows)]
+mod readiness;
 mod settings;
 fn main() -> ExitCode {
     let routed = std::cell::Cell::new(false);
@@ -32,12 +27,6 @@ fn main() -> ExitCode {
         }
     }
 }
-#[cfg(not(unix))]
-fn run(routed: &std::cell::Cell<bool>) -> Result<(), Failure> {
-    let _ = routed;
-    Err("EXIT requires Unix".into())
-}
-#[cfg(unix)]
 fn run(routed: &std::cell::Cell<bool>) -> Result<(), Failure> {
     use gnunet_program_host::{
         logging::Logger,
@@ -45,16 +34,19 @@ fn run(routed: &std::cell::Cell<bool>) -> Result<(), Failure> {
         reporting::Reporter,
         shared_clock::SharedClock,
     };
+    #[cfg(unix)]
     use gnunet_service_startup::{GroupsProfile, apply_privileges, configured_user, resolve_user};
     use std::sync::Arc;
-    let mut inherited = early::capture()?;
+    let inherited = early::capture()?;
+    #[cfg(unix)]
+    let mut inherited = inherited;
     let clock = SharedClock::native(256)?;
     let config = gnunet_config::Configuration::create(
         Arc::new(gnunet_config::ProjectData::default()),
         Default::default(),
     )?;
     let mut logger = Logger::new(b"gnunet-daemon-exit", std::process::id(), false)?;
-    let prepared=program::prepare(config,Invocation{binary_name:b"gnunet-daemon-exit",help:Some(b"GNUnet EXIT PROGRAM; official CADET VPN protocol and bounded actual Linux helper/native packet sources."),select_default_filename:true,defaults:Defaults::Native},Default::default(),std::env::args_os(),&program::Environment::capture(),&mut NlsDisabled,&mut logger,&clock,&mut io::stdout().lock(),&mut io::stderr().lock())?;
+    let prepared=program::prepare(config,Invocation{binary_name:b"gnunet-daemon-exit",help:Some(b"GNUnet EXIT PROGRAM; official CADET VPN protocol and bounded native packet sources."),select_default_filename:true,defaults:Defaults::Native},Default::default(),std::env::args_os(),&program::Environment::capture(),&mut NlsDisabled,&mut logger,&clock,&mut io::stdout().lock(),&mut io::stderr().lock())?;
     let prepared = match prepared {
         Preparation::Ready(p) => *p,
         Preparation::Stopped(s) if s.code == 0 && matches!(s.reason, StoppedReason::Options) => {
@@ -67,6 +59,7 @@ fn run(routed: &std::cell::Cell<bool>) -> Result<(), Failure> {
     let reports = Reporter::new(logger, clock.clone());
     routed.set(true);
     let cleanup = lifecycle::Cleanup::default();
+    #[cfg(unix)]
     if let Some(notice) = inherited.notice.take() {
         reports.warning(
             "exit.parent.notice",
@@ -81,16 +74,21 @@ fn run(routed: &std::cell::Cell<bool>) -> Result<(), Failure> {
             return Err("EXIT accepts no positional arguments".into());
         }
         let settings = settings::Settings::read(prepared.main().config)?;
-        let user = configured_user(prepared.main().config, b"exit")?
-            .map(|u| resolve_user(&u))
-            .transpose()?;
-        let privilege = apply_privileges(user.as_ref(), GroupsProfile::WithInitgroups)?;
-        if user.is_some() {
-            reports.debug(
-                "exit.identity",
-                format_args!("EXIT actual process identity: {privilege:?}"),
-            );
+        #[cfg(unix)]
+        {
+            let user = configured_user(prepared.main().config, b"exit")?
+                .map(|u| resolve_user(&u))
+                .transpose()?;
+            let privilege = apply_privileges(user.as_ref(), GroupsProfile::WithInitgroups)?;
+            if user.is_some() {
+                reports.debug(
+                    "exit.identity",
+                    format_args!("EXIT actual process identity: {privilege:?}"),
+                );
+            }
         }
+        #[cfg(windows)]
+        gnunet_service_startup::verify_configured_identity(prepared.main().config, b"exit")?;
         if reports.failed() {
             return Ok(());
         }

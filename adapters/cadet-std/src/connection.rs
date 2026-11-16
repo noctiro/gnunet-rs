@@ -52,6 +52,7 @@ pub struct Bridge<'core, 'book, 'slots, const C: usize = 64, const S: usize = 32
     budget_timer: Option<Pin<Box<Sleep>>>,
     cleanup_error: Option<Error>,
     native_failed: bool,
+    closed: bool,
 }
 impl<'core, 'book, 'slots, const C: usize, const S: usize> Bridge<'core, 'book, 'slots, C, S> {
     /// Bind the original Book, empty caller records and one real CORE client.
@@ -126,6 +127,7 @@ impl<'core, 'book, 'slots, const C: usize, const S: usize> Bridge<'core, 'book, 
             budget_timer: None,
             cleanup_error: None,
             native_failed: false,
+            closed: false,
         })
     }
     /// Original source clock; cloning creates no independent listener.
@@ -199,8 +201,9 @@ impl<'core, 'book, 'slots, const C: usize, const S: usize> Bridge<'core, 'book, 
         self.cleanup_error.take()
     }
     fn clock_failure(&mut self) {
-        // Stop physical IO before returning the real clock error. Preserve its
-        // actual retirement until the same provider supplies a coherent sample.
+        // Preserve the original failure while physically fencing wire work.
+        // Returned sources subsequently settle on the independent native epoch.
+        self.closed = true;
         match self.native.close() {
             Ok(Some(actual)) if self.pending_retirement.is_none() => {
                 self.pending_retirement = Some(actual)
@@ -220,12 +223,20 @@ impl<'core, 'book, 'slots, const C: usize, const S: usize> Bridge<'core, 'book, 
                 return Err(reason.into());
             }
         };
-        if sample.monotonic < self.last_now {
+        self.observe_time(sample.monotonic)?;
+        Ok(sample)
+    }
+    fn observe_time(&mut self, now: MonoInstant) -> Result<MonoInstant, Error> {
+        if now < self.last_now {
             self.clock_failure();
             return Err(ProtocolError::TimeUncertain.into());
         }
-        self.last_now = sample.monotonic;
-        Ok(sample)
+        self.last_now = now;
+        Ok(now)
+    }
+    fn native_time(&mut self) -> Result<MonoInstant, Error> {
+        let now = self.timebase.elapsed()?;
+        self.observe_time(now)
     }
     fn time(&mut self) -> Result<MonoInstant, Error> {
         Ok(self.time_sample()?.monotonic)
@@ -797,6 +808,16 @@ impl<'core, 'book, 'slots, const C: usize, const S: usize> Bridge<'core, 'book, 
         } else if state.exposed() {
             return Err(ProtocolError::Conflict.into());
         }
+        if state.exposed() && !state.complete() {
+            self.report.partial_retirements = self.report.partial_retirements.saturating_add(1);
+            if matches!(
+                PeerMessage::decode(completion.source.as_ref()),
+                Ok(PeerMessage::Encrypted { .. })
+            ) {
+                self.report.encrypted_partial_retirements =
+                    self.report.encrypted_partial_retirements.saturating_add(1);
+            }
+        }
         self.sends[index].record = None;
         if let Some(i) = self.peer_index(epoch, peer)
             && self.peers[i]
@@ -1084,9 +1105,13 @@ impl<'core, 'book, 'slots, const C: usize, const S: usize> Bridge<'core, 'book, 
         if let Some(error) = self.fault {
             return Poll::Ready(Err(error.into()));
         }
-        let now = match self.poll_time(cx) {
-            Poll::Pending => return Poll::Pending,
-            Poll::Ready(result) => result?,
+        let now = if self.closed || self.pending_retirement.is_some() {
+            self.native_time()?
+        } else {
+            match self.poll_time(cx) {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(result) => result?,
+            }
         };
         if let Some(actual) = self.pending_retirement.take() {
             return Poll::Ready(self.progress(actual, book, observer, now));
@@ -1102,7 +1127,7 @@ impl<'core, 'book, 'slots, const C: usize, const S: usize> Bridge<'core, 'book, 
         // PILS/application progress while CORE itself remains quiet. Retry a
         // newly eligible frame without repeatedly copying the same refused one.
         let queued = book.next_frame().map(|frame| frame.frame);
-        if self.offer || queued != self.offered_frame {
+        if !self.closed && (self.offer || queued != self.offered_frame) {
             self.offer = false;
             let submitted = self.transmit(cx, book, observer)?;
             self.offered_frame = book.next_frame().map(|frame| frame.frame);
@@ -1146,7 +1171,7 @@ impl<'core, 'book, 'slots, const C: usize, const S: usize> Bridge<'core, 'book, 
         let actual = self.native.reconnect()?;
         self.fault = None;
         self.pending_retirement = Some(actual);
-        let now = self.time()?;
+        let now = self.native_time()?;
         let actual = self
             .pending_retirement
             .take()
@@ -1161,15 +1186,15 @@ impl<'core, 'book, 'slots, const C: usize, const S: usize> Bridge<'core, 'book, 
         observer: &mut O,
     ) -> Result<Option<Step<'core, 'book>>, Error> {
         self.check(book)?;
+        self.closed = true;
         let actual = self.native.close()?;
         self.fault = None;
         if let Some(actual) = actual {
             self.pending_retirement = Some(actual);
         }
-        // Stopping the original MQ never depends on a healthy clock. If its
-        // logical provider refuses, retain its actual retirement receipt until
-        // that source recovers; do not invent a successful coherent sample.
-        let now = self.time()?;
+        // Physical closure and local settlement use only the original native
+        // epoch. They neither repair logical time nor authorize another MQ.
+        let now = self.native_time()?;
         self.pending_retirement
             .take()
             .map(|p| self.progress(p, book, observer, now))

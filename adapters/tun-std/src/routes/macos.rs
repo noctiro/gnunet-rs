@@ -76,7 +76,12 @@ pub(super) fn append(frame: &mut Vec<u8>, address: &[u8]) {
     frame.extend_from_slice(address);
     frame.resize((frame.len() + 3) & !3, 0)
 }
-pub(super) fn prepare(info: &Info, action: &Action, sequence: u32) -> io::Result<Session> {
+pub(super) fn prepare(
+    info: &Info,
+    action: &Action,
+    sequence: u32,
+    _: Option<u32>,
+) -> io::Result<Session> {
     let Action::Route {
         add,
         destination,

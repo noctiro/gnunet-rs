@@ -1,9 +1,10 @@
 //! One shared configured URI selection and original-child dispatcher; no shell.
-#![cfg(unix)]
 #![forbid(unsafe_code)]
+mod child;
 mod control;
 mod dispatcher;
 mod settings;
+pub use child::StopMethod;
 pub use dispatcher::{Bounds, Cause, CloseReport, DispatchFailure, Dispatcher, Report, Stop};
 pub use settings::Settings;
 

@@ -6,6 +6,8 @@ is `src/service/statistics/gnunet-service-statistics.c`; IPC structures are in
 `statistics.h`. This crate implements their business state with explicit finite
 capacities, without allocation, unsafe code, sockets or filesystem I/O.
 
+## Reference behavior
+
 `Statistics<ROWS, NAME_BYTES, CLIENTS, WATCHES, EVENTS>` admits private generational
 connection handles. Names are opaque bytes separated by NUL on the wire;
 `NAME_BYTES` includes both terminators. A row stores global value, UID,
@@ -43,6 +45,8 @@ sends DISCONNECT_CONFIRM; it does not itself close the socket or save to disk.
 Real EOF/cancellation invokes the separate owner cleanup operation. Durability
 must not be inferred from the confirmation.
 
+## Persistence and recovery
+
 Persistence enumeration yields the official absolute SET records with flags 2,
 concatenated without any private header. `restore` imports one canonical record
 at a time when no clients are connected. It rejects noncanonical flags and foreign
@@ -61,6 +65,8 @@ Two upstream details require care:
   checks the pinned C under ordinary optimization and defined signed wrapping;
   both agree for this boundary on the tested compiler. This does not prove that
   the undefined C expression is portable to every compiler.
+
+## Checks and examples
 
 Tests include independent wire literals, exact framing, zero-watch behavior,
 signed extrema, GET order/wildcards, owner cleanup and slot reuse, all declared

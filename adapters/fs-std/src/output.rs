@@ -3,23 +3,23 @@ mod artifact;
 mod existing;
 mod observed;
 mod owned;
+mod path;
+pub(crate) use path::components;
+#[cfg(feature = "service")]
+pub(crate) use path::from_protocol_name;
 #[cfg(feature = "service")]
 mod range;
+pub(crate) use crate::FileIdentity;
 use crate::{BlockSource, Buffers, Control, Error, Limits, Progress, ReadFile, Result};
 pub use artifact::{ArtifactFailure, ArtifactReport};
 pub use existing::{RevalidateFailure, RevalidateStage, RevalidatedFile};
 use gnunet_fs::Content;
-use nix::{
-    errno::Errno,
-    fcntl::{AtFlags, OFlag, open, openat},
-    sys::stat::{FileStat, Mode, fstat, fstatat, mkdirat},
-    unistd::{UnlinkatFlags, unlinkat},
-};
+use gnunet_native::{DirectorySync, filesystem::Directory};
 #[cfg(any(feature = "service", test))]
 pub(crate) use observed::OutputObservation;
 #[cfg(feature = "service")]
 pub(crate) use observed::TempRecord;
-pub use observed::{CommitStage, FileIdentity, ObservedFailure};
+pub use observed::{CommitStage, ObservedFailure};
 pub use owned::{DirectoryStage, OWNER_MARKER_NAME, OwnedDirectoryFailure};
 #[cfg(feature = "service")]
 pub use range::{RevalidateRangeFailure, RevalidatedRange};
@@ -27,58 +27,34 @@ use std::{
     ffi::{OsStr, OsString},
     fs::File,
     io,
-    os::unix::ffi::OsStrExt,
     path::Path,
 };
 
-const MAX_PATH_BYTES: usize = 4096;
-const MAX_COMPONENTS: usize = 128;
-const TEMP_PREFIX: &str = ".gnunet-fs-output-";
-const DIRECTORY: OFlag = OFlag::O_RDONLY
-    .union(OFlag::O_DIRECTORY)
-    .union(OFlag::O_NOFOLLOW)
-    .union(OFlag::O_CLOEXEC);
-
+// An eight-digit DOS-compatible name needs neither case folding nor a generated
+// 8.3 alias. A matching final name is skipped before exclusive creation.
+fn temporary_name(nonce: u64) -> OsString {
+    const SPACE: u64 = 10_000_000;
+    OsString::from(format!(
+        "0{:07}",
+        (u64::from(std::process::id()) + nonce % SPACE) % SPACE
+    ))
+}
+pub(crate) fn temporary_name_valid(name: &OsStr) -> bool {
+    let bytes = name.as_encoded_bytes();
+    bytes.len() == 8 && bytes[0] == b'0' && bytes.iter().all(u8::is_ascii_digit)
+}
 fn invalid_name() -> Error {
     gnunet_types::Error::InvalidInput.into()
-}
-fn native(error: Errno) -> io::Error {
-    io::Error::from_raw_os_error(error as i32)
-}
-fn components(path: &Path) -> Result<Vec<&OsStr>> {
-    // Path::components normalizes '.' before the caller can reject it. Inspect
-    // the actual metadata bytes first, before mkdir or source/block operations.
-    let bytes = path.as_os_str().as_bytes();
-    if bytes.len() > MAX_PATH_BYTES {
-        return Err(Error::Limit);
-    }
-    if bytes.is_empty() || bytes[0] == b'/' || bytes.contains(&0) || bytes.contains(&b'\\') {
-        return Err(invalid_name());
-    }
-    let mut result = Vec::new();
-    for part in bytes.split(|byte| *byte == b'/') {
-        if part.is_empty()
-            || part == b"."
-            || part == b".."
-            || (part.len() >= 2 && part[0].is_ascii_alphabetic() && part[1] == b':')
-        {
-            return Err(invalid_name());
-        }
-        if result.len() == MAX_COMPONENTS {
-            return Err(Error::Limit);
-        }
-        result.try_reserve(1).map_err(|_| Error::Limit)?;
-        result.push(OsStr::from_bytes(part));
-    }
-    Ok(result)
 }
 
 /// A caller-selected existing directory, held by its actual descriptor. Renaming
 /// or replacing the original root pathname cannot redirect an extraction.
-/// Metadata paths are relative, at most4096 bytes/128 components, and never follow
-/// symlinks. Parent directories may be created, but existing targets never change.
+/// Metadata paths are relative and bounded by 4096 native units/128 components
+/// (Unix bytes or Windows UTF-16 units). Symlinks/name surrogates are refused.
+/// Callers exclude administrative replacement within held directories. Parent
+/// directories may be created; existing final targets are never replaced.
 pub struct OutputDir {
-    root: File,
+    root: Directory,
     nonce: u64,
 }
 impl OutputDir {
@@ -86,20 +62,20 @@ impl OutputDir {
     #[cfg(feature = "service")]
     pub(crate) fn duplicate(&self) -> Result<Self> {
         Ok(Self {
-            root: self.root.try_clone()?,
+            root: self.root.duplicate()?,
             nonce: self.nonce,
         })
     }
     #[cfg(feature = "network")]
     pub(crate) fn from_directory(root: File) -> Result<Self> {
-        if !root.metadata()?.is_dir() {
-            return Err(invalid_name());
-        }
-        Ok(Self { root, nonce: 0 })
+        Ok(Self {
+            root: Directory::from_file(&root)?,
+            nonce: 0,
+        })
     }
     /// Open an existing caller-selected directory; a final root symlink is refused.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
-        let root = File::from(open(path.as_ref(), DIRECTORY, Mode::empty())?);
+        let root = Directory::open(path.as_ref())?;
         Ok(Self { root, nonce: 0 })
     }
     /// Create a new private directory below this descriptor without replacing
@@ -110,71 +86,53 @@ impl OutputDir {
         let parts = components(relative.as_ref())?;
         let (name, ancestors) = parts.split_last().ok_or_else(invalid_name)?;
         let parent = self.parent(ancestors)?;
-        mkdirat(&parent, *name, Mode::S_IRWXU)?;
-        let root = File::from(openat(&parent, *name, DIRECTORY, Mode::empty())?);
-        root.sync_all()?;
-        parent.sync_all()?;
+        let root = parent.create_private_directory(name)?;
+        root.sync()?;
+        parent.sync()?;
         Ok(Self { root, nonce: 0 })
     }
-    /// Sync the actual anchored directory, including its completed child names.
-    pub fn sync_directory(&self) -> Result<()> {
-        self.root.sync_all()?;
-        Ok(())
+    /// Synchronize the held directory or explicitly report an unavailable native
+    /// barrier. This never substitutes file synchronization for directory sync.
+    pub fn sync_directory(&self) -> Result<DirectorySync> {
+        Ok(self.root.sync()?)
     }
-    fn parent(&self, parts: &[&OsStr]) -> Result<File> {
-        let mut parent = self.root.try_clone()?;
+    fn parent(&self, parts: &[&OsStr]) -> Result<Directory> {
+        let mut parent = self.root.duplicate()?;
         for name in parts {
-            let next = match openat(&parent, *name, DIRECTORY, Mode::empty()) {
-                Ok(fd) => File::from(fd),
-                Err(Errno::ENOENT) => {
-                    match mkdirat(&parent, *name, Mode::S_IRWXU) {
-                        Ok(()) | Err(Errno::EEXIST) => {}
-                        Err(error) => return Err(error.into()),
-                    }
-                    let next = File::from(openat(&parent, *name, DIRECTORY, Mode::empty())?);
-                    next.sync_all()?;
-                    next
-                }
-                Err(error) => return Err(error.into()),
-            };
-            // Also repairs a prior interrupted mkdir that is now observed as
-            // an existing component; each traversed parent naming barrier holds.
-            parent.sync_all()?;
+            let next = parent.ensure_directory(name)?;
+            next.sync()?;
+            parent.sync()?;
             parent = next;
         }
         Ok(parent)
     }
-    fn temporary<'a>(&mut self, parent: &'a File, final_name: &OsStr) -> Result<Temporary<'a>> {
+    fn temporary<'a>(
+        &mut self,
+        parent: &'a Directory,
+        final_name: &OsStr,
+    ) -> Result<Temporary<'a>> {
         for _ in 0..1024 {
             let nonce = self.nonce;
             self.nonce = nonce.checked_add(1).ok_or(Error::Limit)?;
-            let name = OsString::from(format!("{TEMP_PREFIX}{}-{nonce}", std::process::id()));
+            let name = temporary_name(nonce);
             // A legal metadata name may itself use this prefix. Creating our
             // temporary at that same name would expose an unauthenticated prefix.
             if name.as_os_str() == final_name {
                 continue;
             }
-            match openat(
-                parent,
-                name.as_os_str(),
-                OFlag::O_WRONLY
-                    | OFlag::O_CREAT
-                    | OFlag::O_EXCL
-                    | OFlag::O_NOFOLLOW
-                    | OFlag::O_CLOEXEC,
-                Mode::S_IRUSR | Mode::S_IWUSR,
-            ) {
-                Ok(fd) => {
-                    let file = File::from(fd);
-                    // Retain cleanup ownership before any subsequent fallible call.
-                    let identity = match fstat(&file) {
+            match parent.create_private_file(&name) {
+                Ok(file) => {
+                    let identity = match FileIdentity::of(&file) {
                         Ok(identity) => identity,
-                        Err(error) => {
-                            // The descriptor was created exclusively by this call;
-                            // no other output pathname has been admitted.
-                            let _cleanup =
-                                unlinkat(parent, name.as_os_str(), UnlinkatFlags::NoRemoveDir);
-                            return Err(error.into());
+                        Err(source) => {
+                            let cause = Error::Io(source);
+                            return match parent.remove_file(&name, &file) {
+                                Ok(()) => Err(cause),
+                                Err(source) => Err(Error::CleanupFailed {
+                                    cause: Box::new(cause),
+                                    source,
+                                }),
+                            };
                         }
                     };
                     return Ok(Temporary {
@@ -185,19 +143,20 @@ impl OutputDir {
                         removed: false,
                     });
                 }
-                Err(Errno::EEXIST) => {}
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
                 Err(error) => return Err(error.into()),
             }
         }
         Err(Error::Limit)
     }
     /// Authenticate and stream a file to an owned temporary in its destination
-    /// directory. Only a fully authenticated, file-synced and no-clobber-linked
-    /// file whose directory has been synced returns a completed receipt.
+    /// directory. A completed receipt requires full authentication, actual file
+    /// synchronization, no-replace publication and checked final identity.
+    /// `ReadFile::directory_sync` separately reports directory-barrier support.
     ///
     /// Cancellation is sampled between blocks and immediately before linking.
     /// Once linked, an uncertain final sync returns CommitUnknown and keeps the
-    /// target. CleanupAfterCommit preserves a known durable target. The query is
+    /// target. CleanupAfterCommit preserves the actual final retention. The query is
     /// content.query; callers must retain the destination
     /// too, since the query alone does not identify a named output to reconcile.
     pub fn write_file(
@@ -266,63 +225,43 @@ impl OutputDir {
     }
 }
 
-fn ensure_absent(parent: &File, name: &OsStr) -> Result<()> {
-    match fstatat(parent, name, AtFlags::AT_SYMLINK_NOFOLLOW) {
+fn ensure_absent(parent: &Directory, name: &OsStr) -> Result<()> {
+    match parent.open_file(name) {
         Ok(_) => {
             Err(io::Error::new(io::ErrorKind::AlreadyExists, "FS output already exists").into())
         }
-        Err(Errno::ENOENT) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error.into()),
     }
 }
-
 struct Temporary<'a> {
-    parent: &'a File,
+    parent: &'a Directory,
     name: OsString,
     file: File,
-    identity: FileStat,
+    identity: FileIdentity,
     removed: bool,
 }
 impl Temporary<'_> {
-    fn matches(&self, current: &FileStat) -> bool {
-        current.st_dev == self.identity.st_dev && current.st_ino == self.identity.st_ino
-    }
-    fn check_link_at(&self, parent: &File, name: &OsStr) -> io::Result<()> {
-        let current = fstatat(parent, name, AtFlags::AT_SYMLINK_NOFOLLOW).map_err(native)?;
-        if !self.matches(&current) {
-            return Err(io::Error::other(
+    fn check_link_at(&self, parent: &Directory, name: &OsStr) -> io::Result<()> {
+        if parent.same_file(name, &self.file)? {
+            Ok(())
+        } else {
+            Err(io::Error::other(
                 "FS output entry no longer names its owned file",
-            ));
+            ))
         }
-        Ok(())
     }
     fn check_name(&self) -> io::Result<()> {
-        self.check_link_at(self.parent, self.name.as_os_str())
+        self.check_link_at(self.parent, &self.name)
     }
     fn remove(&mut self) -> io::Result<()> {
         if self.removed {
             return Ok(());
         }
-        match fstatat(
-            self.parent,
-            self.name.as_os_str(),
-            AtFlags::AT_SYMLINK_NOFOLLOW,
-        ) {
-            Ok(current) if self.matches(&current) => {
-                unlinkat(
-                    self.parent,
-                    self.name.as_os_str(),
-                    UnlinkatFlags::NoRemoveDir,
-                )
-                .map_err(native)?;
-            }
-            Err(Errno::ENOENT) => {}
-            Ok(_) => {
-                return Err(io::Error::other(
-                    "FS output temporary was replaced; foreign entry retained",
-                ));
-            }
-            Err(error) => return Err(native(error)),
+        match self.parent.remove_file(&self.name, &self.file) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
         }
         self.removed = true;
         Ok(())
@@ -335,643 +274,4 @@ impl Drop for Temporary<'_> {
 }
 
 #[cfg(test)]
-#[expect(
-    clippy::panic_in_result_fn,
-    reason = "Assertions check actual authenticated output and filesystem safety boundaries"
-)]
-mod tests {
-    use super::*;
-    use crate::{BlockSink, Insert};
-    use gnunet_fs::content::{BLOCK_BYTES, EncodedNode, NodeRef};
-    use std::{
-        fs,
-        sync::atomic::{AtomicU64, Ordering},
-    };
-    static NEXT: AtomicU64 = AtomicU64::new(0);
-    struct Cleanup(std::path::PathBuf);
-    impl Cleanup {
-        fn new() -> io::Result<Self> {
-            let path = std::env::temp_dir().join(format!(
-                "gnunet-fs-output-{}-{}",
-                std::process::id(),
-                NEXT.fetch_add(1, Ordering::Relaxed)
-            ));
-            fs::create_dir(&path)?;
-            Ok(Self(path))
-        }
-    }
-    impl Drop for Cleanup {
-        fn drop(&mut self) {
-            let _cleanup = fs::remove_dir_all(&self.0);
-        }
-    }
-    #[derive(Default)]
-    struct Blocks {
-        rows: Vec<([u8; 64], Vec<u8>)>,
-        data_reads: usize,
-        corrupt_second: bool,
-    }
-    impl BlockSink for Blocks {
-        fn insert_block(&mut self, encoded: EncodedNode<'_>) -> Result<Insert> {
-            self.rows.push((
-                encoded.block().key().query,
-                encoded.block().bytes().to_vec(),
-            ));
-            Ok(Insert::Created)
-        }
-    }
-    impl BlockSource for Blocks {
-        fn read_block(&mut self, request: NodeRef, output: &mut [u8]) -> Result<usize> {
-            let bytes = &self
-                .rows
-                .iter()
-                .find(|row| row.0 == request.key().query)
-                .ok_or(Error::Corrupt)?
-                .1;
-            output
-                .get_mut(..bytes.len())
-                .ok_or(Error::Corrupt)?
-                .copy_from_slice(bytes);
-            if request.node().level() == 0 {
-                self.data_reads += 1;
-                if self.corrupt_second && self.data_reads == 2 {
-                    output[bytes.len() - 1] ^= 1;
-                }
-            }
-            Ok(bytes.len())
-        }
-    }
-    fn input() -> Vec<u8> {
-        (0..BLOCK_BYTES + 1).map(|n| (n % 251) as u8).collect()
-    }
-    fn published(bytes: &[u8]) -> Result<(Content, Blocks)> {
-        let mut source = Blocks::default();
-        let file = Buffers::new().publish(
-            &mut &bytes[..],
-            bytes.len() as u64,
-            &mut source,
-            Limits::default(),
-            |_| Control::Continue,
-        )?;
-        Ok((file.content, source))
-    }
-    #[test]
-    fn revalidation_restarts_ctime_only_but_bounds_continuous_metadata_changes() -> Result<()> {
-        use std::os::unix::fs::PermissionsExt;
-        let root = Cleanup::new()?;
-        let path = root.0.join("plain");
-        let bytes = input();
-        fs::write(&path, &bytes)?;
-        File::open(&path)?.sync_all()?;
-        let output = OutputDir::open(&root.0)?;
-        let identity = output.inspect_file("plain")?.ok_or(Error::Corrupt)?;
-        let mut cache = crate::Repository::open(root.0.join("cache"))?;
-        let mut buffers = Buffers::new();
-        let content = buffers
-            .publish(
-                &mut bytes.as_slice(),
-                bytes.len() as u64,
-                &mut cache,
-                Limits::default(),
-                |_| Control::Continue,
-            )?
-            .content;
-        let mut changed = false;
-        let mut mutation_error = None;
-        let verified = output.revalidate_file(
-            "plain",
-            content,
-            identity,
-            None,
-            &mut buffers,
-            &mut cache,
-            Limits::default(),
-            |_| {
-                if !changed {
-                    changed = true;
-                    if let Err(error) =
-                        fs::set_permissions(&path, fs::Permissions::from_mode(0o400))
-                    {
-                        mutation_error = Some(error);
-                        return Control::Cancel;
-                    }
-                }
-                Control::Continue
-            },
-        );
-        if let Some(error) = mutation_error {
-            return Err(error.into());
-        }
-        let verified = verified.map_err(|error| io::Error::other(error.to_string()))?;
-        assert_eq!(verified.source_attempts, 2);
-        assert_eq!(verified.read.verified.content(), content);
-        assert_eq!(verified.identity, identity);
-        assert_eq!(fs::read(&path)?, bytes);
-
-        let mut mode = 0o600;
-        let refused = output.revalidate_file(
-            "plain",
-            content,
-            identity,
-            None,
-            &mut buffers,
-            &mut cache,
-            Limits::default(),
-            |_| {
-                if let Err(error) = fs::set_permissions(&path, fs::Permissions::from_mode(mode)) {
-                    mutation_error = Some(error);
-                    return Control::Cancel;
-                }
-                mode ^= 0o200;
-                Control::Continue
-            },
-        );
-        if let Some(error) = mutation_error {
-            return Err(error.into());
-        }
-        let refused = match refused {
-            Err(failure) => failure,
-            Ok(_) => return Err(Error::Corrupt),
-        };
-        assert_eq!(refused.source_attempts(), 2);
-        assert!(matches!(&refused.operation, Error::SourceChanged));
-        let previous = refused.previous.as_ref().ok_or(Error::Corrupt)?;
-        assert_eq!(previous.source_attempts(), 1);
-        assert!(matches!(&previous.operation, Error::SourceChanged));
-        assert!(previous.fence.is_some());
-        assert!(refused.fence.is_some());
-        Ok(())
-    }
-    #[test]
-    fn nested_authenticated_output_stays_on_the_original_directory_descriptor() -> Result<()> {
-        let root = Cleanup::new()?;
-        let selected = root.0.join("selected");
-        fs::create_dir(&selected)?;
-        let mut output = OutputDir::open(&selected)?;
-        let moved = root.0.join("original");
-        fs::rename(&selected, &moved)?;
-        fs::create_dir(&selected)?;
-        let bytes = input();
-        let (content, mut source) = published(&bytes)?;
-        let read = output.write_file(
-            "a/b/file.bin",
-            &mut source,
-            content,
-            &mut Buffers::new(),
-            Limits::default(),
-            |_| Control::Continue,
-        )?;
-        assert_eq!(read.verified.content(), content);
-        assert_eq!(read.progress.plaintext_bytes, bytes.len() as u64);
-        assert_eq!(fs::read(moved.join("a/b/file.bin"))?, bytes);
-        assert!(!selected.join("a").exists());
-        assert_eq!(fs::read_dir(moved.join("a/b"))?.count(), 1);
-        Ok(())
-    }
-    #[test]
-    fn unsafe_names_symlinks_and_existing_targets_leave_all_sentinels_unchanged() -> Result<()> {
-        let root = Cleanup::new()?;
-        let selected = root.0.join("selected");
-        let outside = root.0.join("outside");
-        fs::create_dir(&selected)?;
-        fs::create_dir(&outside)?;
-        fs::write(selected.join("existing"), b"keep-existing")?;
-        fs::write(outside.join("sentinel"), b"keep-outside")?;
-        std::os::unix::fs::symlink(&outside, selected.join("escape"))?;
-        std::os::unix::fs::symlink(outside.join("sentinel"), selected.join("final-link"))?;
-        let (content, mut source) = published(b"authenticated")?;
-        let mut output = OutputDir::open(&selected)?;
-        let mut buffers = Buffers::new();
-        for name in [
-            "/absolute",
-            "../outside/sentinel",
-            "safe/../bad",
-            "C:/bad",
-            "C:bad",
-            "a/C:bad",
-            "a\\b",
-            "nul\0bad",
-            ".",
-            "a//b",
-            "a/",
-        ] {
-            assert!(matches!(
-                output.write_file(
-                    name,
-                    &mut source,
-                    content,
-                    &mut buffers,
-                    Limits::default(),
-                    |_| Control::Continue
-                ),
-                Err(Error::Protocol(gnunet_types::Error::InvalidInput))
-            ));
-        }
-        for name in ["escape/sentinel", "final-link", "existing"] {
-            assert!(
-                output
-                    .write_file(
-                        name,
-                        &mut source,
-                        content,
-                        &mut buffers,
-                        Limits::default(),
-                        |_| Control::Continue
-                    )
-                    .is_err()
-            );
-        }
-        assert_eq!(fs::read(selected.join("existing"))?, b"keep-existing");
-        assert_eq!(fs::read(outside.join("sentinel"))?, b"keep-outside");
-        assert!(!selected.join("safe").exists());
-        assert!(!selected.join("a").exists());
-        assert_eq!(source.data_reads, 0);
-        assert_eq!(fs::read_dir(&outside)?.count(), 1);
-        Ok(())
-    }
-    #[test]
-    fn failed_authentication_and_cancelled_prefix_never_publish_or_leave_own_temporary()
-    -> Result<()> {
-        let root = Cleanup::new()?;
-        let selected = root.0.join("selected");
-        fs::create_dir(&selected)?;
-        fs::write(selected.join("sentinel"), b"keep")?;
-        let bytes = input();
-        let (content, mut source) = published(&bytes)?;
-        source.corrupt_second = true;
-        let mut output = OutputDir::open(&selected)?;
-        let mut buffers = Buffers::new();
-        assert!(
-            output
-                .write_file(
-                    "partial/corrupt",
-                    &mut source,
-                    content,
-                    &mut buffers,
-                    Limits::default(),
-                    |_| Control::Continue
-                )
-                .is_err()
-        );
-        assert!(!selected.join("partial/corrupt").exists());
-        assert_eq!(fs::read_dir(selected.join("partial"))?.count(), 0);
-        source.corrupt_second = false;
-        source.data_reads = 0;
-        let mut output = OutputDir::open(&selected)?;
-        let final_name = format!("{TEMP_PREFIX}{}-0", std::process::id());
-        let mut saw_prefix = false;
-        let result = output.write_file(
-            &final_name,
-            &mut source,
-            content,
-            &mut buffers,
-            Limits::default(),
-            |progress| {
-                assert!(!selected.join(&final_name).exists());
-                if progress.plaintext_bytes != 0 {
-                    saw_prefix = true;
-                    Control::Cancel
-                } else {
-                    Control::Continue
-                }
-            },
-        );
-        assert!(matches!(result, Err(Error::Cancelled)));
-        assert!(saw_prefix);
-        assert!(!selected.join(final_name).exists());
-        assert_eq!(fs::read(selected.join("sentinel"))?, b"keep");
-        assert!(fs::read_dir(&selected)?.all(|entry| {
-            entry.is_ok_and(|entry| {
-                entry.file_name() == "sentinel" || entry.file_name() == "partial"
-            })
-        }));
-        Ok(())
-    }
-
-    #[cfg(feature = "service")]
-    #[tokio::test(flavor = "current_thread")]
-    async fn network_download_cache_uses_the_same_owned_no_clobber_commit() -> Result<()> {
-        let root = Cleanup::new()?;
-        let selected = root.0.join("selected");
-        fs::create_dir(&selected)?;
-        let bytes = input();
-        let mut repository = crate::Repository::open(root.0.join("repository"))?;
-        let content = Buffers::new()
-            .publish(
-                &mut bytes.as_slice(),
-                bytes.len() as u64,
-                &mut repository,
-                Limits::default(),
-                |_| Control::Continue,
-            )?
-            .content;
-        let mut output = OutputDir::open(&selected)?;
-        let mut buffers = Buffers::new();
-        let options =
-            crate::network::DownloadOptions::new(gnunet_types::AbsoluteTime::from_micros(u64::MAX));
-        let read = output
-            .download_file(
-                "a/b/download.bin",
-                gnunet_client_host::EndpointSource::unix(root.0.join("not-running.sock")),
-                content,
-                &mut buffers,
-                Some(&mut repository),
-                options,
-                |_| Control::Continue,
-            )
-            .await?;
-        assert_eq!(read.verified.content(), content);
-        assert_eq!(read.progress.plaintext_bytes, bytes.len() as u64);
-        assert_eq!(fs::read(selected.join("a/b/download.bin"))?, bytes);
-        assert_eq!(fs::read_dir(selected.join("a/b"))?.count(), 1);
-        assert!(matches!(
-            output
-                .download_file(
-                    "a/b/download.bin",
-                    gnunet_client_host::EndpointSource::unix(root.0.join("not-running.sock")),
-                    content,
-                    &mut buffers,
-                    Some(&mut repository),
-                    options,
-                    |_| Control::Continue,
-                )
-                .await,
-            Err(Error::Io(error)) if error.kind() == io::ErrorKind::AlreadyExists
-        ));
-        assert_eq!(fs::read(selected.join("a/b/download.bin"))?, bytes);
-        Ok(())
-    }
-
-    #[cfg(feature = "service")]
-    #[tokio::test(flavor = "current_thread")]
-    async fn network_failure_and_dropped_pending_download_remove_only_the_owned_temporary()
-    -> Result<()> {
-        use std::{future::Future, task::Poll};
-        let root = Cleanup::new()?;
-        let selected = root.0.join("selected");
-        fs::create_dir(&selected)?;
-        fs::write(selected.join("sentinel"), b"keep")?;
-        let (content, _) = published(b"authenticated")?;
-        let mut output = OutputDir::open(&selected)?;
-        let mut buffers = Buffers::new();
-        let mut options =
-            crate::network::DownloadOptions::new(gnunet_types::AbsoluteTime::from_micros(u64::MAX));
-        options.io_slice_bytes = 0;
-        let refused = output
-            .download_file(
-                "refused",
-                gnunet_client_host::EndpointSource::unix(root.0.join("not-running.sock")),
-                content,
-                &mut buffers,
-                None,
-                options,
-                |_| Control::Continue,
-            )
-            .await;
-        assert!(matches!(
-            refused,
-            Err(Error::Transfer(error))
-                if matches!(*error, crate::network::Error::Protocol(gnunet_types::Error::InvalidInput))
-        ));
-        assert!(!selected.join("refused").exists());
-        assert_eq!(fs::read_dir(&selected)?.count(), 1);
-        options.io_slice_bytes = 1;
-        let mut waiting = Box::pin(output.download_file(
-            "pending",
-            gnunet_client_host::EndpointSource::unix(root.0.join("not-running.sock")),
-            content,
-            &mut buffers,
-            None,
-            options,
-            |_| Control::Continue,
-        ));
-        std::future::poll_fn(|cx| {
-            assert!(waiting.as_mut().poll(cx).is_pending());
-            Poll::Ready(())
-        })
-        .await;
-        assert!(!selected.join("pending").exists());
-        assert_eq!(fs::read_dir(&selected)?.count(), 2);
-        drop(waiting);
-        assert!(!selected.join("pending").exists());
-        assert_eq!(fs::read_dir(&selected)?.count(), 1);
-        assert_eq!(fs::read(selected.join("sentinel"))?, b"keep");
-        Ok(())
-    }
-    #[test]
-    fn commit_intent_observer_failure_vetoes_link_and_retains_real_read_receipt() -> Result<()> {
-        let directory = Cleanup::new()?;
-        let mut output = OutputDir::open(&directory.0)?;
-        let (content, mut source) = published(b"authenticated")?;
-        let mut events = Vec::new();
-        let result = output.write_file_observed(
-            "veto",
-            &mut source,
-            content,
-            &mut Buffers::new(),
-            Limits::default(),
-            |_| Control::Continue,
-            |event| {
-                let code = match event {
-                    OutputObservation::TempOwned(_) => 0,
-                    OutputObservation::CommitIntent { .. } => 1,
-                    OutputObservation::FileCommitted { .. } => 2,
-                    OutputObservation::Cleanup { .. } => 3,
-                };
-                events.push(code);
-                if code == 1 {
-                    Err("intent storage failed")
-                } else {
-                    Ok(())
-                }
-            },
-        );
-        let error = match result {
-            Err(error) => error,
-            Ok(_) => return Err(Error::Corrupt),
-        };
-        assert_eq!(error.stage, CommitStage::NotLinked);
-        assert!(error.operation.is_none());
-        assert_eq!(error.observer, Some("intent storage failed"));
-        assert!(error.cleanup.is_none());
-        assert_eq!(
-            error.receipt.map(|read| read.verified.content()),
-            Some(content)
-        );
-        assert_eq!(events, vec![0, 1]);
-        assert!(!directory.0.join("veto").exists());
-        assert_eq!(fs::read_dir(&directory.0)?.count(), 0);
-        Ok(())
-    }
-    #[test]
-    fn committed_observer_failure_preserves_durable_output_and_exact_cleanup() -> Result<()> {
-        let directory = Cleanup::new()?;
-        let mut output = OutputDir::open(&directory.0)?;
-        let (content, mut source) = published(b"authenticated")?;
-        let result = output.write_file_observed(
-            "committed",
-            &mut source,
-            content,
-            &mut Buffers::new(),
-            Limits::default(),
-            |_| Control::Continue,
-            |event| {
-                if matches!(event, OutputObservation::FileCommitted { .. }) {
-                    Err("commit record failed")
-                } else {
-                    Ok(())
-                }
-            },
-        );
-        let error = match result {
-            Err(error) => error,
-            Ok(_) => return Err(Error::Corrupt),
-        };
-        assert_eq!(error.stage, CommitStage::Durable);
-        assert!(error.operation.is_none());
-        assert_eq!(error.observer, Some("commit record failed"));
-        assert!(error.cleanup.is_none());
-        assert_eq!(
-            error.receipt.map(|read| read.verified.content()),
-            Some(content)
-        );
-        assert_eq!(fs::read(directory.0.join("committed"))?, b"authenticated");
-        assert_eq!(fs::read_dir(&directory.0)?.count(), 1);
-        Ok(())
-    }
-    #[cfg(feature = "service")]
-    #[tokio::test(flavor = "current_thread")]
-    async fn staged_range_retains_absolute_offsets_and_revalidates_only_selected_bytes()
-    -> Result<()> {
-        use crate::network::range::{Completion, Options};
-        use std::{convert::Infallible, os::unix::fs::FileExt};
-        let root = Cleanup::new()?;
-        let selected = root.0.join("selected");
-        fs::create_dir(&selected)?;
-        let mut output = OutputDir::open(&selected)?;
-        let owner = [73; 32];
-        let mut staging = output
-            .create_owned_directory("stage", owner)
-            .map_err(|error| io::Error::other(error.to_string()))?;
-        let parent_id = output.identity()?;
-        let stage_id = staging.identity()?;
-        let moved = root.0.join("original");
-        fs::rename(&selected, &moved)?;
-        fs::create_dir(&selected)?;
-        fs::write(selected.join("sentinel"), b"foreign")?;
-        let bytes = input();
-        let mut cache = crate::Repository::open(root.0.join("cache"))?;
-        let mut buffers = Buffers::new();
-        let content = buffers
-            .publish(
-                &mut bytes.as_slice(),
-                bytes.len() as u64,
-                &mut cache,
-                Limits::default(),
-                |_| Control::Continue,
-            )?
-            .content;
-        let selection = BLOCK_BYTES as u64 - 5..bytes.len() as u64;
-        let options = Options {
-            download: crate::network::DownloadOptions::new(gnunet_types::AbsoluteTime::NEVER),
-            native_deadline: tokio::time::Instant::now() + std::time::Duration::from_secs(5),
-        };
-        let mut committed = false;
-        let read = output
-            .download_range_observed(
-                "range.bin",
-                &mut staging,
-                gnunet_client_host::EndpointSource::unix(root.0.join("absent.sock")),
-                content,
-                selection.clone(),
-                &mut buffers,
-                Some(&mut cache),
-                options,
-                |_| Control::Continue,
-                |event| {
-                    if let OutputObservation::FileCommitted {
-                        temporary,
-                        final_parent,
-                        ..
-                    } = event
-                    {
-                        assert_eq!(temporary.parent, stage_id);
-                        assert_eq!(final_parent, parent_id);
-                        committed = true;
-                    }
-                    Ok::<_, Infallible>(())
-                },
-            )
-            .await
-            .map_err(|error| io::Error::other(error.to_string()))?;
-        assert!(committed);
-        assert_eq!(read.delivered_bytes, 6);
-        assert_eq!(
-            read.destination,
-            crate::network::range::Destination::SinkCompleted
-        );
-        assert!(
-            matches!(read.completion, Completion::Verified(proof) if proof.range() == selection)
-        );
-        let actual = fs::read(moved.join("range.bin"))?;
-        assert_eq!(actual.len(), bytes.len());
-        assert!(
-            actual[..selection.start as usize]
-                .iter()
-                .all(|byte| *byte == 0)
-        );
-        assert_eq!(
-            &actual[selection.start as usize..],
-            &bytes[selection.start as usize..]
-        );
-        assert!(!selected.join("range.bin").exists());
-        assert_eq!(fs::read(selected.join("sentinel"))?, b"foreign");
-        assert_eq!(fs::read_dir(moved.join("stage"))?.count(), 1);
-        drop(staging);
-        let _stage = output
-            .attach_owned_directory("stage", owner, Some(stage_id))
-            .map_err(|error| io::Error::other(error.to_string()))?;
-        let identity = output.inspect_file("range.bin")?.ok_or(Error::Corrupt)?;
-        // A change outside the selected interval does not acquire or invalidate
-        // a whole-file claim: only the actual selected bytes are compared.
-        let held = fs::OpenOptions::new()
-            .write(true)
-            .open(moved.join("range.bin"))?;
-        held.write_all_at(b"X", 0)?;
-        let reread = output
-            .revalidate_range(
-                "range.bin",
-                content,
-                selection.clone(),
-                identity,
-                Some(parent_id),
-                &mut buffers,
-                &mut cache,
-                Limits::default(),
-                |_| Control::Continue,
-            )
-            .map_err(|error| io::Error::other(error.to_string()))?;
-        assert_eq!(reread.read.delivered_bytes, 6);
-        assert_eq!(
-            reread.read.destination,
-            crate::network::range::Destination::ExistingFileCompared
-        );
-        held.write_all_at(b"!", selection.start)?;
-        let refused = output.revalidate_range(
-            "range.bin",
-            content,
-            selection,
-            identity,
-            Some(parent_id),
-            &mut buffers,
-            &mut cache,
-            Limits::default(),
-            |_| Control::Continue,
-        );
-        assert!(
-            matches!(refused, Err(error) if matches!(error.operation, Error::SourceChanged) && error.receipt.is_none())
-        );
-        assert!(moved.join("range.bin").exists());
-        Ok(())
-    }
-}
+mod tests;

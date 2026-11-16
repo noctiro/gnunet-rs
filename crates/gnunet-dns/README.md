@@ -5,6 +5,8 @@ query/record/packet main chain in `crates/gnunet-dns`. It is `no_std`,
 uses no allocator or unsafe code, has no default features, and depends only on the
 existing internal types/wire crates. It has no network or native-library FFI.
 
+## Public interface
+
 Callers provide UTC, a byte arena, query/record slots, finite work/input limits
 and output storage. Parsing expands bounded compression including forward
 pointers, limits hops to the native hard maximum33, preserves original label

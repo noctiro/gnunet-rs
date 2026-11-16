@@ -8,6 +8,7 @@
     clippy::panic_in_result_fn,
     reason = "Finite native regression asserts original bytes, explicit refusal and durable recovery."
 )]
+mod support;
 use gnunet_crypto::Entropy;
 use gnunet_service_runtime::connection::Connection;
 use gnunet_types::Error;
@@ -22,7 +23,6 @@ use gnunet_udp_communicator_host::{
 };
 use socket2::{Domain, Protocol, Socket, Type};
 use std::{future::poll_fn, path::PathBuf, time::Duration};
-use tokio::net::UnixStream;
 struct Scratch(PathBuf);
 impl Drop for Scratch {
     fn drop(&mut self) {
@@ -43,7 +43,7 @@ async fn impossible_empty_effect_budget_discards_original_large_receipt_then_acc
     let scratch = Scratch(
         std::env::temp_dir().join(format!("udp-permanent-pressure-{}", std::process::id())),
     );
-    std::fs::create_dir(&scratch.0)?;
+    support::private_directory(&scratch.0)?;
     let raw = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
     let buffer = raw.set_send_buffer_size(262144);
     eprintln!("ACTUAL_RAW_SEND_BUFFER_SET {buffer:?}");
@@ -63,7 +63,7 @@ async fn impossible_empty_effect_budget_discards_original_large_receipt_then_acc
     eprintln!("ORIGINAL_RECEIPT_BYTES_MATCH 65495");
     // The actual socket already holds this original receipt. No private input
     // injection is involved; its checked SocketId survives this owner move.
-    let (service, communicator) = UnixStream::pair()?;
+    let (service, communicator) = support::pair().await?;
     let configuration = Configuration {
         local: local.peer(),
         peer: remote.peer(),
@@ -77,7 +77,7 @@ async fn impossible_empty_effect_budget_discards_original_large_receipt_then_acc
         transmit: socket.profile().sender_policy(),
     };
     let mut driver = Driver::new(
-        Connection::from_unix(communicator),
+        Connection::from_tcp(communicator),
         socket,
         configuration,
         100,
@@ -140,7 +140,7 @@ async fn transient_effect_pressure_retains_original_signed_receipt_until_registr
     let scratch = Scratch(
         std::env::temp_dir().join(format!("udp-transient-pressure-{}", std::process::id())),
     );
-    std::fs::create_dir(&scratch.0)?;
+    support::private_directory(&scratch.0)?;
     let raw = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
     raw.bind(&"127.0.0.1:0".parse::<std::net::SocketAddr>()?.into())?;
     let mut socket = DatagramSocket::bind("127.0.0.1:0".parse()?)?;
@@ -161,7 +161,7 @@ async fn transient_effect_pressure_retains_original_signed_receipt_until_registr
     );
     let receipt = tokio::time::timeout(Duration::from_secs(2), socket.receive()).await??;
     assert_eq!(socket.bytes(receipt)?, packet.bytes());
-    let (service, communicator) = UnixStream::pair()?;
+    let (service, communicator) = support::pair().await?;
     let configuration = Configuration {
         local: local.peer(),
         peer: remote.peer(),
@@ -175,7 +175,7 @@ async fn transient_effect_pressure_retains_original_signed_receipt_until_registr
         transmit: socket.profile().sender_policy(),
     };
     let mut driver = Driver::new(
-        Connection::from_unix(communicator),
+        Connection::from_tcp(communicator),
         socket,
         configuration,
         100,

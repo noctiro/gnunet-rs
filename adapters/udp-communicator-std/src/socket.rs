@@ -196,6 +196,12 @@ impl DatagramSocket {
     /// Adopt the exact actual scan descriptor; it is never rebound or cloned as
     /// another receive owner. Allocation precedes any publication of this owner.
     pub(crate) fn adopt(socket: UdpSocket) -> Result<Self, SocketError> {
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsSocket;
+            gnunet_native::network::suppress_udp_connection_resets(socket.as_socket())?;
+        }
+
         let local = socket.local_addr()?;
         let profile = if local.is_ipv4() {
             Profile::Ipv4
@@ -323,7 +329,12 @@ impl DatagramSocket {
         let mut buffer = ReadBuf::new(&mut self.receive);
         match socket.poll_recv_from(cx, &mut buffer) {
             Poll::Pending => Poll::Pending,
-            Poll::Ready(Err(error)) => Poll::Ready(Err(SocketError::Io(error))),
+            Poll::Ready(Err(error)) => {
+                // Some native failures may have touched receive scratch; no
+                // datagram receipt or source attribution exists for that data.
+                self.receive.as_mut_slice().zeroize();
+                Poll::Ready(Err(SocketError::Io(error)))
+            }
             Poll::Ready(Ok(address)) => {
                 let bytes = buffer.filled().len();
                 if bytes == RECEIVE_BYTES {

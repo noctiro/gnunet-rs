@@ -1,55 +1,91 @@
-# Actual ARM daemon reactor development
+# ARM reactor ownership
 
-This workspace reactor reuses the single `gnunet-service-runtime::process` backend and the one published `gnunet-arm-spawn-helper`. Its native implementation and readiness owner are not copied into the service host. The complete121-obligation/22-source projection remains explicit, and component integration promotes no whole ARM or GNUnet owner.
+The reactor connects `gnunet-arm-service-core` to actual control streams, managed
+listeners, native child processes and absolute restart targets. Protocol messages
+follow the [central contract](../../spec/gnunet/README.md). The
+[package interface](README.md) describes configuration and platform entry points.
 
-The caller owns immutable Registry, its borrowed ServiceSpec vector, OwnerScope, service/client/listener metadata, frame bytes/slots, LIST scratch, formal Owner and external ChildRegistry. A separate caller-owned ReactorState holds stream/TX/RX owners, pending native/timer leases, OriginalChild mappings and pending consuming wait observations. Driver borrows these owners; no unsafe self-reference is constructed. Canceling drive or dropping a Driver borrow cannot drop that state or its original native authority. Final source lifecycle remains explicit: retain/drain the external child registry even if a view is dropped.
+## Source layers
 
-Startup binds the ARM IPC listener separately from managed readiness-only listeners, attaches only successfully bound managed listeners, prepares child observation, applies pending listener operations and starts each forced entry through process admission before enabling service client admission. Generic early CLOSE_LSOCKS owns ARM-self's incoming WRITE pipe and closes it only after configured bind/startup stage. It never tries to adopt that pipe as a listening socket or claims privilege/application readiness from binding alone. Initial generic startup and final shutdown are typed explicit ports until their full app frontend is wired; no success default is inserted.
+`reactor.rs` defines the public borrowed driver, retained state and finite limits.
+`reactor/children.rs` settles process effects and consuming exits;
+`reactor/clients.rs` owns accepted connections and frame handoff;
+`reactor/timers.rs` retains restart targets; `reactor/drive.rs` orders work.
 
-Every take_native lease is retained in state before fallible preparation. The prepared recipe follows the GNUNET parser or SIMPLE filename/argv0/whole-options branch. Source listeners remain bound in parent and are merely disarmed before inherited mappings. An admitted OriginalChild/control capability is installed in the service+CoreChildId map before core.spawned acknowledgment, so a fallible acknowledgment cannot orphan it. Actual refusal with no PID maps to Failed; resource refusal stays an explicit error/retained lease. TERM validates both original mapping and native ticket, performs pipe/native policy and acknowledges only the attempt. Real wait/ECHILD observations remain retained across UTC/output admission failure; no planned task or lost numeric PID is interpreted as reap.
+The [process port](src/process.rs) uses the shared runtime's original-child
+registry. Unix policy selects the configured executable and exec helper. Windows
+policy separates [image selection](../service-runtime/src/process/executable.rs),
+[creation](src/process/windows.rs) and [control state](src/process/windows/control.rs).
+Neither backend reconstructs process authority from a numeric PID.
 
-Unix/TCP client RX keeps exact partial header/body state across cancellation and validates the full official u16 size before core.receive. Valid unknown types follow core/MQ policy. LIST scratch is caller-owned and output snapshots are immutable. Borrowed core output is copied into a bounded persistent per-client TX owner before its ticket is released; partial writes retain offsets and FIFO. EOF and explicit resource-closure lanes run even when another TX is full, revoking the original client/monitor/requester generation. No optional notification <=1024 is silently declared an official drop because local storage is missing; any stricter capacity action is a visible host resource profile.
+## External owners and cancellation
 
-All ARM restart tasks are source IDLE priority, including delayed ones (gnunet-service-arm.c1634/1843). An expired timer is dispatched only after the current poll has no ready ordinary client/native work, preserving that source ordering. A timer effect owns one exact registration until fired/canceled. Finite UTC absolute targets are converted to wake hints and UTC is rechecked on callback; FOREVER is an retained never-ready registration with cancellation identity. Expired/backward clocks cannot create a new deadline. Driver cancellation retains pin/sleep state and lease. On self-stop, source status/result queueing is followed by the generic shutdown task; it does not force STOPPING to physically flush or fabricate a client Stopped result before EOF. Shutdown cancels timer, applies all parent listener closes, then attempts every child TERM and consumes every reap before final generic runtime acknowledgment. Slow clients do not block these cleanup lanes.
+The caller owns registry/spec views, core scope and slots, frame storage, managed
+listeners, native child registry, `State`, LIST scratch and `LaunchContext`.
+`Driver` borrows these owners. Dropping a drive future or its complete driver
+borrow preserves native processes, bootstrap/control state, partial frames,
+leased effects, pending exits and restart timers.
 
-tests will use only empty owned BASE/user-only config, explicit finite fixture BINARY and owned Unix/127.0.0.1 resources. Compare normal C public client→Rust daemon and Rust public client→normal C daemon separately; literal byte peers supplement rather than replace those. Unknown/malformed/fragmented traffic, queued multiple listeners, SIMPLE, control pipe/fallback, restarted native children, retained partial TX and canceled drive are independent witnesses. CLI/testing/global OS completion and Linux runtime execution remain explicitly pending until implemented and observed.
+Owner identity and the immutable service registry are checked when reborrowing.
+A foreign live child is refused before consuming a wait. An unexpected completed
+receipt is returned through `Error::ForeignCompletion`; it is never acknowledged
+as a configured service's successful reap. Final callers explicitly drain the
+original native registry. Dropping local I/O does not prove child death.
 
-The complete generic startup/RESOURCE_DIAGNOSTICS/wait4 path remains a separate obligation: the initial frontend must prepare native child/shutdown observation before service enumeration. If resource diagnostics is selected, it requires open-w plus consuming usage data; an empty created file is not support. This first reactor increment does not certify that path.
+## Admission, startup and stopping
 
-service.c do_send semantics drive MQ counting: after a positive send or an EAGAIN/EINTR return at offset0, the first envelope is in-flight and MQ_get_length excludes it; zero/fatal errors retire the socket before in-flight. poll_write readiness alone is not this attempt. The transport retains an explicit first-attempt flag independently from its original byte offset.
+Native creation is distinct from executable initialization and service readiness.
+Every admitted child is mapped before a fallible clock/core acknowledgment.
+Windows post-admission preparation failures retain the original child and provider
+failure until consuming retirement; cleanup requests termination through its
+original handle. A no-child refusal never reports admission.
 
-## Source corrections found by integration
+Windows bootstrap qualification and actual startup bytes are ordinary rotating
+sources. Only a qualified `.` increments `startup_ready`; formal STARTED remains
+a native-admission observation. Failure bytes, EOF and process exit cannot create
+a readiness receipt. Original sources remain alive through listener import.
 
-During TERM-child drain, ARM can still admit control requests. `shutdown_task`
-closes managed service listeners; `do_shutdown` later closes the generic ARM
-service. The host retains self-stop requester transport until external State
-drop and tests the corresponding socket lifecycle.
+A stop effect retains its original ticket until the native attempt settles.
+Unix follows the shared pipe-then-signal route. Windows uses the qualified control
+outbox when selected. An admitted byte and pending write survive cancellation;
+resumption does not enqueue it again. A read-only original-process wait wakes a
+pending write if the child exits. Missing or failed cooperative control falls
+back to original-handle termination. Control/wait and fallback errors remain
+separate diagnostics. Neither write submission nor accepted termination is a
+consuming exit receipt.
 
-Clock regression tests retain the original restart target while UTC moves backward.
-The host settles initial, restart and TERM scans before child-death callbacks;
-clock changes do not authorize an extra child or reset the original backoff.
+Forced cleanup bypasses cooperative control: SIGKILL on Unix and TerminateProcess
+on Windows. Windows exits retain their native unsigned code and are never
+reported as POSIX signal deaths. Resource events carry consuming wait4 data on Unix and independent native
+counter/query-error observations on Windows. Callers take an event before another
+resource receipt is consumed.
 
-## Ordinary progress and retained cursors
+## Listener and stream leases
 
-`service.c` queues a receive continuation per processed message; `scheduler.c`
-appends ready work to its FIFO and processes the existing-priority pass before
-new continuations. The initial integrated candidate always started at session0
-and RX, which actually delayed a ready second client behind an earlier legal
-backlog. Current State retains ordinary-source/session/direction cursors, rotates
-after work, and preserves those cursors across Driver cancellation. The
-existing all-close-before-TERM and uninterrupted initial/restart/shutdown scan
-rules remain in effect. A request/demand native effect is settled before an
-unrelated consuming reap callback. Busy without any new input bytes is not
-reported as progress. Exact global callback ordering, cached-reactor refresh
-under continuous external activity and the full SCHEDULER interface remain part
-of the complete goal.
+Managed readiness observes the original listener without accepting or reading
+its queued streams. Each readiness lease is delivered once to the core and is
+parked while its child runs. The child receives the original endpoint and backlog;
+recipient registration grants no creator-path cleanup authority. Windows transfer
+uses the [native provider contract](../native-std/SOCKET-ACTIVATION.md). It
+publishes private source descriptors retained in the child's control owner until
+qualified readiness or consuming retirement. Closing the managed listener does
+not discard a publisher still required by a starting child. Terminal SERVICE
+failure transfers these owners into `Recovery` with the original registry.
 
-A persisted ARM self-stop requester can lose its logical MQ session during child
-Drain (for example after an invalid registered message) without releasing its
-physical descriptor. `State` retains that original socket until its external
-process owner is dropped. This retirement neither resumes EMFILE acceptance nor
-increments the actual-close counter. Active and persisted sockets share the
-same finite physical admission bound. The real-child regression confirms
-STOPPING, malformed-message retirement, no early EOF, two-slot capacity refusal,
-final child reap and EOF only after external State Drop. This is a component
-witness; it does not complete generic SERVICE or the ARM process frontend.
+Accepted control streams are separate owners. Partial RX/TX cursors and FIFO
+admission survive cancellation. Active and persisted sockets share one physical
+capacity bound. An ARM self-stop requester can retire logically while its original
+socket remains in external `State`; EOF follows physical owner retirement.
+
+## Scheduling and bounded progress
+
+Settlements finish leased effects before unrelated callbacks. Shutdown closes
+managed listeners, settles the complete stop pass, consumes child exits, then
+acknowledges generic runtime cleanup. Pending native writes keep this ordering
+without spinning or running unrelated callbacks inside the effect.
+
+Ordinary source, child-control, session and stream-direction cursors rotate after
+actual work. Removing an entry adjusts its cursor. A pending poll alone is not
+progress. Bounded settlements yield with a registered source wake or an explicit
+cooperative wake. IDLE restart callbacks follow ordinary ready work; UTC changes
+preserve the original absolute restart target until actual core settlement.

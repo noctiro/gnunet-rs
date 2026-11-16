@@ -141,6 +141,8 @@ fn canonical_with(
         #[cfg(unix)]
         Stream::Tcp(s) => initialize(s.as_fd(), StreamKind::Tcp),
         #[cfg(windows)]
+        Stream::Unix(s) => initialize(s.as_socket(), StreamKind::Unix),
+        #[cfg(windows)]
         Stream::Tcp(s) => initialize(s.as_socket(), StreamKind::Tcp),
     };
     match diagnostics {
@@ -150,7 +152,7 @@ fn canonical_with(
         }
         Ok(diagnostics) => {
             let connection = match stream {
-                #[cfg(unix)]
+                #[cfg(any(unix, windows))]
                 Stream::Unix(s) => Connection::from_unix(s),
                 Stream::Tcp(s) => Connection::from_tcp(s),
             };
@@ -188,7 +190,7 @@ impl Listener<'_> {
         poll_accept(self, cx).map(|result| {
             result.map(|(stream, peer)| {
                 let connection = match stream {
-                    #[cfg(unix)]
+                    #[cfg(any(unix, windows))]
                     Stream::Unix(stream) => Connection::from_unix(stream),
                     Stream::Tcp(stream) => Connection::from_tcp(stream),
                 };
@@ -202,7 +204,7 @@ fn poll_accept(
     cx: &mut Context<'_>,
 ) -> Poll<io::Result<(Stream, PeerAddress)>> {
     match listener {
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         Listener::Unix(listener) => listener
             .poll_accept(cx)
             .map(|r| r.map(|(s, _)| (Stream::Unix(s), PeerAddress::Unix))),

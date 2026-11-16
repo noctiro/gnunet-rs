@@ -58,15 +58,18 @@ from source failure.
 
 ## Rust helper installation
 
-The command explicitly owns two independent Rust helper children:
-`gnunet-helper-audio-record` and `gnunet-helper-audio-playback`. It reuses the
-existing `gnunet-arm-spawn-helper` process wrapper and `OriginalChild` registry;
-it neither starts ARM nor uses ARM RPC. These three executables must come from
-the corresponding Rust installation. For an executable in `PREFIX/bin`, default
-helpers are `PREFIX/lib/gnunet/libexec/NAME`. Otherwise they are siblings of the
-current executable, including a normal Cargo output directory. The three
-absolute path overrides below support explicit alternate Rust installation
-layouts. There is no PATH or official C-helper fallback.
+The command owns two Rust helper children: `gnunet-helper-audio-record` and
+`gnunet-helper-audio-playback`. Unix launches them through
+`gnunet-arm-spawn-helper`; Windows uses `CreateProcessW` directly with an explicit
+standard-handle allowlist and no shell. All helpers must come from the same Rust
+installation. Unix audio uses PulseAudio; Windows uses WASAPI and a standard Opus
+DLL beside the helpers, as described in the [audio backend](../../adapters/conversation-audio-std/README.md).
+
+For a command in `PREFIX/bin`, helpers default to
+`PREFIX/lib/gnunet/libexec/NAME`; otherwise they are siblings of the command,
+including a Cargo output directory. Windows helper names include `.exe`.
+`HELPER_RECORD` and `HELPER_PLAYBACK` accept absolute native paths;
+`HELPER_LAUNCHER` applies to Unix. No PATH or official C-helper fallback is used.
 
 Both audio helpers receive no arguments. The recorder writes standard730
 frames containing Ogg/Opus bytes. Playback consumes standard730 on stdin and
@@ -75,19 +78,21 @@ and bodies, and keeps the helper730, Ogg-page and Opus-packet boundaries
 independent. Recorded compressed bytes may be split into original SDK audio
 frames of at most64344 data bytes, preserving their byte order. Incoming SDK
 Audio owners retain their original RAII quota until the complete helper frame
-has been written or that explicit media owner is stopped. Payloads are not
-copied into a second playback queue or converted into raw PCM by the command.
+has been written or that explicit media owner is stopped. The command does not decode PCM. Windows retains one additional zeroizing native
+write buffer, bounded to one helper frame, until actual overlapped completion.
+An accepted write request or pipe flush does not release the original Audio quota.
 
-Cancellation/suspension first closes the original parent pipes and clears their
-retained audio. TERM is sent only to unreaped OriginalChild capabilities,
-then KILL at half the fixed shutdown grace if needed. An consuming wait
-is required before another media pair starts. Real exit status, signal syscall
-success/error, partial cursors and unreaped debt remain in bounded diagnostics. An abnormal owner drop makes one clock-free kill/nonblocking-reap attempt and
-retains any remaining debt; it does not manufacture a completed cleanup. A
-child spawn, write, exit0 or complete live Ogg EOF is not evidence that hardware
-is ready, a remote party heard audio, or an EOS was generated on SIGTERM.
+Cancellation and suspension withdraw the original parent pipes. Unix sends
+SIGTERM to retained unreaped child capabilities, then SIGKILL at half the fixed
+shutdown grace. Windows cancels the exact pending overlapped write and calls
+TerminateProcess on original process handles. Outstanding write bytes and Audio
+quota remain retained until the native completion is observed. Another media
+pair requires the original processes and pending write to retire. Diagnostics
+keep native termination results, actual exits, partial cursors, write cancellation
+and remaining debt separately. Process admission, an exit code of zero and a
+whole local frame write do not establish hardware readiness or remote playback.
 
-## bounds
+## Bounds
 
 The section `[conversation-command-rust]` accepts:
 
@@ -126,20 +131,15 @@ unbounded history. These budgets cover the owned CLI/SDK observations; caller
 copies, kernel pipes and independent helper/provider memory are not a process
 RSS claim.
 
-Terminal descriptors are duplicated, use reactor readiness for pipes/TTYs, and
-restore jointly captured original open-file flags on close, including when
-stdin/stdout share an open-file description. Regular-file terminal IO and
-synchronous selected logging can block in the OS and cannot be forcibly
-preempted by the protocol hard bound. Untrusted displayed names/messages are
-escaped; binary audio and private keys are never formatted.
+Unix duplicates terminal descriptors, uses readiness for pipes and TTYs, and
+restores jointly captured open-file flags, including when stdin and stdout share
+an open-file description. Windows uses capacity-one original I/O workers;
+console input/output converts UTF-16 and UTF-8 without changing redirected bytes.
+Shutdown cancels only the original pending input read, drains output under the
+same fixed grace, and retains transfer and consuming-close receipts. A blocked
+write is never reported as canceled or closed merely because the deadline ended.
+Regular-file I/O and selected synchronous logging can block inside the OS.
+Displayed untrusted names are escaped; audio and private keys are not formatted.
 
-Both service generations actually accepted the complete
-Register731; the PHONE value stayed identical and all18 original processes
-exited and were reaped without cleanup errors. Original Cancelled/Closed Line
-causes remain recorded separately from physical cleanup.
-
-This selected result covers registration recovery. New incoming calls after
-recovery, answered calls, media/device operation, cancellation under load,
-unchanged C Conversation peer cryptography and full platform/resource/performance
-qualification remain open. A clean interactive exit means original local owners
-retired; it does not assert that a call was answered or heard.
+See [remaining work and qualification](../../IMPLEMENTATION_STATUS.md) for
+platform runtime and peer interoperability requirements.

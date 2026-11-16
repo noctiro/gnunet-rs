@@ -9,6 +9,8 @@ ready, invoke its compiled binary with:
 /ABS/ss_singleton_client -c /ABS/node.conf -L ERROR LOCAL_PID52 START_US DEADLINE_US
 ```
 
+## Input and callback contract
+
 `LOCAL_PID52` is the current PILS public identity. Both absolute times are
 decimal GNUnet microseconds; start must precede deadline and the deadline must
 be at most60 seconds ahead. Both requests retain these same original values.

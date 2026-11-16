@@ -3,21 +3,21 @@
 #![deny(unsafe_code)]
 mod error;
 pub mod framing;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[expect(
     unsafe_code,
-    reason = "Confined standard POSIX loader and libopus/PulseAudio ABI provider; no GNUnet FFI or opaque protocol implementation"
+    reason = "Confined standard libopus and POSIX/PulseAudio or Windows/WASAPI ABI providers; no GNUnet FFI or opaque protocol implementation"
 )]
 mod native;
 pub mod ogg;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 mod playback;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 mod record;
 pub use error::Error;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub use playback::playback;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub use record::record;
 /// Selected standard codec sample rate; Ogg Opus granules always use48kHz.
 pub const RATE: u32 = 48000;
@@ -90,6 +90,9 @@ pub struct Report {
     pub submitted_samples: u64,
     /// Actual source samples consumed by the recording encoder.
     pub recorded_samples: u64,
+    /// Native capture packets carrying a discontinuity indication. This does
+    /// not infer a missing sample count or synthesize replacement audio.
+    pub capture_discontinuities: u64,
     /// Actual valid Ogg pages, not packet count.
     pub pages: u64,
     /// Actual capture-prefix bytes discarded before a verified page.
@@ -102,10 +105,10 @@ pub struct Report {
     pub unterminated_streams: u64,
     /// Actual logical streams with their real EOS observed.
     pub eos_streams: u64,
-    /// Actual Pulse drain returned successfully; no hearing proof is implied.
+    /// Actual native audio drain returned successfully; no hearing proof is implied.
     pub drained: bool,
 }
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub(crate) fn buffer<T: Default + Clone>(n: usize) -> Result<zeroize::Zeroizing<Vec<T>>, Error>
 where
     Vec<T>: zeroize::Zeroize,
@@ -119,7 +122,7 @@ where
     v.resize(n, T::default());
     Ok(zeroize::Zeroizing::new(v))
 }
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub(crate) fn increment(n: &mut u64, by: u64) -> Result<(), Error> {
     *n = n.checked_add(by).ok_or(gnunet_types::Error::Overflow)?;
     Ok(())

@@ -1,7 +1,7 @@
 # Bounded native NAMECACHE service
 
 `server::Server` consumes the independently implemented official ciphertext cache
-and the existing shared SERVICE access policy, Unix credential gate and process
+and the existing shared SERVICE access policy, native credential gate and process
 RuntimeClock. The caller drives it inside its existing Tokio runtime. Construction
 allocates finite owner metadata and a native timer; it creates no socket, Resolver,
 thread, filesystem, disk worker, key loader or hidden task.
@@ -52,11 +52,20 @@ retains the whole immutable body until its whole-write; logical wire
 credits are not a promise about allocator metadata or exact RSS. No per-client
 copy of the cache or worker-side shadow inventory exists.
 
-The one focused model exercises the pure dispatch helper using only
-preexisting public ciphertext/query fixtures. It checks original RIDs, reply
-preallocation before effects, resource failure, inner expiry, exact lookup
-body and delete outcomes. It passed after integration. One foreground/Unix profile observed
-cache, exact lookup, deletion, miss, bad-source isolation and graceful shutdown
-with the owned socket path removed. It uses only public ciphertext/query data. A separate public-cipher Unix profile passed in both official C/Rust directions,
-including C API callbacks and a Rust memory-service restart miss. Neither
-profile used private keys, devices, routes, external network or stopped host work.
+## Public interfaces and configuration
+
+`server::Server` owns the cache and accepted sources. `server::Ports` supplies
+SERVICE options, native local-peer policy and one runtime clock. `server::Limits`
+bounds sources, framing, output credits, I/O slices and source lifetimes. The
+caller supplies listeners, drives progress and retains shutdown/cleanup results.
+The [normal service](../../apps/gnunet-service-namecache/README.md) maps native
+configuration and startup onto this same API on Unix and Windows.
+
+## Tests
+
+`src/model.rs` exercises dispatch preflight, original RIDs, memory effects,
+expiration and exact replies with published ciphertext vectors. The normal
+service's process tests cover native IPC, malformed-source isolation, parent
+stop and owned endpoint removal. Current-source C interoperability and broader
+platform qualification are tracked centrally in
+[implementation status](../../IMPLEMENTATION_STATUS.md).

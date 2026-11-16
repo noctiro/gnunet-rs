@@ -1,7 +1,6 @@
 //! One caller-owned SERVICE future, original Server/Worker and shared Resolver.
 use crate::{
     Failure,
-    control::Signals,
     lifecycle::{Grace, Notes, Resolver, Terminal},
     settings::Settings,
 };
@@ -18,7 +17,7 @@ use gnunet_service_runtime::{
     clock::RuntimeClock,
     service::{Listener, ShutdownMode},
 };
-use gnunet_service_startup::{ParentControl, daemon::ChildReady};
+use gnunet_service_startup::{ControlReceiver, StopSignals as Signals};
 use std::{
     future::{Future, poll_fn},
     io::{self, Write},
@@ -36,7 +35,7 @@ async fn before_start(signals: &mut Signals, reports: &Reporter) -> Result<(), F
             )
             .into()));
         }
-        match signals.poll(cx) {
+        match signals.poll_stop(cx) {
             Poll::Ready(Ok(())) => Poll::Ready(Err(io::Error::new(
                 io::ErrorKind::Interrupted,
                 "IDENTITY stopped before readiness",
@@ -81,7 +80,7 @@ async fn turn(
         if reports.failed() {
             return Poll::Ready(Ok(Turn::DiagnosticStop));
         }
-        if let Poll::Ready(signal) = signals.poll(cx) {
+        if let Poll::Ready(signal) = signals.poll_stop(cx) {
             return Poll::Ready(signal.map(|()| Turn::Signal).map_err(Into::into));
         }
         for n in 0..2 {
@@ -121,7 +120,7 @@ async fn serve(
     settings: &Settings,
     reports: &Reporter,
     notes: &Notes,
-    child: &mut ChildReady,
+    notify_ready: impl Future<Output = Result<(), Failure>>,
     generation: u64,
     egos: usize,
     recovered: usize,
@@ -149,9 +148,9 @@ async fn serve(
             )?;
             out.flush()?;
         }
-        // Only after real readiness and successful stdout flush is the original
-        // daemon child permitted to send its single startup status byte.
-        child.ready()?;
+        // Only after real readiness and successful output flush may the native
+        // parent receive its startup acknowledgement.
+        notify_ready.await?;
         Ok::<(), Failure>(())
     }
     .await;
@@ -237,15 +236,27 @@ fn cleanup_grace(grace: &mut Option<Grace>, terminal: &mut Terminal, settings: &
     }
 }
 
+pub(super) struct Inputs {
+    pub config: Configuration,
+    pub settings: Settings,
+    pub bound: BoundListeners,
+    pub parent: Option<ControlReceiver>,
+    pub clock: Arc<dyn RuntimeClock>,
+    pub reports: Reporter,
+}
+
 pub(super) async fn run(
-    config: Configuration,
-    settings: Settings,
-    bound: BoundListeners,
-    parent: Option<ParentControl>,
-    clock: Arc<dyn RuntimeClock>,
-    reports: Reporter,
-    child: &mut ChildReady,
+    inputs: Inputs,
+    notify_ready: impl Future<Output = Result<(), Failure>>,
 ) -> Result<Terminal, Failure> {
+    let Inputs {
+        config,
+        settings,
+        bound,
+        parent,
+        clock,
+        reports,
+    } = inputs;
     let mut signals = Signals::new(parent)?;
     for error in bound.failures() {
         reports.warning(
@@ -299,7 +310,7 @@ pub(super) async fn run(
                 &settings,
                 &reports,
                 &notes,
-                child,
+                notify_ready,
                 generation,
                 egos,
                 recovered,

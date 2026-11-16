@@ -1,11 +1,12 @@
 //! Process sockets/address intent survive healthy identity cuts; old IO authority retires.
 mod identity;
+mod nat_registration;
 use crate::{
     Cause,
     addresses::{Addresses, Anchor, NatObservation},
     bootstrap::Dial,
     control::Control,
-    network::Scanner,
+    network::{Scanner, Snapshot},
     settings::Settings,
 };
 use gnunet_client_host::EndpointSource;
@@ -23,10 +24,10 @@ use gnunet_udp_communicator_host::{
     socket::DatagramSocket,
 };
 use gnunet_wire::official::AbsoluteTime;
+use nat_registration::Observer as NatObserver;
 use std::{
     future::{Future, poll_fn},
     io,
-    os::unix::fs::DirBuilderExt,
     sync::Arc,
     task::{Context, Poll},
     time::{Duration, Instant},
@@ -186,11 +187,11 @@ impl gnunet_crypto::Entropy for Entropy {
 enum Step<'n, 'p> {
     Stop(io::Result<()>),
     Pils(Result<pils::Progress<'p>, pils::Error>),
-    Nat(Result<nat::Progress<'n>, nat::Error>),
+    Nat(Result<nat::Progress<'n>, Cause>),
     Comm(Result<Activity, gnunet_udp_communicator_host::communicator::Failure>),
     App(Result<application::Step, application::Error>),
     Resolver(Result<gnunet_resolver_broker::Progress, gnunet_resolver_broker::BrokerError>),
-    Refresh(io::Result<()>),
+    Refresh(io::Result<Snapshot>),
     Wake,
     Failure(Cause),
     Connection(Result<gnunet_service_runtime::connection::Connection, Cause>),
@@ -222,52 +223,6 @@ fn sample(clock: &dyn RuntimeClock) -> Result<Anchor, Cause> {
 fn native_expired(alarm: &mut std::pin::Pin<Box<Sleep>>, cx: &mut Context<'_>) -> bool {
     alarm.as_mut().poll(cx).is_ready()
 }
-fn nat_registration<'id>(
-    instance: &'id nat::Instance,
-    source: EndpointSource,
-    bound: &[std::net::SocketAddr],
-    now: u64,
-) -> Result<nat::Registration<'id>, Cause> {
-    let profile = nat::native_profile()?;
-    let mut scratch = [0; 56];
-    let mut writer = nat::ipc::AddressWriter::new(&mut scratch, profile);
-    for address in bound {
-        writer.push(match address {
-            std::net::SocketAddr::V4(a) => nat::ipc::Address::V4 {
-                ip: a.ip().octets(),
-                port: a.port(),
-            },
-            std::net::SocketAddr::V6(a) => nat::ipc::Address::V6 {
-                ip: a.ip().octets(),
-                port: a.port(),
-                flow: a.flowinfo(),
-                scope: a.scope_id(),
-            },
-        })?;
-    }
-    let request = nat::RegistrationRequest {
-        flags: nat::ipc::ADDRESSES | nat::ipc::REVERSAL,
-        protocol: 17,
-        addresses: writer.addresses(),
-        section: b"communicator-udp",
-    };
-    let until = now
-        .checked_add(30_000_000)
-        .filter(|n| *n != u64::MAX)
-        .ok_or("NAT registration time overflow")?;
-    Ok(nat::Registration::new(
-        instance,
-        source,
-        request,
-        nat::Profiles::same(profile),
-        nat::Deadlines {
-            send_until: until,
-            first_input_until: None,
-            until: u64::MAX,
-        },
-        nat::Limits::default(),
-    )?)
-}
 #[derive(Debug)]
 struct PilsLost {
     cause: pils::LossCause,
@@ -292,40 +247,6 @@ impl std::error::Error for PilsLost {
             pils::LossCause::Eof | pils::LossCause::Requested => None,
         }
     }
-}
-#[derive(Debug)]
-struct NatLost {
-    cause: nat::Cause,
-    notification: bool,
-    addresses: usize,
-    pending_writes: usize,
-}
-impl std::fmt::Display for NatLost {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "original NAT source ended: {:?}; held callback={}, addresses={}, pending writes={}",
-            self.cause, self.notification, self.addresses, self.pending_writes
-        )
-    }
-}
-impl std::error::Error for NatLost {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match &self.cause {
-            nat::Cause::Io(error) => Some(error),
-            nat::Cause::Ports(error) => Some(error),
-            nat::Cause::Error(error) => Some(error),
-            _ => None,
-        }
-    }
-}
-fn nat_loss(end: nat::End<'_>) -> Cause {
-    Box::new(NatLost {
-        notification: end.notification.is_some(),
-        addresses: end.addresses.len(),
-        pending_writes: end.source.writes.len(),
-        cause: end.source.cause,
-    })
 }
 fn pils_event(event: pils::Progress<'_>, reporter: &Reporter) -> Result<(), Cause> {
     match event {
@@ -402,9 +323,8 @@ pub(super) async fn run(inputs: Inputs) -> Result<Report, Cause> {
         if pils.enable_local_key(master)?!=gnunet_pils::client::LocalKeyStatus::Matched{return Err("existing UDP key does not match current verified PILS".into());}
         let original_epoch=pils.identity().ok_or(gnunet_types::Error::NotReady)?.epoch();
         if tokio::time::Instant::now()>=hard{return Err("UDP startup expired before state access".into());}
-        std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&settings.directory)?;
-        {use std::os::unix::fs::MetadataExt;let metadata=std::fs::symlink_metadata(&settings.directory)?;
-        if !metadata.is_dir() || metadata.uid()!=nix::unistd::geteuid().as_raw() || metadata.mode()&0o077!=0 {return Err("UDP replay directory must be private and owned by the configured process identity".into());}}
+        gnunet_service_runtime::private_parents(&settings.directory.join(".gnunet-udp-state"))?;
+        gnunet_native::filesystem::Directory::open(&settings.directory)?.validate_private()?;
         let namespace=Namespace::open(&settings.directory)?;
         let mut dialing=Dial::new(transport);
         let connection=loop {
@@ -447,13 +367,11 @@ pub(super) async fn run(inputs: Inputs) -> Result<Report, Cause> {
         let owner=comm.as_mut().ok_or("missing original UDP communicator")?;
         owner.enable_burst(&burst_instance,clock.clone(),Default::default())?;
         let bound:Vec<_>=owner.local_addresses().collect();
-        let mut scanner=Scanner::new()?;
-        addresses.replace_interfaces(&scanner.advertised(&bound)?,&mut |address|scanner.classify(address))?;
         if !settings.disable_broadcast {
             owner.enable_discovery(Default::default())?;
-            owner.update_interfaces(&scanner.discovery(&bound)?)?;
         }
-        registration=Some(nat_registration(&nat_instance,nat_source,&bound,clock.sample()?.now.as_micros())?);
+        let mut scanner=Scanner::new(&bound,!settings.disable_broadcast,&mut addresses,owner)?;
+        registration=Some(NatObserver::new(&nat_instance,nat_source,&bound)?);
         app=Some(Application::new(app_source,65535,Duration::from_secs(60),Duration::from_secs(86400))?);
         let mut wake=Box::pin(tokio::time::sleep(Duration::from_secs(86400)));
         let mut cursor=0usize;let mut entropy=Entropy;
@@ -464,7 +382,7 @@ pub(super) async fn run(inputs: Inputs) -> Result<Report, Cause> {
             let owner=comm.as_mut().ok_or("missing original UDP communicator")?;
             let identity=identities.as_mut().ok_or("missing original UDP identity owner")?;
             poll_fn(|cx|Poll::Ready(identity.guard(cx))).await?;
-            let key=identity.binding()?;
+            let paused=identity.paused();
             let nat=registration.as_mut().ok_or("missing original NAT registration")?;
             let application=app.as_mut().ok_or("missing original TRANSPORT application")?;
             // Native original-operation guards run before any canonical sample.
@@ -478,22 +396,25 @@ pub(super) async fn run(inputs: Inputs) -> Result<Report, Cause> {
                 Poll::Ready(match nat.poll_native_guard(cx,None){Poll::Pending=>Ok(None),Poll::Ready(result)=>result.map(Some).map_err(|error|Box::new(error) as Cause)})
             }).await?;
             if let Some(event)=native_nat {
-                let observed=addresses.observe_nat(nat,&event,&mut |address|scanner.classify(address))?;
+                let observed=addresses.observe_nat(nat.registration()?,&event,&mut |address|scanner.classify(address))?;
                 reporter.warning("udp.nat.native-limit",format_args!("{observed:?}"));
-                if let nat::Progress::Ended(end)=event {report.nat_retired=true;return Err(nat_loss(end));}
+                if let nat::Progress::Ended(end)=event {report.nat_retired=true;nat_registration::ended(nat,end,&reporter)?;}
                 continue;
             }
-            if let Some(burst)=owner.take_burst_report(){reporter.debug("udp.burst",format_args!("{burst:?}"));}
+            if let Some(burst)=owner.take_burst_report(){
+                if burst.candidate_installed() {reporter.debug("udp.burst",format_args!("{burst:?}"));}
+                else {reporter.warning("udp.burst.retired",format_args!("{burst:?}"));}
+            }
             let anchor=sample(clock.as_ref())?;
             if anchor.utc<last_wall{return Err(gnunet_types::Error::TimeUncertain.into());}
             last_wall=anchor.utc;
             addresses.check_time(anchor.utc)?;
-            if let Some(event)=addresses.advance(owner,&mut pils,key,Some(anchor))?{address_event(event,&reporter);continue;}
-            if owner.transport_ready() && application.idle() && let Some(hint)=owner.take_discovered(){
+            if !paused && let Some(event)=addresses.advance(owner,&mut pils,identity.binding()?,Some(anchor))?{address_event(event,&reporter);continue;}
+            if !paused && owner.transport_ready() && application.idle() && let Some(hint)=owner.take_discovered(){
                 let address=format!("udp-{}",hint.source);
                 application.validate(hint.peer,address.as_bytes(),hint.network,Bounds::new(clock.as_ref(),Duration::from_secs(30))?)?;
             }
-            let target=owner.next_wakeup().and_then(|t|origin.checked_add(Duration::from_micros(t))).unwrap_or_else(||Instant::now()+Duration::from_secs(86400));
+            let target=(!paused).then(||owner.next_wakeup()).flatten().and_then(|t|origin.checked_add(Duration::from_micros(t))).unwrap_or_else(||Instant::now()+Duration::from_secs(86400));
             wake.as_mut().reset(target.into());
             let step={
                 let mut resolving=std::pin::pin!(resolver.drive_waiting(None,|event|reporter.debug("udp.resolver",format_args!("{event:?}"))));
@@ -511,7 +432,7 @@ pub(super) async fn run(inputs: Inputs) -> Result<Report, Cause> {
                             reporter.warning("udp.application.expired",format_args!("epoch={} submitted={} written={} remaining={}",retired.epoch,retired.submitted,retired.written,retired.remaining));
                             return Poll::Ready(Step::App(Err(gnunet_types::Error::Deadline.into())));
                         }
-                        if let Poll::Ready(result)=nat.poll_native_guard(cx,None){return Poll::Ready(Step::Nat(result));}
+                        if let Poll::Ready(result)=nat.poll_native_guard(cx,None){return Poll::Ready(Step::Nat(result.map_err(|error|Box::new(error) as Cause)));}
                         let time=match current_time {
                             Some(time)=>time,
                             None=>{
@@ -544,23 +465,32 @@ pub(super) async fn run(inputs: Inputs) -> Result<Report, Cause> {
                                     reporter.warning("udp.application.expired",format_args!("epoch={} submitted={} written={} remaining={}",retired.epoch,retired.submitted,retired.written,retired.remaining));
                                     return Poll::Ready(Step::App(Err(gnunet_types::Error::Deadline.into())));
                                 }
-                                if let Poll::Ready(result)=nat.poll_native_guard(cx,None){return Poll::Ready(Step::Nat(result));}
+                                if let Poll::Ready(result)=nat.poll_native_guard(cx,None){return Poll::Ready(Step::Nat(result.map_err(|error|Box::new(error) as Cause)));}
                                 time
                             },
                         };
                         if let Err(error)=identity.guard(cx){return Poll::Ready(Step::Failure(error));}
                         let class=(cursor+offset)%7;
                         let result=match class {
-                            0=>{
+                            0 if !paused=>{
                                 let (key,journal)=match identity.ports(){Ok(ports)=>ports,Err(error)=>return Poll::Ready(Step::Failure(error.into()))};
                                 owner.poll_bound(cx,key,&pils,journal,time,&mut entropy,&mut |address|scanner.classify(address)).map(Step::Comm)
                             },
-                            1=>nat.poll(cx,None).map(Step::Nat),
-                            2=>{let mut receiving=std::pin::pin!(pils.drive(None));receiving.as_mut().poll(cx).map(Step::Pils)},
+                            1 if !paused=>nat.poll(cx,None).map(Step::Nat),
+                            2=>{
+                                let mut refused=None;
+                                let result=pils.poll_guarded(cx,None,&mut || {
+                                    match identity.guard_io() {
+                                        Ok(())=>Ok(()),
+                                        Err(error)=>{refused=Some(error);Err(gnunet_types::Error::Deadline.into())},
+                                    }
+                                });
+                                match refused {Some(error)=>Poll::Ready(Step::Failure(error)),None=>result.map(Step::Pils)}
+                            },
                             3=>resolving.as_mut().poll(cx).map(Step::Resolver),
-                            4=>application.poll(cx).map(Step::App),
-                            5=>scanner.poll_refresh(cx).map(Step::Refresh),
-                            _ if !owner.transport_attached()=>dialing.poll(cx,&reporter).map(Step::Connection),
+                            4 if !paused=>application.poll(cx).map(Step::App),
+                            5 if !paused=>scanner.poll_refresh(cx,&bound).map(Step::Refresh),
+                            6 if !paused && !owner.transport_attached()=>dialing.poll(cx,&reporter).map(Step::Connection),
                             _=>Poll::Pending,
                         };
                         if result.is_ready(){cursor=(class+1)%7;return result;}
@@ -571,6 +501,10 @@ pub(super) async fn run(inputs: Inputs) -> Result<Report, Cause> {
             match step {
                 Step::Stop(result)=>{result?;report.stopped=true;break;},
                 Step::Comm(result)=>match result {
+                    Ok(Activity::ClassificationFailed{peer:_,target,operation,error})=>reporter.warning("udp.address.refused",format_args!("target={target} operation={operation:?}: {error}")),
+                    Ok(Activity::DiscoveryFailed{socket,operation,error})=>reporter.warning("udp.discovery.failed",format_args!("socket={socket} operation={operation:?}: {error}")),
+                    Ok(Activity::SendError{socket,peer:_,target,error})=>reporter.warning("udp.send.failed",format_args!("socket={socket} intended target={target}: {error}")),
+                    Ok(Activity::ReceiveError{socket,error})=>reporter.debug("udp.receive.rejected",format_args!("socket={socket}: {error}")),
                     Ok(Activity::Registered)=>{report.registered=true;reporter.message(Level::INFO,"udp.transport.registered",format_args!("generation={} whole local registration written",owner.transport_generation()));},
                     Ok(Activity::Restored)=>{
                         poll_fn(|cx|Poll::Ready(identity.guard(cx))).await?;
@@ -593,6 +527,26 @@ pub(super) async fn run(inputs: Inputs) -> Result<Report, Cause> {
                 Step::Pils(event)=>{
                     let event=event?;
                     addresses.observe_pils(&event)?;
+                    let event=match event {
+                        pils::Progress::Lost {epoch,cause,report:lost}=>{
+                            let feeds=lost.feeds().count();
+                            if lost.retained()!=0 || !pils.is_idle() {
+                                return Err(Box::new(PilsLost {cause,feeds,retained:lost.retained()}) as Cause);
+                            }
+                            let first=match cause.into_connection_loss() {
+                                Ok(first)=>first,
+                                Err(cause)=>return Err(Box::new(PilsLost {cause,feeds,retained:lost.retained()}) as Cause),
+                            };
+                            let retired=identity.pause(epoch,first,owner)?;
+                            if let Some(first)=identity.first_loss(){reporter.warning("udp.pils.disconnected",format_args!("{first}; retired FEEDs={feeds}"));}
+                            if let Some(retired)=retired {
+                                reporter.message(Level::INFO,"udp.identity.retired",format_args!("{retired:?}"));
+                                identity::observe_retirement(owner,&mut addresses,&mut dialing,&reporter,retired)?;
+                            }
+                            continue;
+                        },
+                        event=>event,
+                    };
                     if matches!(&event,pils::Progress::Inbound(gnunet_pils::client::Inbound::Identity{..})) {
                         // The original observer owns both same-key refreshes
                         // and healthy changed-peer cuts. Address intent and
@@ -600,6 +554,15 @@ pub(super) async fn run(inputs: Inputs) -> Result<Report, Cause> {
                         let current=sample(clock.as_ref())?;
                         if current.utc<last_wall{return Err(gnunet_types::Error::TimeUncertain.into());}
                         last_wall=current.utc;
+                        if identity.paused() && pils.local_key_status()!=gnunet_pils::client::LocalKeyStatus::Matched {
+                            identity.verify(pils.identity().ok_or(gnunet_types::Error::NotReady)?,current.utc)?;
+                            identity.guard_io()?;
+                            let master=gnunet_pils_host::identity::load_existing(&settings.ikm)?;
+                            identity.guard_io()?;
+                            if pils.enable_local_key(master)?!=gnunet_pils::client::LocalKeyStatus::Matched {
+                                return Err(gnunet_types::Error::Authentication.into());
+                            }
+                        }
                         let mut cut=None;
                         let changed=identity.select(&pils,owner,current.utc,&mut |retired|{
                             reporter.message(Level::INFO,"udp.identity.retired",format_args!("{retired:?}"));
@@ -608,12 +571,9 @@ pub(super) async fn run(inputs: Inputs) -> Result<Report, Cause> {
                         })?;
                         poll_fn(|cx|Poll::Ready(identity.guard(cx))).await?;
                         if changed {
-                            let retired=cut.ok_or("missing actual UDP identity retirement")?;
-                            let loss=owner.transport_loss().ok_or("UDP identity cut has no original source retirement")?;
-                            reporter.message(Level::INFO,"udp.identity.source-retired",format_args!("generation={} input_bytes={} retired_operations={}",loss.generation,loss.input_bytes,loss.retired.len()));
-                            for operation in loss.retired {reporter.debug("udp.identity.operation-retired",format_args!("{operation:?}"));}
-                            addresses.transport_lost(owner)?;
-                            if retired.transport_was_attached{dialing.disconnected()?;}
+                            if let Some(retired)=cut {
+                                identity::observe_retirement(owner,&mut addresses,&mut dialing,&reporter,retired)?;
+                            }
                             report.identity_updates=report.identity_updates.saturating_add(1);
                             reporter.message(Level::INFO,"udp.identity.selected",format_args!("peer={:?}; original sockets and address intent retained",identity.binding()?.peer()));
                         }
@@ -621,13 +581,16 @@ pub(super) async fn run(inputs: Inputs) -> Result<Report, Cause> {
                     pils_event(event,&reporter)?;
                 },
                 Step::Nat(event)=>{let event=event?;
-                    match addresses.observe_nat(nat,&event,&mut |address|scanner.classify(address))? {
-                        NatObservation::Accepted=>{if matches!(event,nat::Progress::Notification{..}){nat.release_notification()?;}},
-                        NatObservation::Backpressure=>{return Err("UDP NAT address capacity exhausted with original callback retained".into());},
+                    match addresses.observe_nat(nat.registration()?,&event,&mut |address|scanner.classify(address))? {
+                        NatObservation::Accepted=>{if matches!(event,nat::Progress::Notification{..}){nat.registration_mut()?.release_notification()?;}},
+                        NatObservation::Rejected{address,reason}=>{
+                            reporter.warning("udp.nat.address.refused",format_args!("{address}: {reason}"));
+                            nat.registration_mut()?.release_notification()?;
+                        },
                         NatObservation::None|NatObservation::Retired=>{},
-                        NatObservation::Reverse(view)=>{reporter.warning("udp.nat.reverse",format_args!("official UDP reversal callback has no implemented reversal action: {}",view.remote));addresses.release_reverse(nat,view)?;},
+                        NatObservation::Reverse(view)=>{reporter.warning("udp.nat.reverse",format_args!("official UDP reversal callback has no implemented reversal action: {}",view.remote));addresses.release_reverse(nat.registration_mut()?,view)?;},
                     }
-                    if let nat::Progress::Ended(end)=event {report.nat_retired=true;return Err(nat_loss(end));}
+                    if let nat::Progress::Ended(end)=event {report.nat_retired=true;nat_registration::ended(nat,end,&reporter)?;}
                 },
                 Step::App(event)=>match event? {
                     application::Step::Lost{report:retired,cause}=>{reporter.warning("udp.application.lost",format_args!("epoch={} written={} remaining={} cause={cause:?}",retired.epoch,retired.written,retired.remaining));application.restart(Duration::from_secs(60))?;},
@@ -635,8 +598,10 @@ pub(super) async fn run(inputs: Inputs) -> Result<Report, Cause> {
                     _=>{},
                 },
                 Step::Resolver(result)=>{result?;},
-                Step::Refresh(Ok(()))=>{addresses.replace_interfaces(&scanner.advertised(&bound)?,&mut |address|scanner.classify(address))?;if !settings.disable_broadcast{owner.update_interfaces(&scanner.discovery(&bound)?)?;}},
-                Step::Refresh(Err(error))=>reporter.warning("udp.interfaces.failed",format_args!("retaining previous actual snapshot: {error}")),
+                Step::Refresh(Ok(snapshot))=>if let Err(error)=scanner.install(snapshot,&mut addresses,owner) {
+                    reporter.warning("udp.interfaces.refused",format_args!("retaining previous complete snapshot: {error}"));
+                },
+                Step::Refresh(Err(error))=>reporter.warning("udp.interfaces.failed",format_args!("retaining previous complete snapshot: {error}")),
                 Step::Wake=>{},
                 Step::Failure(error)=>return Err(error),
                 Step::Connection(connection)=>{
@@ -668,11 +633,21 @@ pub(super) async fn run(inputs: Inputs) -> Result<Report, Cause> {
     }
     let mut retirement = Box::pin(tokio::time::sleep(Duration::from_secs(5)));
     if let Some(owner) = &mut comm {
+        let paused = identities.as_ref().is_some_and(identity::State::paused);
         let mut forced = owner.is_quiescent();
+        if paused {
+            // No current key can sign a withdrawal. Stop retained connectors
+            // without beginning another recovery attempt during shutdown.
+            let lost = pils.close();
+            addresses.pils_retired(&lost);
+            report.pils_retired += lost.iter().flatten().count();
+            owner.close();
+            forced = true;
+        }
         // Clock-independent removals are still admitted on this original MQ.
         // A clock failure prevents new FEED, but does not prevent physical close.
         loop {
-            if poll_fn(|cx| Poll::Ready(native_expired(&mut retirement, cx))).await {
+            if paused || poll_fn(|cx| Poll::Ready(native_expired(&mut retirement, cx))).await {
                 break;
             }
             if let Err(error) = poll_fn(|cx| Poll::Ready(addresses.poll_native_guard(cx))).await {

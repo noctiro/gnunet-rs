@@ -1,13 +1,28 @@
 # GNS SERVICE
 
-`gnunet-service-gns -c configuration` is the ordinary GNS500/501 IPC service,
-using standard SERVICE `-c/-d/-h/-L/-l/-v` preparation and the selected Logger. The original activation listeners and parent-control FD are adopted once. TCP/adopt preparation precedes configured `USERNAME`; Unix creation/access
-follows the identity change. `[gns] UNIX_MATCH_UID` defaults NO and
-`UNIX_MATCH_GID` defaults YES, matching the public service template. Explicit
-shared service policy is preserved; normal shutdown defaults Immediate.
+Native GNS 500/501 IPC service on Linux, macOS, FreeBSD and Windows. The same
+Server, resolver engine and dependency owners serve all native platforms.
 
-READY means local listeners, Server and dependency factories exist and stdout
-was flushed before the original ChildReady. The service keeps one process SharedClock and
+## Usage and startup
+
+`gnunet-service-gns -c configuration` uses standard SERVICE `-c/-d/-h/-L/-l/-v`
+options and the selected Logger. Unix adopts original descriptors, prepares
+TCP/inherited listeners before configured `USERNAME`, and creates local endpoints
+after the identity transition. Windows selects native activation, original-process
+detachment, configured account verification and a qualified parent connection.
+
+`[gns] UNIX_MATCH_UID` defaults NO; `UNIX_MATCH_GID` defaults YES on Unix and
+NO on Windows. Explicit Unix credential checks remain explicit requirements;
+Windows endpoints use native private ACLs. Normal shutdown defaults Immediate.
+
+Listeners, Server and dependency factories precede flushed READY output and the
+parent acknowledgement. The shared acknowledgement driver has one finite native
+bound and observes stop/logging errors. This observation does not promise future
+health or successful upstream resolution.
+
+## Resolution and native providers
+
+The service keeps one process SharedClock and
 one Resolver broker/Driver. NAMECACHE and DHT share bounded multi-operation
 clients; REVOCATION keeps its genuine one-request native MQ. Individual source
 or query failures leave unrelated queries live. Exposed NAMECACHE writes are
@@ -22,15 +37,23 @@ same exchange bounds through UDP/TCP, referral and alias processing. System
 address queries use the same process broker; their default 60-second record
 lifetime is explicit Rust policy because that broker returns no DNS TTL.
 
-The default symbolic service/protocol provider reads bounded `/etc/protocols`
-and `/etc/services`; this is the files profile, not all NSS or GANA registries. Numeric DNS bootstrap endpoints come from bounded `/etc/resolv.conf`. These
-synchronous configuration reads happen before live dependency effects and may
-block in the OS; no forced cancellation of a blocking read is claimed. `INTERCEPT_DNS=YES` attaches the configured ordinary `[dns]` CLIENT with the
+The bounded service/protocol files profile uses `/etc/protocols` and
+`/etc/services` on Unix. Windows discovers its native system directory and uses
+`drivers/etc/protocol` and `drivers/etc/services`. Explicit `PROTOCOLS_FILE` and
+`SERVICES_FILE` override those defaults. This is a files profile, not complete
+NSS/provider enumeration.
+
+DNS bootstrap uses bounded `/etc/resolv.conf` on Unix and a native configured-DNS
+snapshot on Windows. An explicit `RESOLV_CONF` selects file parsing on either
+platform. Native endpoint ordering and IPv6 scopes are preserved. These startup
+reads/snapshots issue no DNS query and retain their synchronous OS contract. `INTERCEPT_DNS=YES` attaches the configured ordinary `[dns]` CLIENT with the
 standard PRE_RESOLUTION subscription. Its original callbacks select typed zTLDs
 or configured `[gns] .suffix` public zones and use the same retained GNS Manager;
 non-GNS, malformed and other-profile questions are forwarded unchanged by their
 original callbacks. No self-RPC, extra UDP listener, Manager, Resolver or worker
 is created. A malformed selected namespace is an error, not DNS fallback.
+
+## Interception and resource limits
 
 Interception resource controls in `[gns-rust]` are MAX_INTERCEPT_REQUESTS(default
 MAX_QUERIES,max4096), INTERCEPT_PACKET_BYTES(default65507,max65519 IPC payload),
@@ -57,7 +80,9 @@ explicit Soft stop. These are Rust bounds, not copied C queue/timer internals. A
 renewal. RESOLV_CONF, RESOLV_CONF_BYTES, PROTOCOLS_FILE, SERVICES_FILE,
 DNS_EXCHANGES, SYSTEM_ADDRESS_LIFETIME and RESOLVER_* bounds are also explicit.
 
-Every post-Server exit enters old-owner cleanup: peer FDs close, only
+## Cancellation and recovery
+
+Every post-Server exit enters original-owner cleanup: peer FDs close, only
 their original queries cancel, original operations retire under their existing
 native bounds, then the original shared Resolver Driver disconnects and drops. Subscription revocation is not described as shared wire retirement. Queued
 responses are not called Written; positive write prefixes and discarded suffix
@@ -82,3 +107,12 @@ identity, deadlines and answers remain independent. Optional-refresh failures
 have bounded nonfatal diagnostics; late cache statuses and original
 retirement reports remain observations. STOPPED includes bounded refresh
 counts, without claiming remote publication, durability or measured performance.
+
+## Source layout
+
+`main.rs` owns terminal diagnostics; `unix.rs` and `windows.rs` select native
+startup around the shared foreground. `settings.rs` validates resource limits
+and native provider selection. `foreground.rs` composes and drives the actual
+owners; `foreground/diagnostics.rs` retains bounded observations and independent
+failure causes. `control.rs` aliases shared native stop subscriptions, and
+`lifecycle.rs` retains original Resolver cleanup.

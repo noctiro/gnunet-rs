@@ -329,6 +329,12 @@ impl Link {
         if Instant::now() >= options.until {
             return Err(io::ErrorKind::TimedOut.into());
         }
+        let info = Info {
+            name: options.interface.clone(),
+            index: 0,
+            mode: Mode::LinuxPi,
+        };
+        let route_table = crate::routes::table(&info)?;
         let mut child = command.spawn()?;
         let pid = child.id();
         // Tokio's successful piped spawn supplies both ends; retain the Child
@@ -343,11 +349,6 @@ impl Link {
             error: None,
             eof: false,
         };
-        let info = Info {
-            name: options.interface.clone(),
-            index: 0,
-            mode: Mode::LinuxPi,
-        };
         let startup = Box::pin(tokio::time::sleep_until(options.until));
         Ok(Self {
             child: Some(child),
@@ -356,6 +357,7 @@ impl Link {
             diagnostic,
             epoch: Epoch(Rc::new(Stamp {
                 alive: Cell::new(true),
+                route_table,
             })),
             info,
             options,
@@ -490,12 +492,18 @@ impl Link {
                 Err(e) => return Poll::Ready(Err(e.into())),
             }
         }
-        let mut observation = self.snapshot(self.options.until)?;
+        let mut observation = self.snapshot(
+            self.options.until,
+            crate::SnapshotOptions {
+                ipv4: self.options.ipv4.is_some(),
+                ipv6: self.options.ipv6.is_some(),
+            },
+        )?;
         let v4 = self.options.ipv4.is_none_or(|(address, mask)| {
             observation.ipv4_address() == crate::Ipv4Observation::Present(address)
                 && observation.ipv4_netmask() == crate::Ipv4Observation::Present(mask)
         });
-        let mtu = self.accepts_mtu(observation.mtu());
+        let mtu = self.accepts_mtu(observation.link_mtu());
         if let Some(error) = observation.take_close_error() {
             return Poll::Ready(Err(error.into()));
         }
@@ -507,8 +515,12 @@ impl Link {
         }
     }
     /// Actual snapshot for the captured kernel interface and original pipe epoch.
-    pub fn snapshot(&self, until: Instant) -> Result<NativeSnapshot, AdminFailure> {
-        crate::admin::snapshot(self.epoch(), self.info.clone(), until, || {
+    pub fn snapshot(
+        &self,
+        until: Instant,
+        options: crate::SnapshotOptions,
+    ) -> Result<NativeSnapshot, AdminFailure> {
+        crate::admin::snapshot(self.epoch(), self.info.clone(), until, options, || {
             check_interface(&self.epoch, &self.info, until)
         })
     }

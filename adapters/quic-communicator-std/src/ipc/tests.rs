@@ -1,16 +1,13 @@
 //! Native local MQ witnesses only; no QUIC/TLS/peer or processing ACK is simulated.
 use super::*;
+use gnunet_service_runtime::local::{Listener as LocalListener, Stream as LocalStream};
 use std::{
     error::Error,
     future::{Future, poll_fn},
-    os::unix::fs::DirBuilderExt,
     path::PathBuf,
     time::Duration,
 };
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::{UnixListener, UnixStream},
-};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 type TestError = Box<dyn Error>;
 struct Directory(PathBuf);
 impl Directory {
@@ -20,9 +17,16 @@ impl Directory {
         let stamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
             .as_nanos();
-        let path =
-            PathBuf::from("/tmp").join(format!("gqr-{}-{stamp:x}-{serial:x}", std::process::id()));
-        std::fs::DirBuilder::new().mode(0o700).create(&path)?;
+        #[cfg(unix)]
+        let base = PathBuf::from("/tmp");
+        #[cfg(windows)]
+        let base = std::env::temp_dir();
+        let base = std::fs::canonicalize(base)?;
+        let name =
+            std::ffi::OsString::from(format!("gqr-{:x}-{stamp:x}-{serial:x}", std::process::id()));
+        let parent = gnunet_native::filesystem::Directory::open(&base)?;
+        let _original = parent.create_private_directory(&name)?;
+        let path = base.join(name);
         Ok(Self(path))
     }
 }
@@ -39,7 +43,7 @@ fn runtime() -> Result<tokio::runtime::Runtime, TestError> {
 fn ipc_error(error: Failure) -> TestError {
     format!("actual local MQ failure: {error:?}").into()
 }
-async fn attach(ipc: &mut Ipc, listener: &UnixListener) -> Result<UnixStream, TestError> {
+async fn attach(ipc: &mut Ipc, listener: &LocalListener) -> Result<LocalStream, TestError> {
     let mut accept = std::pin::pin!(listener.accept());
     let mut peer = None;
     let mut attached = false;
@@ -73,9 +77,9 @@ async fn attach(ipc: &mut Ipc, listener: &UnixListener) -> Result<UnixStream, Te
     )
     .await?
 }
-fn new_ipc(directory: &Directory) -> Result<(Ipc, UnixListener, Instant), TestError> {
+fn new_ipc(directory: &Directory) -> Result<(Ipc, LocalListener, Instant), TestError> {
     let path = directory.0.join("s");
-    let listener = UnixListener::bind(&path)?;
+    let listener = LocalListener::bind(&path)?;
     let hard = Instant::now() + Duration::from_secs(30);
     let ipc = Ipc::new(
         EndpointSource::unix(path),
@@ -259,7 +263,7 @@ fn native_result_capacity_uses_exact_wire_extent_and_preserves_held_command()
     runtime()?.block_on(async {
         async fn drain(
             ipc: &mut Ipc,
-            peer: &mut UnixStream,
+            peer: &mut LocalStream,
             frames: usize,
             count: usize,
         ) -> Result<Vec<u8>, TestError> {
@@ -324,7 +328,7 @@ fn native_result_capacity_uses_exact_wire_extent_and_preserves_held_command()
         }
         let directory = Directory::new()?;
         let path = directory.0.join("capacity");
-        let listener = UnixListener::bind(&path)?;
+        let listener = LocalListener::bind(&path)?;
         let hard = Instant::now() + Duration::from_secs(10);
         let mut ipc = Ipc::new(
             EndpointSource::unix(path),
@@ -433,6 +437,61 @@ fn explicit_identity_pause_closes_original_mq_and_defers_reconnect_until_domain_
         let fresh=attach(&mut ipc,&listener).await?;
         if !ipc.outputs.is_empty() || ipc.generation()!=2 || !matches!(fresh.try_read(&mut [0;32]),Err(e) if e.kind()==std::io::ErrorKind::WouldBlock) {return Err("old FIFO crossed the source cut".into());}
         ipc.close();
+        Ok(())
+    })
+}
+
+#[test]
+fn recovery_bound_stops_connect_and_write_after_a_slow_clock_provider() -> Result<(), TestError> {
+    use gnunet_service_runtime::clock::{
+        ClockSample, ClockSubscription, RuntimeClock, SystemClock,
+    };
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    struct SlowClock {
+        armed: AtomicBool,
+        calls: AtomicUsize,
+    }
+    impl RuntimeClock for SlowClock {
+        fn sample(&self) -> Result<ClockSample, Protocol> {
+            if self.armed.load(Ordering::SeqCst) {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(150));
+            }
+            SystemClock.sample()
+        }
+        fn subscribe(&self) -> Result<Box<dyn ClockSubscription>, Protocol> {
+            SystemClock.subscribe()
+        }
+    }
+    runtime()?.block_on(async {
+        for attached in [false,true] {
+            let directory=Directory::new()?;let path=directory.0.join("g");
+            let listener=LocalListener::bind(&path)?;
+            let clock=Arc::new(SlowClock {armed:AtomicBool::new(false),calls:AtomicUsize::new(0)});
+            let hard=Instant::now()+Duration::from_secs(5);
+            let mut ipc=Ipc::new(EndpointSource::unix_with_clock(path,clock.clone()),4,131070,1,hard,Duration::from_secs(5)).map_err(ipc_error)?;
+            let peer=if attached {
+                let peer=attach(&mut ipc,&listener).await?;
+                ipc.enqueue(Request::Register {characteristics:gnunet_wire::official::communicator::Characteristics::Reliable,can_burst:false,prefix:b"quic"},Role::Register,hard).map_err(ipc_error)?;
+                Some(peer)
+            }else{None};
+            let utc=SystemClock.sample()?.now.as_micros()+1_000_000;
+            ipc.set_recovery_bound(Some((Instant::now()+Duration::from_millis(100),utc))).map_err(ipc_error)?;
+            clock.armed.store(true,Ordering::SeqCst);
+            let result=ipc.poll_recovering(&mut Context::from_waker(std::task::Waker::noop()),|_,_,_|{});
+            if !matches!(result,Err(Failure::Protocol(Protocol::Deadline))) || clock.calls.load(Ordering::SeqCst)==0 {
+                return Err("slow provider crossed the original IPC bound".into());
+            }
+            if let Some(peer)=peer {
+                if ipc.outputs.front().is_none_or(|output|output.bytes!=0)
+                    || !matches!(peer.try_read(&mut [0;32]),Err(error) if error.kind()==std::io::ErrorKind::WouldBlock) {
+                    return Err("late guard wrote an original prefix".into());
+                }
+            }else if listener.poll_accept(&mut Context::from_waker(std::task::Waker::noop())).is_ready() {
+                return Err("late guard created a replacement socket".into());
+            }
+            ipc.close();
+        }
         Ok(())
     })
 }

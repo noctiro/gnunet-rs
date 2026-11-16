@@ -1,7 +1,7 @@
 //! Native local DATASTORE IPC over the pure caller-buffer owner and shared
 //! CLIENT channel. No service process or background driver is created.
 #![forbid(unsafe_code)]
-#[cfg(all(unix, feature = "server"))]
+#[cfg(feature = "server")]
 pub mod backend;
 #[cfg(feature = "server")]
 pub mod server;

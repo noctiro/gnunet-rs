@@ -1,60 +1,35 @@
-use gnunet_service_startup::{ControlReceiver, ParentControl};
-use std::{
-    io,
-    task::{Context, Poll},
-};
-use tokio::signal::unix::{Signal, SignalKind};
+//! Sticky process stop intent over one original shared native subscription.
+use gnunet_service_startup::{StopError, StopSignals, StopSubscription};
+use std::task::{Context, Poll};
+
 pub(super) struct Signals {
-    parent: Option<ControlReceiver>,
-    interrupt: Signal,
-    terminate: Signal,
+    original: StopSignals,
     requested: bool,
 }
 impl Signals {
-    pub(super) fn new(parent: Option<ParentControl>) -> io::Result<Self> {
-        Ok(Self {
-            parent: parent
-                .map(|control| control.register().map_err(|failure| failure.error))
-                .transpose()?,
-            interrupt: tokio::signal::unix::signal(SignalKind::interrupt())?,
-            terminate: tokio::signal::unix::signal(SignalKind::terminate())?,
+    pub(super) fn new(original: StopSignals) -> Self {
+        Self {
+            original,
             requested: false,
-        })
+        }
     }
-    pub(super) fn poll(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+    pub(super) fn requested(&self) -> bool {
+        self.requested
+    }
+    pub(super) fn poll(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), StopError>> {
         if self.requested {
             return Poll::Ready(Ok(()));
         }
-        if let Some(parent) = &mut self.parent {
-            match parent.poll_signal(cx) {
-                Poll::Ready(Ok(Some(signal)))
-                    if i32::from(signal) == SignalKind::interrupt().as_raw_value()
-                        || i32::from(signal) == SignalKind::terminate().as_raw_value() =>
-                {
-                    self.requested = true;
-                    return Poll::Ready(Ok(()));
-                }
-                Poll::Ready(Ok(Some(_))) => cx.waker().wake_by_ref(),
-                Poll::Ready(Ok(None)) => self.parent = None,
-                Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
-                Poll::Pending => {}
+        self.original.poll_stop(cx).map(|result| {
+            if result.is_ok() {
+                self.requested = true;
             }
-        }
-        for signal in [&mut self.interrupt, &mut self.terminate] {
-            match signal.poll_recv(cx) {
-                Poll::Ready(Some(())) => {
-                    self.requested = true;
-                    return Poll::Ready(Ok(()));
-                }
-                Poll::Ready(None) => {
-                    return Poll::Ready(Err(io::Error::new(
-                        io::ErrorKind::UnexpectedEof,
-                        "installed signal stream ended",
-                    )));
-                }
-                Poll::Pending => {}
-            }
-        }
-        Poll::Pending
+            result
+        })
+    }
+}
+impl StopSubscription for Signals {
+    fn poll_stop(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), StopError>> {
+        self.poll(cx)
     }
 }

@@ -3,6 +3,7 @@
     clippy::panic_in_result_fn,
     reason = "Finite actual Unix ownership assertions with fallible setup"
 )]
+mod support;
 use gnunet_crypto::{EddsaPrivateKey, Entropy};
 use gnunet_service_runtime::connection::Connection;
 use gnunet_transport::{
@@ -14,7 +15,7 @@ use gnunet_types::Error;
 use std::{cell::Cell, future::poll_fn, rc::Rc, time::Duration};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::UnixStream,
+    net::TcpStream,
 };
 struct Key(EddsaPrivateKey);
 impl Signer for Key {
@@ -50,7 +51,7 @@ fn frame(kind: u16, n: usize) -> Vec<u8> {
 fn kind(b: &[u8]) -> u16 {
     u16::from_be_bytes([b[2], b[3]])
 }
-async fn read(s: &mut UnixStream) -> Result<Vec<u8>, std::io::Error> {
+async fn read(s: &mut TcpStream) -> Result<Vec<u8>, std::io::Error> {
     let mut h = [0; 4];
     s.read_exact(&mut h).await?;
     let n = usize::from(u16::from_be_bytes([h[0], h[1]]));
@@ -62,7 +63,7 @@ async fn read(s: &mut UnixStream) -> Result<Vec<u8>, std::io::Error> {
     s.read_exact(&mut b[4..]).await?;
     Ok(b)
 }
-async fn next_send(s: &mut UnixStream) -> Result<Vec<u8>, std::io::Error> {
+async fn next_send(s: &mut TcpStream) -> Result<Vec<u8>, std::io::Error> {
     loop {
         let b = read(s).await?;
         if kind(&b) == 1209 {
@@ -85,7 +86,7 @@ fn incoming(peer: PeerId, b: &[u8], token: u64) -> Vec<u8> {
     out[88..].copy_from_slice(b);
     out
 }
-async fn wait_token(s: &mut UnixStream, token: u64) -> Result<(), std::io::Error> {
+async fn wait_token(s: &mut TcpStream, token: u64) -> Result<(), std::io::Error> {
     loop {
         let b = read(s).await?;
         if kind(&b) == 1203 && b[8..16] == token.to_ne_bytes() {
@@ -94,7 +95,7 @@ async fn wait_token(s: &mut UnixStream, token: u64) -> Result<(), std::io::Error
     }
 }
 async fn add_remote(
-    comm: &mut UnixStream,
+    comm: &mut TcpStream,
     remote: &Key,
     qid: u32,
     token: u64,
@@ -151,12 +152,12 @@ async fn actual_backchannel_keeps_carrier_and_target_distinct_and_routes_only_cu
     let mut key = Key(EddsaPrivateKey::from_seed([3; 32]));
     let remote = Key(EddsaPrivateKey::from_seed([5; 32]));
     let mut server = Server::new(Engine::new(key.identity(), Limits::default())?, 3, 262140)?;
-    let (cs, mut carrier) = UnixStream::pair()?;
-    server.admit(Connection::from_unix(cs))?;
-    let (us, mut udp) = UnixStream::pair()?;
-    server.admit(Connection::from_unix(us))?;
-    let (ns, mut replacement) = UnixStream::pair()?;
-    server.admit(Connection::from_unix(ns))?;
+    let (cs, mut carrier) = support::pair().await?;
+    server.admit(Connection::from_tcp(cs))?;
+    let (us, mut udp) = support::pair().await?;
+    server.admit(Connection::from_tcp(us))?;
+    let (ns, mut replacement) = support::pair().await?;
+    server.admit(Connection::from_tcp(ns))?;
     let state = Rc::new(Cell::<Snapshot>::new(server.engine().snapshot()));
     let seen = state.clone();
     let phase = Rc::new(Cell::new(0));

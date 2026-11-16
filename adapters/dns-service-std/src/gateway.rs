@@ -1,11 +1,12 @@
 //! Actual SERVICE/helper/DNSSTUB composition; every original result is matched
 //! before core application. Pure phase/effect declarations never become success.
 use crate::{
+    UPSTREAM_SOCKETS, Upstream,
     core::{self, Destination, Request, Resolve, Source, Work},
+    packet_source::{self, OutputStop, Packet, PacketSource, Retirement, Route, SourceEvent},
     server::{Error, Event, Progress, Report, Server},
-    transport::{Helper, HelperEvent, HelperExit},
 };
-use gnunet_dnsstub_host::{DnsStub, Event as StubEvent, Flow, RequestId};
+use gnunet_dnsstub_host::{Event as StubEvent, Flow, RequestId};
 use gnunet_service_runtime::{framing::OwnedFrame, service::Listener};
 use gnunet_types::Error as Fault;
 use std::{
@@ -31,7 +32,7 @@ impl Default for GatewayLimits {
         Self {
             request_lifetime: Duration::from_secs(30),
             request_hard_lifetime: Duration::from_secs(45),
-            resolver_sockets: 16,
+            resolver_sockets: UPSTREAM_SOCKETS,
         }
     }
 }
@@ -64,9 +65,23 @@ pub enum GatewayProgress<'id> {
         /// Actual mismatch, malformed packet or bounded resource refusal.
         reason: Fault,
     },
-    /// Actual helper process retirement; report retains complete original status.
-    HelperExited,
-    /// Original shutdown is physically complete for owned processes/MQs.
+    /// An original route or packet output was refused without retiring the source.
+    PacketRefused {
+        /// Original query, or none when route qualification preceded admission.
+        request: Option<Request<'id>>,
+        /// Actual original pre-admission or retired-operation error.
+        reason: Error,
+    },
+    /// A native route-table observation failed without dropping a packet or
+    /// replacing the last complete interface views.
+    #[cfg(windows)]
+    RouteObservationFailed {
+        /// Original native enumeration, clock or snapshot validation error.
+        reason: std::io::Error,
+    },
+    /// Original packet source retired; the report retains its native receipt.
+    SourceRetired,
+    /// Local source retirement and MQ closure completed; no remote delivery claim.
     Stopped,
     /// Only caller wait budget ended.
     WaitDeadline,
@@ -76,18 +91,22 @@ pub enum GatewayProgress<'id> {
 pub struct GatewayReport {
     /// Actual local MQ counts.
     pub ipc: Report,
-    /// Actual helper raw packets read.
+    /// Raw packets admitted from the original packet source.
     pub packets: u64,
-    /// Actual helper pipe queue admissions, the original official answered counter.
-    pub helper_frames_queued: u64,
+    /// Packet-local route/output refusals; not one of the official DNS counters.
+    pub packet_refusals: u64,
+    /// Failed native interface observations, independent of packet refusals.
+    pub route_observation_failures: u64,
+    /// Packet-source queue admissions, the official answered counter.
+    pub outputs_queued: u64,
     /// Actual native DNSSTUB lazy socket opening failures.
     pub resolver_socket_failures: u64,
     /// Actual source-delivered DNS responses rejected by original correlation.
     pub resolver_discarded: u64,
     /// Actual non-DNS UDP helper packets rejected by the interception boundary.
     pub non_dns_udp: u64,
-    /// Actual helper pipe whole frames written, no TUN/remote ACK.
-    pub helper_frames_written: u64,
+    /// Complete local pipe writes or native packet submissions; no remote ACK.
+    pub outputs_written: u64,
     /// Actual real resolver operations admitted.
     pub resolver_queries: u64,
     /// Real resolver admissions refused without affecting other requests.
@@ -96,8 +115,8 @@ pub struct GatewayReport {
     pub resolver_answers: u64,
     /// Original DNSSTUB callback-authority evictions.
     pub resolver_evictions: u64,
-    /// Actual helper wait and signal outcomes.
-    pub helper_exit: Option<HelperExit>,
+    /// Original process exit or device-close observation.
+    pub source_retirement: Option<Retirement>,
     /// First original fatal cause.
     pub first: Option<Error>,
     /// First independent cleanup fault.
@@ -109,10 +128,10 @@ struct ResolveMap<'id> {
     job: Resolve<'id>,
     native: RequestId,
 }
-#[derive(Clone, Copy)]
 struct Span<'id> {
     request: Request<'id>,
     hard: Instant,
+    route: Route,
 }
 enum Captured {
     Datagram {
@@ -126,40 +145,41 @@ enum Captured {
     SocketFailure,
     Activity,
 }
-/// One actual shared native SERVICE with one original helper and one DNSSTUB
+/// Shared native SERVICE with one original packet source and one DNSSTUB
 /// owner. Configured DNS exits are numeric addresses, with no hidden resolver.
 pub struct Gateway<'id> {
     server: Server<'id>,
-    helper: Helper<'id>,
+    packets: PacketSource<'id>,
     source: Source<'id>,
-    stub: DnsStub<16, 65479, 4>,
+    stub: Upstream,
     maps: Vec<Option<ResolveMap<'id>>>,
     spans: Vec<Option<Span<'id>>>,
     limits: GatewayLimits,
     scratch: Zeroizing<Vec<u8>>,
-    held_input: Option<(OwnedFrame, Instant)>,
+    held_input: Option<(Packet, Instant)>,
     cursor: usize,
     class: usize,
     closing: bool,
-    helper_done: bool,
+    source_done: bool,
     timer: Pin<Box<Sleep>>,
     report: GatewayReport,
 }
 struct Parts<'id> {
-    stub: DnsStub<16, 65479, 4>,
     maps: Vec<Option<ResolveMap<'id>>>,
     spans: Vec<Option<Span<'id>>>,
     scratch: Vec<u8>,
 }
 /// Failed composition retains actual original owners; caller must physically
-/// close MQs and drive the same helper's retirement rather than orphan it.
+/// close MQs and drive the same packet source through retirement.
 pub struct RejectedGateway<'id> {
     /// Original construction error.
     pub error: Error,
     /// Original local MQ/core owner, unchanged on rejection.
     pub server: Server<'id>,
-    /// Original process/pipe owner, no fake cleanup proof.
-    pub helper: Helper<'id>,
+    /// Original process/pipe or native device owner, retained for retirement.
+    pub packets: PacketSource<'id>,
+    /// Original upstream sockets; retain until the capture filter is retired.
+    pub upstream: Option<Upstream>,
 }
 impl std::fmt::Debug for RejectedGateway<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -169,28 +189,65 @@ impl std::fmt::Debug for RejectedGateway<'_> {
     }
 }
 impl<'id> Gateway<'id> {
-    /// Actual helper must already own its real process/pipes. Attaching it is not
+    /// Packet source must already own its native resources. Attaching it is not
     /// a routing-setup ACK. Resolver construction alone opens/sends no socket.
     #[expect(
         clippy::result_large_err,
         reason = "Rejected construction retains both original physical owners for explicit no-clock retirement, without a fallible error allocation"
     )]
     pub fn new(
-        mut server: Server<'id>,
-        mut helper: Helper<'id>,
+        server: Server<'id>,
+        packets: PacketSource<'id>,
         exit: std::net::IpAddr,
         limits: GatewayLimits,
     ) -> Result<Self, RejectedGateway<'id>> {
-        if let Some(error) = helper.take_startup_error() {
+        let mut stub = match Upstream::start(limits.resolver_sockets, core::MAX_DNS_BYTES) {
+            Ok(stub) => stub,
+            Err(error) => {
+                return Err(RejectedGateway {
+                    error: error.into(),
+                    server,
+                    packets,
+                    upstream: None,
+                });
+            }
+        };
+        if let Err(error) = stub.add_dns_sa(std::net::SocketAddr::new(exit, 53)) {
+            return Err(RejectedGateway {
+                error: error.into(),
+                server,
+                packets,
+                upstream: Some(stub),
+            });
+        }
+        Self::with_upstream(server, packets, stub, limits)
+    }
+    /// Adopt the original configured upstream, including sockets reserved before
+    /// capture opened. A mismatched capture exemption refuses construction.
+    #[expect(
+        clippy::result_large_err,
+        reason = "Rejected construction retains original native owners for explicit retirement"
+    )]
+    pub fn with_upstream(
+        mut server: Server<'id>,
+        mut packets: PacketSource<'id>,
+        stub: Upstream,
+        limits: GatewayLimits,
+    ) -> Result<Self, RejectedGateway<'id>> {
+        if let Some(error) = packets.take_startup_error() {
             return Err(RejectedGateway {
                 error: Error::Io(error),
                 server,
-                helper,
+                packets,
+                upstream: Some(stub),
             });
         }
         let prepared = (|| -> Result<Parts<'id>, Error> {
-            if !helper.initialized()
-                || !(1..=16).contains(&limits.resolver_sockets)
+            if !packets.initialized()
+                || !packets.matches_upstream(&stub)
+                || stub.slot_count() != limits.resolver_sockets
+                || stub.is_stopped()
+                || !(1..=UPSTREAM_SOCKETS).contains(&limits.resolver_sockets)
                 || limits.request_lifetime.is_zero()
                 || limits.request_hard_lifetime < limits.request_lifetime
             {
@@ -202,12 +259,11 @@ impl<'id> Gateway<'id> {
                     return Err(Fault::Overflow.into());
                 }
             }
-            let mut stub = DnsStub::start(limits.resolver_sockets, core::MAX_DNS_BYTES)?;
-            stub.add_dns_sa(std::net::SocketAddr::new(exit, 53))?;
             let count = server.engine().request_capacity();
             let mut maps = Vec::new();
-            maps.try_reserve_exact(16).map_err(|_| Fault::Capacity)?;
-            maps.resize_with(16, || None);
+            maps.try_reserve_exact(UPSTREAM_SOCKETS)
+                .map_err(|_| Fault::Capacity)?;
+            maps.resize_with(UPSTREAM_SOCKETS, || None);
             let mut spans = Vec::new();
             spans
                 .try_reserve_exact(count)
@@ -219,14 +275,12 @@ impl<'id> Gateway<'id> {
                 .map_err(|_| Fault::Capacity)?;
             scratch.resize(65535, 0);
             Ok(Parts {
-                stub,
                 maps,
                 spans,
                 scratch,
             })
         })();
         let Parts {
-            stub,
             maps,
             spans,
             scratch,
@@ -236,7 +290,8 @@ impl<'id> Gateway<'id> {
                 return Err(RejectedGateway {
                     error,
                     server,
-                    helper,
+                    packets,
+                    upstream: Some(stub),
                 });
             }
         };
@@ -246,13 +301,14 @@ impl<'id> Gateway<'id> {
                 return Err(RejectedGateway {
                     error: error.into(),
                     server,
-                    helper,
+                    packets,
+                    upstream: Some(stub),
                 });
             }
         };
         Ok(Self {
             server,
-            helper,
+            packets,
             source,
             stub,
             maps,
@@ -263,7 +319,7 @@ impl<'id> Gateway<'id> {
             cursor: 0,
             class: 0,
             closing: false,
-            helper_done: false,
+            source_done: false,
             timer: Box::pin(tokio::time::sleep_until(Instant::now())),
             report: GatewayReport::default(),
         })
@@ -272,12 +328,10 @@ impl<'id> Gateway<'id> {
     pub const fn report(&self) -> &GatewayReport {
         &self.report
     }
-    /// Consume this original owner and retain its actual errors and helper exit
-    /// report. This first performs the existing clock-free physical close; it
-    /// does not wait for a child, certify firewall cleanup or synthesize an exit.
-    /// A caller requiring confirmed retirement must first drive `Stopped`.
-    /// An absent helper exit remains unconfirmed and the original Helper Drop
-    /// fallback still runs when this consumed Gateway is dropped.
+    /// Close local owners and retain their observations. Native device-close
+    /// receipts are captured synchronously; helper exit requires driving
+    /// `Stopped` first. This method never waits for a child or certifies routing
+    /// cleanup. Missing source retirement remains unconfirmed.
     pub fn into_report(mut self) -> GatewayReport {
         self.close(None, &mut |_| {});
         std::mem::take(&mut self.report)
@@ -287,7 +341,7 @@ impl<'id> Gateway<'id> {
     /// never a TUN write, response delivery or STATISTICS processing receipt.
     pub fn statistics(&self) -> [u64; 6] {
         [
-            self.report.helper_frames_queued,
+            self.report.outputs_queued,
             self.report.resolver_socket_failures,
             self.report.resolver_discarded,
             self.server.report().client_responses_discarded,
@@ -301,7 +355,7 @@ impl<'id> Gateway<'id> {
             self.report.cleanup = Some(error)
         }
     }
-    /// Physical MQs/pipes/sockets stop independently before logical settlement.
+    /// Stop physical admission and retain native owners before logical settlement.
     /// Canonical clock is not sampled, and child wait/firewall cleanup stays owned.
     pub fn close(&mut self, cause: Option<Error>, observe: &mut impl FnMut(Event<'id>)) {
         if self.report.first.is_none() {
@@ -315,13 +369,19 @@ impl<'id> Gateway<'id> {
             self.cleanup(error)
         }
         self.held_input = None;
-        let pending = self.helper.pending();
-        self.helper.request_stop();
-        if let Some((effect, written, total)) = pending {
-            observe(Event::HelperOutputLost {
-                effect,
-                written,
-                total,
+        let pending = self.packets.pending();
+        self.packets.request_stop();
+        if !self.source_done
+            && let Some(retirement) = self.packets.take_immediate_retirement()
+        {
+            self.report.source_retirement = Some(retirement);
+            self.source_done = true;
+        }
+        if let Some(pending) = pending {
+            observe(Event::PacketOutputLost {
+                effect: pending.effect,
+                exposure: pending.exposure,
+                total: pending.total,
             });
         }
         let _stopped = self.stub.stop();
@@ -442,20 +502,20 @@ impl<'id> Gateway<'id> {
                     if source != self.source {
                         return Err(Fault::StaleGeneration.into());
                     }
-                    if !self.helper.writable() {
+                    if !self.packets.writable() {
                         continue;
                     }
-                    let hard = self
+                    let span = self
                         .spans
                         .iter()
                         .flatten()
                         .find(|s| s.request == request)
-                        .ok_or(Fault::StaleGeneration)?
-                        .hard;
-                    let (effect, len) = self
-                        .server
-                        .engine_mut()
-                        .prepare_helper(request, &mut self.scratch)?;
+                        .ok_or(Fault::StaleGeneration)?;
+                    let (effect, len) = self.packets.prepare(
+                        self.server.engine_mut(),
+                        request,
+                        &mut self.scratch,
+                    )?;
                     let frame = match OwnedFrame::copy_from(&self.scratch[..len]) {
                         Ok(f) => f,
                         Err(e) => {
@@ -463,14 +523,24 @@ impl<'id> Gateway<'id> {
                             return Err(e.into());
                         }
                     };
-                    match self.helper.queue(effect, frame, hard) {
+                    match self.packets.queue(effect, frame, span.hard, &span.route) {
                         Ok(()) => {
                             self.server.engine_mut().queued(effect)?;
-                            self.report.helper_frames_queued =
-                                self.report.helper_frames_queued.saturating_add(1);
+                            self.report.outputs_queued =
+                                self.report.outputs_queued.saturating_add(1);
                         }
                         Err((e, _)) => {
                             self.server.engine_mut().reject_prepared(effect)?;
+                            if packet_source::route_refusal(&e) {
+                                self.server.engine_mut().abort(request)?;
+                                self.report.packet_refusals =
+                                    self.report.packet_refusals.saturating_add(1);
+                                self.cursor = (i + 1) % cap;
+                                return Ok(Some(GatewayProgress::PacketRefused {
+                                    request: Some(request),
+                                    reason: e,
+                                }));
+                            }
                             return Err(e);
                         }
                     }
@@ -481,7 +551,10 @@ impl<'id> Gateway<'id> {
                     if source != self.source {
                         return Err(Fault::StaleGeneration.into());
                     }
-                    return Err(Fault::Deadline.into());
+                    match self.packets.cancel_output(request)? {
+                        OutputStop::Requested => continue,
+                        OutputStop::SourceRequired => return Err(Fault::Deadline.into()),
+                    }
                 }
                 Work::Close(Destination::Client(client)) => {
                     self.server
@@ -491,7 +564,7 @@ impl<'id> Gateway<'id> {
                 Work::Retire(request) => {
                     self.server.engine_mut().retire(request)?;
                     for slot in &mut self.spans {
-                        if slot.is_some_and(|s| s.request == request) {
+                        if slot.as_ref().is_some_and(|s| s.request == request) {
                             *slot = None;
                             break;
                         }
@@ -504,13 +577,13 @@ impl<'id> Gateway<'id> {
         }
         Ok(None)
     }
-    fn helper_event(
+    fn source_event(
         &mut self,
-        event: HelperEvent<'id>,
+        event: SourceEvent<'id>,
         observe: &mut impl FnMut(Event<'id>),
     ) -> Result<GatewayProgress<'id>, Error> {
         match event {
-            HelperEvent::Frame(frame) => {
+            SourceEvent::Packet(frame) => {
                 if self.held_input.is_some() {
                     return Err(Fault::Conflict.into());
                 }
@@ -520,30 +593,59 @@ impl<'id> Gateway<'id> {
                 self.held_input = Some((frame, hard));
                 Ok(GatewayProgress::Activity)
             }
-            HelperEvent::Written {
+            SourceEvent::Written {
                 effect,
-                bytes,
-                complete,
+                observation,
             } => {
-                if bytes > 0 {
+                if observation.exposed() {
                     self.server.engine_mut().exposed(effect)?;
                 }
-                if complete {
+                if observation.complete() {
                     self.server.engine_mut().written(effect)?;
-                    self.report.helper_frames_written =
-                        self.report.helper_frames_written.saturating_add(1);
+                    self.report.outputs_written = self.report.outputs_written.saturating_add(1);
                 }
                 Ok(GatewayProgress::Activity)
             }
-            HelperEvent::Read(_) => Ok(GatewayProgress::Activity),
-            HelperEvent::Failed(e) => Err(e.into()),
-            HelperEvent::Exited(exit) => {
-                self.helper_done = true;
-                self.report.helper_exit = Some(exit);
-                self.close(Some(Fault::Closed.into()), observe);
-                Ok(GatewayProgress::HelperExited)
+            SourceEvent::OutputStopped {
+                effect,
+                exposure,
+                total,
+                reason,
+            } => {
+                self.server.engine_mut().packet_stopped(effect)?;
+                observe(Event::PacketOutputLost {
+                    effect,
+                    exposure,
+                    total,
+                });
+                self.report.packet_refusals = self.report.packet_refusals.saturating_add(1);
+                Ok(GatewayProgress::PacketRefused {
+                    request: Some(effect.request()),
+                    reason,
+                })
             }
-            HelperEvent::Stopping => Ok(GatewayProgress::Activity),
+            #[cfg(windows)]
+            SourceEvent::Refused(reason) => {
+                self.report.packet_refusals = self.report.packet_refusals.saturating_add(1);
+                Ok(GatewayProgress::PacketRefused {
+                    request: None,
+                    reason,
+                })
+            }
+            #[cfg(windows)]
+            SourceEvent::RouteObservationFailed(reason) => {
+                self.report.route_observation_failures =
+                    self.report.route_observation_failures.saturating_add(1);
+                Ok(GatewayProgress::RouteObservationFailed { reason })
+            }
+            SourceEvent::Activity => Ok(GatewayProgress::Activity),
+            SourceEvent::Failed(e) => Err(e.into()),
+            SourceEvent::Retired(exit) => {
+                self.source_done = true;
+                self.report.source_retirement = Some(exit);
+                self.close(Some(Fault::Closed.into()), observe);
+                Ok(GatewayProgress::SourceRetired)
+            }
         }
     }
     fn admit_input(&mut self, now: u64) -> Result<Option<GatewayProgress<'id>>, Error> {
@@ -559,7 +661,7 @@ impl<'id> Gateway<'id> {
             .checked_add(duration)
             .filter(|n| *n != u64::MAX)
             .ok_or(Fault::Overflow)?;
-        let packet = match core::helper_packet(frame.bytes()) {
+        let packet = match frame.bytes() {
             Ok(p) => p,
             Err(e) => return Ok(Some(GatewayProgress::PacketDropped(e))),
         };
@@ -578,7 +680,11 @@ impl<'id> Gateway<'id> {
             .intercept(self.source, packet, now, until)
         {
             Ok(request) => {
-                self.spans[slot] = Some(Span { request, hard });
+                self.spans[slot] = Some(Span {
+                    request,
+                    hard,
+                    route: frame.into_route(),
+                });
                 self.report.packets = self.report.packets.saturating_add(1);
                 Ok(Some(GatewayProgress::Activity))
             }
@@ -669,12 +775,12 @@ impl<'id> Gateway<'id> {
         observe: &mut impl FnMut(Event<'id>),
     ) -> Poll<Result<GatewayProgress<'id>, Error>> {
         if self.closing {
-            if self.helper_done {
+            if self.source_done {
                 return Poll::Ready(Ok(GatewayProgress::Stopped));
             }
-            if let Poll::Ready(exit) = self.helper.poll_exit(cx) {
-                self.report.helper_exit = Some(exit);
-                self.helper_done = true;
+            if let Poll::Ready(exit) = self.packets.poll_retirement(cx) {
+                self.report.source_retirement = Some(exit);
+                self.source_done = true;
                 return Poll::Ready(Ok(GatewayProgress::Stopped));
             }
             if let Some(until) = until {
@@ -689,9 +795,12 @@ impl<'id> Gateway<'id> {
             return Poll::Pending;
         }
         let result = (|| {
+            if !self.packets.matches_upstream(&self.stub) {
+                return Poll::Ready(Err(Fault::StaleGeneration.into()));
+            }
             self.hard_expire()?;
-            if let Poll::Ready(event) = self.helper.poll_native_guard(cx) {
-                return Poll::Ready(self.helper_event(event, observe));
+            if let Poll::Ready(event) = self.packets.poll_guard(cx) {
+                return Poll::Ready(self.source_event(event, observe));
             }
             if let Poll::Ready(progress) = self.server.poll_native_guard(cx, until, observe) {
                 return Poll::Ready(progress.map(|_| GatewayProgress::Activity));
@@ -748,9 +857,9 @@ impl<'id> Gateway<'id> {
                         }
                         Poll::Ready(Ok(_)) => Poll::Ready(Ok(GatewayProgress::Activity)),
                     },
-                    1 => match self.helper.poll(cx) {
+                    1 => match self.packets.poll(cx) {
                         Poll::Pending => Poll::Pending,
-                        Poll::Ready(e) => Poll::Ready(self.helper_event(e, observe)),
+                        Poll::Ready(e) => Poll::Ready(self.source_event(e, observe)),
                     },
                     _ => self.poll_stub(cx),
                 };

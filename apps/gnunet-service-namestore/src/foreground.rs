@@ -1,7 +1,6 @@
 //! Original NAMESTORE/worker owners under standard SERVICE startup.
 use crate::{
     Failure,
-    control::Signals,
     lifecycle::{Cleanup, Resolver},
     settings::Settings,
 };
@@ -19,7 +18,7 @@ use gnunet_service_runtime::{
     clock::RuntimeClock,
     service::{Listener, ShutdownMode},
 };
-use gnunet_service_startup::{ParentControl, daemon::ChildReady};
+use gnunet_service_startup::{ControlReceiver, StopSignals as Signals};
 use std::{
     fmt,
     future::{Future, poll_fn},
@@ -286,7 +285,7 @@ async fn turn(
         if reports.failed() {
             resolver.close();
             return Poll::Ready(Ok(Turn::Signal));
-        } else if let Poll::Ready(signal) = signals.poll(cx) {
+        } else if let Poll::Ready(signal) = signals.poll_stop(cx) {
             return Poll::Ready(
                 signal
                     .map(|()| Turn::Signal)
@@ -333,10 +332,9 @@ pub(super) struct Inputs<'a> {
     pub config: &'a Configuration,
     pub settings: Settings,
     pub bound: &'a BoundListeners,
-    pub parent: Option<ParentControl>,
+    pub parent: Option<ControlReceiver>,
     pub clock: SharedClock,
     pub reports: Reporter,
-    pub child: &'a mut ChildReady,
     pub cleanup: Cleanup,
 }
 
@@ -344,7 +342,10 @@ pub(super) struct Inputs<'a> {
     clippy::too_many_lines,
     reason = "One lexical scope retains the actual store worker, its borrowed Server, original cleanup futures and real join report on every construction/runtime error"
 )]
-pub(super) async fn run(input: Inputs<'_>) -> Result<(), Failure> {
+pub(super) async fn run(
+    input: Inputs<'_>,
+    notify_ready: impl Future<Output = Result<(), Failure>>,
+) -> Result<(), Failure> {
     let Inputs {
         config,
         settings,
@@ -352,7 +353,6 @@ pub(super) async fn run(input: Inputs<'_>) -> Result<(), Failure> {
         parent,
         clock: shared_clock,
         reports,
-        child,
         cleanup,
     } = input;
     let mut signals = Signals::new(parent)?;
@@ -361,7 +361,7 @@ pub(super) async fn run(input: Inputs<'_>) -> Result<(), Failure> {
     }
     let stopped_before_start = poll_fn(|cx| {
         reports.register(cx);
-        Poll::Ready(match signals.poll(cx) {
+        Poll::Ready(match signals.poll_stop(cx) {
             Poll::Ready(result) => result.map(|()| true),
             Poll::Pending => Ok(false),
         })
@@ -424,7 +424,7 @@ pub(super) async fn run(input: Inputs<'_>) -> Result<(), Failure> {
                 if reports.failed() {
                     return Poll::Ready(Ok(true));
                 }
-                Poll::Ready(match signals.poll(cx) {
+                Poll::Ready(match signals.poll_stop(cx) {
                     Poll::Ready(result) => result.map(|()| true),
                     Poll::Pending => Ok(false),
                 })
@@ -438,7 +438,7 @@ pub(super) async fn run(input: Inputs<'_>) -> Result<(), Failure> {
                 writeln!(out, "READY namestore wire=0.29.1 store=rust-marked-snapshot-v1 generation={generation} rows={rows} recovered-pending={recovered} disk-workers=1")?;
                 out.flush()?;
             }
-            child.ready()?;
+            notify_ready.await?;
             let listeners = bound.listeners();
             let mut until = None;
             let mut alarm: Option<Pin<Box<Sleep>>> = None;

@@ -8,9 +8,15 @@ mod target;
 mod task;
 use crate::network::tree_download::TreeDownloadProgress;
 use crate::{
-    CommitStage, Error, FileIdentity, ObservedFailure, OwnedDirectoryFailure, ReadFile,
-    RevalidateFailure,
+    Error, FileIdentity, ObservedFailure, OwnedDirectoryFailure, ReadFile, RevalidateFailure,
 };
+
+fn native_stage(sync: Option<crate::DirectorySync>) -> Result<crate::CommitStage, Cause> {
+    sync.map(crate::CommitStage::FileSynchronized)
+        .ok_or(Cause::State(
+            "native output lacks its directory observation",
+        ))
+}
 pub use file::{FileOptions, FileProgress};
 use gnunet_fs::directory::walk;
 pub use model::{
@@ -118,8 +124,8 @@ impl Cause {
         }
     }
     pub(super) fn committed(&self) -> bool {
-        matches!(self, Self::Output(error) if error.stage == CommitStage::Durable)
-            || matches!(self, Self::RangeOutput(error) if error.stage == CommitStage::Durable)
+        matches!(self, Self::Output(error) if error.stage.is_committed())
+            || matches!(self, Self::RangeOutput(error) if error.stage.is_committed())
             || matches!(
                 self,
                 Self::Operation(Error::CleanupAfterCommit { .. })

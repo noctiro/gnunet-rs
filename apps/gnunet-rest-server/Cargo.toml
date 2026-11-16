@@ -9,7 +9,7 @@ license.workspace = true
 default = []
 oidc = ["gnunet-rest-host/oidc", "dep:gnunet-oidc-crypto-host"]
 
-[target.'cfg(unix)'.dependencies]
+[dependencies]
 gnunet-oidc-crypto-host = { workspace = true, optional = true }
 gnunet-config.workspace = true
 gnunet-rest.workspace = true
@@ -27,9 +27,11 @@ gnunet-service-runtime.workspace = true
 gnunet-service-startup.workspace = true
 tokio = { workspace = true, features = ["rt", "net", "time", "signal"] }
 zeroize.workspace = true
+gnunet-native.workspace = true
+
+[target.'cfg(unix)'.dependencies]
 uzers.workspace = true
 nix = { workspace = true, features = ["user"] }
-libc.workspace = true
 
 [lints]
 workspace = true

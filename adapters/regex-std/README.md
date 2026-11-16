@@ -5,6 +5,8 @@ actual `gnunet-regex-service` Core and kernel Unix/TCP MQs. It starts no DHT,
 PILS, resolver, worker, thread or detached task. The coordinator supplies real
 PILS signing and the caller-owned native DHT provider described below.
 
+## Public interface
+
 The pinned production service allows one ANNOUNCE and one SEARCH simultaneously
 on a connection, with duplicate same-kind requests closing that original source. The Core owns this rule. Host uses official wire codecs, preserving SEARCH C
 prefix semantics and refusing malformed known frames. There is no wire RID,
@@ -95,8 +97,3 @@ an already-created provider or hide its native/worker debts in Drop. Readonly
 peer/provider/metrics views support foreground readiness and diagnostics;
 they create no work or success receipt. Diagnostic PUT counters advance only
 after original provider admission and never control business progress.
-
-The native source/standalone composition requires its own affected compiler and
-runtime qualification. Historical interface-only compiler receipts keep their
-original source scope; no new native, crypto, service or official interoperability
-execution is implied by these source paths.

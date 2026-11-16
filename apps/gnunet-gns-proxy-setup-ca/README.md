@@ -1,43 +1,64 @@
 # GNS proxy CA preparation
 
-`gnunet-gns-proxy-setup-ca` implements the preparation command described by the
-pinned official `src/cli/gns/gnunet-gns-proxy-setup-ca.in` and its man page. Shared PROGRAM preparation supplies configuration, help/version, logging and
-filename expansion. Official `-v` prints the version; `-V` selects verbose
-preparation. `-c FILE`, `-h`, `-t`, and `-o` retain their respective purposes.
+`gnunet-gns-proxy-setup-ca` creates credentials for the GNS proxy and can import
+the public CA into existing NSS databases. Shared PROGRAM preparation supplies
+configuration, logging and filename expansion on Linux, macOS, FreeBSD and
+Windows. `-v` prints the version; `-V` enables verbose preparation; `-t` probes
+the provider and optional NSS helper; `-o` repeats a bounded status summary.
 
-A normal invocation generates a self-signed P-256/SHA-256 CA with the official
-GNS Proxy CA subject and 3650-day validity. It includes explicit critical CA
-constraints and certificate-signing key usage, and emits one certificate plus
-one unencrypted PKCS#8 key (standard 64-column PEM encoded by the existing
-Base64 dependency) into expanded `[gns-proxy] PROXY_CACERT`. This ordinary
-X.509 profile is consumable by the Rust proxy authority loader and compatible
-TLS consumers.
+## Credential publication
 
-The combined credential is staged with create-new 0600 permissions in the same
-directory and published using a no-clobber hard link after complete writes and
-file synchronization. New parent directories use 0700; existing directories are
-not chmodded. An existing destination, including any symlink, is preserved and
-reported as a refusal. There is no automatic CA rotation or existing-private-key
-read. Publication/cleanup/durability failures retain whether the new destination
-was actually published. Filesystems without same-directory hard links return a
-error rather than silently using an overwrite-prone fallback.
+A normal invocation creates a self-signed P-256/SHA-256 CA with the GNS Proxy CA
+subject, critical CA constraints, certificate-signing usage and 3650-day validity.
+Expanded `[gns-proxy] PROXY_CACERT` receives the certificate and unencrypted
+PKCS#8 key in one PEM file. The serialized private key is erased before launching
+an NSS helper. Existing destinations, including symlinks, are refused.
 
-For Firefox/Icecat `~/.mozilla/*/*.*` profile directories and `~/.pki/nssdb`, the
-optional NSS `certutil` adapter imports only the public certificate with the
-standard GNS Proxy CA nickname and CT,, trust flags. SQL databases use the sql:
-prefix. An existing nickname is preserved and returned as an explicit import refusal,
-rather than deleted or treated as proof that this new CA is already trusted. Missing helpers/profiles are explicit skips. Actual nonzero import statuses are
-errors; a successfully created CA remains available after browser import failure. The helper does not change a system-wide trust store. Browser software must
-actually use the discovered NSS database; successful certutil status is not a
-claim that every browser or running profile has reloaded trust.
+Original native directory and file owners protect staging, no-clobber hard-link
+publication and cleanup. New parent directories are private; existing permissions
+are checked rather than changed. Unix staging uses 0600; Windows uses a private
+process-user DACL. Complete writes and file synchronization precede publication.
+Attempted publication, confirmed publication, original staging removal, writer
+close and directory synchronization have independent results. An error can leave
+a published credential; it never triggers replacement or rollback by pathname.
+Windows directory synchronization may be unavailable and does not imply durable
+name publication. Filesystems without hard links return an error.
 
-`-t` reports the compiled rcgen/AWS-LC provider and runs the optional certutil
-help probe. It creates no CA, imports no trust and requires no OpenSSL/GnuTLS
-binary. `-o` retains a bounded in-memory status summary, with no temporary summary
-file. Profiles, scanned directory entries, paths and generated PEM sizes are
-bounded. One original 120-second native/canonical window covers preparation and
-subprocess polling without phase renewal. Synchronous filesystem/cryptographic
-calls are guarded before/after but cannot be forcibly preempted; an NSS child is
-killed and reaped on guard failure before its error is returned.
+## NSS configuration
 
-C/Rust/browser acceptance remains open.
+`[gns-proxy-rust] NSS_CERTUTIL` selects an absolute path to trusted Mozilla NSS
+`certutil`. Windows requires this selection for optional imports because the
+system program with the same name implements a different interface. Unix can
+use NSS `certutil` from PATH. No implicit command shell is used on Windows.
+`NSS_DATABASE` optionally selects one existing custom database, including a
+profile outside the default browser locations.
+
+Default discovery covers Windows `%APPDATA%/Mozilla/Firefox/Profiles`, macOS
+`~/Library/Application Support/Firefox/Profiles`, Unix `~/.mozilla/firefox` and
+`~/.mozilla/icecat`, and Unix `~/.pki/nssdb`. Only directories containing an
+ordinary `cert9.db` or `cert8.db` are admitted. SQL databases use the `sql:`
+prefix. Discovery is limited to 4096 entries and 128 profiles; the original
+profile directory remains held and is checked around helper calls. The default
+Firefox locations follow the [Mozilla profile service](https://firefox-source-docs.mozilla.org/toolkit/profile/index.html).
+
+Imports pass only a private staging file containing the public certificate, with
+the `GNS Proxy CA` nickname and `CT,,` trust flags. Existing nicknames are
+preserved. Missing optional helpers/profiles are reported as skips; nonzero
+import statuses and changed profile observations are errors. A successful helper
+exit does not prove that a running browser has reloaded trust. The command does
+not modify operating-system trust stores. See the [NSS tool reference](https://nss-crypto.org/reference/security/nss/legacy/tools/certutil/index.html).
+
+## Cancellation and errors
+
+Native startup captures parent control first. One 120-second native/canonical
+window covers preparation, with stop signals, parent control and logger errors
+checked between bounded work units. Synchronous filesystem/crypto calls cannot
+be forcibly interrupted. A failed or cancelled NSS operation retains the original
+child, requests native termination and observes exit for at most five seconds.
+Timeout reports an unobserved exit rather than claiming successful retirement.
+The full Windows exit word is retained. Public-file removal, writer close,
+publication, helper exit and selected diagnostic errors remain independent.
+
+`-t` creates no credential and imports no trust. Actual browser trust and
+cross-platform runtime qualification follow the central
+[implementation status](../../IMPLEMENTATION_STATUS.md).

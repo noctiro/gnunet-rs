@@ -1,38 +1,142 @@
-# Actual PT native owner and PROGRAM (P2)
+# PT native host
 
-This package composes the PT/DNS wire/core and existing official DNS-interception, VPN, CADET and DHT native clients. Implementation, deployment and interoperability evidence remain separate.
+This crate composes the PT core with the official DNS-interception, VPN, CADET
+and DHT clients. Linux, macOS, Windows and FreeBSD share the protocol owner and
+PROGRAM driver. The SDK exposes it through `official-pt` and `gnunet::pt_host`.
 
-`Owner::new(Identities, Sources, same_clock_arc, core_limits, families, native_limits, explicit_vpn_af)` owns clients without self-referential storage, hidden tasks or a Resolver. Instance/channel metadata belongs to the caller. Each DNS attachment maps to a private Core Source and each Notification maps to its original opaque8 ID, native Request, core Request, original absolute expiry and native hard bound. Only the same original Source/Epoch/request can receive a reply. Actual source loss retires its callbacks and cancels the original VPN interests; reconnect sends only fresh INIT, never old callbacks/answers. `drive` is a cancel-safe observation wait. `stop` physically closes original owners without needing a clock and returns independent cleanup errors.
+## Ownership
 
-POST processes all answer/authority/additional A/AAAA records through same-family VPN allocations. Only a matching USE_IP result can supply an address. Allocation jobs, callback/source generation, original lease and response bounds stay bound. Each record replacement and final reply is checked. Actual IP traffic to/from the allocated addresses is handled by the admitted VPN daemon, its TUN/exit and helper/route ownership, not by invented PT packets or a second device. USE_IP and DNS queue writes alone are not evidence that a route, TUN or remote application is ready. There is no PT-owned raw/TUN helper in the official Meson target.
+`Owner::new(Identities, Sources, clock, core_limits, families, native_limits, vpn_af)`
+borrows the caller's Instance brands and channel metadata. It owns each enabled
+client and starts no hidden task, Resolver or runtime. Each DNS notification keeps
+its original Source, Epoch, opaque eight-byte ID, native request, core request,
+absolute expiry and native hard bound. Only that original callback can receive
+the reply. `drive` is a cancel-safe observation wait; `stop` physically retires
+the original owners without sampling a clock and returns independent failures.
 
-PRE implements signed DNS-exit discovery/result validation, bounded candidate/channel ownership, explicit CADET OPEN/local credit/send whole-write/response/destroy mapping, unique query IDs per channel generation, original question/opcode comparison, restoration of original DNS IDs, alternate-channel retries, fixed original deadlines and bounded attempts. A PRE request with no admitted live advertised channel is dropped, as in the official daemon. DNS packets use official types193/194 on SHA512("exit-dns"). Query IDs never wrap within one Tunnel: after65536 allocated IDs the old channel drains outstanding originals and is really destroyed before a new generation is opened. Quality scoring uses whole-write/answer/timeout facts; pending queries are not claimed to be dropped.
+Source loss cancels the original VPN allocation interests and DNS callbacks.
+Reconnection sends fresh INIT frames without replaying old answers or callbacks.
+Allocation replies must match their original operations and address families.
+The VPN client retains partial cancellation debt after the DNS callback is gone.
+PT polls its native guards before its own clock wait and settles local outcomes
+without a clock sample. A healthy VPN MQ survives DNS replacement; old allocation
+results cannot satisfy a successor callback with the same opaque DNS ID.
 
-The DHT GET port is explicitly caller-owned. `discovery::Native` supplies the production client: original Discovery and GetId, key=SHA512("dns"), type10, replication1, DEMULTIPLEX_EVERYWHERE1, empty xquery, fixed original canonical/native deadlines and raw112-byte public advertisement delivery. One GET, one output frame and one native input frame are bounded; no monitor/HELLO/PUT metadata is reserved. Safe readonly MQ recovery retains the original GET and bounds. Actual source/connect/protocol causes are independent observations. Deadline/cancel first suppresses the exact GET and physically retires its MQ or pending connection attempt before ending; BeforeIssue/epoch absence never implies absence of a native attempt. Original cancellation and retirement failures remain distinct. No result/end/whole-write asserts remote success or no-match. The normal PROGRAM supplies this port, PRE DNS and CADET only when TUNNEL_DNS is enabled, on the same original Resolver/clock. POST DNS and VPN are selected only for enabled address families. No host-DNS/GNS/static-peer substitute or private wire is added.
+The [interception module](src/owner/interception.rs) retains rejected callbacks
+until their original Drop decision can be admitted. A full DNS output budget
+leaves that decision pending while existing writes and other sources progress;
+retries keep the original token and deadlines. Callback metadata follows each
+enabled DNS client's native request limit, independently of the core's smaller
+business-admission budget. Only local reply admission advances its decision
+state; whole-write and source retirement remain separate observations.
 
-Native hard checks and alarm registration run before waiting on canonical-clock stabilization, including callback, allocation, partial CADET input, control/send/receive-done, ad and query lifetimes. Each original native bound is minted once. Logical rollback changes no original target and cannot revive expired/retired advertisements. Same-expiry advertisement replay cannot renew its native lease. Real later signed expiry can renew it. Backpressure uses a bounded retry wake, never busy retry, and cannot extend an old deadline. A partial immutable transmit at deadline retires its physical MQ; local DATA credit and Written never prove remote receipt.
+## DNS and VPN translation
 
-For rewritten POST answers queued to an immutable MQ, only the transformed A/AAAA TTLs are zero. The shared `packet::rewrite_uncached` runs the complete original/transformed compression-alias validation after TTL0, retains lease fields, clears AD and leaves all other record bytes intact. This avoids adding queue/partial-write time to a finite VPN lease. The cost is extra address resolution/allocation work because transformed addresses are not cached. P1 `packet::rewrite` retains its positive floor(remaining lease) API for explicit pure callers. Existing RRSIG bytes are preserved but no longer authenticate rewritten RRsets; PT does not re-sign or assert DNSSEC validation.
+POST translates every selected A/AAAA record in the answer, authority and
+additional sections through same-family VPN allocations. Only a matching USE_IP
+reply supplies a replacement address. VPN packet forwarding, routes, TUN and EXIT
+ownership remain in the VPN service. Allocation and queue-write receipts confer
+no forwarding or remote-application readiness.
 
-`program` is optional. It supplies actual [pt] TUNNEL_IPV4/TUNNEL_IPV6/TUNNEL_DNS switches, finite [pt-rust] budgets, shared PROGRAM/Resolver/clock, once-owned parent signals, explicit privilege profile and bounded shutdown. gnunet-daemon-pt has NOARMBIND=YES, no listeners and no fake READY. Linux/macOS default foreground selects the existing native VPN AF profiles; other callers must supply an explicit profile through Owner.
+Admission reserves the full transformed reply before exposing any VPN allocation
+job. Capacity refusal therefore precedes a possible remote allocation. Results
+fill the reserved slots; final encoding and compression validation precede reply
+queue admission. The [POST host module](src/owner/post.rs) owns the original VPN
+interests and their matching results within the shared PT owner.
+Disabled providers require no host allocation-interest, channel or advertisement
+table, and POST-only construction requires no CADET backing slots.
 
-Official subsystem `pt` STATISTICS names are retained exactly in metrics.rs, nonpersistent. Real callbacks, matching allocations, accepted/late DNS replies and genuine timeout decisions increment fixed local totals. The PROGRAM composes the existing `StatisticsHandle::from_live_config` with the same live config, Resolver and clock. Relative deltas are admitted at most once from a private attempted cursor; any setter error may follow admission, so destroy(false)+physical drop retires that source and the delta is never replayed as processed. Actual processing-confirm/discard/unconfirmed shutdown facts remain separate from storage durability. PT native bounds are polled before statistics work. Shutdown stops PT, then drives finite STATISTICS destroy while Resolver is still alive, preserving original and independent cleanup errors; a native hard deadline forcibly retires unconfirmed IO.
+Queued rewritten responses use `packet::rewrite_uncached`: transformed A/AAAA
+TTLs become zero so output backpressure cannot extend the VPN lease. Compression
+alias validation covers the original and transformed packets, AD is cleared and
+unrelated record bytes are retained. Existing RRSIG data does not authenticate
+the rewritten RRsets. Pure callers can use `packet::rewrite` for a positive
+floor of the remaining lease.
 
-No private key was read or hashed. Actual Rust DNS interception SERVICE/platform redirection and VPN/TUN/EXIT runtime are deployment dependencies and are not manufactured by this client. Official-C bidirectional interoperability, packet forwarding and privileged/device acceptance remain unexecuted.
+## Exit discovery and tunnels
 
-Central integration adds an explicit DNS native-only guard and a VPN partial-RX
-native bound before the outer clock wait. On VPN partial timeout the old
-MQ retires before its original pure allocation interests are canceled; no remote
-lease revocation is claimed. With all three official switches off, PROGRAM
-returns normally without constructing provider owners, matching the active C
-no-useful-service path. SDK uses `official-pt` / `gnunet::pt_host` because this
-is PT composition rather than a PT-owned service IPC client. Current strict
-macOS/Linux, SDK/no-program/M0/guards and one public TTL0/opaque-ID model pass. Production crypto/key/native/provider/device/official-C execution remains absent.
+PRE uses signed exit advertisements from DHT and CADET DNS messages 193/194 on
+SHA512("exit-dns"). A request without an admitted live advertised channel is
+dropped. Each tunnel retains its original EXIT peer, request deadline, bounded
+attempt count, DNS IDs, questions and opcode. IDs do not wrap: after 65,536 IDs,
+the old channel drains its outstanding requests and is destroyed before a new
+generation opens. Whole writes, answers and timeouts remain distinct facts.
 
-The PROGRAM foreground takes the original `gnunet_program_host::reporting::Reporter`. Resolver and provider diagnostics use that same selected Logger; output failure wakes the existing PT task and enters its owner/statistics/Resolver shutdown path. An original provider error concurrent with a failed diagnostic is retained separately, and `owner::Failures::source` exposes the first cause. The installing caller retains `Reporter::take_error` in its final result after shutdown. No background task or replacement source is introduced. The production DHT port is supplied by the independent discovery owner described above.
+The caller supplies a [discovery port](src/discovery.rs).
+[`discovery::Native`](src/discovery/native.rs) owns a readonly DHT GET for
+SHA512("dns"), block type 10, replication 1, DEMULTIPLEX_EVERYWHERE and an empty
+extended query. One GET, output frame and input frame are bounded. Advertisements
+are signed 112-byte public blocks. Readonly MQ recovery preserves the original
+GET and its bounds; cancellation suppresses it and physically retires the MQ or
+pending connection before ending. A write or end observation claims neither
+remote success nor absence of matching exits.
 
-The discovery successor also closes the shared Resolver on refused constructor/allocation exits, keeps independent cancellation/core-retirement errors, and preserves the original outcome through native shutdown-target overflow. No runtime, crypto, helper or official-peer execution is implied.
+The [advertisement owner](src/owner/advertisements.rs) binds verified blocks to
+their original query and native lease. The [PRE host](src/owner/pre.rs) handles
+CADET events and classifies one nested DNS frame per turn, allowing ready DNS
+decisions to advance between frames. Query transmission, retries and valid
+responses reuse the core's admission-time reply reservation. A fixed parser or
+size refusal withdraws that exit rather than retrying an inadmissible frame.
 
-A complete original CADET DNS response packet retains its tunnel/EXIT peer and cursor before a later channel `Destroyed` can reset that tunnel's DNS IDs or reselect unanswered requests. Reply classification is independent of an unrelated admitted native transmit. It still requires the core's original Waiting attempt, per-channel DNS ID, original questions/opcode, request deadline and EXIT lease/closing checks. Consumer capacity retains the exact unaccepted frame and earlier accepted frames are not replayed.
+The bounded lease table keeps one monotonic absolute-expiry floor. Expired
+admitted leases, observed on the canonical clock or at their original native
+targets, advance this local admission boundary. All equal or earlier expirations
+lose authority before their slots are reused, including after clock rollback or
+an identity change. Repeated expirations keep their original hard bound; only a
+strictly later signed expiry can replace it. Channel and control cleanup retain
+their independent owners.
 
-A remote-close packet is released locally after classification, without receive_done or a new ACK/send on the gone channel. Only then does original tunnel_stopped reselect requests which remain unanswered; already retained ReplyReady data stays bound to its original DNS callback. Local close/cancel/expiry never gains response authority from destruction, and original pending native suffixes retain their own completion and hard bounds. MQ loss and hard expiry keep their existing failure paths.
+A received CADET DNS packet retains its original tunnel and byte cursor across
+a later channel destruction. Reply classification still checks the original
+Waiting attempt, DNS ID, questions, opcode, deadline and exit lease. On a destroyed
+channel, classification finishes before unanswered requests are reselected.
+Releasing the local packet sends no receive credit to that gone channel. Local
+cancellation and expiry grant no new response authority, and admitted output
+keeps its own completion and bounds.
+
+## PROGRAM integration
+
+The optional `program` feature provides [settings](src/settings.rs) and the
+[shared foreground](src/foreground.rs). The normal
+[daemon](../../apps/gnunet-daemon-pt/) uses `ClientStartup` and `StopSignals` for
+original parent control and native termination on every supported platform.
+Unix applies the configured process identity; Windows verifies its current
+token. Local VPN IPC uses `AfProfile::native()` for the actual platform.
+
+Official `[pt]` switches default to NO. All-disabled configuration exits before
+constructing provider owners. TUNNEL_DNS selects only PRE DNS, DHT and CADET;
+enabled address families select POST DNS and VPN. Selectors share the PROGRAM
+Resolver and clock. `[pt-rust]` controls finite resource budgets and timeouts.
+The daemon has NOARMBIND=YES and publishes no listening-service readiness.
+
+Native hard bounds are checked before canonical-clock waits, including partial
+VPN/CADET input, callbacks, allocations, control writes and exit leases. Every
+bound is minted once. Clock rollback and backpressure cannot renew it. A partial
+transmit at expiry retires its physical MQ. Provider construction failures also
+disconnect the original Resolver and preserve cleanup failures.
+
+Fixed channel-retry targets participate in the shared clock wakeup, so an idle
+provider set can reopen a retired channel without unrelated traffic. Already due
+targets cannot hide a future callback or discovery deadline.
+
+The selected PROGRAM Reporter carries provider and Resolver diagnostics.
+Output failure wakes the original task and starts bounded shutdown; an original
+business failure remains independent of the logger failure.
+
+## Statistics and shutdown
+
+[Metrics](src/metrics.rs) retains the official `pt` statistic names. The shared
+STATISTICS owner uses the same configuration, Resolver and clock. Relative
+nonpersistent deltas are attempted once; an ambiguous setter failure retires
+that source without replaying a possibly admitted delta. Processing confirmation,
+discard and unconfirmed shutdown remain distinct from storage durability.
+
+Shutdown stops PT first. A normal stop publishes the final deltas and requests
+the official STATISTICS processing barrier on the original connection, including
+when all setters have already been written. Final admissions, barrier creation
+and drain share one original native deadline while the Resolver remains live.
+A PT or Reporter failure aborts the original statistics source without admitting
+new deltas or starting a drain. Native timeout retires unconfirmed I/O; original
+and independent cleanup errors remain in the result. The Resolver disconnects
+last. Native deployment and official-peer qualification are tracked in
+[implementation status](../../IMPLEMENTATION_STATUS.md).

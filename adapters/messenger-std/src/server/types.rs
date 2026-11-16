@@ -12,6 +12,8 @@ pub enum Error {
     Provider(gnunet_client_host::ConnectError),
     /// Original PILS physical loss cause.
     PilsLost(pils::LossCause),
+    /// Original connection failure retained through the fixed recovery bound.
+    PilsRecoveryTimeout(pils::ConnectionLoss),
     /// Actual original history writer/recovery failure.
     History(crate::history::Error),
     /// Independent final-cut preparation/completion and actual worker join failures.
@@ -35,6 +37,9 @@ impl std::fmt::Display for Error {
                 "final history: {original}; independent worker shutdown: {cleanup}"
             ),
             Self::PilsLost(e) => write!(f, "PILS original loss: {e:?}"),
+            Self::PilsRecoveryTimeout(first) => {
+                write!(f, "PILS recovery deadline expired: {first}")
+            }
         }
     }
 }
@@ -44,6 +49,7 @@ impl std::error::Error for Error {
             Self::HistoryShutdown { original, .. } => Some(original.as_ref()),
             Self::Io(error) => Some(error),
             Self::History(error) => Some(error),
+            Self::PilsRecoveryTimeout(first) => Some(first),
             _ => None,
         }
     }
@@ -354,6 +360,14 @@ pub enum Event {
         /// Actual local refusal of obsolete signing authority.
         reason: Fault,
     },
+    /// An admitted original PILS operation and its Core binding have retired.
+    /// This does not claim the old service never computed a signature.
+    SignRetired {
+        /// Original SDK operation diagnostic allocation.
+        operation: u64,
+        /// Local retirement cause, not a remote outcome.
+        reason: Fault,
+    },
     /// Exact explicit history worker progress; queued is never durable success.
     History(crate::history::Progress),
     /// Actual provider/source failure; error itself returned separately when fatal.
@@ -361,7 +375,8 @@ pub enum Event {
         /// Whether the original lost dependency was PILS.
         pils: bool,
     },
-    /// Original exposed output retired with the physical source, unknown delivery.
+    /// Original output cancelled before exposure or retired with its physical
+    /// source. This is not a remote receipt or permission to replay it.
     OutputLost {
         /// Original retired output sequence.
         sequence: u64,

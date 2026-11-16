@@ -6,6 +6,8 @@ fixture declares 1100 client slots, which exceeds the official native 1024 FD
 boundary. It is not the production Rust app or its default capacity, and this
 receipt does not complete a generic SERVICE/STATISTICS owner.
 
+## Usage
+
 For each process, first fill one listener with clients whose official
 GET has returned END. The next accepted socket crosses the native FD_SETSIZE
 boundary and is closed before admission. Its peer observes EOF/reset. A

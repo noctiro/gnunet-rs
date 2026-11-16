@@ -1,5 +1,6 @@
 //! One original foreground future survives PROGRAM task/scheduler cancellation.
 //! The caller retains its own stop latch and actual cleanup/deadline contract.
+mod stop;
 use crate::{
     program::{self, Prepared},
     shared_clock::SharedClock,
@@ -13,6 +14,7 @@ use std::{
     rc::Rc,
     task::Poll,
 };
+pub use stop::Stop;
 type Cause = Box<dyn Error>;
 struct Original<F: Future> {
     future: Pin<Box<F>>,

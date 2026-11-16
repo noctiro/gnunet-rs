@@ -9,6 +9,8 @@ does not spend the name-byte quota or create a partial row. The job pool remains
 fixed. It has no OS, executor, socket, IDENTITY client,
 NAMESTORE client, storage worker, secret-key or facade dependency.
 
+## Public interface
+
 Internal `BTreeMap` indexes provide logarithmic name/zone deduplication and
 exact cache-name lookup. Rows and their index keys share the same `Arc<str>`;
 the name-byte quota counts each retained string once. Cache lookup constructs
@@ -91,5 +93,5 @@ The production contract is based on pinned GNUnet 0.29.1
 `src/cli/namestore/gnunet-zoneimport.c`: stdin EOF before continuous TTL refresh,
 IN NS queries, first-label/suffix ownership, zone iteration, relative
 parent delegation, pending STORE exclusion, retries and three-section result
-conversion. This source candidate was only formatted and reviewed as text; it
-does not assert DNS/network, cryptographic, mixed-node or storage execution.
+conversion. The [native host](../../adapters/zoneimport-std/README.md) supplies
+DNS, NAMESTORE and native operation ownership.

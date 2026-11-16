@@ -2,6 +2,8 @@
 
 This bridge connects the DV actor to the existing Engine/accepted-MQ Server. It owns bounded metadata, not a second Flow engine, key, MQ, worker, resolver, task or plaintext pool. All identities are original Engine/Actor leases. Raw1218/1219 never become CORE messages.
 
+## Public interface
+
 `Bridge::adopt_at(server, actor, limits, native_epoch)` takes the exact original Owner `Clock::native_bound(MonoInstant(0))`; it does not calibrate a fresh clock. `sync_neighbours` uses validated direct queue generations. `sync_paths` explicitly selects `SendPolicy::Bidirectional` and installs only the Actor's send-eligible route, fixed native lifetime and maximum plaintext. That policy accepts local-probe confirmation or a still-current, signed inverse route whose full reverse-link history and source watermark have actually passed the route layer. An inverse route remains `Freshness::Passive` with `rtt: None`; no local probe/measurement is manufactured. Receiving a private Granted by itself creates no return queue.
 
 Inbound `receive_one` fairly handles complete native frames and Engine-reassembled outer DV bodies. The actor's explicit incoming disposition retains the same source, immutable body and first deadline on Deferred; Rejected/Expired consumes only that original input when physical FC disposal can proceed. A Source failure does not consume the frame as a remote protocol refusal. Every assembly is tagged with its first `Option<Source>`: None, old Source and replacement Source cannot combine. Reassembly completion carries the first expiry. Source retirement removes the exact old assemblies/held bodies before gate release. Only the actor's private `Granted` enters `deliver`, which reuses the original Flow/reliability/fragment/backchannel/CORE dispatcher. Completed plaintext held by CORE backpressure stays charged to its same Ingress and is not reprocessed as a fresh envelope.
@@ -76,10 +78,6 @@ introduced. Durable wire stamp allocation and original BOX admission/written/
 unknown/retirement ownership remain unchanged. Burst synchronization still uses
 only a locally Confirmed route and an measured `Some(RTT)`; a usable signed
 inverse path with unknown RTT cannot enable it.
-
-This source composition does not establish A--B--C execution or
-unchanged-C/mixed-peer interoperability. Required runtime qualification remains
-outstanding; historical build and execution receipts retain their original scope.
 
 Path synchronization replaces an eligible same-peer path through the Engine's
 atomic install operation before replacing the bridge's private ledger entry. It does not withdraw first, create a transient CORE disconnect or discard the

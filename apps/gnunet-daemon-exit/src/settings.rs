@@ -81,7 +81,10 @@ fn prefix(text: &str) -> Result<Prefix, Failure> {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum TunMode {
     None,
+    #[cfg(unix)]
     Preopened,
+    #[cfg(windows)]
+    Existing,
     Fresh,
     Direct,
 }
@@ -95,13 +98,20 @@ pub(super) struct Redirect {
 pub(super) struct Settings {
     pub pils_profile: gnunet_pils::Profile,
     pub mode: TunMode,
+    #[cfg(windows)]
+    pub wintun: Option<crate::network::device::windows::Settings>,
+    #[cfg(target_os = "linux")]
     pub helper: Option<std::path::PathBuf>,
+    #[cfg(target_os = "linux")]
     pub helper_mtu: Option<u32>,
+    #[cfg(target_os = "linux")]
     pub helper_partial: Duration,
     pub egress: Option<String>,
     pub name: Option<String>,
     pub unit: Option<u32>,
     pub packet_information: bool,
+    #[cfg(target_os = "freebsd")]
+    pub checkpoint: Option<std::path::PathBuf>,
     pub mtu: u32,
     pub ipv4: Option<(Ipv4Addr, Ipv4Addr, u8)>,
     pub ipv6: Option<(Ipv6Addr, u8)>,
@@ -123,6 +133,32 @@ pub(super) struct Settings {
     pub lookup: Duration,
     pub af: AfProfile,
 }
+fn tun_checkpoint(c: &Configuration, mode: TunMode) -> Result<Option<std::path::PathBuf>, Failure> {
+    use gnunet_config::ProcessEnvironment;
+    let selected = c.get(LOCAL, b"TUN_RECOVERY_FILE").is_some();
+    if !cfg!(target_os = "freebsd") || !matches!(mode, TunMode::Fresh | TunMode::Direct) {
+        if selected {
+            return Err("TUN_RECOVERY_FILE requires fresh/direct FreeBSD TUN ownership".into());
+        }
+        return Ok(None);
+    }
+    if selected {
+        return Ok(Some(c.get_filename(
+            LOCAL,
+            b"TUN_RECOVERY_FILE",
+            &ProcessEnvironment,
+        )?));
+    }
+    let input = b"${GNUNET_DATA_HOME}/exit/tun-recovery";
+    let expanded = c.expand_dollar(input, &ProcessEnvironment)?;
+    if expanded == input {
+        return Err(
+            "set [exit-rust] TUN_RECOVERY_FILE or GNUNET_DATA_HOME for native FreeBSD TUN recovery"
+                .into(),
+        );
+    }
+    Ok(Some(c.expand_filename(&expanded, &ProcessEnvironment)?))
+}
 impl Settings {
     pub fn read(c: &Configuration) -> Result<Self, Failure> {
         let pils_profile = gnunet_pils::Profile::configured(c.get(b"PILS", b"PROFILE"), None)?;
@@ -136,16 +172,23 @@ impl Settings {
             "none"
         }) {
             "none" => TunMode::None,
+            #[cfg(unix)]
             "preopened" => TunMode::Preopened,
+            #[cfg(windows)]
+            "existing" => TunMode::Existing,
             "fresh" => TunMode::Fresh,
             "direct" => TunMode::Direct,
-            _ => return Err("TUN_MODE must be none, preopened, fresh or direct".into()),
+            _ => return Err("invalid native TUN_MODE for this platform".into()),
         };
+        let checkpoint = tun_checkpoint(c, mode)?;
+        #[cfg(not(target_os = "freebsd"))]
+        drop(checkpoint);
         let egress = if enable4 || exit6 {
             let value = text(c, b"exit", b"EXIT_IFNAME")?.ok_or("missing [exit] EXIT_IFNAME")?;
             if value == "%" || value == "-" {
                 None
             } else {
+                #[cfg(unix)]
                 if value.is_empty()
                     || value.len() >= libc::IFNAMSIZ
                     || !value
@@ -153,6 +196,10 @@ impl Settings {
                         .all(|b| b.is_ascii_alphanumeric() || b"-_.:".contains(&b))
                 {
                     return Err("invalid [exit] EXIT_IFNAME".into());
+                }
+                #[cfg(windows)]
+                if value.is_empty() || value.contains('\0') || value.encode_utf16().count() > 256 {
+                    return Err("invalid Windows [exit] EXIT_IFNAME".into());
                 }
                 Some(value.to_owned())
             }
@@ -319,6 +366,9 @@ impl Settings {
             input_lifetime: micros(c, b"INPUT_LIFETIME", d.input_lifetime)?,
             quarantine: micros(c, b"QUARANTINE", d.quarantine)?,
         };
+        if mode != TunMode::None && core.packet_bytes > gnunet_tun_host::Limits::MAX_PACKET_BYTES {
+            return Err("PACKET_BYTES exceeds the native TUN packet limit".into());
+        }
         let n = gnunet_exit_host::runtime::Limits::default();
         let native = gnunet_exit_host::runtime::Limits {
             ports: number(c, b"MAX_CADET_PORTS", n.ports)?,
@@ -363,7 +413,13 @@ impl Settings {
             None | Some("native") => AfProfile::native(),
             Some("linux") => AfProfile::LINUX,
             Some("darwin") => AfProfile::DARWIN,
-            _ => return Err("PEER_AF_PROFILE must be native, linux or darwin".into()),
+            Some("freebsd") => AfProfile::FREEBSD,
+            Some("windows") => AfProfile::WINDOWS,
+            _ => {
+                return Err(
+                    "PEER_AF_PROFILE must be native, linux, darwin, freebsd or windows".into(),
+                );
+            }
         };
         let mtu = u32::try_from(number(c, b"MTU", 1400)?)?;
         if mtu == 0 || mtu > 65535 || (enable6 && mtu < 1280) {
@@ -372,12 +428,17 @@ impl Settings {
         Ok(Self {
             pils_profile,
             mode,
+            #[cfg(windows)]
+            wintun: crate::network::device::windows::Settings::read(c, mode != TunMode::None)?,
+            #[cfg(target_os = "linux")]
             helper: if cfg!(target_os = "linux") && mode == TunMode::Fresh {
                 Some(c.suid_binary_path(b"gnunet-helper-exit")?)
             } else {
                 None
             },
+            #[cfg(target_os = "linux")]
             helper_mtu: c.get(LOCAL, b"MTU").map(|_| mtu),
+            #[cfg(target_os = "linux")]
             helper_partial: duration(c, b"HELPER_INPUT_TIMEOUT", 5_000_000)?,
             egress,
             name: text(c, b"exit", b"TUN_IFNAME")?
@@ -390,6 +451,8 @@ impl Settings {
                 .map(u32::try_from)
                 .transpose()?,
             packet_information: flag(c, LOCAL, b"LINUX_TUN_PI", false)?,
+            #[cfg(target_os = "freebsd")]
+            checkpoint,
             mtu,
             ipv4,
             ipv6,
@@ -483,6 +546,37 @@ impl Settings {
 #[cfg(test)]
 mod profile_tests {
     use super::*;
+    #[test]
+    fn checkpoint_selection_never_silently_ignores_a_foreign_provisioning_mode()
+    -> Result<(), Failure> {
+        let mut config = Configuration::default();
+        config.set_value(
+            LOCAL,
+            b"TUN_RECOVERY_FILE",
+            Some(b"/tmp/private-exit/checkpoint"),
+        )?;
+        #[cfg(unix)]
+        let borrowed = TunMode::Preopened;
+        #[cfg(windows)]
+        let borrowed = TunMode::Existing;
+        for mode in [TunMode::None, borrowed] {
+            if tun_checkpoint(&config, mode).is_ok() {
+                return Err("external/no-device mode accepted an administrative checkpoint".into());
+            }
+        }
+        for mode in [TunMode::Fresh, TunMode::Direct] {
+            let actual = tun_checkpoint(&config, mode);
+            #[cfg(target_os = "freebsd")]
+            if actual? != Some(std::path::PathBuf::from("/tmp/private-exit/checkpoint")) {
+                return Err("selected checkpoint path changed".into());
+            }
+            #[cfg(not(target_os = "freebsd"))]
+            if actual.is_ok() {
+                return Err("non-FreeBSD provisioning ignored a selected checkpoint".into());
+            }
+        }
+        Ok(())
+    }
     #[test]
     #[expect(
         clippy::panic_in_result_fn,

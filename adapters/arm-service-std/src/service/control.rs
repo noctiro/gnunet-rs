@@ -1,22 +1,15 @@
-//! Real original parent control and owned process signals, no polling thread.
+//! Selected diagnostic stop and one shared original native stop subscription.
 use super::{Failure, reporting::Reports};
-use gnunet_service_startup::{ControlReceiver, ParentControl};
+use gnunet_service_startup::{ControlReceiver, StopSignals};
 use std::task::{Context, Poll};
-use tokio::signal::unix::{Signal, SignalKind};
 pub(super) struct Control {
-    parent: Option<ControlReceiver>,
-    interrupt: Signal,
-    terminate: Signal,
+    stop: StopSignals,
     diagnostic_stop: bool,
 }
 impl Control {
-    pub(super) fn new(parent: Option<ParentControl>) -> Result<Self, Failure> {
+    pub(super) fn new(parent: Option<ControlReceiver>) -> Result<Self, Failure> {
         Ok(Self {
-            parent: parent
-                .map(|p| p.register().map_err(|e| e.error))
-                .transpose()?,
-            interrupt: tokio::signal::unix::signal(SignalKind::interrupt())?,
-            terminate: tokio::signal::unix::signal(SignalKind::terminate())?,
+            stop: StopSignals::new(parent)?,
             diagnostic_stop: false,
         })
     }
@@ -30,27 +23,8 @@ impl Control {
             self.diagnostic_stop = true;
             return Poll::Ready(Ok(()));
         }
-        if let Some(parent) = &mut self.parent {
-            match parent.poll_signal(cx) {
-                Poll::Ready(Ok(Some(signal)))
-                    if i32::from(signal) == SignalKind::interrupt().as_raw_value()
-                        || i32::from(signal) == SignalKind::terminate().as_raw_value() =>
-                {
-                    return Poll::Ready(Ok(()));
-                }
-                Poll::Ready(Ok(Some(_))) => cx.waker().wake_by_ref(),
-                Poll::Ready(Ok(None)) => self.parent = None,
-                Poll::Ready(Err(e)) => return Poll::Ready(Err(Box::new(e))),
-                Poll::Pending => {}
-            }
-        }
-        for signal in [&mut self.interrupt, &mut self.terminate] {
-            match signal.poll_recv(cx) {
-                Poll::Ready(Some(())) => return Poll::Ready(Ok(())),
-                Poll::Ready(None) => return Poll::Ready(Err("ARM signal stream ended".into())),
-                Poll::Pending => {}
-            }
-        }
-        Poll::Pending
+        self.stop
+            .poll_stop(cx)
+            .map_err(|error| Box::new(error) as Failure)
     }
 }

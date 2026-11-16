@@ -77,6 +77,28 @@ impl Reporter {
         });
     }
 
+    /// Translate a catalog template and safely render typed arguments only after
+    /// the selected policy admits this callsite. Backend/format failures latch
+    /// the same permanent error and wake the original owner, without fallback.
+    #[track_caller]
+    pub fn message_translated(
+        &self,
+        level: Level,
+        site: &'static str,
+        domain: Option<&[u8]>,
+        template: &[u8],
+        arguments: &[crate::format::Argument<'_>],
+    ) {
+        let caller = std::panic::Location::caller();
+        self.emit(|logger| {
+            let translations = logger.translations();
+            service::diagnostic_body(logger, &self.0.clock, site, level, caller, || {
+                let translated = translations.gettext(domain, template)?;
+                crate::format::render(&translated, arguments)
+            })
+        });
+    }
+
     fn emit(&self, logging: impl FnOnce(&mut Logger<'static>) -> io::Result<()>) {
         if self.failed() {
             return;
@@ -88,8 +110,11 @@ impl Reporter {
             .map_err(|_| io::Error::other("selected Logger is already borrowed"))
             .and_then(|mut logger| logging(&mut logger));
         if let Err(error) = result {
-            self.0.failed.set(true);
-            *self.0.error.borrow_mut() = Some(error);
+            // A formatter/catalog callback can reenter and latch an earlier
+            // borrow failure. Keep that first cause, including after it is taken.
+            if !self.0.failed.replace(true) {
+                *self.0.error.borrow_mut() = Some(error);
+            }
             // Release the local borrow before invoking an externally owned waker.
             let waker = self.0.waker.borrow().clone();
             if let Some(waker) = waker {

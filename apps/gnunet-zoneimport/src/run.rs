@@ -2,7 +2,7 @@
 use crate::{
     Cause,
     control::Control,
-    input::{Input, Names},
+    input::{Input, Names, Retired},
     settings::Settings,
     statistics,
 };
@@ -17,8 +17,9 @@ use std::{
     cell::Cell,
     error::Error,
     fmt,
+    fs::File,
     future::{Future, poll_fn},
-    io::{self, Stdin},
+    io,
     rc::Rc,
     sync::Arc,
     task::{Context, Poll},
@@ -34,7 +35,7 @@ pub(super) struct Inputs {
     pub reporter: Reporter,
     pub stop: Rc<Cell<bool>>,
     pub parent: Option<ParentControl>,
-    pub stdin: Stdin,
+    pub stdin: io::Result<File>,
 }
 #[derive(Default)]
 pub(super) struct Report {
@@ -66,6 +67,7 @@ struct Errors {
     original: Option<Cause>,
     business: Option<core::NameFailures>,
     signal: Option<io::Error>,
+    input: Option<Retired>,
     cleanup: [Option<host::Error>; 4],
     additional_cleanup: u64,
     cleanup_deadline: Option<io::Error>,
@@ -90,6 +92,7 @@ impl Errors {
     }
     fn failed(&self) -> bool {
         self.original.is_some()
+            || self.input.is_some()
             || self.business.is_some()
             || self.signal.is_some()
             || self.cleanup.iter().any(Option::is_some)
@@ -129,6 +132,7 @@ impl Error for Failed {
             .original
             .as_deref()
             .or_else(|| self.errors.signal.as_ref().map(|error| error as &dyn Error))
+            .or_else(|| self.errors.input.as_ref().map(|error| error as &dyn Error))
             .or_else(|| {
                 self.errors
                     .cleanup
@@ -649,12 +653,12 @@ pub(super) async fn run(inputs: Inputs) -> Result<Report, Cause> {
     let mut statistics_instance = handle::Instance::new();
     let outcome = async {
         let mut control = Control::new(parent, stop, reporter.clone())?;
-        let mut input = Input::new(stdin);
         let mut names = Names::new(
             settings.input_bytes,
             settings.core.names,
             settings.initial_names,
         )?;
+        let mut input = Input::new(stdin?)?;
         let collected = collect(
             &mut input,
             &mut names,
@@ -664,7 +668,23 @@ pub(super) async fn run(inputs: Inputs) -> Result<Report, Cause> {
         )
         .await;
         report.input_names = names.len();
-        report.input_eof = collected?;
+        report.input_eof = collected.as_ref().is_ok_and(|eof| *eof);
+        let now = Instant::now();
+        let hard = match now.checked_add(settings.cleanup) {
+            Some(hard) => hard,
+            None => {
+                errors.original(io::Error::other("input retirement target overflow"));
+                now
+            }
+        };
+        let retired = input.retire(hard).await;
+        if !retired.successful() {
+            errors.input = Some(retired);
+        }
+        collected?;
+        if errors.input.is_some() {
+            return Ok::<(), Cause>(());
+        }
         if !report.input_eof || control.stopped() {
             return Ok::<(), Cause>(());
         }

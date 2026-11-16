@@ -1,21 +1,20 @@
 //! Caller-driven original native renderer. No shell or hidden worker is used.
 mod directory;
+mod process;
 mod template;
 mod types;
 use directory::Directory;
 use gnunet_service_runtime::{
     clock::RuntimeClock,
-    process::{
-        self, ChildExit, ChildRegistry, DescriptorMap, EnvironmentSnapshot, NativeCommand,
-        OriginalChild, ProcessLimits, SpawnResult,
-    },
+    process::{ChildRegistry, OriginalChild},
 };
+pub use process::{Exit, StopMethod};
+use process::{RegistryError, StopKind};
 use std::{
     cell::Cell,
     ffi::OsString,
     fmt,
     future::{Future, poll_fn},
-    os::fd::AsFd,
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
@@ -105,7 +104,7 @@ pub struct Retirement {
 impl Retirement {
     fn new(limits: Limits) -> Result<Self, Cause> {
         Ok(Self {
-            registry: ChildRegistry::new(1).map_err(launch)?,
+            registry: ChildRegistry::new(1).map_err(process::registry_error)?,
             child: None,
             png_phase: false,
             directory: None,
@@ -123,44 +122,44 @@ impl Retirement {
     }
     fn reap(&mut self) {
         if let Err(error) = self.registry.reap_completed() {
-            self.error(launch(error));
+            self.error(process::registry_error(error));
         }
         while let Some(event) = self.registry.take_reaped() {
             if self.child.as_ref() != Some(&event.child) {
-                self.error(launch(process::LaunchError::Stale));
+                self.error(process::registry_error(RegistryError::Stale));
                 self.ownership_lost = true;
                 continue;
             }
             self.child = None;
             if self.png_phase {
                 self.report.gs_reaped = true;
-                self.report.gs_exit = Some(event.exit);
+                self.report.gs_exit = Some(process::exit(event));
             } else {
                 self.report.tex_reaped = true;
-                self.report.tex_exit = Some(event.exit);
+                self.report.tex_exit = Some(process::exit(event));
             }
         }
         if self.child.is_some() && self.registry.pending_children() == 0 {
             self.ownership_lost = true;
-            self.error(launch(process::LaunchError::Stale));
+            self.error(process::registry_error(RegistryError::Stale));
         }
     }
-    fn signal(&mut self, signal: i32) {
-        // Only registry-retained original authority may be signalled. An old
-        // child handle after ECHILD could now name a reused PID; never use it.
+    fn request_child_stop(&mut self, kind: StopKind) {
         let Some(child) = self.registry.children().next().cloned() else {
             if self.child.is_some() {
                 self.ownership_lost = true;
             }
             return;
         };
-        if signal == libc::SIGKILL {
-            self.report.kill_attempted = true;
-        } else {
-            self.report.term_attempted = true;
+        match kind {
+            StopKind::Force => self.report.kill_attempted = true,
+            StopKind::Terminate => {
+                self.report.stop_attempted = true;
+                self.report.stop_method = Some(process::STOP_METHOD);
+            }
         }
-        if let Err(error) = self.registry.signal_native(&child, signal) {
-            self.error(launch(error));
+        if let Err(error) = process::stop(&mut self.registry, &child, kind) {
+            self.error(error);
         }
     }
     fn arm(&mut self, cx: &mut Context<'_>) {
@@ -179,7 +178,7 @@ impl Retirement {
         }
         self.reap();
         if self.ownership_lost && self.registry.pending_children() == 0 {
-            self.error(launch(process::LaunchError::Stale));
+            self.error(process::registry_error(RegistryError::Stale));
             self.report.undrained = true;
             // The original exit is unknown. Keep actual prior phase receipts,
             // and retain the directory rather than granting removal authority.
@@ -191,7 +190,7 @@ impl Retirement {
             // A prior failed signal cannot discard original cleanup authority.
             // Retry at the existing finite poll interval, only while this exact
             // unreaped child remains owned by this registry.
-            self.signal(libc::SIGKILL);
+            self.request_child_stop(StopKind::Force);
         }
         if self.child.is_none() && self.registry.pending_children() == 0 && !self.ownership_lost {
             if let Some(directory) = &self.directory {
@@ -221,7 +220,7 @@ impl Retirement {
             }
         }
         if let Poll::Ready(Err(error)) = self.registry.poll_child_signal(cx) {
-            self.error(launch(error));
+            self.error(process::registry_error(error));
         }
         self.report.undrained = true;
         self.arm(cx);
@@ -238,7 +237,7 @@ impl Drop for Retirement {
             if self.child.is_none() && self.registry.pending_children() > 0 {
                 self.child = self.registry.children().next().cloned();
             }
-            self.signal(libc::SIGKILL);
+            self.request_child_stop(StopKind::Force);
             self.reap();
             if self.registry.pending_children() == 0
                 && (self.ownership_lost || self.child.is_none())
@@ -255,9 +254,6 @@ impl Drop for Retirement {
         }
     }
 }
-fn launch(error: process::LaunchError) -> Cause {
-    Cause::Launch(error)
-}
 
 fn spawn(
     retirement: &mut Retirement,
@@ -272,10 +268,11 @@ fn spawn(
     let (stdout, stderr) = directory.logs(png)?;
     check.run()?;
     let tool = if png {
-        &settings.ghostscript
+        settings.ghostscript.as_deref()
     } else {
-        &settings.pdflatex
-    };
+        settings.pdflatex.as_deref()
+    }
+    .ok_or(Cause::MissingTool { png })?;
     let arguments: &[&str] = if png {
         &[
             "-dSAFER",
@@ -310,8 +307,8 @@ fn spawn(
     argv.extend(arguments.iter().map(OsString::from));
     let cwd = directory.path().to_path_buf();
     let mut values = Vec::new();
-    values.try_reserve_exact(12).map_err(|_| Cause::Limit)?;
-    for key in ["HOME", "TMPDIR", "TEXMFOUTPUT"] {
+    values.try_reserve_exact(20).map_err(|_| Cause::Limit)?;
+    for key in ["HOME", "TMPDIR", "TEXMFOUTPUT", "TEMP", "TMP"] {
         values.push((OsString::from(key), cwd.as_os_str().to_owned()));
     }
     for key in [
@@ -320,62 +317,36 @@ fn spawn(
         values.push((OsString::from(key), OsString::from("0")));
     }
     values.push((OsString::from("openout_any"), OsString::from("p")));
-    let environment = EnvironmentSnapshot::from_values(values, cwd.clone()).map_err(launch)?;
-    let limits = ProcessLimits {
-        launch: process::LaunchLimits {
-            max_command_bytes: 16 * 1024,
-            max_arguments: 32,
-            max_children: 1,
-            max_environment_bytes: 64 * 1024,
-        },
-        max_auxiliary_bytes: 4096,
-        max_descriptors: 2,
-        max_descriptor_number: 3,
-    };
-    let command = NativeCommand {
-        filename: tool.as_os_str().to_owned(),
+    #[cfg(windows)]
+    for key in [
+        "SystemRoot",
+        "WINDIR",
+        "APPDATA",
+        "LOCALAPPDATA",
+        "PROGRAMDATA",
+        "USERPROFILE",
+    ] {
+        if let Some(value) = std::env::var_os(key) {
+            values.push((OsString::from(key), value));
+        }
+    }
+    let environment = process::environment(values, cwd.clone())?;
+    check.run()?;
+    let child = process::spawn(
+        &mut retirement.registry,
+        settings,
+        tool,
         argv,
         environment,
-        environment_changes: Vec::new(),
-        cwd: Some(cwd),
-        stdio: 0,
-        stdio_snapshot: None,
-        listeners: Vec::new(),
-        mappings: vec![
-            DescriptorMap {
-                source: stdout.as_fd(),
-                target: 1,
-            },
-            DescriptorMap {
-                source: stderr.as_fd(),
-                target: 2,
-            },
-        ],
-    };
-    check.run()?;
-    let admitted = process::spawn(
-        &settings.configuration,
-        &settings.launcher,
-        command,
-        limits,
-        &mut retirement.registry,
-    )
-    .map_err(launch)?;
-    match admitted {
-        SpawnResult::Refused { error } => {
-            return Err(Cause::Io(error.unwrap_or_else(|| {
-                std::io::Error::other("native renderer invocation refused")
-            })));
-        }
-        SpawnResult::Admitted(spawned) => {
-            retirement.child = Some(spawned.child);
-            retirement.png_phase = png;
-            if png {
-                retirement.report.gs_spawned = true;
-            } else {
-                retirement.report.tex_spawned = true;
-            }
-        }
+        cwd,
+        [&stdout, &stderr],
+    )?;
+    retirement.child = Some(child);
+    retirement.png_phase = png;
+    if png {
+        retirement.report.gs_spawned = true;
+    } else {
+        retirement.report.tex_spawned = true;
     }
     // An admitted child remains owned even if synchronous native preparation
     // crossed a target. Immediate real cleanup follows this original failure.
@@ -393,7 +364,7 @@ async fn wait(retirement: &mut Retirement, check: &Check<'_>) -> Result<(), Caus
         retirement.reap();
         if retirement.child.is_none() {
             if retirement.ownership_lost {
-                return Poll::Ready(Err(launch(process::LaunchError::Stale)));
+                return Poll::Ready(Err(process::registry_error(RegistryError::Stale)));
             }
             let exit = if retirement.png_phase {
                 retirement.report.gs_exit
@@ -401,7 +372,7 @@ async fn wait(retirement: &mut Retirement, check: &Check<'_>) -> Result<(), Caus
                 retirement.report.tex_exit
             }
             .ok_or(Cause::Artifact)?;
-            return Poll::Ready(if matches!(exit, ChildExit::Exited(0)) {
+            return Poll::Ready(if exit.is_success() {
                 Ok(())
             } else {
                 Err(Cause::Tool {
@@ -411,7 +382,7 @@ async fn wait(retirement: &mut Retirement, check: &Check<'_>) -> Result<(), Caus
             });
         }
         if let Poll::Ready(Err(error)) = retirement.registry.poll_child_signal(cx) {
-            return Poll::Ready(Err(launch(error)));
+            return Poll::Ready(Err(process::registry_error(error)));
         }
         retirement.arm(cx);
         Poll::Pending
@@ -421,10 +392,10 @@ async fn wait(retirement: &mut Retirement, check: &Check<'_>) -> Result<(), Caus
 async fn failure(mut retirement: Retirement, cause: Cause) -> RenderFailure {
     retirement.report.stop_requested |= matches!(cause, Cause::Cancelled);
     retirement.report.deadline |= matches!(cause, Cause::Deadline);
-    retirement.signal(if matches!(cause, Cause::Limit) {
-        libc::SIGKILL
+    retirement.request_child_stop(if matches!(cause, Cause::Limit) {
+        StopKind::Force
     } else {
-        libc::SIGTERM
+        StopKind::Terminate
     });
     let started = Instant::now();
     let kill = started + retirement.limits.terminate_grace;
@@ -436,7 +407,7 @@ async fn failure(mut retirement: Retirement, cause: Cause) -> RenderFailure {
         }
         let now = Instant::now();
         if now >= kill && !retirement.report.kill_attempted {
-            retirement.signal(libc::SIGKILL);
+            retirement.request_child_stop(StopKind::Force);
         }
         if now >= end {
             return Poll::Ready(None);

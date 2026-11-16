@@ -7,6 +7,8 @@ background task, callback registry, CORE service implementation or NSE owner is
 created here. SDK feature `official-core-client` exposes `core_client_host`
 independently of `official-core`.
 
+## Public interface
+
 `Message::copy_from` creates an immutable, securely erased original source. `Message::try_from_owned` freezes an existing Vec without copying; refusal returns
 that unchanged Vec to its caller. `send` retains that same `SendOperation<Message>`; no source is regenerated or
 automatically replayed after loss. Retained source allocation capacities (including spare bytes), operation metadata,
@@ -20,6 +22,8 @@ receipt. `Finished.payload` retains exact zero/partial/full physical state. Thes
 without reserving it or consuming an ID. This local admission observation is
 separate from the later wire SendReady. `poll` and `clock` expose the same driver
 and source clock for containing coordinators.
+
+## Cancellation and recovery
 
 Canceling a `drive` future preserves original attempts, timers, partial RX and TX. A waiting deadline expires only that wait. `cancel` removes only a wholly
 unwritten prepared payload; its already admitted request still drains. A started

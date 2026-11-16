@@ -352,7 +352,8 @@ async fn upstream_owned(
                                 }
                             }
                         }
-                        stub::Event::ReceiveFailed { error, .. }
+                        stub::Event::ReceiveRejected { error, .. }
+                        | stub::Event::ReceiveFailed { error, .. }
                         | stub::Event::SocketOpened {
                             result: Err(error), ..
                         }

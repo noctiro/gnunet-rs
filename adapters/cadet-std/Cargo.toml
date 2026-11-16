@@ -7,7 +7,7 @@ license.workspace = true
 
 [dependencies]
 gnunet-crypto.workspace = true
-libc.workspace = true
+gnunet-native.workspace = true
 gnunet-cadet.workspace = true
 gnunet-core-client-host.workspace = true
 gnunet-pils.workspace = true

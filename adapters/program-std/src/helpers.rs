@@ -542,8 +542,9 @@ pub fn relative_time<'a>(
         },
     )
 }
-/// Original fancy absolute parser: numeric epochs only above9999, native strptime
-/// patterns share one zeroed tm, then native mktime and saturated microseconds.
+/// Parse numeric epochs above 9999 or native calendar input into microseconds.
+/// POSIX uses strptime/mktime; Windows uses retained LC_TIME and wide native
+/// date parsing. `end of time` and overflowing numeric epochs map to the sentinel.
 pub fn parse_absolute(value: &[u8]) -> Result<u64, Error> {
     if value.eq_ignore_ascii_case(b"end of time") {
         return Ok(u64::MAX);

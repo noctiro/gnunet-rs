@@ -90,6 +90,12 @@ impl<'pils, const O: usize> Connecting<'pils, O> {
         }
         self.native.recover_ports()
     }
+    /// Permanently stop this original startup socket before waiting for a new
+    /// observer identity. No signing job has been admitted by Connecting.
+    pub fn close(&mut self) -> [Option<OperationId<'pils>>; O] {
+        self.stopped = true;
+        self.native.close()
+    }
     /// Bind the verified actual identity/epoch to exactly one original Book.
     /// Refusal returns the original startup owner unchanged, without stopping IO.
     #[expect(

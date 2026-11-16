@@ -1,6 +1,7 @@
 //! One-shot ordinary publication, sharing actual auto-share metadata/KSK plans.
 //! One explicit preparation worker is owned and joined; it never owns a socket.
 pub(super) mod settings;
+use super::stop::StopEvents;
 use super::{
     publication_options,
     service::{duration, target},
@@ -21,7 +22,6 @@ use std::{
     fmt,
     future::{Future, poll_fn},
     io::{self, Write},
-    os::unix::{ffi::OsStrExt, fs::DirBuilderExt},
     path::{Path, PathBuf},
     sync::{
         Arc,
@@ -30,7 +30,6 @@ use std::{
     task::{Context, Poll},
     time::{Duration, Instant},
 };
-use tokio::signal::unix::{Signal, SignalKind, signal};
 
 #[derive(Clone, Copy)]
 pub(super) struct Mode {
@@ -78,7 +77,7 @@ fn arguments(args: &[impl AsRef<OsStr>], mode: Mode) -> Result<Arguments, Box<dy
                     .as_ref(),
             ));
         } else {
-            if !literal && raw.as_bytes().starts_with(b"-") {
+            if !literal && raw.as_encoded_bytes().starts_with(b"-") {
                 return Err("unknown publication option (use -- for a literal path)".into());
             }
             if positional.len() == 4 {
@@ -121,7 +120,7 @@ fn arguments(args: &[impl AsRef<OsStr>], mode: Mode) -> Result<Arguments, Box<dy
 }
 fn state_directory(selected: Option<PathBuf>) -> io::Result<PathBuf> {
     if let Some(path) = selected {
-        std::fs::DirBuilder::new().mode(0o700).create(&path)?;
+        super::create_private_directory(&path)?;
         return std::fs::canonicalize(path);
     }
     static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -131,7 +130,7 @@ fn state_directory(selected: Option<PathBuf>) -> io::Result<PathBuf> {
             .map_err(|_| io::Error::other("publication state sequence exhausted"))?;
         let path =
             std::env::temp_dir().join(format!("gnunet-publish-{}-{serial}", std::process::id()));
-        match std::fs::DirBuilder::new().mode(0o700).create(&path) {
+        match super::create_private_directory(&path) {
             Ok(()) => return std::fs::canonicalize(path),
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
             Err(e) => return Err(e),
@@ -145,8 +144,7 @@ fn state_directory(selected: Option<PathBuf>) -> io::Result<PathBuf> {
 struct Gate {
     stop: Arc<AtomicBool>,
     observed_cancel: Arc<AtomicBool>,
-    interrupt: Signal,
-    terminate: Signal,
+    signals: StopEvents,
     alarm: std::pin::Pin<Box<tokio::time::Sleep>>,
     hard: Instant,
     expired: bool,
@@ -157,8 +155,7 @@ impl Gate {
         Ok(Self {
             stop: Arc::new(AtomicBool::new(false)),
             observed_cancel: Arc::new(AtomicBool::new(false)),
-            interrupt: signal(SignalKind::interrupt())?,
-            terminate: signal(SignalKind::terminate())?,
+            signals: StopEvents::new()?,
             alarm: Box::pin(tokio::time::sleep_until(hard.into())),
             hard,
             expired: false,
@@ -170,22 +167,11 @@ impl Gate {
             self.expired = true;
             self.stop.store(true, Ordering::Release);
         }
-        if !self.stop.load(Ordering::Acquire) {
-            for s in [&mut self.interrupt, &mut self.terminate] {
-                if let Poll::Ready(value) = s.poll_recv(cx) {
-                    self.stop.store(true, Ordering::Release);
-                    if value.is_some() {
-                        // Only this actual observation may mint user cancellation.
-                        // Deadline/source-end stop facts never set this flag.
-                        self.observed_cancel.store(true, Ordering::Release);
-                    } else {
-                        self.signal_error = Some(io::Error::new(
-                            io::ErrorKind::UnexpectedEof,
-                            "publication signal source closed",
-                        ));
-                    }
-                    break;
-                }
+        if !self.stop.load(Ordering::Acquire) && self.signals.poll(cx) {
+            self.stop.store(true, Ordering::Release);
+            self.signal_error = self.signals.take_failure();
+            if self.signal_error.is_none() {
+                self.observed_cancel.store(true, Ordering::Release);
             }
         }
     }
@@ -362,12 +348,13 @@ async fn run_task(
 pub(super) fn run(
     args: &[impl AsRef<OsStr>],
     mode: Mode,
-    out: &mut impl Write,
+    out: &mut super::Output<'_, impl Write>,
 ) -> Result<(), Box<dyn Error>> {
     let mut args = arguments(args, mode)?;
     let hard = Instant::now()
         .checked_add(Duration::from_micros(args.interval))
         .ok_or("publication native deadline overflow")?;
+    out.deadline(hard);
     let store = EndpointSource::unix(std::mem::take(&mut args.store));
     let fs = args
         .fs
@@ -408,7 +395,10 @@ struct Execution {
     blocks: gnunet::fs_host::network::BlockOptions,
     metadata: MetadataSettings,
 }
-async fn execute(execution: Execution, out: &mut impl Write) -> Result<(), Box<dyn Error>> {
+async fn execute(
+    execution: Execution,
+    out: &mut super::Output<'_, impl Write>,
+) -> Result<(), Box<dyn Error>> {
     let Execution {
         args,
         mode,
@@ -522,7 +512,7 @@ async fn execute(execution: Execution, out: &mut impl Write) -> Result<(), Box<d
                     break;
                 }
                 match run_task(original,&store,if indexed{fs.as_ref()}else{None},deadline,&mut gate,&mut buffers).await {
-                        Ok(outcome)=>summaries.push(json!({"task":name.to_str(),"task_bytes":name.as_os_str().as_bytes(),"accepted_puts":outcome.progress.recorded.accepted,
+                        Ok(outcome)=>summaries.push(json!({"task":name.to_str(),"task_bytes":crate::argument::native_bytes(name.as_os_str()),"accepted_puts":outcome.progress.recorded.accepted,
                             "accepted_bytes":outcome.progress.recorded.bytes,"verified_puts":outcome.completed.as_ref().map(|c|c.verified.puts())})),
                         Err(e)=>{failure.task=Some(e);break;}
                     }
@@ -547,9 +537,10 @@ async fn execute(execution: Execution, out: &mut impl Write) -> Result<(), Box<d
         && failure.task.is_none()
         && !failure.stopped
         && failure.signal.is_none();
+    out.cleanup()?;
     let output=(||->io::Result<()>{
             serde_json::to_writer(&mut *out,&json!({"event":if success{"fs_publication_complete"}else{"fs_publication_incomplete"},
-                "state_directory":state.to_str(),"state_directory_bytes":state.as_os_str().as_bytes(),"state_retained":true,"uri_bytes":content_uri,
+                "state_directory":state.to_str(),"state_directory_bytes":crate::argument::native_bytes(state.as_os_str()),"state_retained":true,"uri_bytes":content_uri,
                 "metadata_objects":metadata_objects,"manual_metadata_items":manual_items,"expected_keyword_tasks":expected_keywords,"automatic_keywords_enabled":automatic_keywords,"format_extraction_enabled":format_extraction,
                 "native_deadline":failure.expired,"stop_observed":failure.stopped,"signal_cancel_observed":failure.cancel_observed,
                 "completed_tasks":summaries,"searchability":"only the actually accepted selected keyword tasks; no global reachability proof",

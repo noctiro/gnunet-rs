@@ -172,6 +172,149 @@ fn full_output_fifo_defers_effects_without_blocking_a_zero_output_callback() -> 
     check(engine.routes.is_empty() && !engine.peers[0].connected && engine.output.len() == maximum)
 }
 
+fn start_core(engine: &mut Engine) -> Result<ClientId, Error> {
+    let core = engine.accept()?;
+    let mut start = [0; 40];
+    CoreRequest::Start(gnunet_client::transport::Start::new(
+        Some(NoSigning.identity()),
+        true,
+    ))
+    .encode(&mut start)?;
+    engine.receive_at(&core, &start, times(10), &mut NoSigning, &mut FixedEntropy)?;
+    while engine.output().is_some() {}
+    Ok(core)
+}
+
+#[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "Unit-test assertions report invariant failures while Result propagates fixture errors"
+)]
+fn output_pressure_retains_the_whole_liveness_notification() -> Result<(), Error> {
+    let (mut engine, owner) = registered()?;
+    let peer = PeerId([2; 32]);
+    let _setup = maintain(&mut engine, &owner, &queue(peer, 1, 0)?, 10)?;
+    let cores = [start_core(&mut engine)?, start_core(&mut engine)?];
+    engine.routes[0].valid_until = u64::MAX;
+    engine.peers[0].connected = true;
+    let maximum = engine.limits.messages + engine.limits.control_messages;
+    for _ in 0..maximum - 1 {
+        engine.emit(owner.clone(), message(99, 4)?)?;
+    }
+    let now = LIVENESS + 11;
+    engine.tick_at(times(now), &mut FixedEntropy)?;
+    assert_eq!(
+        engine.output.len(),
+        maximum - 1,
+        "partial loss notification"
+    );
+    assert!(engine.peers[0].connected, "CORE loss debt was discarded");
+    assert!(
+        !engine.payload_route_live(peer, now),
+        "expired route was revived"
+    );
+
+    drop(engine.output());
+    engine.tick_at(times(now + 1), &mut FixedEntropy)?;
+    assert!(!engine.peers[0].connected, "retained loss did not complete");
+    let mut notified = Vec::new();
+    while let Some(output) = engine.output() {
+        if let Output::Frame { client, bytes } = output
+            && cores.contains(&client)
+        {
+            assert_eq!(
+                CoreResponse::decode(&bytes)?,
+                CoreResponse::Disconnected(peer)
+            );
+            notified.push(client);
+        }
+    }
+    assert_eq!(notified, cores, "each original CORE must observe loss once");
+    engine.tick_at(times(now + 2), &mut FixedEntropy)?;
+    assert!(engine.output.is_empty(), "loss notification was duplicated");
+    Ok(())
+}
+
+#[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "Unit-test assertions report invariant failures while Result propagates fixture errors"
+)]
+fn output_pressure_retains_expired_send_credit() -> Result<(), Error> {
+    let (mut engine, owner) = registered()?;
+    let peer = PeerId([2; 32]);
+    let _setup = maintain(&mut engine, &owner, &queue(peer, 1, 0)?, 10)?;
+    let core = start_core(&mut engine)?;
+    engine.routes[0].valid_until = u64::MAX;
+    engine.peers[0].connected = true;
+    engine.peers[0].flow_next = u64::MAX;
+    engine.enqueue(None, peer, &message(64, 8)?, Some(core.clone()), false)?;
+    let id = engine.jobs[0].id;
+    let expires = engine.jobs[0].expires;
+    engine.peers[0].last_inbound = expires;
+    let maximum = engine.limits.messages + engine.limits.control_messages;
+    for _ in 0..maximum {
+        engine.emit(owner.clone(), message(99, 4)?)?;
+    }
+
+    engine.tick_at(times(expires), &mut FixedEntropy)?;
+    assert_eq!(engine.jobs.len(), 1, "original send was discarded");
+    assert_eq!(engine.jobs[0].id, id, "original send was replaced");
+    assert_eq!(
+        engine.jobs[0].expires, expires,
+        "retention deadline was renewed"
+    );
+    assert_eq!(engine.buffered, 8, "retained payload lost its byte charge");
+    assert_eq!(engine.expired_messages, 0, "expiry was falsely settled");
+
+    drop(engine.output());
+    drop(engine.output());
+    let mut update = message(1222, 64)?;
+    update[4..8].copy_from_slice(&1u32.to_be_bytes());
+    update[8..40].copy_from_slice(&peer.0);
+    update[44..48].copy_from_slice(&1024u32.to_be_bytes());
+    update[48..56].copy_from_slice(&1u64.to_be_bytes());
+    engine.receive_at(
+        &owner,
+        &update,
+        times(expires),
+        &mut NoSigning,
+        &mut FixedEntropy,
+    )?;
+    engine.retry_deferred_at(times(expires), &mut FixedEntropy)?;
+    assert_eq!(
+        engine.jobs.len(),
+        1,
+        "ordinary work sent an expired original"
+    );
+    assert!(engine.attempts.is_empty(), "expiry admitted a new attempt");
+    assert_eq!(engine.routes[0].available, 1, "expiry spent a packet grant");
+    engine.tick_at(times(expires + 1), &mut FixedEntropy)?;
+    assert!(engine.jobs.is_empty(), "retained expiry did not complete");
+    assert_eq!(
+        engine.buffered, 0,
+        "retired payload retained its byte charge"
+    );
+    assert_eq!(
+        engine.expired_messages, 1,
+        "original expiry must settle once"
+    );
+    let mut credits = 0;
+    while let Some(output) = engine.output() {
+        if let Output::Frame { client, bytes } = output
+            && client == core
+        {
+            assert_eq!(
+                CoreResponse::decode(&bytes)?,
+                CoreResponse::SendCredit(peer)
+            );
+            credits += 1;
+        }
+    }
+    assert_eq!(credits, 1, "original CORE credit must be returned once");
+    Ok(())
+}
+
 #[test]
 fn raw_dv_maintenance_retains_original_source_targets_and_flow_debt() -> Result<(), Error> {
     let (mut engine, owner) = registered()?;

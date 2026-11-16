@@ -11,7 +11,11 @@ default=[]
 gnunet-arm-host={path="@REPOSITORY@/adapters/arm-std",default-features=false}
 gnunet-arm-core={path="@REPOSITORY@/crates/gnunet-arm-core",default-features=false}
 gnunet-config={path="@REPOSITORY@/adapters/config-std",default-features=false}
-gnunet-ipc-unix={path="@REPOSITORY@/adapters/ipc-unix",default-features=false}
+gnunet-native={path="@REPOSITORY@/adapters/native-std",default-features=false}
+gnunet-client-host={path="@REPOSITORY@/adapters/client-std",default-features=false}
+gnunet-resolver-broker={path="@REPOSITORY@/adapters/resolver-broker-std",default-features=false}
+gnunet-program-host={path="@REPOSITORY@/adapters/program-std",default-features=false,features=["service-runtime"]}
+gnunet-service-runtime={path="@REPOSITORY@/adapters/service-runtime",default-features=false}
 gnunet-types={path="@REPOSITORY@/crates/gnunet-types",default-features=false}
 tokio={version="=1.54.1",default-features=false,features=["rt","net","time","io-util","signal","sync"]}
 

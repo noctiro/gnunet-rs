@@ -1,4 +1,7 @@
 use super::*;
+#[cfg(test)]
+#[path = "relay/recovery_tests.rs"]
+mod recovery_tests;
 impl<'c, 'slots, 'p, E: Entropy, const O: usize> Server<'c, 'slots, 'p, E, O> {
     pub(super) fn add_task(
         &mut self,
@@ -390,9 +393,9 @@ impl<'c, 'slots, 'p, E: Entropy, const O: usize> Server<'c, 'slots, 'p, E, O> {
             self.tasks[i].as_mut().ok_or(Fault::Stale)?.queued = true;
             self.peer_output = Some(PeerOutput {
                 transmit,
+                target: PeerTarget::Channel(channel),
                 sequence,
                 task: Some(sequence),
-                retire: None,
                 until,
             });
             self.task_cursor = (i + 1) % self.tasks.len();
@@ -506,9 +509,9 @@ impl<'c, 'slots, 'p, E: Entropy, const O: usize> Server<'c, 'slots, 'p, E, O> {
             let sequence = self.sequence()?;
             self.peer_output = Some(PeerOutput {
                 transmit,
+                target: PeerTarget::Channel(channel),
                 sequence,
                 task: None,
-                retire: None,
                 until: self.until()?,
             });
             self.received[receive_index] = None;
@@ -616,145 +619,14 @@ impl<'c, 'slots, 'p, E: Entropy, const O: usize> Server<'c, 'slots, 'p, E, O> {
             }
         }
     }
-    fn retire_remote_tunnel(&mut self) -> Result<bool, Error> {
-        for index in 0..self.tunnels.len() {
-            let Some(tunnel) = &self.tunnels[index] else {
-                continue;
-            };
-            if !tunnel.remote_closed {
-                continue;
-            }
-            let channel = tunnel.channel;
-            // Local cancellation wins independently of history. Otherwise retain
-            // the same Source/room until held raw input and its actual durable
-            // cut finish; receive_packet releases a processed packet only after
-            // history_ready. Unrelated room cuts cannot prolong an empty source.
-            if !tunnel.closing
-                && self
-                    .received
-                    .iter()
-                    .flatten()
-                    .any(|r| r.input.channel() == channel)
-            {
-                continue;
-            }
-            self.retire_tunnel(channel)?;
-            return Ok(true);
-        }
-        Ok(false)
-    }
-    pub(super) fn retire_tunnel(&mut self, channel: cadet::Channel<'c>) -> Result<(), Error> {
-        if let Some(i) = self
-            .tunnels
-            .iter()
-            .position(|t| t.as_ref().is_some_and(|t| t.channel == channel))
-        {
-            let t = self.tunnels[i].take().ok_or(Fault::Stale)?;
-            self.core.source_stopped(t.source)?;
-            if self.shutdown.is_none()
-                && self
-                    .apps
-                    .iter()
-                    .flatten()
-                    .any(|a| a.rooms.iter().any(|l| l.room == t.room))
-                && self
-                    .core
-                    .peers(t.room)?
-                    .any(|(p, announced, _, _)| *p == t.peer && announced)
-                && !self
-                    .tunnels
-                    .iter()
-                    .flatten()
-                    .any(|p| p.room == t.room && p.peer == t.peer)
-                && !self
-                    .misses
-                    .iter()
-                    .flatten()
-                    .any(|m| m.room == t.room && m.peer == t.peer)
-            {
-                let i = self
-                    .misses
-                    .iter()
-                    .position(Option::is_none)
-                    .ok_or(Fault::Capacity)?;
-                self.misses[i] = Some(MissingPeer {
-                    room: t.room,
-                    peer: t.peer,
-                });
-            }
-
-            for task in &mut self.tasks {
-                if task
-                    .as_ref()
-                    .is_some_and(|t| t.destination == Destination::Peer(channel))
-                {
-                    *task = None
-                }
-            }
-            for app in self.apps.iter_mut().flatten() {
-                for l in &mut app.rooms {
-                    if l.entry == Some(t.source) {
-                        l.entry = None;
-                    }
-                }
-            }
-        }
-        for r in &mut self.received {
-            if r.as_ref().is_some_and(|r| r.input.channel() == channel) {
-                *r = None
-            }
-        }
-        Ok(())
-    }
-    pub(super) fn cadet_lost(
-        &mut self,
-        report: Option<cadet::Loss<'c>>,
-        cause: Option<cadet::LossCause>,
-        observe: &mut impl FnMut(Event),
-    ) -> Result<(), Error> {
-        for r in &mut self.received {
-            *r = None
-        }
-        self.cadet_pending = None;
-        if let Some(out) = self.peer_output.take() {
-            let exposed = report
-                .and_then(|l| l.pending)
-                .filter(|p| p.transmit == out.transmit)
-                .map(|p| p.exposed);
-            if exposed != Some(false) {
-                self.report.unknown = self.report.unknown.saturating_add(1)
-            }
-            observe(Event::OutputLost {
-                sequence: out.sequence,
-                exposed,
-            });
-            if let Some(task) = out.task {
-                self.finish_task(task)
-            }
-        }
-        // No temporary channel vector is allocated after native loss.
-        for i in 0..self.tunnels.len() {
-            if let Some(t) = self.tunnels[i].as_ref() {
-                let channel = t.channel;
-                self.retire_tunnel(channel)?
-            }
-        }
-        if let (Some(report), Some(cause)) = (report, cause) {
-            observe(Event::CadetLost {
-                epoch: report.epoch.value(),
-                channels: report.channels,
-                pending: report.pending.map(|p| (p.transmit.value(), p.exposed)),
-                cause,
-            })
-        }
-        observe(Event::DependencyLost { pils: false });
-        Ok(())
-    }
     pub(super) fn cadet_poll(
         &mut self,
         cx: &mut Context<'_>,
         observe: &mut impl FnMut(Event),
     ) -> Poll<Result<Progress, Error>> {
+        if self.reconcile_peer_output(observe)? {
+            return Poll::Ready(Ok(Progress::Activity));
+        }
         match self.receive_packet(observe) {
             Ok(true) => return Poll::Ready(Ok(Progress::Activity)),
             Ok(false) => {}
@@ -803,9 +675,9 @@ impl<'c, 'slots, 'p, E: Entropy, const O: usize> Server<'c, 'slots, 'p, E, O> {
                     let sequence = self.sequence()?;
                     self.peer_output = Some(PeerOutput {
                         transmit,
+                        target: PeerTarget::CloseChannel(channel),
                         sequence,
                         task: None,
-                        retire: Some(channel),
                         until: self.until()?,
                     });
                     return Poll::Ready(Ok(Progress::Activity));
@@ -815,8 +687,26 @@ impl<'c, 'slots, 'p, E: Entropy, const O: usize> Server<'c, 'slots, 'p, E, O> {
                 return Poll::Ready(Ok(Progress::Activity));
             }
         }
-        let p = match self.cadet.poll(cx, None) {
+        let deadline = self
+            .peer_output
+            .as_ref()
+            .map(|out| out.until)
+            .into_iter()
+            .chain(self.cadet_pending.map(|(_, until)| until))
+            .min();
+        let mut gate_expired = false;
+        let p = match self.cadet.poll_guarded(cx, None, &mut || {
+            if deadline.is_some_and(|until| Instant::now() >= until) {
+                gate_expired = true;
+                return Err(Fault::Deadline.into());
+            }
+            Ok(())
+        }) {
             Poll::Pending => return Poll::Pending,
+            Poll::Ready(Err(_)) if gate_expired => {
+                self.expire_cadet_output(observe)?;
+                return Poll::Ready(Ok(Progress::Activity));
+            }
             Poll::Ready(p) => p?,
         };
         match p {
@@ -863,14 +753,14 @@ impl<'c, 'slots, 'p, E: Entropy, const O: usize> Server<'c, 'slots, 'p, E, O> {
                     if let Some(task) = out.task {
                         self.finish_task(task)
                     }
-                    if let Some(channel) = out.retire {
-                        self.retire_tunnel(channel)?
-                    }
                     self.report.written = self.report.written.saturating_add(1);
                     observe(Event::Written {
                         sequence: out.sequence,
                         peer: true,
                     });
+                    if let PeerTarget::CloseChannel(channel) = out.target {
+                        self.retire_tunnel(channel)?
+                    }
                 }
             }
             cadet::Step::Data(input) => {

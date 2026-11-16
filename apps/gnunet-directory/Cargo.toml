@@ -9,16 +9,19 @@ license.workspace = true
 name = "gnunet-directory"
 path = "src/main.rs"
 
-[target.'cfg(unix)'.dependencies]
+[dependencies]
 gnunet-program-host = { workspace = true, features = ["service-runtime"] }
 gnunet-config.workspace = true
+gnunet-native.workspace = true
 gnunet-service-runtime.workspace = true
 gnunet-service-startup.workspace = true
 gnunet-fs.workspace = true
 gnunet-fs-codec.workspace = true
 gnunet-types.workspace = true
-libc.workspace = true
 tokio = { workspace = true, features = ["rt", "time", "signal"] }
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
 
 [lints]
 workspace = true

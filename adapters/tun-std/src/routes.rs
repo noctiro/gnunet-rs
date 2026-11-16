@@ -1,5 +1,5 @@
 //! One original interface-route transaction with an actual correlated kernel ACK.
-use crate::{Action, ApplyFailure, Effect, EffectId, Info, Timing};
+use crate::{Action, ApplyFailure, Effect, Info, Timing};
 use std::{
     future::{Future, poll_fn},
     io,
@@ -12,21 +12,21 @@ use tokio::{
     io::unix::AsyncFd,
     time::{Instant, Sleep},
 };
-#[cfg(target_os = "linux")]
-mod linux;
-#[cfg(target_os = "linux")]
-use linux as native;
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+mod netlink;
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+use netlink as native;
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(target_os = "macos")]
 use macos as native;
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "freebsd")))]
 mod native {
     use super::*;
-    pub(super) fn prepare(_: &Info, _: &Action, _: u32) -> io::Result<Session> {
+    pub(super) fn prepare(_: &Info, _: &Action, _: u32, _: Option<u32>) -> io::Result<Session> {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
-            "native interface routes require Linux/macOS",
+            "native interface routes require Linux/macOS/FreeBSD",
         ))
     }
     pub(super) fn ack(
@@ -43,11 +43,24 @@ mod native {
         ))
     }
 }
+/// Capture the device generation's routing table once. Later process setfib()
+/// changes cannot redirect its route mutation or reconciliation to another FIB.
+pub(crate) fn table(_info: &Info) -> io::Result<Option<u32>> {
+    #[cfg(target_os = "freebsd")]
+    {
+        crate::platform::interface_fib(_info).map(Some)
+    }
+    #[cfg(target_os = "linux")]
+    {
+        Ok(Some(u32::from(libc::RT_TABLE_MAIN)))
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
+    {
+        Ok(None)
+    }
+}
 pub(crate) mod query;
-pub use query::{
-    RouteQuery, RouteQueryCompletion, RouteQueryEvidence, RouteQueryOutcome, RouteQueryProblem,
-    RouteQueryProgress, RouteQuerySubmission, RouteQueryTarget, RouteRecord,
-};
+pub use query::RouteQuery;
 // Routing sockets broadcast same-process replies; use a non-recycling process
 // sequence even across multiple TUN owners. This is an OS protocol field only.
 static NEXT_SEQUENCE: AtomicU32 = AtomicU32::new(0);
@@ -59,86 +72,7 @@ fn sequence() -> io::Result<u32> {
         .map(|n| n + 1)
         .map_err(|_| io::Error::other("route sequence exhausted"))
 }
-/// Original request exposure, independent of kernel acceptance.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum RouteSubmission {
-    /// No mutation request was admitted.
-    Unsent,
-    /// One whole original native request was written.
-    Whole {
-        /// Complete actual native frame bytes.
-        bytes: usize,
-    },
-    /// Unexpected positive partial write; never resume its suffix.
-    Partial {
-        /// Actual exposed native bytes.
-        bytes: usize,
-    },
-    /// A native write error may have followed synchronous processing.
-    Unknown,
-}
-/// Actual kernel response or explicit uncertainty/local unsent retirement.
-#[derive(Debug)]
-pub enum RouteOutcome {
-    /// Correlated native ACK: Ok is actual kernel success,
-    /// Err preserves the kernel's actual rejection errno.
-    KernelAck(io::Result<()>),
-    /// No request was written before cancellation/source/deadline.
-    Unsent(io::Error),
-    /// Request may have changed the kernel; no success/rejection is invented.
-    Uncertain(io::Error),
-}
-/// Terminal original route observation. It contains no reusable Effect authority.
-#[derive(Debug)]
-pub struct RouteCompletion {
-    /// Original device/effect authority.
-    pub id: EffectId,
-    /// Exact requested action.
-    pub action: Action,
-    /// Original interface snapshot, never rebound to a replacement.
-    pub interface: Info,
-    /// Original absolute transaction deadline.
-    pub deadline: Instant,
-    /// Actual exposure fact.
-    pub submission: RouteSubmission,
-    /// Real ACK or honest local uncertainty.
-    pub outcome: RouteOutcome,
-    /// Source/deadline state when observed.
-    pub timing: Timing,
-    /// Independent native control-socket close error; never retried.
-    pub close_error: Option<io::Error>,
-    /// Original native write error, retained even if a later ACK/deadline settles it.
-    pub write_error: Option<io::Error>,
-}
-/// One bounded caller-driven native transaction step.
-#[derive(Debug)]
-pub enum RouteProgress {
-    /// Whole original request entered the kernel;
-    /// this is not an ACK or proof of route installation.
-    Submitted {
-        /// Exact original effect.
-        id: EffectId,
-        /// Actual native bytes written.
-        bytes: usize,
-    },
-    /// Actual native write returned an error; a synchronous kernel may still
-    /// emit its correlated reply. The original errno remains on this owner.
-    WriteError {
-        /// Exact original effect.
-        id: EffectId,
-    },
-    /// One bounded unrelated kernel message was consumed.
-    Activity {
-        /// Actual native bytes read.
-        bytes: usize,
-    },
-    /// Correlated actual terminal result/local retirement.
-    Complete(RouteCompletion),
-    /// This caller wait ended; original socket/deadline remain.
-    WaitDeadline,
-    /// Terminal result was already consumed.
-    Finished,
-}
+use crate::route_types::*;
 struct Session {
     fd: OwnedFd,
     frame: Vec<u8>,
@@ -175,7 +109,12 @@ impl NativeRoute {
                     "original route effect expired/source retired",
                 ));
             }
-            native::prepare(effect.interface(), effect.action(), sequence()?)
+            native::prepare(
+                effect.interface(),
+                effect.action(),
+                sequence()?,
+                effect.id().epoch().route_table(),
+            )
         })();
         let session = match prepared {
             Ok(session) => session,
@@ -249,6 +188,7 @@ impl NativeRoute {
             id: effect.id().clone(),
             action: effect.action().clone(),
             interface: effect.interface().clone(),
+            table: effect.id().epoch().route_table(),
             deadline: effect.deadline(),
             submission: self.submission,
             outcome,
@@ -461,29 +401,8 @@ fn receive(fd: &OwnedFd, bytes: &mut [u8]) -> io::Result<usize> {
             "truncated original kernel route reply",
         ));
     }
-    #[cfg(target_os = "linux")]
-    {
-        if (message.msg_namelen as usize) < std::mem::size_of::<libc::sockaddr_nl>()
-            || peer.ss_family != libc::AF_NETLINK as libc::sa_family_t
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "invalid netlink source",
-            ));
-        }
-        #[expect(
-            unsafe_code,
-            reason = "The kernel returned a full AF_NETLINK sockaddr in aligned initialized sockaddr_storage; read the documented scalar pid only"
-        )]
-        // SAFETY: size/family were checked, sockaddr_storage satisfies sockaddr_nl alignment.
-        let pid = unsafe { (*(std::ptr::addr_of!(peer).cast::<libc::sockaddr_nl>())).nl_pid };
-        if pid != 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "route ACK sender is not the kernel",
-            ));
-        }
-    }
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    netlink::source(&peer, message.msg_namelen)?;
     #[cfg(target_os = "macos")]
     {
         if message.msg_namelen < 2 || peer.ss_family != libc::AF_ROUTE as libc::sa_family_t {
@@ -495,30 +414,30 @@ fn receive(fd: &OwnedFd, bytes: &mut [u8]) -> io::Result<usize> {
     }
     Ok(n as usize)
 }
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 fn invalid() -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, "malformed original route ACK")
 }
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 fn range<const N: usize>(b: &[u8], at: usize) -> io::Result<[u8; N]> {
     b.get(at..at + N)
         .ok_or_else(invalid)?
         .try_into()
         .map_err(|_| invalid())
 }
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 fn word(b: &[u8], at: usize) -> io::Result<u32> {
     Ok(u32::from_ne_bytes(range(b, at)?))
 }
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 fn short(b: &[u8], at: usize) -> io::Result<u16> {
     Ok(u16::from_ne_bytes(range(b, at)?))
 }
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 fn put32(b: &mut [u8], at: usize, n: u32) {
     b[at..at + 4].copy_from_slice(&n.to_ne_bytes())
 }
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 fn put16(b: &mut [u8], at: usize, n: u16) {
     b[at..at + 2].copy_from_slice(&n.to_ne_bytes())
 }

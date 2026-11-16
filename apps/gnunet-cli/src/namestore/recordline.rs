@@ -1,5 +1,6 @@
 //! Bounded standard record-line IO over the actual original native clients.
 use super::{KEY_BYTES, Result, bytes, row, text};
+use crate::control::Control;
 use gnunet::{
     clients::{identity, namestore as ns},
     gnsrecord::{self, RecordData, RecordFlags, RecordType},
@@ -15,17 +16,11 @@ use std::{
     ffi::{OsStr, OsString},
     fmt,
     fs::File,
-    future::{Future, poll_fn},
     io::{self, Read, Write},
     path::PathBuf,
-    pin::Pin,
-    task::{Context, Poll},
     time::Duration,
 };
-use tokio::{
-    signal::unix::{Signal, SignalKind, signal},
-    time::{Instant, Sleep},
-};
+use tokio::time::Instant;
 use zeroize::{Zeroize, Zeroizing};
 const FRAME: usize = u16::MAX as usize;
 const TEXT: usize = 262140;
@@ -125,71 +120,6 @@ fn storage(size: usize) -> Result<Zeroizing<Vec<u8>>> {
 }
 // No detached reader. The original budget is checked after synchronous OS IO;
 // an individual blocked Read/Write is not advertised as preemptible.
-struct Control {
-    interrupt: Signal,
-    terminate: Signal,
-    hard: Instant,
-    timer: Pin<Box<Sleep>>,
-}
-impl Control {
-    fn new(timeout: Duration) -> io::Result<Self> {
-        let hard = Instant::now()
-            .checked_add(timeout)
-            .ok_or_else(|| io::Error::other("record-line deadline overflow"))?;
-        Ok(Self {
-            interrupt: signal(SignalKind::interrupt())?,
-            terminate: signal(SignalKind::terminate())?,
-            hard,
-            timer: Box::pin(tokio::time::sleep_until(hard)),
-        })
-    }
-    fn check(&mut self, cx: &mut Context<'_>) -> io::Result<()> {
-        if Instant::now() >= self.hard || self.timer.as_mut().poll(cx).is_ready() {
-            return Err(io::Error::new(
-                io::ErrorKind::TimedOut,
-                "original record-line deadline",
-            ));
-        }
-        for stream in [&mut self.interrupt, &mut self.terminate] {
-            match stream.poll_recv(cx) {
-                Poll::Ready(Some(())) => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::Interrupted,
-                        "record-line stopped",
-                    ));
-                }
-                Poll::Ready(None) => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::UnexpectedEof,
-                        "record-line signal source ended",
-                    ));
-                }
-                Poll::Pending => {}
-            }
-        }
-        Ok(())
-    }
-    async fn gate(&mut self) -> Result<()> {
-        poll_fn(|cx| Poll::Ready(self.check(cx))).await?;
-        Ok(())
-    }
-    async fn drive<T, E: Error + 'static>(
-        &mut self,
-        future: impl Future<Output = std::result::Result<T, E>>,
-    ) -> Result<T> {
-        let mut future = std::pin::pin!(future);
-        poll_fn(|cx| {
-            if let Err(error) = self.check(cx) {
-                return Poll::Ready(Err(Box::new(error) as Box<dyn Error>));
-            }
-            future
-                .as_mut()
-                .poll(cx)
-                .map(|result| result.map_err(|error| Box::new(error) as Box<dyn Error>))
-        })
-        .await
-    }
-}
 #[derive(Debug, Default)]
 struct Report {
     line: u64,
@@ -554,7 +484,7 @@ async fn lookup(
     )?;
     let result = async {
         loop {
-            match control.drive(lookup.drive(Some(control.hard))).await? {
+            match control.drive(lookup.drive(Some(control.hard()))).await? {
                 identity::LookupProgress::Finished {
                     outcome: identity::LookupOutcome::Found(ego),
                     ..
@@ -649,7 +579,7 @@ async fn owner(
         )?;
         let found: Result<ns::SecretKey> = async {
             loop {
-                match control.drive(monitor.drive(Some(control.hard))).await? {
+                match control.drive(monitor.drive(Some(control.hard()))).await? {
                     identity::Progress::Initialized(_) => {
                         for ego in monitor.egos() {
                             if ego.public_key()? == public {
@@ -760,7 +690,7 @@ async fn store(
     failure.report.local = None;
     let result=async {
         loop {
-            match control.drive(client.drive(Some(control.hard))).await? {
+            match control.drive(client.drive(Some(control.hard()))).await? {
                 ns::Progress::Completed(completion) if completion.operation==operation=>{
                     let result=store_completion(completion,group,failure);
                     // Actual receipt facts precede fallible output.
@@ -1124,7 +1054,7 @@ async fn export(
     let result = async {
         let mut buffers = Buffers::new()?;
         loop {
-            match control.drive(iterator.drive(Some(control.hard))).await? {
+            match control.drive(iterator.drive(Some(control.hard()))).await? {
                 ns::Progress::Record {
                     operation, reply, ..
                 } => {
@@ -1228,8 +1158,8 @@ pub(super) fn run(args: &[OsString], import_mode: bool, out: &mut impl Write) ->
     let mut failure = Failure::default();
     let mut original_hard = None;
     let result = runtime.block_on(async {
-        let mut control = Control::new(settings.timeout)?;
-        original_hard = Some(control.hard);
+        let mut control = Control::new(settings.timeout, "record-line")?;
+        original_hard = Some(control.hard());
         control.gate().await?;
         let result = if import_mode {
             let reader: Box<dyn Read> = match &settings.input {

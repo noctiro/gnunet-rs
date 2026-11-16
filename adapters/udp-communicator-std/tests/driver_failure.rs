@@ -1,5 +1,6 @@
 //! Actual fixed-session MQ rejection and terminal draining; no C interop claim.
 #![cfg(feature = "transport")]
+mod support;
 use gnunet_crypto::Entropy;
 use gnunet_service_runtime::connection::Connection;
 use gnunet_types::Error;
@@ -13,14 +14,13 @@ use gnunet_wire::official::Frame;
 use std::{
     future::poll_fn,
     io::{Read, Write},
+    net::TcpStream as NativeStream,
     net::UdpSocket,
-    os::unix::net::UnixStream as NativeStream,
     path::PathBuf,
     sync::atomic::{AtomicU64, Ordering},
     task::Poll,
     time::Duration,
 };
-use tokio::net::UnixStream;
 
 type Failure = Box<dyn std::error::Error>;
 type Test = Result<(), Failure>;
@@ -64,19 +64,19 @@ struct Harness {
     _scratch: Scratch,
 }
 impl Harness {
-    fn new(fail_entropy: bool) -> Result<Self, Failure> {
+    async fn new(fail_entropy: bool) -> Result<Self, Failure> {
         let scratch = Scratch(std::env::temp_dir().join(format!(
             "udp-driver-failure-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         )));
-        std::fs::create_dir(&scratch.0)?;
+        support::private_directory(&scratch.0)?;
         let local = Identity::from_seed([3; 32]);
         let peer = Identity::from_seed([5; 32]).peer();
         let remote = UdpSocket::bind("127.0.0.1:0")?;
         remote.set_nonblocking(true)?;
         let socket = DatagramSocket::bind("127.0.0.1:0".parse()?)?;
-        let (service, communicator) = UnixStream::pair()?;
+        let (service, communicator) = support::pair().await?;
         let configuration = Configuration {
             local: local.peer(),
             peer,
@@ -90,7 +90,7 @@ impl Harness {
             transmit: socket.profile().sender_policy(),
         };
         let driver = Driver::new(
-            Connection::from_unix(communicator),
+            Connection::from_tcp(communicator),
             socket,
             configuration,
             100,
@@ -198,7 +198,7 @@ impl Harness {
                                 if matches!(activity, Activity::NativeSent { .. }) {
                                     self.native_sends += 1;
                                 }
-                                if activity == Activity::Command
+                                if matches!(activity, Activity::Command)
                                     && let Some(now) = self.late_on_command.take()
                                 {
                                     self.now = now;
@@ -237,7 +237,7 @@ impl Harness {
 #[tokio::test(flavor = "current_thread")]
 async fn known_send_entropy_refusal_drains_original_failure_and_down_even_past_ack_target() -> Test
 {
-    let mut h = Harness::new(true)?;
+    let mut h = Harness::new(true).await?;
     let mid = [0x41; 8];
     h.send(1, h.peer, mid)?;
     h.until(|h| Ok(h.driver.is_quiescent() && h.eof)).await?;
@@ -290,7 +290,7 @@ async fn known_send_entropy_refusal_drains_original_failure_and_down_even_past_a
 
 #[tokio::test(flavor = "current_thread")]
 async fn foreign_send_ids_fail_without_retiring_the_actual_fixed_session() -> Test {
-    let mut h = Harness::new(false)?;
+    let mut h = Harness::new(false).await?;
     let foreign_mid = [0x51; 8];
     let foreign_peer_mid = [0x52; 8];
     let live_mid = [0x53; 8];

@@ -79,6 +79,7 @@ impl<'id> Runtime<'id> {
                     gnunet_dnsstub_host::Event::SocketOpened {
                         result: Err(error), ..
                     }
+                    | gnunet_dnsstub_host::Event::ReceiveRejected { error, .. }
                     | gnunet_dnsstub_host::Event::ReceiveFailed { error, .. } => Notice::Io {
                         request: None,
                         error,

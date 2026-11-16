@@ -83,6 +83,9 @@ static struct
   char sid_text[129];
   uint64_t native_until;
   uint64_t duplicates;
+  uint64_t local_common;
+  uint64_t local_own;
+  const char *callback_violation;
   unsigned int role;
   unsigned int submitted;
   unsigned int completed;
@@ -413,15 +416,30 @@ element_received (void *cls, const struct GNUNET_SET_Element *element)
   }
   if (0 == memcmp (element->data, common, ELEMENT_BYTES))
   {
-    finish (false, "local-common-was-delivered");
+    if (NULL == app.callback_violation)
+      app.callback_violation = "local-common-was-delivered";
+    if (UINT64_MAX == app.local_common)
+      finish (false, "local-common-count-overflow");
+    else if (0 == app.local_common++)
+      event ("CONTRACT_VIOLATION role=%u kind=local-common-was-delivered", app.role);
     return;
   }
   for (role = 0; role < PEERS; ++role)
     if (0 == memcmp (element->data, own[role], ELEMENT_BYTES))
       break;
-  if ((PEERS == role) || (app.role == role))
+  if (PEERS == role)
   {
-    finish (false, (PEERS == role) ? "unexpected-element" : "local-own-was-delivered");
+    finish (false, "unexpected-element");
+    return;
+  }
+  if (app.role == role)
+  {
+    if (NULL == app.callback_violation)
+      app.callback_violation = "local-own-was-delivered";
+    if (UINT64_MAX == app.local_own)
+      finish (false, "local-own-count-overflow");
+    else if (0 == app.local_own++)
+      event ("CONTRACT_VIOLATION role=%u kind=local-own-was-delivered", app.role);
     return;
   }
   if (0 != (app.seen & (1U << role)))
@@ -462,6 +480,16 @@ concluded (void *cls)
     return;
   }
   event ("CONCLUDED role=%u unique=3 expected=3 matched=yes", app.role);
+  if (NULL != app.callback_violation)
+  {
+    /* Preserve the independent conclusion callback without calling a violating
+     * service conformant. Do not tear down the cohort at its first local echo.
+     */
+    event ("VIOLATION_SUMMARY role=%u local-common=%" PRIu64 " local-own=%" PRIu64,
+           app.role, app.local_common, app.local_own);
+    finish (false, app.callback_violation);
+    return;
+  }
   if (admit ())
     finish (true, "complete");
 }

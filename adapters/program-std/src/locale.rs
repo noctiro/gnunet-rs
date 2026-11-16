@@ -4,20 +4,31 @@
 //! Rust retains ownership, copies native strings and formats arguments safely.
 use crate::program::{Failure, LocaleSetup};
 use gnunet_config::{Installation, PathKind, ProcessEnvironment, ProjectData};
+#[cfg(unix)]
+use std::os::unix::ffi::OsStrExt;
 use std::{
     ffi::{CStr, CString},
     io,
     marker::PhantomData,
-    os::unix::ffi::OsStrExt,
     path::{Path, PathBuf},
     rc::Rc,
     sync::atomic::{AtomicBool, Ordering},
 };
+#[cfg(unix)]
+const MESSAGES_CATEGORY: libc::c_int = libc::LC_MESSAGES;
+// GNU libintl's LC_MESSAGES value on systems without a native category.
+#[cfg(windows)]
+const MESSAGES_CATEGORY: libc::c_int = 1729;
+#[cfg(unix)]
+const LIBINTL_BIND: &CStr = c"libintl_bindtextdomain";
+#[cfg(windows)]
+const LIBINTL_BIND: &CStr = c"libintl_wbindtextdomain";
 /// Explicit standard backend ABI. Choosing names cannot validate an arbitrary
 /// binary: load's unsafe contract requires the actual trusted implementation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AbiProfile {
-    /// GNU libintl exported libintl_* symbols, including its setlocale wrapper.
+    /// GNU libintl_* symbols, including its setlocale wrapper. Windows requires
+    /// the native UTF-16 wbindtextdomain export as well.
     Libintl,
     /// Standard unprefixed gettext symbols and native setlocale, e.g. glibc.
     Libc,
@@ -65,7 +76,10 @@ fn cstring(value: &[u8]) -> io::Result<CString> {
 }
 type SetLocale = unsafe extern "C" fn(libc::c_int, *const libc::c_char) -> *mut libc::c_char;
 type Domain = unsafe extern "C" fn(*const libc::c_char) -> *mut libc::c_char;
+#[cfg(unix)]
 type Bind = unsafe extern "C" fn(*const libc::c_char, *const libc::c_char) -> *mut libc::c_char;
+#[cfg(windows)]
+type Bind = unsafe extern "C" fn(*const libc::c_char, *const u16) -> *mut u16;
 type Get = unsafe extern "C" fn(*const libc::c_char) -> *mut libc::c_char;
 type DGet = unsafe extern "C" fn(*const libc::c_char, *const libc::c_char) -> *mut libc::c_char;
 type NGet = unsafe extern "C" fn(
@@ -86,7 +100,9 @@ impl Drop for Lease {
         CLAIMED.store(false, Ordering::Release);
     }
 }
+#[cfg(unix)]
 struct Library(*mut libc::c_void);
+#[cfg(unix)]
 impl Library {
     fn open(path: &Path) -> io::Result<Self> {
         let path = CString::new(path.as_os_str().as_bytes()).map_err(io::Error::other)?;
@@ -119,6 +135,7 @@ impl Library {
         Ok(ptr)
     }
 }
+#[cfg(unix)]
 impl Drop for Library {
     fn drop(&mut self) {
         #[expect(
@@ -128,6 +145,23 @@ impl Drop for Library {
         // SAFETY: this exact successful dlopen reference has not previously been closed.
         let status = unsafe { libc::dlclose(self.0) };
         if status != 0 { /* Drop cannot report loader failure. */ }
+    }
+}
+#[cfg(windows)]
+struct Library(gnunet_native::library::Library);
+#[cfg(windows)]
+impl Library {
+    #[expect(
+        unsafe_code,
+        reason = "The enclosing ProcessLocale::load contract requires a trusted standard backend, its dependencies and exclusive initialization"
+    )]
+    fn open(path: &Path) -> io::Result<Self> {
+        // SAFETY: the public unsafe acquisition certifies this DLL's complete
+        // loader, ABI, initialization and destruction requirements.
+        unsafe { gnunet_native::library::Library::load(path) }.map(Self)
+    }
+    fn symbol(&self, name: &CStr) -> io::Result<*mut libc::c_void> {
+        self.0.symbol(name)
     }
 }
 struct Backend {
@@ -142,6 +176,26 @@ struct Backend {
     _library: Library,
     _lease: Lease,
     _thread: PhantomData<Rc<()>>,
+}
+impl Backend {
+    fn bind_directory(&self, domain: &CStr, path: &Path) -> io::Result<()> {
+        #[cfg(unix)]
+        let path = CString::new(path.as_os_str().as_bytes()).map_err(io::Error::other)?;
+        #[cfg(windows)]
+        let path = gnunet_native::paths::absolute_wide_path(path)?;
+        #[expect(
+            unsafe_code,
+            reason = "The selected trusted ABI receives a live terminated domain and native narrow/UTF-16 path; the retained Backend owns the function for this synchronous call"
+        )]
+        // SAFETY: bindtextdomain/wbindtextdomain copies its inputs. The returned
+        // borrowed path is not needed, so check NULL without traversing it.
+        let result = unsafe { (self.bindtextdomain)(domain.as_ptr(), path.as_ptr()) };
+        if result.is_null() {
+            Err(io::Error::other("gettext directory binding failed"))
+        } else {
+            Ok(())
+        }
+    }
 }
 fn copy_native(ptr: *const libc::c_char) -> io::Result<Vec<u8>> {
     if ptr.is_null() {
@@ -230,6 +284,9 @@ impl ProcessLocale {
     /// If path can be loaded, the caller must ensure it is a trusted native
     /// implementation exporting the exact selected standard ABI (including
     /// function-pointer calling conventions), compatible with this process/libc.
+    /// Its dependencies, initializers/destructors and process loader environment
+    /// must also be trusted. Windows requires a fully qualified DLL path and the
+    /// GNU libintl profile, including wide directory binding and LC_MESSAGES1729.
     /// A definitely absent path may be supplied to observe the ordinary loader
     /// error; no native object or function can be used on that failed path. During load's native backend setup and every configure, all unrelated
     /// thread, foreign locale/gettext user and environment mutator must be quiescent.
@@ -245,6 +302,13 @@ impl ProcessLocale {
         reason = "Dynamic standard platform ABI and process-global locale authority require explicit caller trust/exclusivity"
     )]
     pub unsafe fn load(path: PathBuf, profile: AbiProfile) -> io::Result<Self> {
+        #[cfg(windows)]
+        if profile != AbiProfile::Libintl {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Windows gettext requires the GNU libintl locale wrapper",
+            ));
+        }
         CLAIMED
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .map_err(|_| io::Error::other("locale capability already held"))?;
@@ -254,7 +318,7 @@ impl ProcessLocale {
             AbiProfile::Libintl => [
                 c"libintl_setlocale",
                 c"libintl_textdomain",
-                c"libintl_bindtextdomain",
+                LIBINTL_BIND,
                 c"libintl_gettext",
                 c"libintl_dgettext",
                 c"libintl_ngettext",
@@ -276,7 +340,7 @@ impl ProcessLocale {
         }
         #[expect(
             unsafe_code,
-            reason = "POSIX dlsym function-address conversion is used only under the explicit trusted ABI profile precondition"
+            reason = "Native export-address conversion is used only under the explicit trusted ABI profile precondition"
         )]
         // SAFETY: the caller certifies these exact signatures; Library remains owned by Backend.
         let backend = unsafe {
@@ -365,7 +429,7 @@ impl LocaleSetup for ProcessLocale {
         )]
         // SAFETY: null second argument queries this native category rather than changing it.
         let messages_locale =
-            copy_native(unsafe { (self.backend.setlocale)(libc::LC_MESSAGES, std::ptr::null()) })?;
+            copy_native(unsafe { (self.backend.setlocale)(MESSAGES_CATEGORY, std::ptr::null()) })?;
         let directory = if let Some(path) = &project.gettext_path {
             Some(path.clone())
         } else {
@@ -373,15 +437,11 @@ impl LocaleSetup for ProcessLocale {
                 .path(PathKind::Localedir)
                 .map(Path::to_path_buf)
         };
+        #[cfg(windows)]
+        let directory = directory.map(std::path::absolute).transpose()?;
         let domain = cstring(domain)?;
         if let Some(path) = &directory {
-            let path = CString::new(path.as_os_str().as_bytes()).map_err(io::Error::other)?;
-            #[expect(
-                unsafe_code,
-                reason = "Trusted bindtextdomain ABI receives live domain/path strings, copied/retained by the actual native backend"
-            )]
-            // SAFETY: native bindtextdomain does not borrow either input after returning.
-            copy_native(unsafe { (self.backend.bindtextdomain)(domain.as_ptr(), path.as_ptr()) })?;
+            self.backend.bind_directory(&domain, path)?;
         }
         #[expect(
             unsafe_code,

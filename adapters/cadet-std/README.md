@@ -1,5 +1,7 @@
 # Native CADET application IPC
 
+## Application client
+
 `Client::new` borrows a pure Instance and fixed port/channel metadata, plus an
 explicit EndpointSource and native Limits. Poll `Client::poll` or `drive` from
 the caller's runtime. No background task, hidden Resolver, private handshake or
@@ -13,14 +15,22 @@ bytes and its processing token. Waiting-future cancellation preserves cursors. O
 only logical listening ports reannounce after reconnect. Channels and payloads
 require new explicit application work.
 
+`discard_unexposed` removes an exact pending frame only when the native queue
+proves no byte was written, then rolls back its logical reservation and send
+credit. An exposed frame stays pending and returns `false`; it must finish on
+the original stream or settle through physical source loss. This sends no wire
+cancellation and creates no remote receipt.
+
 `inspect::Inspector` gives each peer/tunnel/path query its own MQ. It emits
 original frames incrementally and completes only on the matching official END. EOF is interrupted; partial results remain in Report. The current official C
 service has no GetChannel handler, so no working operation is fabricated for it. `gnunet-cli cadet --help` documents the streaming command entry points.
 
 `cadet_block_loopback` is a test/example driver for two Rust clients through an
 unchanged official v0.29.1 CADET daemon's own-peer path. It exchanges official FS
-140/141 frames, authenticates a DBLOCK and checks management END records. This is local service IPC evidence; cross-peer tunnel/session interoperability
-and the full independent Rust CADET service remain incomplete.
+140/141 frames, authenticates a DBLOCK and checks management END records.
+Cross-peer qualification is tracked in [implementation status](../../IMPLEMENTATION_STATUS.md).
+
+## Application server
 
 `server::Server` drives the independent application SERVICE core over actual
 accepted streams. The caller supplies configured listeners, admission policy,
@@ -28,6 +38,13 @@ bounded tables/shared payload buffers and the canonical clock. Each MQ retains
 its original input, immutable output and partial cursors across canceled waits. Positive output and complete writes update the pure owner before observation;
 physical retirement precedes detach. Local loopback uses port ownership,
 send credit and application receive_done.
+
+An accepted explicit Destroy retains its original finite drain bound. If that
+source MQ subsequently reaches EOF or a socket error, ingress and ports revoke,
+other channel work cancels, and the native row stops I/O. Already admitted outgoing DATA drains on its existing destination owner.
+The first loss cause and immutable pending output remain retained. The source
+then physically retires before pure detach; clock failure and immediate shutdown
+still close it directly. EOF never creates a replacement source or send receipt.
 
 The caller owns that Server and its application pools. `node::Parts` borrows it
 for one peer coordinator lifetime, so peer construction failure cannot consume
@@ -49,6 +66,8 @@ the caller must apply a bounded retirement policy when later requests on that
 same MQ would be required to free its resources. `Stopped` describes local MQs,
 not external peer-effect quiescence.
 
+## CORE connection bridge
+
 `connection::Bridge` separately owns a CORE client and fixed peer/send maps. Actual CORE generations authorize neighbors, and each immutable connection frame
 binds one SendId. Only its per-send physical receipt exposes/completes that
 frame. An old partial send drains before a replacement peer generation receives
@@ -57,6 +76,12 @@ transactional capacity refusal returns the original input as explicit packet
 loss. Discovery, signing, KX/channel orchestration and connection timers remain
 the containing coordinator's work.
 
+`Bridge::report` and `Node::connection_report` retain bounded cumulative counts
+of exposed sends returned without a whole-write fact, including the subset
+whose original frames contained tunnel ciphertext. Counts advance only when
+the original native source returns. They describe local partial retirement,
+not remote receipt or application delivery, and retain no payload history.
+
 A false-to-true local CORE request-availability transition schedules the same
 original Bridge/Node owner once, even if the Book has no frame yet. The Node's
 channel class may have just refused to prepare an ACK or DATA while that neighbor
@@ -64,6 +89,8 @@ was busy; it must reconsider the newly available source without waiting for
 unrelated network input or a route timer. The bridge compares the exact original
 live Book neighbor state with current native admission availability. Repeated ready observations do not wake again. This grants no wire SendReady,
 remote acknowledgement, extra queue slot or changed retry deadline.
+
+## Identity and keys
 
 `identity_dh::Connecting` observes and verifies its PILS identity before
 binding one shared `identity_dh::Port`. Fixed job and context tables bound
@@ -83,6 +110,8 @@ directly connected CORE peers and explicitly admitted verified DHT routing
 candidates. The ordinary foreground supplies the DHT discovery owner;
 explicit `[cadet-rust] PEER_CORE=NO` selects its local-only profile.
 
+## Management
+
 `management` supplies bounded PEERS/TUNNELS/PATH snapshots. Node captures actual
 Book/controller/channel state and binds the completed snapshot to the original
 MQ/query. Private management and application output origins remain separate. Partial writes retain the original frame and report; only matching full END
@@ -92,6 +121,8 @@ management Unsupported. GetChannel remains Unsupported, matching the pinned C
 service's absence of a registered handler. These metadata snapshots are not
 authentication or peer-processing receipts.
 
+## Peer coordinator and signing
+
 `node::Node` owns the application/connection/DH drivers and borrows explicit
 fixed registries and reusable key/payload pools. `poll_signing` drives one separate
 node-wide `signing::Signer`, preserving original purpose38 jobs and native
@@ -100,19 +131,46 @@ with `take_next`; no disk sync runs inside socket polling. Original CORE sends
 have independent finite lifetimes and hard retirement bounds. Logical revocation
 does not settle physical IO, and full CORE writes do not acknowledge peer data.
 
+The shared `Timebase` separates native elapsed observations from logical time.
+Active work still checks the configured logical source. After physical CORE
+closure, the bridge returns original send sources and peer losses using only
+the same native epoch, even when logical time remains unavailable. Closing Node
+generations use that epoch to retire existing peer and signing effects. The
+original clock failure remains a failure; cleanup supplies no absolute time,
+replacement connection, replay or new authentication authority.
+
+The monotime store shares reservation policy across native targets. Its file
+owner uses original private directories, a physical exclusive lock and pinned
+selected/pending images. Replacement failures block further reservations until
+exact reconciliation; all values in a reconciled failed range remain burned.
+Windows flushes the selected file after replacement before reading back its
+80-byte checked state, including the file metadata described by the
+[Windows caching contract](https://learn.microsoft.com/en-us/windows/win32/fileio/file-caching).
+The distinct directory barrier remains `DirectorySync::Unavailable` on Windows;
+`Store::directory_sync` and `Range::directory_sync` expose the actual observation.
+An outstanding range retains the original writer lock after its store drops.
+
 A new sign admission selects the current verified PILS
 announcement only after matching the original MQ epoch and original peer-key
 anchor. This accepts a refreshed same-key HELLO revision without changing that
 anchor, a previously admitted job, its purpose, expiry or fixed hard-stop target. Exact PILS admission and existing signature verification remain mandatory;
-changed-key or changed-epoch sources keep their original refusal/close behavior. The corresponding source regression consumes newer same-key announcements before
-and during an original signing job.
+changed-key or changed-epoch sources keep their original refusal/close behavior.
 
-An two-foreground file flow uses unchanged C PILS and a controlled CORE
-IPC relay. It exercises signed CREATE, KX/authentication, encrypted reliable
-channels, application receive completion and complete CHK validation. It does
-not establish original C CORE/underlay, C CADET peer or whole-node interoperability.
+## Discovery
 
-The Node exposes original pending-discovery tickets in bounded slot order, an original native opening target, exact-current checks and a narrow public-path admission method. Projection first checks the same exact live application Open phase as target lookup and admission: an application EOF/close cannot briefly reappear as discovery work while its peer owner awaits a later fair retirement turn or an old GET finishes its stop. Admission validates the original generational app open and its original logical/native bounds, local/remote endpoints, no cycles, Book path capacity and a current first-hop neighbor. It uses the same Book CREATE, monotime/signing and tunnel KX rather than returning an authenticated-connection receipt. The ordinary service verifies DHT HELLO/path signatures before invoking it. Open native bounds are minted when the original application open is taken, not when a lookup is retried or a result arrives. These source/API changes have no new private wire or storage representation and are not runtime/interoperability acceptance.
+Node exposes pending discovery tickets in bounded slot order, fixed native
+opening targets and explicit path admission. A ticket remains valid only while
+its exact application Open is live. Application EOF or closure cannot restore
+discovery work while peer retirement or an old GET stop is pending.
+
+Path admission validates the Open generation, its logical/native bounds, path
+endpoints, absence of cycles, Book capacity and a current first-hop neighbor.
+The service verifies DHT HELLO and path signatures first. Admission uses the
+existing Book CREATE, monotime/signing and tunnel KX; it grants no authentication
+receipt. Native bounds are fixed when the application Open is taken and cannot
+be extended by lookup retries or arriving results.
+
+## Diagnostics
 
 The standard `CADET_DROP_CADET_MESSAGE` diagnostic request is accepted on the
 ordinary application MQ for its original channel. The pure/native client API
@@ -128,8 +186,7 @@ An explicit `Emission::Dropped` is separate from `Sent` and physical failure;
 exposed attempts cannot be relabeled dropped. Reliable DATA/OPEN retain their
 original MID/payload and bounded retry; dropped ACK/OPEN_ACK/DESTROY consume only
 the selected original control attempt. Node reports diagnostic drops
-separately from physical writes and peer acceptance. This source path has no
-runtime, fault-injection or official interoperability acceptance yet.
+separately from physical writes and peer acceptance.
 
 The Node retains fixed first/last authenticated DATA and DATA_ACK observations for
 the last original channel occupying each preallocated slot. Records identify
@@ -140,12 +197,13 @@ before/after application. Counts have an explicit overflow flag. No payload,
 private key or authority token is stored, and observing a record changes no
 protocol decision, timer, retry, queue, nonce or acknowledgement.
 
-Records remain after the original owner returns its slab; an later channel
+Records remain after the original owner returns its slab; a later channel
 allocation replaces that slot's previous diagnostic occupant. This is bounded
 last-occupant evidence, not a complete lifecycle or packet history. The normal
 service emits those retained records once at final INFO reporting, without
-logging every input or allocating a traffic-sized history. Source presence alone
-does not explain a particular retransmission or establish peer interoperability.
+logging every input or allocating a traffic-sized history.
+
+## Channel lifecycle
 
 Incoming CTN reservations follow original channel lifetimes. A closing owner
 still reserves its number while any original native attempt, send result,
@@ -162,8 +220,8 @@ selection, port proof and original ChannelOwner/Application generations remain.
 
 An authenticated OPEN to a currently closed port retains the official
 LOOSE lifecycle in a separate fixed metadata slab sharing the same CTN claim
-budget. It keeps the original tunnel Scope, CTN and h_port, with one
-first30-second canonical/native bound. Duplicate OPEN neither replaces those
+budget. It keeps the original tunnel Scope, CTN and h_port, with canonical/native
+bounds fixed 30 seconds after admission. Duplicate OPEN neither replaces those
 bytes nor renews that target. No payload/channel slab or application endpoint
 is allocated while the port is closed; DATA/ACK without a listener is ignored
 without a delivery or flow ACK. An authenticated remote DESTROY removes only
@@ -188,9 +246,9 @@ their frame is queued, releasing it after all original negative frames
 have terminal local outcomes. A failed seal/queue creates no permanent
 reservation. The final ordinary INFO summary exposes retained, later-bound, expired
 and remotely destroyed waits as separate local counters. It does not turn them
-into application-delivery or remote-ACK receipts. This connected source addition
-has not by itself established the late-listener normal runtime or C-peer
-interoperability result.
+into application-delivery or remote-ACK receipts.
+
+## Send scheduling
 
 The Node selects pending application sends through the pure service's
 `next_send_where` boundary. Its readonly predicate checks the matching actual
@@ -199,5 +257,4 @@ peer owner's available send window. A blocked channel leaves other queued
 channel heads eligible, while copy/admission still validates the original
 capabilities and bytes. If all candidates are blocked, that application class
 returns no activity or self-wake; peer ACK/owner progress resumes admission. The original serial order, budgets, immutable bytes and message numbers are
-unchanged. This source repair is not a causal attribution for previous failed
-normal runs.
+unchanged.

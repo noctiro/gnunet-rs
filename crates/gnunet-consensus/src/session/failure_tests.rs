@@ -155,3 +155,47 @@ fn original_public_deadline_snapshots_waitstart_before_retirement_changes_phase(
     check(context.observed_canonical == deadline && session.task_failures() == (None, 0))?;
     drain(&mut session, context)
 }
+
+#[test]
+fn cleanup_write_receipts_cannot_release_original_listener_or_client_debt() -> Result<(), Error> {
+    let domain = Instance::new();
+    let peers = [[1; 32]];
+    let mut session = Session::new(
+        &domain,
+        peers[0],
+        join(&peers),
+        Limits::default(),
+        Abi::native(),
+        10_000,
+    )?;
+    receipt(&mut session)?;
+    session.cancel(Error::Cancelled)?;
+    let mut retired = 0;
+    for _ in 0..16 {
+        session.retire_step()?;
+        if let Some(effect) = session.effect() {
+            check(effect.action.cleanup())?;
+            let id = effect.id;
+            session.admit_effect(id)?;
+            check(matches!(
+                session.complete_effect(id, Completion::Written),
+                Err(Error::InvalidInput)
+            ))?;
+            // A refused write receipt must retain the original admitted effect
+            // and its cleanup obligation for the actual retirement observation.
+            check(
+                session
+                    .effect()
+                    .is_some_and(|effect| effect.id == id && effect.is_admitted()),
+            )?;
+            check(!session.is_quiescent())?;
+            session.complete_effect(id, Completion::Retired)?;
+            retired += 1;
+        }
+        if session.is_quiescent() {
+            check(retired == 2 && !session.outcome().client_done_written)?;
+            return Ok(());
+        }
+    }
+    Err(Error::Deadline)
+}

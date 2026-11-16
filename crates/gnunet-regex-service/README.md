@@ -7,6 +7,8 @@ compiler, and original local operation/output tokens. There is no C FFI,
 private wire, native DHT implementation, socket, background task or implicit
 clock in this crate.
 
+## Public interface
+
 `Core` owns each IPC allocation and permits one ANNOUNCE and one SEARCH
 independently on the same MQ, as the active official service does. ANNOUNCE
 compiles the whole expression once, enumerates all state and synthetic

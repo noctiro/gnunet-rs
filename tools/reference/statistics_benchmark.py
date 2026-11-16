@@ -379,7 +379,7 @@ def run(args):
                                     inputs.selected_environment, role="service", deadline=startup)
             services[implementation] = service
             if implementation == "rust":
-                control.observed(service, b"READY statistics wire=0.29.1 persistence=memory-only authentication=kernel-unix",
+                control.observed(service, b"READY statistics persistence=memory-only",
                                  startup)
             control.wait(lambda: True if endpoint.is_socket() else None,
                          startup, "normal private Unix bind")

@@ -1,74 +1,47 @@
-//! Create-new staging and no-clobber publication; an existing CA is never read.
+//! Native private staging and no-clobber publication through original directories.
 use crate::{Cause, budget::Budget};
+use gnunet_native::DirectorySync;
 use std::{
     error::Error,
     fmt,
-    fs::{self, DirBuilder, File, OpenOptions},
-    io::{self, Seek, Write},
-    os::unix::fs::{DirBuilderExt, OpenOptionsExt},
+    fs::{self, File},
+    io::{self, Seek},
     path::{Path, PathBuf},
 };
+mod namespace;
+mod staging;
+use namespace::Namespace;
+use staging::{Cleanup, Staging};
 
 pub(super) fn absent(path: &Path) -> Result<(), Cause> {
     match fs::symlink_metadata(path) {
         Ok(_) => Err(io::Error::new(
             io::ErrorKind::AlreadyExists,
-            format!(
-                "existing CA preserved at {}; explicitly choose a new CA path to rotate it",
-                path.display()
-            ),
+            "existing CA destination preserved",
         )
         .into()),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error.into()),
     }
 }
-fn parent(path: &Path) -> &Path {
-    path.parent()
-        .filter(|path| !path.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."))
-}
-fn temporary(directory: &Path, kind: &str, budget: &Budget) -> Result<(PathBuf, File), Cause> {
-    for serial in 0..128u16 {
-        budget.check()?;
-        let path = directory.join(format!(
-            ".gnunet-gns-ca-{kind}-{}-{serial}.tmp",
-            std::process::id()
-        ));
-        match OpenOptions::new()
-            .write(true)
-            .read(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&path)
-        {
-            Ok(file) => return Ok((path, file)),
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
-            Err(error) => return Err(error.into()),
-        }
-    }
-    Err(io::Error::new(
-        io::ErrorKind::AlreadyExists,
-        "CA staging-name capacity reached",
-    )
-    .into())
-}
 #[derive(Debug)]
 struct PublicationFailure {
     target: PathBuf,
-    temporary: PathBuf,
+    attempted: bool,
     published: bool,
+    directory_sync: Option<DirectorySync>,
     original: Option<Cause>,
-    cleanup: Option<io::Error>,
+    cleanup: Cleanup,
 }
 impl fmt::Display for PublicationFailure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "CA publication to {} (published={}, staging={}): original={:?}, cleanup={:?}",
+            "CA publication to {}: attempted={}, published={}, directory_sync={:?}, original={:?}, cleanup={:?}",
             self.target.display(),
+            self.attempted,
             self.published,
-            self.temporary.display(),
+            self.directory_sync,
             self.original,
             self.cleanup
         )
@@ -76,104 +49,114 @@ impl fmt::Display for PublicationFailure {
 }
 impl Error for PublicationFailure {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
-        self.original
-            .as_deref()
-            .or_else(|| self.cleanup.as_ref().map(|error| error as _))
+        self.original.as_deref().or_else(|| {
+            self.cleanup
+                .remove
+                .as_ref()
+                .or(self.cleanup.close.as_ref())
+                .map(|error| error as _)
+        })
     }
 }
-pub(super) fn publish(
+pub(super) async fn publish(
     path: &Path,
     certificate: &str,
     key: &str,
     budget: &Budget,
-) -> Result<(), Cause> {
-    budget.check()?;
-    absent(path)?;
-    DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(parent(path))?;
-    budget.check()?;
-    let (staging, mut file) = temporary(parent(path), "private", budget)?;
+) -> Result<DirectorySync, Cause> {
+    let namespace = Namespace::select(path, budget).await?;
+    namespace.absent()?;
+    let mut staging = Staging::create(namespace, "private", budget).await?;
+    let mut attempted = false;
     let mut published = false;
-    let result = (|| -> Result<(), Cause> {
-        file.write_all(certificate.as_bytes())?;
-        budget.check()?;
-        file.write_all(key.as_bytes())?;
-        budget.check()?;
-        file.sync_all()?;
-        budget.check()?;
-        // Same-directory hard-link publication is atomic and refuses every
-        // existing destination, including a symlink. Never replace by rename.
-        fs::hard_link(&staging, path)?;
+    let mut directory_sync = None;
+    let result = async {
+        staging.write(certificate.as_bytes(), budget).await?;
+        staging.write(key.as_bytes(), budget).await?;
+        budget.check().await?;
+        staging.check()?;
+        staging.file()?.sync_all()?;
+        budget.check().await?;
+        staging.check()?;
+        staging.namespace.absent()?;
+        attempted = true;
+        staging.namespace.directory.link_file_from(
+            &staging.namespace.directory,
+            &staging.name,
+            staging.file()?,
+            &staging.namespace.name,
+        )?;
         published = true;
-        budget.check()?;
-        File::open(parent(path))?.sync_all()?;
-        Ok(())
-    })();
-    drop(file);
-    // Cleanup retains its original cause even after a successful publication.
-    let cleanup = fs::remove_file(&staging).err();
-    match (result, cleanup) {
-        (Ok(()), None) => Ok(()),
-        (original, cleanup) => Err(Box::new(PublicationFailure {
-            target: path.to_owned(),
-            temporary: staging,
-            published,
-            original: original.err(),
-            cleanup,
-        })),
+        budget.check().await?;
+        staging.check()?;
+        staging.remove()?;
+        budget.check().await?;
+        staging.namespace.check()?;
+        directory_sync = Some(staging.namespace.directory.sync()?);
+        budget.check().await?;
+        Ok::<(), Cause>(())
     }
+    .await;
+    let cleanup = staging.cleanup();
+    if result.is_err() || !cleanup.successful() {
+        return Err(Box::new(PublicationFailure {
+            target: path.to_owned(),
+            attempted,
+            published,
+            directory_sync,
+            original: result.err(),
+            cleanup,
+        }));
+    }
+    directory_sync.ok_or_else(|| "CA publication has no directory barrier observation".into())
 }
-
 pub(super) struct PublicFile {
-    path: Option<PathBuf>,
-    file: File,
+    staging: Staging,
 }
 impl PublicFile {
-    pub(super) fn new(target: &Path, certificate: &str, budget: &Budget) -> Result<Self, Cause> {
-        let (path, mut file) = temporary(parent(target), "public", budget)?;
-        let result = (|| -> Result<(), Cause> {
-            file.write_all(certificate.as_bytes())?;
-            file.flush()?;
-            file.rewind()?;
-            budget.check()?;
-            Ok(())
-        })();
-        if let Err(error) = result {
-            drop(file);
-            let cleanup = fs::remove_file(&path).err();
+    pub(super) async fn new(
+        target: &Path,
+        certificate: &str,
+        budget: &Budget,
+    ) -> Result<Self, Cause> {
+        let namespace = Namespace::select(target, budget).await?;
+        let mut staging = Staging::create(namespace, "public", budget).await?;
+        let result = async {
+            staging.write(certificate.as_bytes(), budget).await?;
+            staging.file_mut()?.rewind()?;
+            budget.check().await
+        }
+        .await;
+        if let Err(original) = result {
+            let cleanup = staging.cleanup();
             return Err(Box::new(PublicationFailure {
                 target: target.to_owned(),
-                temporary: path,
-                published: true,
-                original: Some(error),
+                attempted: false,
+                published: false,
+                directory_sync: None,
+                original: Some(original),
                 cleanup,
             }));
         }
-        Ok(Self {
-            path: Some(path),
-            file,
-        })
+        Ok(Self { staging })
     }
     pub(super) fn input(&mut self) -> io::Result<File> {
-        self.file.rewind()?;
-        self.file.try_clone()
+        self.staging.check()?;
+        self.staging.file_mut()?.rewind()?;
+        self.staging.file()?.try_clone()
     }
-    pub(super) fn finish(mut self) -> io::Result<()> {
-        let path = self
-            .path
-            .take()
-            .ok_or_else(|| io::Error::other("public staging path already retired"))?;
-        fs::remove_file(path)
-    }
-}
-impl Drop for PublicFile {
-    fn drop(&mut self) {
-        // Normal paths use finish() and preserve its result. This fallback
-        // releases only this original public staging path after unwinding.
-        if let Some(path) = self.path.take() {
-            let _cleanup = fs::remove_file(path);
+    pub(super) fn finish(mut self) -> Result<(), Cause> {
+        let cleanup = self.staging.cleanup();
+        if cleanup.successful() {
+            return Ok(());
         }
+        Err(Box::new(PublicationFailure {
+            target: self.staging.namespace.name.clone().into(),
+            attempted: false,
+            published: false,
+            directory_sync: None,
+            original: None,
+            cleanup,
+        }))
     }
 }

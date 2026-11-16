@@ -202,6 +202,7 @@ where
         if self.closed {
             return Err(ProtocolError::Closed.into());
         }
+        self.check_time()?;
         let record = self.result(result).ok_or(ProtocolError::Stale)?;
         if !record.visible() {
             return Err(ProtocolError::NotReady.into());
@@ -232,10 +233,9 @@ where
         {
             return Err(ProtocolError::InvalidInput.into());
         }
-        let now = clock.sample()?.now;
-        if self.last_now.is_some_and(|previous| now < previous) {
-            return Err(ProtocolError::TimeUncertain.into());
-        }
+        // Source construction can consume the original search lifetime too.
+        self.check_time()?;
+        let now = self.last_now.ok_or(ProtocolError::NotReady)?;
         let attempt = if let Some(index) = existing {
             self.probe_books[index].begin(leaf, transfer, now)?
         } else {
@@ -247,7 +247,6 @@ where
             self.retained += size_of::<Book>();
             attempt
         };
-        self.last_now = Some(now);
         Ok(Probe {
             result,
             attempt,

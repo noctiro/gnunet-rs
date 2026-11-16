@@ -915,19 +915,8 @@ impl<'id, 'slots> Client<'id, 'slots> {
     /// exposed. This rolls back its reservation; exposed data requires MQ loss
     /// or completion and can never be retried as known-unsent by this method.
     pub fn discard(&mut self, transmit: Transmit<'id>) -> Result<(), Error> {
-        let pending = self
-            .pending
-            .filter(|p| p.transmit == transmit)
-            .ok_or(Error::StaleGeneration)?;
-        if pending.exposed {
-            return Err(Error::OutcomeUnknown);
-        }
-        if let Action::Data(channel) = pending.action
-            && let Ok(r) = self.channel_record(channel)
-            && r.credit >= self.limits.max_send_credit
-        {
-            return Err(Error::Overflow);
-        }
+        self.check_discard(transmit)?;
+        let pending = self.pending.ok_or(Error::StaleGeneration)?;
         match pending.action {
             Action::PortOpen { port, fresh: true } => {
                 if self.port_record(port).is_ok() {
@@ -972,6 +961,24 @@ impl<'id, 'slots> Client<'id, 'slots> {
             | Action::Reject => {}
         }
         self.pending = None;
+        Ok(())
+    }
+    /// Preflight logical rollback without changing its credit or metadata.
+    /// The native owner must additionally prove its actual frame is unwritten.
+    pub fn check_discard(&self, transmit: Transmit<'id>) -> Result<(), Error> {
+        let pending = self
+            .pending
+            .filter(|p| p.transmit == transmit)
+            .ok_or(Error::StaleGeneration)?;
+        if pending.exposed {
+            return Err(Error::OutcomeUnknown);
+        }
+        if let Action::Data(channel) = pending.action
+            && let Ok(r) = self.channel_record(channel)
+            && r.credit >= self.limits.max_send_credit
+        {
+            return Err(Error::Overflow);
+        }
         Ok(())
     }
     /// Apply one actual decoded response from exactly the supplied original MQ.

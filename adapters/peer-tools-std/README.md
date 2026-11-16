@@ -1,25 +1,86 @@
-# Actual installed public-peer PROGRAM tools
+# GNUnet HELLO and PILS commands
 
-Pinned v0.29.1 `src/cli/meson.build` has no peerinfo directory/target. It installs `gnunet-hello` from cli/hello and `gnunet-pils` from cli/pils. The Rust workspace had neither executable. This package implements the active tools; no obsolete peerinfo wire, compatibility alias, hostkey reader, private-key importer or fabricated public identity is added.
+This adapter implements the installed `gnunet-hello` and `gnunet-pils` commands
+on Linux, macOS, FreeBSD and Windows through the official PILS and PEERSTORE
+clients. Public identity and signatures come from the selected services.
 
-`gnunet-pils -1/--once` prints the canonical52-character public peer identity obtained from one PILS identity announcement. Without -1 it prints every identity observation, including unchanged peer metadata updates, within a default finite5-minute window. Native attachment is not identity readiness. Loss/retry is shown explicitly; an observer can receive a fresh announcement, but no old identity is presented as fresh. No local-key access is enabled.
+## Process interface
 
-`gnunet-hello` requires exactly one active action:
+`run(tool, startup)` consumes a fresh-process `ClientStartup` and returns the
+actual process exit code. The executable captures inheritance before creating
+configuration, logging or runtime owners. Errors before diagnostic selection
+remain in `Result`; selected-Logger failures return a failure exit code.
 
-- `-e/--export-hello`: export the current public PILS announcement as a canonical `gnunet://hello/` URL.
-- `-b/--binary` with -e: export one complete official HELLO_URI frame, never the outer PILS1831 frame.
-- `-E/--expiration TIME` with -e: use the shared official relative-time parser, preserve the original public address snapshot, submit purpose7 via actual `PILS Client::sign_hello` with `KeyTarget::Exact(original_identity)`, then require the original operation/signature/returned signer/original physical epoch/current signer binding. Only its typed signature completion produces output. Local write is not that completion. Loss while signing fails without reissuing the original request; no local signer/private-key fallback exists. Explicit forever/zero expiry follows wire time semantics while operation waiting stays finite.
-- `-i/--import-hello`: read bounded public stdin URL or a complete binary HELLO, validate via the shared HELLO codec/signature profile, and run the new public PEERSTORE `hello::HelloAdd`. A exact-peer scan checks for newer verified metadata. It then either waits for original STOP/local retirement or admits one original REPLACE and waits for STORE_RESULT. Output distinguishes saved, newer-existing with no new store, local cancellation and unknown/failure. Neither whole write nor a partial dump prefix is declared complete success.
-- `-D/--dump-hellos`: iterate the official peerstore/peerstore-peer-hello-uri namespace, verify/bind every displayed record to its cache peer and explicit profile, display escaped original public address URIs/expiration/coverage, and grant one-record credit. Only original successful ITERATE_END means a complete list. Invalid/expired data is explicitly skipped, native loss interrupts the list, and Ctrl-C sends the STOP and drives its fixed bounded suffix/termination; STOP has no ACK.
+One PROGRAM task owns the selected Reporter, original native stop subscriptions,
+clients and explicitly driven Resolver. Export/signing, import and iteration
+have separate modules. Normal exit and cancellation retire the original clients
+before Resolver disconnect. Rejected or canceled tasks preserve independent
+cleanup failures in one bounded shared slot per owner.
 
-Common extra options: `--pils-socket`, `--peerstore-socket` select explicit Unix endpoints; otherwise shared live configuration and Resolver are used. `--duration-ms`1..86400000 defaults HELLO30s/PILS300000ms; `--io-slice-bytes`1..65535. Without `--profile`, the tools inherit node-wide `[PILS] PROFILE`, defaulting to `reference029`. Explicit `--profile reference029|reference-0.29.1|deterministic` selects the profile for this public endpoint, which may belong to another node, and overrides the node setting. Invalid explicit selections fail; verification never falls back to another profile. Standard PROGRAM config/help/version/log options remain. No positional arguments are accepted. Unrelated PEER.PRIVATE_KEY configuration is neither queried nor required.
+## Commands
 
-The PROGRAM startup/configuration, original client/Resolver/signal/stdin/stdout ownership and HELLO business handlers are separate modules. There is one explicit PROGRAM task and one shared Resolver. Only the required service client is constructed. Original PILS operation metadata is bounded to2, PEERSTORE rows4 and physical/source queues256KiB. Shared HELLO address scratch is bounded65423 bytes and1024 addresses. Input is capped65535 bytes, binary output by the official frame width, URL by a checked worst-case escaped width. Public packet buffers zeroize. Stdio uses only ordinary Stdin/Stdout handles and bounded synchronous chunks. It never duplicates descriptors, registers inherited stdio with a reactor, changes O_NONBLOCK/file flags or starts a hidden blocking worker. read/write counts are bytes accepted by stdio, not kernel exposure or a flush receipt. Each complete output is explicitly flushed; normal/error cleanup closes native owners first and preserves its independent flush failure alongside the original task/client/Resolver causes. PROGRAM help/error exit also explicitly flushes. Drop makes a final diagnostic-only flush attempt after native owner retirement. A synchronous OS read/write/flush can exceed the network deadline and cannot be forcibly interrupted by that deadline; there is no false finite-stdio claim. No path is opened to import data or keys.
+`gnunet-pils --once` prints one verified 52-character public peer identity and
+exits after its output flush. Without `--once`, it prints each observation,
+including metadata refreshes, within the configured finite duration. Attachment
+alone is not an identity result. Canceling a single-identity or export action before its output
+completes fails; continuous observation can stop between complete outputs.
 
-Default HELLO signature profile authenticates metadata only, not its address list; displayed/imported addresses are not dial/transport authority. Alternate producer profile must be configured explicitly. Source/wire/native deadlines, callback cancellation, original iterator credit, local writes and service results are preserved. Drop/normal/error paths physically stop clients before their Resolver and retain independent cleanup causes. There is no TRANSPORT, HOSTLIST, TOPOLOGY or stopped-owner dependency.
+`gnunet-hello` requires exactly one action:
 
-## Current C producer defects not copied
+- `--export-hello/-e` prints the current public announcement as a canonical
+  `gnunet://hello/` URL. `--binary/-b` selects the complete HELLO_URI frame.
+- `--expiration/-E TIME` with export submits the original address snapshot for
+  PILS purpose-7 signing under the exact observed identity. Output requires the
+  matching verified signature, operation, physical epoch and current signer.
+  Source loss does not replay the signing request.
+- `--import-hello/-i` validates URL or binary stdin and drives PEERSTORE
+  `hello_add`: exact-peer scan, newer-record comparison and, when necessary, one
+  original REPLACE followed by STORE_RESULT. Output distinguishes an actual
+  store from an existing newer record. Cancellation cannot retract a store.
+- `--dump-hellos/-D` iterates the official HELLO namespace, verifies each record's
+  peer/profile binding and grants one-record credit. It displays escaped public
+  addresses and signature coverage. Successful ITERATE_END completes the list;
+  a partial prefix does not. Stop uses the original iterator and a fixed grace.
 
-Current C HELLO CLI redundantly requires a PRIVATE_KEY filename without using the file, can remove the last URL byte even without a newline, has a bounded-stdin terminator overrun, prints imported regardless of a failed STORE callback, and swaps binary/URL callbacks when -E is used. Rust uses only public IPC, checked complete input, consistent -b output and result status. Concurrent action flags in C race scheduler shutdown; Rust requires one clear action. These are present-release fixes, not old private protocol migration. Existing HELLO codec's explicit profile/C URL `+` caveat remains documented by that codec; this tool does not silently reinterpret it.
+## Configuration and examples
 
-Central build/API/lint and any separately authorized public native/crypto qualification remain outstanding.
+```sh
+gnunet-pils -c gnunet.conf --once
+gnunet-hello -c gnunet.conf --export-hello --binary > hello.bin
+gnunet-hello -c gnunet.conf --import-hello < hello.bin
+```
+
+Standard PROGRAM options select configuration, logging, help and version.
+Endpoints come from `[pils]` and `[peerstore]`, or explicit `--pils-socket` and
+`--peerstore-socket` local paths. Windows paths use the native AF_UNIX transport.
+`--duration-ms` accepts 1..86400000, defaulting to 30000 for HELLO and 300000 for
+PILS. `--io-slice-bytes` accepts 1..65535.
+
+The default signature profile follows `[PILS] PROFILE`, or `reference029` when
+absent. `--profile reference029|reference-0.29.1|deterministic` explicitly selects
+another endpoint's profile. Invalid selections fail without fallback.
+No private-key setting is required by either command.
+
+## I/O and resource contracts
+
+PILS retains at most two operations; PEERSTORE uses four operation rows and
+256 KiB source/output budgets. HELLO address storage is bounded to 65423 bytes
+and 1024 addresses. Binary messages are capped at 65535 bytes; text input/output
+uses the codec's checked URL bound, including worst-case escaping. Input grows
+from 4096 bytes only as needed, with a separate oversize sentinel. Import uses
+one original zeroizing input and, for URLs, one bounded canonical message.
+
+Stdin and stdout use synchronous standard handles in bounded chunks. Their
+flags remain unchanged and no blocking worker is introduced. A synchronous
+call can outlast its deadline; post-call checks classify that late return as a
+failure. Accepted stdio bytes do not prove kernel exposure. Explicit output
+flush is a separately guarded operation. Drop performs no extra flush or native
+I/O; it retains the accepted-byte count when explicit flush was unconfirmed.
+Ordinary Rust/OS stdio buffering still applies.
+
+Diagnostics use the selected Logger. Its failure fences subsequent source and
+I/O work; action, client, Resolver and unconfirmed-output facts remain separate.
+The default HELLO signature authenticates metadata, with address coverage
+reported separately by the [HELLO codec](../../crates/gnunet-hello/README.md).
+Runtime qualification remains in the central
+[implementation status](../../IMPLEMENTATION_STATUS.md).

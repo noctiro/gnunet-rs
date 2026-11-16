@@ -6,6 +6,8 @@ STATISTICS, PEERSTORE, PILS, NAT, TRANSPORT and CORE; NAT precedes TRANSPORT. On
 the exact A↔B and B↔C HELLO edges are imported. No topology, gossip or DHT process
 adds a hidden direct A–C path.
 
+## Observations
+
 `dv_core_client.c` links the unchanged official CORE/application public APIs. Two
 callers suggest only B and each submit one fixed16-byte application payload in
 the official TEST message (type0). Passing requires each exact opposite payload

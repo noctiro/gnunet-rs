@@ -23,3 +23,23 @@ Protocol frames, partial framing cursors, acknowledgement credits, peer epochs,
 request cancellation and retry policy remain in domain owners. Socket readiness
 never reports transferred bytes or application success. `official-client` exposes
 this layer in the SDK; `official-ipc` additionally enables the STATISTICS host.
+
+## Native endpoints
+
+Windows `UNIXPATH` attempts use the runtime's AF_UNIX stream adapter, with the
+same attempt guard, cancellation owner and official path-shortening rule. Socket
+names require valid UTF-8 and native sun_path bounds; general Windows WTF-8
+filenames are not silently substituted. Connecting grants no peer identity or
+application acknowledgement. See the [local stream contract](../service-runtime/README.md#local-streams)
+for ownership and remaining Windows listener/credential qualification.
+
+## Service presence
+
+`presence::test` follows the pinned official weak synchronous observation on
+Unix and Windows. ARM-managed `UNIXPATH` uses existence without connecting;
+Windows queries native reparse-node attributes. Other existing local endpoints
+are connected and immediately closed. Refusal/missing nodes fall through to the
+configured TCP test. Loopback TCP uses bind evidence; other configured hostnames
+are assumed up without DNS or a connection. No result authenticates a service,
+proves application readiness or acknowledges a request. This synchronous probe
+has the same potential to block during connect as its official counterpart.

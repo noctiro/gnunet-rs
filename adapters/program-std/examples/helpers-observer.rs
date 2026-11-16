@@ -7,9 +7,12 @@ use gnunet_program_host::{
 use std::{
     cell::RefCell,
     io::{self, Write},
-    os::unix::ffi::OsStrExt,
     rc::Rc,
 };
+fn hex_path(path: Option<&std::path::Path>) -> String {
+    let bytes = path.map(|path| gnunet_native::os_bytes::encode(path.as_os_str()));
+    hex(bytes.as_deref())
+}
 fn hex(value: Option<&[u8]>) -> String {
     let Some(bytes) = value else {
         return "-".to_owned();
@@ -139,8 +142,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     diagnostics.borrow_mut(),
                     "OBS {} FILE {} CFG {} MSG {}",
                     event.level.0,
-                    hex(file.path.as_ref().map(|v| v.as_os_str().as_bytes())),
-                    hex(config.path.as_ref().map(|v| v.as_os_str().as_bytes())),
+                    hex_path(file.path.as_deref()),
+                    hex_path(config.path.as_deref()),
                     hex(Some(event.template))
                 ));
             }
@@ -179,17 +182,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         stdout,
         "STR {} FILE {} CFG {} LOGFILE {} LEVEL {}",
         hex(string.get()?.as_deref()),
-        hex(file.get()?.path.as_ref().map(|v| v.as_os_str().as_bytes())),
-        hex(config
-            .get()?
-            .path
-            .as_ref()
-            .map(|v| v.as_os_str().as_bytes())),
-        hex(logfile
-            .get()?
-            .path
-            .as_ref()
-            .map(|v| v.as_os_str().as_bytes())),
+        hex_path(file.get()?.path.as_deref()),
+        hex_path(config.get()?.path.as_deref()),
+        hex_path(logfile.get()?.path.as_deref()),
         hex(level.get()?.as_deref())
     )?;
     io::stderr().write_all(&result.output.stderr)?;

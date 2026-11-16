@@ -11,13 +11,57 @@ use windows_sys::Win32::Networking::WinSock::{
     WSAGetLastError, WSAStartup,
 };
 
-struct Winsock;
+pub(crate) struct Winsock;
+
+/// Numeric native IPv6 formatting, with no DNS or socket creation. InetNtopW
+/// needs no WSAStartup reference; its fixed output is checked as terminated ASCII.
+#[expect(
+    unsafe_code,
+    reason = "InetNtopW borrows an aligned initialized IN6_ADDR and bounded initialized wide output; any original Winsock error is captured before another call"
+)]
+pub fn ipv6_text(address: [u8; 16]) -> io::Result<Vec<u8>> {
+    use windows_sys::Win32::Networking::WinSock::{AF_INET6, IN6_ADDR, IN6_ADDR_0, InetNtopW};
+    let address = IN6_ADDR {
+        u: IN6_ADDR_0 { Byte: address },
+    };
+    let mut output = [0_u16; 46];
+    // SAFETY: input/output are nonoverlapping and remain live for this numeric-only call.
+    let result = unsafe {
+        InetNtopW(
+            i32::from(AF_INET6),
+            (&address as *const IN6_ADDR).cast(),
+            output.as_mut_ptr(),
+            output.len(),
+        )
+    };
+    if result.is_null() {
+        // SAFETY: scalar current-thread error query precedes all cleanup/native calls.
+        return Err(io::Error::from_raw_os_error(unsafe { WSAGetLastError() }));
+    }
+    let end = output
+        .iter()
+        .position(|&unit| unit == 0)
+        .filter(|&end| end != 0)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid native IPv6 string extent",
+            )
+        })?;
+    if output[..end].iter().any(|&unit| unit > 127) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "non-ASCII native IPv6 string",
+        ));
+    }
+    Ok(output[..end].iter().map(|&unit| unit as u8).collect())
+}
 impl Winsock {
     #[expect(
         unsafe_code,
         reason = "WSAStartup writes one exact output WSADATA; this guard owns exactly its successful reference"
     )]
-    fn start() -> io::Result<Self> {
+    pub(crate) fn start() -> io::Result<Self> {
         let mut data = std::mem::MaybeUninit::<WSADATA>::uninit();
         // SAFETY: API receives full writable native WSADATA output storage.
         let code = unsafe { WSAStartup(0x0202, data.as_mut_ptr()) };

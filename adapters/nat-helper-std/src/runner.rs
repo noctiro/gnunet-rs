@@ -1,5 +1,8 @@
 use super::{Cause, Failure, failure};
-use crate::platform::{PROFILE, observe};
+use crate::{
+    platform::{PROFILE, observe},
+    text::Text,
+};
 use gnunet_nat::icmp;
 use gnunet_native::nat_helper::{self, Output, Signals};
 use nix::{
@@ -8,7 +11,6 @@ use nix::{
 };
 use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 use std::{
-    ffi::OsString,
     fmt, io,
     net::{Ipv4Addr, SocketAddrV4},
     os::fd::AsFd,
@@ -18,59 +20,8 @@ const FREQUENCY: Duration = Duration::from_millis(500);
 const CLIENT_SEND: Duration = Duration::from_secs(5);
 const LINE_LIFETIME: Duration = Duration::from_secs(2);
 const TTL: u8 = 64; // IPDEFTTL of the qualified Linux/Darwin/modern FreeBSD profiles.
-/// Fixed text storage for official endpoint lines and bounded diagnostics.
-pub(crate) struct Text<const N: usize> {
-    bytes: [u8; N],
-    len: usize,
-}
-impl<const N: usize> Text<N> {
-    pub fn new() -> Self {
-        Self {
-            bytes: [0; N],
-            len: 0,
-        }
-    }
-    pub fn bytes(&self) -> &[u8] {
-        &self.bytes[..self.len]
-    }
-}
-impl<const N: usize> fmt::Write for Text<N> {
-    fn write_str(&mut self, s: &str) -> fmt::Result {
-        let end = self.len.checked_add(s.len()).ok_or(fmt::Error)?;
-        if end > N {
-            return Err(fmt::Error);
-        }
-        self.bytes[self.len..end].copy_from_slice(s.as_bytes());
-        self.len = end;
-        Ok(())
-    }
-}
 fn os(code: u8, action: &'static str, error: io::Error) -> Failure {
     failure(code, Cause::Io(action, error))
-}
-fn next_arg(args: &mut impl Iterator<Item = OsString>, code: u8) -> Result<OsString, Failure> {
-    args.next()
-        .ok_or_else(|| failure(code, Cause::Usage("missing official helper argument")))
-}
-fn ipv4(arg: &OsString, code: u8) -> Result<Ipv4Addr, Failure> {
-    arg.to_str()
-        .filter(|s| s.len() <= 15)
-        .and_then(|s| s.parse().ok())
-        .ok_or_else(|| failure(code, Cause::Usage("expected a numeric IPv4 address")))
-}
-fn port(arg: &OsString) -> Result<u16, Failure> {
-    let port = arg
-        .to_str()
-        .filter(|s| s.len() <= 16)
-        .and_then(|s| s.parse::<u16>().ok())
-        .filter(|n| *n != 0);
-    port.ok_or_else(|| failure(8, Cause::Usage("port must be decimal1..65535")))
-}
-fn no_more(args: &mut impl Iterator<Item = OsString>, code: u8) -> Result<(), Failure> {
-    if args.next().is_some() {
-        return Err(failure(code, Cause::Usage("unexpected helper argument")));
-    }
-    Ok(())
 }
 fn timeout(until: Instant) -> u16 {
     let micros = until.saturating_duration_since(Instant::now()).as_micros();
@@ -186,12 +137,11 @@ pub(super) fn client() -> Result<(), Failure> {
     nat_helper::configure_raw(&raw).map_err(|e| os(5, "SO_BROADCAST/IP_HDRINCL", e))?;
     raw.set_nonblocking(true)
         .map_err(|e| os(5, "raw writer O_NONBLOCK", e))?;
-    let mut args = std::env::args_os();
-    let _name = args.next();
-    let local = ipv4(&next_arg(&mut args, 6)?, 7)?;
-    let remote = ipv4(&next_arg(&mut args, 6)?, 7)?;
-    let advertised = port(&next_arg(&mut args, 6)?)?;
-    no_more(&mut args, 6)?;
+    let crate::arguments::Client {
+        local,
+        remote,
+        advertised,
+    } = crate::arguments::client()?;
     let mut echo = [0; 56];
     let en = icmp::reversal_icmp(
         local.octets(),
@@ -435,10 +385,7 @@ pub(super) fn server() -> Result<(), Failure> {
         return Ok(());
     }
 
-    let mut args = std::env::args_os();
-    let _name = args.next();
-    let local = ipv4(&next_arg(&mut args, 3)?, 4)?;
-    no_more(&mut args, 3)?;
+    let local = crate::arguments::server()?;
     let input = Socket::from(input.map_err(|e| os(6, "open raw ICMP reader", e))?);
     let raw = Socket::from(raw.map_err(|e| os(8, "open raw IPv4 writer", e))?);
     nat_helper::configure_raw(&raw).map_err(|e| os(9, "SO_BROADCAST/IP_HDRINCL", e))?;

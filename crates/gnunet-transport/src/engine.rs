@@ -103,7 +103,8 @@ pub struct WorkDeferral {
 /// Result of a scheduled work pass, independent of remote delivery.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WorkStatus {
-    /// No newly deferred original was encountered.
+    /// No transmission job newly refused resource preflight. Maintenance may
+    /// still be waiting for space in the bounded output FIFO.
     Ready,
     /// This original is retained and skipped until explicit retry or retirement.
     Deferred(WorkDeferral),
@@ -182,7 +183,7 @@ pub struct Snapshot {
     pub clients: usize,
     /// Live communicator queues.
     pub queues: usize,
-    /// Peers with a currently validated route.
+    /// Peers whose original CORE connection has not yet been retired.
     pub connected: usize,
     /// Malformed or unsupported remote network frames dropped in isolation.
     pub remote_dropped: u64,
@@ -699,6 +700,12 @@ impl Engine {
         }
         self.output.push_back(Output::Frame { client, bytes });
         Ok(())
+    }
+    fn output_room(&self, needed: usize) -> bool {
+        self.output
+            .len()
+            .checked_add(needed)
+            .is_some_and(|n| n <= self.limits.messages + self.limits.control_messages)
     }
     fn remove_address_create(&mut self, index: usize) {
         let request = self.address_creates.remove(index);
@@ -2892,6 +2899,12 @@ impl Engine {
             let Some(mut job) = self.jobs.pop_front() else {
                 break;
             };
+            // An expired original may retain its CORE credit while the output
+            // FIFO is full. No ordinary receive or explicit retry may send it.
+            if job.expires != u64::MAX && now >= job.expires {
+                self.jobs.push_back(job);
+                continue;
+            }
             if job.deferred.is_some() && !retry {
                 self.jobs.push_back(job);
                 continue;
@@ -2962,11 +2975,17 @@ impl Engine {
             if job.expires != u64::MAX && now >= job.expires {
                 if let Some(core) = job.core.as_ref()
                     && self.client(core).is_ok()
-                    && let Err(error) =
-                        self.core_frame(core.clone(), CoreResponse::SendCredit(job.peer))
                 {
-                    self.jobs.push_front(job);
-                    return Err(error);
+                    if !self.output_room(1) {
+                        self.jobs.push_back(job);
+                        continue;
+                    }
+                    if let Err(error) =
+                        self.core_frame(core.clone(), CoreResponse::SendCredit(job.peer))
+                    {
+                        self.jobs.push_front(job);
+                        return Err(error);
+                    }
                 }
                 self.buffered -= job.charge();
                 self.remote_acks.remove_job(job.id);
@@ -3110,12 +3129,14 @@ impl Engine {
             }
         }
         for p in 0..self.peers.len() {
-            if now.saturating_sub(self.peers[p].last_inbound) > LIVENESS {
-                let peer = self.peers[p].id;
-                self.refresh(peer)?;
+            let peer = self.peers[p].id;
+            if !self.refresh_fits(peer)? {
                 continue;
             }
-            self.refresh(self.peers[p].id)?;
+            self.refresh(peer)?;
+            if now.saturating_sub(self.peers[p].last_inbound) > LIVENESS {
+                continue;
+            }
             if self.peers[p].flow_next != u64::MAX
                 && self.peers[p].flow_next <= now
                 && (self.peers[p].flow_dirty

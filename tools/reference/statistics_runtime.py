@@ -31,8 +31,7 @@ def ready_line(kind, memory=False):
     if kind != 'rust':
         return None
     persistence = b'memory-only' if memory else b'official-set-snapshot'
-    return (b'READY statistics wire=0.29.1 persistence=' + persistence
-            + b' authentication=kernel-unix\n')
+    return b'READY statistics persistence=' + persistence + b'\n'
 
 
 def duplicate_listener(parent, minimum, foreign, errors, label):

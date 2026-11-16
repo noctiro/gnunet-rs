@@ -1,8 +1,8 @@
 //! Official REGEX section plus explicitly bounded Rust implementation policies.
 use crate::{Failure, statistics};
-use gnunet_config::{Configuration, Environment, ProcessEnvironment, ProjectData};
+use gnunet_config::Configuration;
 use gnunet_service_runtime::{credentials::UnixAccess, service::ShutdownMode};
-use std::{path::Path, sync::Arc, time::Duration};
+use std::time::Duration;
 /// Explicit finite capacities. These are local policies, never added wire fields.
 #[derive(Clone, Debug)]
 pub struct Settings {
@@ -150,27 +150,6 @@ fn duration(config: &Configuration, key: &[u8], default: Duration) -> Result<Dur
     }
     Ok(value)
 }
-pub(crate) fn configuration(selected: Option<&Path>) -> Result<Configuration, Failure> {
-    let project = Arc::new(ProjectData::default());
-    let mut config = Configuration::create(project.clone(), Default::default())?;
-    let user = if let Some(path) = selected {
-        Some(path.to_path_buf())
-    } else {
-        let raw = match ProcessEnvironment.variable(b"XDG_CONFIG_HOME") {
-            Some(mut value) => {
-                value.push(b'/');
-                value.extend_from_slice(&project.config_file);
-                value
-            }
-            None => project.user_config_file.clone(),
-        };
-        let path = config.expand_filename(&raw, &ProcessEnvironment)?;
-        path.is_file().then_some(path)
-    };
-    config.load(user.as_deref())?;
-    Ok(config)
-}
-
 #[cfg(test)]
 mod profile_tests {
     use super::*;

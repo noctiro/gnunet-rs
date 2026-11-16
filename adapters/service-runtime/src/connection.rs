@@ -36,20 +36,46 @@ impl std::os::fd::AsFd for Connection {
 impl std::os::windows::io::AsSocket for Connection {
     fn as_socket(&self) -> std::os::windows::io::BorrowedSocket<'_> {
         match &self.stream {
+            Stream::Unix(stream) => stream.as_socket(),
             Stream::Tcp(stream) => stream.as_socket(),
         }
     }
 }
 
 impl Connection {
+    /// Nonconsuming current socket events, independent of cached reactor hints.
+    /// This does not read bytes, change cursors or infer protocol completion.
+    #[cfg(any(unix, windows))]
+    pub fn level_readiness(
+        &self,
+        interest: crate::readiness::SocketInterest,
+    ) -> io::Result<Option<crate::readiness::SocketEvents>> {
+        #[cfg(unix)]
+        let original = std::os::fd::AsFd::as_fd(self);
+        #[cfg(windows)]
+        let original = std::os::windows::io::AsSocket::as_socket(self);
+        gnunet_native::network::socket_readiness(original, interest)
+    }
     /// Whether this original owned stream is Unix. This performs no I/O or
     /// credential lookup and supplies no peer authentication authority.
     #[must_use]
     pub const fn is_unix(&self) -> bool {
         match &self.stream {
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             Stream::Unix(_) => true,
             Stream::Tcp(_) => false,
+        }
+    }
+    /// Windows kernel peer PID from the original AF_UNIX socket; None for TCP.
+    /// No process is opened and no user/group authentication is established.
+    #[cfg(windows)]
+    pub fn unix_peer_process_id(&self) -> io::Result<Option<u32>> {
+        use std::os::windows::io::AsSocket;
+        match &self.stream {
+            Stream::Unix(stream) => {
+                gnunet_native::local_socket::peer_process_id(stream.as_socket()).map(Some)
+            }
+            Stream::Tcp(_) => Ok(None),
         }
     }
     /// Kernel-reported Unix peer UID/GID, or None for TCP. This only observes
@@ -96,8 +122,8 @@ impl Connection {
 
     /// Take an already configured, uniquely owned Unix stream without I/O.
     /// This establishes no protocol, peer authentication or admission authority.
-    #[cfg(unix)]
-    pub fn from_unix(stream: tokio::net::UnixStream) -> Self {
+    #[cfg(any(unix, windows))]
+    pub fn from_unix(stream: crate::local::Stream) -> Self {
         Self {
             lease: None,
             stream: Stream::Unix(stream),

@@ -6,7 +6,6 @@ use gnunet_program_host::{
 use std::{
     cell::RefCell,
     io::{self, Write},
-    os::unix::ffi::OsStrExt,
     rc::Rc,
 };
 fn hex(bytes: &[u8]) -> String {
@@ -24,16 +23,23 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     if args.len() < 4 {
         return Err("mode level extra required".into());
     }
-    let mode = args[1].as_bytes();
-    let level = args[2].as_bytes();
-    let extra = args[3].as_bytes() != b"0";
-    let minimum = if level == b"-" { None } else { Some(level) };
+    let mode = gnunet_native::os_bytes::encode(&args[1]);
+    let level = gnunet_native::os_bytes::encode(&args[2]);
+    let extra = args[3] != "0";
+    let minimum = if level.as_ref() == b"-" {
+        None
+    } else {
+        Some(level.as_ref())
+    };
     let mut logger = Logger::new(b"owned-program", std::process::id(), extra)?;
     let mut stderr = io::stderr();
+    let filename = args
+        .get(4)
+        .map(|path| gnunet_native::os_bytes::encode(path));
     let diagnostics = logger.setup(
         b"owned-program",
         minimum,
-        args.get(4).map(|v| v.as_bytes()),
+        filename.as_deref(),
         &Environment::capture(),
         &Stamp::setup_now()?,
     )?;
@@ -45,7 +51,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         std::process::id(),
         i32::from(extra)
     )?;
-    if mode == b"policy" {
+    if mode.as_ref() == b"policy" {
         for (index, component) in [None, Some(b"owned-program".as_slice()), Some(b"other")]
             .into_iter()
             .enumerate()
@@ -66,7 +72,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
-    } else if mode == b"custom" {
+    } else if mode.as_ref() == b"custom" {
         let mut add = |tag| {
             let output = Rc::clone(&output);
             logger.logger_add(move |record| {
@@ -107,7 +113,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             i32::from(logger.scope_get().is_some())
         )?;
         logger.logger_remove(one)?;
-    } else if mode == b"file" {
+    } else if mode.as_ref() == b"file" {
         logger.write_diagnostic(b"diagnostic-port\n", &mut stderr)?;
         let old = logger.scope_enter([0; 16]);
         logger.nocheck(Level::ERROR, None, b"alpha", &Stamp::now(0)?, &mut stderr)?;

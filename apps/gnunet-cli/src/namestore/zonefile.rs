@@ -1,5 +1,6 @@
 //! Public zonefile import over the original IDENTITY/NAMESTORE clients.
 use super::{KEY_BYTES, Result, bytes, row, text};
+use crate::control::Control;
 use gnunet::{
     clients::{identity, namestore as ns},
     crypto::Entropy,
@@ -14,17 +15,11 @@ use std::{
     ffi::{OsStr, OsString},
     fmt,
     fs::File,
-    future::{Future, poll_fn},
     io::{self, Read, Write},
     path::PathBuf,
-    pin::Pin,
-    task::{Context, Poll},
     time::Duration,
 };
-use tokio::{
-    signal::unix::{Signal, SignalKind, signal},
-    time::{Instant, Sleep},
-};
+use tokio::time::Instant;
 use zeroize::{Zeroize, Zeroizing};
 
 // Pinned gnunet_error_codes.h:71 and the admitted IDENTITY lookup wire contract.
@@ -293,69 +288,6 @@ impl Error for SourceFailure {
     }
 }
 
-struct Control {
-    interrupt: Signal,
-    terminate: Signal,
-    hard: Instant,
-    timer: Pin<Box<Sleep>>,
-}
-impl Control {
-    fn new(hard: Instant) -> io::Result<Self> {
-        Ok(Self {
-            interrupt: signal(SignalKind::interrupt())?,
-            terminate: signal(SignalKind::terminate())?,
-            hard,
-            timer: Box::pin(tokio::time::sleep_until(hard)),
-        })
-    }
-    fn check(&mut self, cx: &mut Context<'_>) -> io::Result<()> {
-        if Instant::now() >= self.hard || self.timer.as_mut().poll(cx).is_ready() {
-            return Err(io::Error::new(
-                io::ErrorKind::TimedOut,
-                "original zonefile import deadline",
-            ));
-        }
-        for stream in [&mut self.interrupt, &mut self.terminate] {
-            match stream.poll_recv(cx) {
-                Poll::Ready(Some(())) => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::Interrupted,
-                        "zonefile import stopped",
-                    ));
-                }
-                Poll::Ready(None) => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::UnexpectedEof,
-                        "original zonefile signal source ended",
-                    ));
-                }
-                Poll::Pending => {}
-            }
-        }
-        Ok(())
-    }
-    async fn gate(&mut self) -> Result<()> {
-        poll_fn(|cx| Poll::Ready(self.check(cx))).await?;
-        Ok(())
-    }
-    async fn drive<T, E: Error + 'static>(
-        &mut self,
-        operation: impl Future<Output = std::result::Result<T, E>>,
-    ) -> Result<T> {
-        let mut operation = std::pin::pin!(operation);
-        poll_fn(|cx| {
-            if let Err(error) = self.check(cx) {
-                return Poll::Ready(Err(Box::new(error) as Box<dyn Error>));
-            }
-            operation
-                .as_mut()
-                .poll(cx)
-                .map(|result| result.map_err(|error| Box::new(error) as Box<dyn Error>))
-        })
-        .await
-    }
-}
-
 struct Execution<'a, W: Write> {
     until: u64,
     control: &'a mut Control,
@@ -364,12 +296,11 @@ struct Execution<'a, W: Write> {
 }
 
 struct Random {
-    file: File,
     error: Option<io::Error>,
 }
 impl Entropy for Random {
     fn fill(&mut self, output: &mut [u8]) -> std::result::Result<(), Fault> {
-        match self.file.read_exact(output) {
+        match gnunet_native::entropy::fill(output) {
             Ok(()) => Ok(()),
             Err(error) => {
                 self.error.get_or_insert(error);
@@ -405,7 +336,7 @@ async fn lookup(
     let mut lookup = identity::Lookup::exact(&instance, source, name, until, limits)?;
     let result = async {
         loop {
-            match control.drive(lookup.drive(Some(control.hard))).await? {
+            match control.drive(lookup.drive(Some(control.hard()))).await? {
                 identity::LookupProgress::Finished {
                     outcome: identity::LookupOutcome::Found(ego),
                     ..
@@ -467,14 +398,14 @@ async fn create(
     let mut client = identity::Client::new(&instance, source, limits)?;
     let result = async {
         control.gate().await?;
-        let mut random = Random { file: File::open("/dev/urandom")?, error: None };
+        let mut random = Random { error: None };
         control.gate().await?;
         let submitted = client.create_generated(name, identity::KeyType::Eddsa, &mut random, until);
         failure.entropy = random.error.take();
         let operation = submitted?;
         failure.report.pending_create = true;
         loop {
-            match control.drive(client.drive(Some(control.hard))).await? {
+            match control.drive(client.drive(Some(control.hard()))).await? {
                 identity::Progress::Completed(completion) if completion.operation == operation => {
                     return match completion.outcome {
                         identity::Outcome::Result { code: 0, created: Some(key) } => {
@@ -774,7 +705,7 @@ async fn store(
     failure.report.admitted_sets += 1;
     failure.report.pending_store = true;
     loop {
-        match control.drive(client.drive(Some(control.hard))).await? {
+        match control.drive(client.drive(Some(control.hard()))).await? {
             ns::Progress::Completed(completion) if completion.operation == operation => {
                 match completion.outcome {
                     ns::Outcome::Reply(reply) => {
@@ -843,7 +774,7 @@ async fn execute(settings: &Settings, input: &str, out: &mut impl Write) -> Resu
     let hard = Instant::now()
         .checked_add(settings.timeout)
         .ok_or("zonefile native deadline overflow")?;
-    let mut control = Control::new(hard)?;
+    let mut control = Control::until(hard, "zonefile import")?;
     control.gate().await?;
     let source = ns::EndpointSource::unix(settings.socket.clone());
     let identity_source =

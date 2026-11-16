@@ -1,21 +1,23 @@
-# Messenger IPC, bodies, records and cryptographic operations (M1–M3)
+# Messenger formats and cryptography
 
 GNUnet v0.29.1 Messenger API0.8, pinned revision
 346358e26d4dcc2dc4f51bef5d52dca29c7d8165. Default Rust code uses no heap
-allocation, native runtime, hidden RNG or C FFI. This is not a complete Messenger
-room/client/service implementation. Message/Short decoded fields are sealed:
+allocation, native runtime or hidden RNG. Message/Short decoded fields are sealed:
 getters borrow/copy views of their immutable original bytes; callers cannot
 replace padding bounds or fields used by a cryptographic check.
 
-The existing M1/M2 layer implements every active client IPC/notification, all28
-active kind body codecs, blindable public/signature and HPKE structures, complete
+## Public interface
+
+The format API covers active client IPC/notifications and message bodies, blindable public/signature and HPKE structures, complete
 signed/short framing, explicit endian/FILE-name profile and padding footer,
 all4 packed record payloads and caller-sized SensitiveBuffer<N> ownership. Source constants preserve22..28 beyond the stale C KIND_MAX21. Actual SECRET
 fixed body is72+data, ACCESS208, and AUTHORIZATION192. Exact decode rejects an
 unexplained fixed tail; decode_prefix preserves ignored fixed-body bytes. Text
 preserves original encoded bytes and first-NUL semantics separately.
 
-M3 implements operations, reusing existing gnunet-crypto/session-crypto:
+## Cryptographic operations
+
+Operations reuse `gnunet-crypto` and `gnunet-session-crypto`:
 
 - SHA512 canonical signed-message hash; size72/purpose12 CHAT_MESSAGE signature
   record; ECDSA/EdDSA signing with an opaque zeroizing IDENTITY SecretKey;
@@ -59,6 +61,8 @@ M3 implements operations, reusing existing gnunet-crypto/session-crypto:
   key. Exact active serialization consumption/length is checked. The public
   record holds ciphertext only. Record salt uses strlen bytes without final NUL.
 
+## Secret storage and bounds
+
 SensitiveBuffer erases its full capacity on clear/drop. AeadKey and RecordSecret
 are opaque zeroizing owners, without Clone/Hash/public raw getters. Real key
 providers may own and process their own newly provisioned keys; these library
@@ -76,7 +80,9 @@ instead of copying C u16 wrap. Decrypt rejects failed tag/hash/body bounds and
 erases output before returning failure. A cheap immutable body view is reparsed
 after validation to permit safe error erasure without another hash/payload copy.
 
-Cryptographic checks deliberately prove only their own property. The caller
+## Authentication boundaries
+
+Cryptographic checks prove only their own property. The caller
 must select trusted original member/peer keys, expected identifiers/events,
 unique authorization contexts and record/room/epoch ownership. A valid
 signature, HMAC, AEAD tag or recovered key does not grant membership, permission,
@@ -86,6 +92,8 @@ PILS still needs its CLIENT: signing_payload only supplies its input,
 with no invented operation receipt. GNS record signature/zone validation and
 NAMESTORE storage outcomes remain outside the packed record cryptography.
 
+## AUTHORIZATION constraint
+
 The AUTHORIZATION limitation is pinned to messenger_api_message.c:439-447
 (size),828-834 (encode),1187-1193 (decode),1439-1452 (HMAC),1945-1980 (decrypt)
 and messenger_api_message_kind.c:395-451 (producer). Size/encode/decode
@@ -93,21 +101,16 @@ omit MAC16 while decrypt/HMAC require it. The outgoing producer computes
 that MAC for its local HMAC and then loses it on wire; matching that operation
 does not repair the upstream information loss.
 
-Still required for a complete Messenger implementation:
+## Composition
 
-1. Bounded room/open/enter/sync state; member IDs/reset/collisions; contact/key/
-   session transitions, sender attribution and authorization using the actual
-   cryptographic results and original IDENTITY/PILS operations.
-2. Message DAG/previous/merge continuity, duplicate/history/missing-message
-   recovery, deletion/delay, transcript links, subscriptions and discourse.
-3. Epoch/group announcement/appeal/access/revolution/authorization lifecycle,
-   event/identifier/nonce uniqueness, timer/storage gates, revocation and
-   the unresolved received AUTHORIZATION omitted-MAC protocol defect.
-4. Actual bounded persistence and native CLIENT/SERVICE/CADET source ownership,
-   reconnect/flow control, Entropy/key-provider wiring and interoperability.
-
+The [Messenger core](../gnunet-messenger-core/README.md) owns room, membership,
+epoch and DAG transitions. The [native client API](../../adapters/messenger-api-std/README.md)
+composes these operations with service clients; the
+[service host](../../adapters/messenger-std/README.md) owns routing and persistence.
 
 Checked Message/Short fields are sealed behind getters so callers cannot replace padding and invalidate original hash bounds. This proves no signature, encryption, room/group state or C interoperability.
+
+## Native layout profiles
 
 The pinned MEMBER_ID reset producer/reader uses native u32 without
 htonl/ntohl. Response encoding/decoding therefore requires the explicit original

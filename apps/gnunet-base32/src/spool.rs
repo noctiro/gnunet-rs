@@ -1,20 +1,46 @@
-//! Private unlinked decoded-data spool. Memory never grows with stdin size.
+//! One anonymous private decoded-data file, retained through its original handle.
+use gnunet_native::filesystem::{self, Directory, FileIdentity};
 use std::{
-    fs::{self, DirBuilder, File, OpenOptions},
+    ffi::{OsStr, OsString},
+    fs::File,
     io::{self, Read, Seek, SeekFrom, Write},
-    os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt},
     path::PathBuf,
     sync::atomic::{AtomicU64, Ordering},
 };
 static NEXT: AtomicU64 = AtomicU64::new(0);
+const DATA: &str = "data";
 pub(super) struct Spool {
-    directory: PathBuf,
-    identity: Option<(u64, u64)>,
+    parent: Directory,
+    directory: Option<Directory>,
+    path: PathBuf,
+    name: OsString,
     file: Option<File>,
-    file_identity: Option<(u64, u64)>,
+    identity: Option<FileIdentity>,
     named: bool,
     removed: bool,
     cleanup_on_drop: bool,
+}
+#[derive(Debug)]
+struct Cleanup {
+    namespace: Option<io::Error>,
+    close: Option<io::Error>,
+}
+impl std::fmt::Display for Cleanup {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "spool namespace={:?}; original file close={:?}",
+            self.namespace, self.close
+        )
+    }
+}
+impl std::error::Error for Cleanup {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.namespace
+            .as_ref()
+            .or(self.close.as_ref())
+            .map(|error| error as _)
+    }
 }
 impl Spool {
     pub fn create(owner: &mut Option<Self>) -> io::Result<()> {
@@ -22,28 +48,24 @@ impl Spool {
             return Err(io::Error::other("spool already owned"));
         }
         let root = std::env::temp_dir();
-        if !root.is_absolute() || !fs::symlink_metadata(&root)?.is_dir() {
-            return Err(io::Error::other(
-                "temporary parent must be an existing absolute directory",
-            ));
+        if !root.is_absolute() {
+            return Err(io::Error::other("temporary parent must be absolute"));
         }
+        let parent = Directory::open(&root)?;
         for _ in 0..32 {
             let serial = NEXT
                 .try_update(Ordering::Relaxed, Ordering::Relaxed, |v| v.checked_add(1))
                 .map_err(|_| io::Error::other("spool serial exhausted"))?;
-            let directory = root.join(format!("gnunet-base32-{}-{serial}", std::process::id()));
-            match DirBuilder::new().mode(0o700).create(&directory) {
-                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
-                Err(error) => return Err(error),
-                Ok(()) => {}
-            }
-            // Retain successful mkdir before fallible metadata; cleanup cannot
-            // remove an unproven/replaced directory merely by its path string.
+            let name = OsString::from(format!("gnunet-base32-{}-{serial}", std::process::id()));
+            // Record naming intent before a native create can partially succeed.
+            // An unconfirmed object is retained, never deleted by guessed path.
             *owner = Some(Self {
-                directory,
-                identity: None,
+                parent: parent.duplicate()?,
+                directory: None,
+                path: root.join(&name),
+                name,
                 file: None,
-                file_identity: None,
+                identity: None,
                 named: false,
                 removed: false,
                 cleanup_on_drop: true,
@@ -51,66 +73,49 @@ impl Spool {
             let spool = owner
                 .as_mut()
                 .ok_or_else(|| io::Error::other("spool owner lost"))?;
-            let meta = fs::symlink_metadata(&spool.directory)?;
-            if !meta.is_dir() || meta.mode() & 0o077 != 0 {
-                return Err(io::Error::other("private spool directory changed"));
+            match spool.parent.create_private_directory(&spool.name) {
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                    // No ownership was obtained over this existing entry.
+                    spool.cleanup_on_drop = false;
+                    *owner = None;
+                    continue;
+                }
+                Err(error) => return Err(error),
+                Ok(directory) => spool.directory = Some(directory),
             }
-            spool.identity = Some((meta.dev(), meta.ino()));
-            let file = OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create_new(true)
-                .mode(0o600)
-                .open(spool.directory.join("data"))?;
-            // No other descriptor to the data file is created or exposed.
-            spool.file = Some(file);
+            let directory = spool
+                .directory
+                .as_ref()
+                .ok_or_else(|| io::Error::other("spool directory lost"))?;
+            directory.validate_private()?;
+            spool.file = Some(directory.create_private_file(OsStr::new(DATA))?);
             spool.named = true;
-            let meta = spool
+            let file = spool
                 .file
                 .as_ref()
-                .ok_or_else(|| io::Error::other("spool file lost"))?
-                .metadata()?;
-            if !meta.is_file() || meta.nlink() != 1 || meta.mode() & 0o077 != 0 {
-                return Err(io::Error::other("private spool file changed"));
-            }
-            spool.file_identity = Some((meta.dev(), meta.ino()));
-            spool.check_directory()?;
-            let observed = fs::symlink_metadata(spool.directory.join("data"))?;
-            if (observed.dev(), observed.ino()) != (meta.dev(), meta.ino()) || !observed.is_file() {
-                return Err(io::Error::other("spool pathname replaced"));
-            }
-            fs::remove_file(spool.directory.join("data"))?;
+                .ok_or_else(|| io::Error::other("spool file lost"))?;
+            spool.identity = Some(filesystem::private_single_file_identity(file)?);
+            // Windows uses original-link POSIX disposition; Unix uses unlinkat
+            // through the held private directory. No file path is reopened.
+            directory.remove_file(OsStr::new(DATA), file)?;
             spool.named = false;
-            spool.check_directory()?;
-            fs::remove_dir(&spool.directory)?;
-            spool.identity = None;
+            spool.parent.remove_directory(&spool.name, directory)?;
             spool.removed = true;
+            spool.directory = None;
             return Ok(());
         }
         Err(io::Error::other("private spool names unavailable"))
     }
-    fn check_directory(&self) -> io::Result<()> {
-        let identity = self
-            .identity
-            .ok_or_else(|| io::Error::other("original spool directory identity unconfirmed"))?;
-        let meta = fs::symlink_metadata(&self.directory)?;
-        if !meta.is_dir() || meta.mode() & 0o077 != 0 || (meta.dev(), meta.ino()) != identity {
-            return Err(io::Error::other("original spool directory replaced"));
-        }
-        Ok(())
-    }
     fn file(&mut self) -> io::Result<&mut File> {
         let identity = self
-            .file_identity
+            .identity
             .ok_or_else(|| io::Error::other("spool file identity unconfirmed"))?;
         let file = self
             .file
             .as_mut()
             .ok_or_else(|| io::Error::other("spool file closed"))?;
-        let meta = file.metadata()?;
-        if !meta.is_file()
-            || (meta.dev(), meta.ino()) != identity
-            || meta.nlink() != u64::from(self.named)
+        if FileIdentity::of(file)? != identity
+            || filesystem::file_links(file)? != u64::from(self.named)
         {
             return Err(io::Error::other("original spool file changed"));
         }
@@ -126,32 +131,45 @@ impl Spool {
         self.file()?.read(bytes)
     }
     pub fn path(&self) -> PathBuf {
-        self.directory.clone()
+        self.path.clone()
     }
-    pub fn close(&mut self) -> io::Result<()> {
-        self.cleanup_on_drop = false;
-        // The anonymous data object is released by its original File, never by
-        // an untrusted pathname. Retain any unconfirmed named object on failure.
-        self.file = None;
+    fn remove(&mut self) -> io::Result<()> {
         if self.removed {
             return Ok(());
         }
-        self.check_directory()?;
+        let directory = self
+            .directory
+            .as_ref()
+            .ok_or_else(|| io::Error::other("original spool directory unconfirmed"))?;
+        directory.validate_private()?;
         if self.named {
-            let identity = self
-                .file_identity
-                .ok_or_else(|| io::Error::other("named spool identity unconfirmed"))?;
-            let meta = fs::symlink_metadata(self.directory.join("data"))?;
-            if !meta.is_file() || meta.nlink() != 1 || (meta.dev(), meta.ino()) != identity {
-                return Err(io::Error::other("named spool file replaced"));
+            let file = self
+                .file
+                .as_ref()
+                .ok_or_else(|| io::Error::other("original named spool file lost"))?;
+            if Some(FileIdentity::of(file)?) != self.identity {
+                return Err(io::Error::other("original named spool file unconfirmed"));
             }
-            fs::remove_file(self.directory.join("data"))?;
+            directory.remove_file(OsStr::new(DATA), file)?;
             self.named = false;
         }
-        fs::remove_dir(&self.directory)?;
-        self.identity = None;
+        self.parent.remove_directory(&self.name, directory)?;
         self.removed = true;
+        self.directory = None;
         Ok(())
+    }
+    pub fn close(&mut self) -> io::Result<()> {
+        self.cleanup_on_drop = false;
+        let namespace = self.remove().err();
+        let close = self
+            .file
+            .take()
+            .and_then(|file| filesystem::close(file).err());
+        if namespace.is_some() || close.is_some() {
+            Err(io::Error::other(Cleanup { namespace, close }))
+        } else {
+            Ok(())
+        }
     }
 }
 impl Drop for Spool {

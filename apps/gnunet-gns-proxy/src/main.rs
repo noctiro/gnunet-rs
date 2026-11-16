@@ -1,14 +1,9 @@
 //! Standard GNS proxy PROGRAM through the actual bounded gateway owner.
 #![deny(unsafe_code)]
-#[cfg(unix)]
 mod control;
-#[cfg(unix)]
 mod early;
-#[cfg(unix)]
 mod options;
-#[cfg(unix)]
 mod run;
-#[cfg(unix)]
 mod settings;
 use std::{
     error::Error,
@@ -16,20 +11,17 @@ use std::{
     process::ExitCode,
 };
 type Cause = Box<dyn Error>;
-#[cfg(unix)]
 #[derive(Debug)]
 struct SelectedFailure {
     code: u8,
     original: Option<Cause>,
     logging: Option<io::Error>,
 }
-#[cfg(unix)]
 impl std::fmt::Display for SelectedFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "GNS proxy PROGRAM: {self:?}")
     }
 }
-#[cfg(unix)]
 impl Error for SelectedFailure {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         self.original
@@ -37,10 +29,8 @@ impl Error for SelectedFailure {
             .or_else(|| self.logging.as_ref().map(|error| error as _))
     }
 }
-#[cfg(unix)]
 #[derive(Debug)]
 struct PreparationFailure(gnunet_program_host::program::Stopped);
-#[cfg(unix)]
 impl std::fmt::Display for PreparationFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
@@ -50,7 +40,6 @@ impl std::fmt::Display for PreparationFailure {
         )
     }
 }
-#[cfg(unix)]
 impl Error for PreparationFailure {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         use gnunet_program_host::program::StoppedReason;
@@ -65,7 +54,6 @@ fn main() -> ExitCode {
     match execute() {
         Ok(code) => ExitCode::from(code),
         Err(error) => {
-            #[cfg(unix)]
             if let Some(selected) = error.downcast_ref::<SelectedFailure>() {
                 return ExitCode::from(selected.code);
             }
@@ -74,11 +62,6 @@ fn main() -> ExitCode {
         }
     }
 }
-#[cfg(not(unix))]
-fn execute() -> Result<u8, Cause> {
-    Err("native GNS proxy PROGRAM requires Unix".into())
-}
-#[cfg(unix)]
 fn execute() -> Result<u8, Cause> {
     use gnunet_program_host::{
         foreground,
@@ -98,10 +81,11 @@ fn execute() -> Result<u8, Cause> {
     let selection = options::Selection::new();
     let preparation=program::prepare(config,Invocation {
         binary_name:b"gnunet-gns-proxy",
-        help:Some(b"Run the GNS SOCKS5 HTTP/HTTPS proxy. -p/--port selects the listener port (default 7777); -a/--authority selects an existing CA certificate/private-key PEM; -6/--disable-ivp6 disables IPv6. [gns-proxy] BIND_TO, BIND_TO6 and PROXY_CACERT use the normal configuration. Optional [gns-proxy-rust] PKIX_ROOTS selects a public root-certificate PEM bundle; bundled public roots are the default. Configure the browser to trust the selected proxy CA. System trust settings are managed separately. Standard -c/-L/-l/-h/-v choose configuration and diagnostics. Ctrl-C, TERM and parent control stop the proxy."),
+        help:Some(b"Run the GNS SOCKS5 HTTP/HTTPS proxy. -p/--port selects the listener port (default 7777); -a/--authority selects an existing CA certificate/private-key PEM; -6/--disable-ivp6 disables IPv6. [gns-proxy] BIND_TO, BIND_TO6 and PROXY_CACERT use the normal configuration. Optional [gns-proxy-rust] PKIX_ROOTS selects a public root-certificate PEM bundle; bundled public roots are the default. Configure the browser to trust the selected proxy CA. System trust settings are managed separately. Standard -c/-L/-l/-h/-v choose configuration and diagnostics. Native stop signals and parent control stop the proxy."),
         select_default_filename:true,defaults:Defaults::Native,
     },selection.options(),std::env::args_os(),&program::Environment::capture(),&mut NlsDisabled,&mut logger,&clock,&mut io::stdout().lock(),&mut io::stderr().lock());
     let reporter = Reporter::new(logger, clock.clone());
+    #[cfg(unix)]
     if let Some(notice) = early.notice {
         reporter.debug(
             "gns-proxy.parent.notice",

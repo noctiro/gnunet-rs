@@ -1,4 +1,4 @@
-# ARM complete source-derived scope and first core
+# ARM protocol and lifecycle contract
 
 Baseline: v0.29.1,346358e26d4dcc2dc4f51bef5d52dca29c7d8165.
 
@@ -47,7 +47,7 @@ Pure API is a caller-owned bounded Client owner, independent Monitor, queued fra
 
 A distinct handle creates its own MQ and queues4-byte MONITOR. It accepts only STATUS, including numeric unknown statuses and raw/non-UTF8 effective C-string names. No initial snapshot: service sends only status0/name arm after subscription. On MQ error destroy MQ and retry current0,2ms,4ms...15min, without reset on notification. A failed `GNUNET_CLIENT_connect` creation invokes service=NULL/statusSTOPPED and returnsNULL at initial construction; a retry-time configuration failure emits that observation and does not schedule a new reconnect task in C. INIT_TIMEOUT5s macro is never used and must not become a Rust timer. Stop destroys MQ/task and all later old-epoch events are rejected.
 
-## Daemon/service lifecycle and host closure (not claimed implemented by first client core)
+## Daemon and host lifecycle
 
 Service discovery scans every configuration section except arm, requires BINARY, classifies RUN_PER_USER and global START_USER_SERVICES/START_SYSTEM_SERVICES. Both absent enables both; explicitly disabling both errors. Per-service CONFIG then PATHS/DEFAULTCONFIG is used only if stat succeeds. Initial backoff1ms, restart_atFOREVER, force_start from IMMEDIATE_START; NOARMBIND skips listeners only for immediate services; otherwise START_ON_DEMAND gates binding. PIPECONTROL sets process flags.
 
@@ -59,6 +59,11 @@ Child death is SIGCHLD self-pipe+nonblocking wait/wait4 (optional resource diagn
 
 MONITOR subscriptions use optional notification queue1024 and may drop notifications under pressure. All ARM clients are marked generic monitor clients. Default generic flags are MANUAL_SHUTDOWN|CLOSE_LSOCKS. Global shutdown cancels restarts, closes all owned child listeners, TERM-signals running children, frees alreadydown services, and defers final generic shutdown until all children are actually reaped. No timeout/escalation-to-KILL is invented. Self-stop client remains persisted so IPC closes after service teardown. GLIBC malloc tuning and optional wait4 diagnostics are separate platform surfaces.
 
-## Tests
+## Native composition
 
-The first candidate implements codec/client operation/monitor state only, using current gnunet-types/wire; no new external/noalloc dependency. Tests use literal official bytes and bounded state methods. Native spawn/exec/fd inheritance/config/readiness pipes/waitpid, daemon process inventory and CLI/testing wrappers remain explicitly pending, not automatically complete because pure types exist. Future ordinary-user C probe should use self-owned Unix peers or harmless local mock child; never public DNS, system daemon management or account/configuration changes.
+The [ARM client adapter](../../adapters/arm-std/README.md) owns configuration,
+command construction and startup resources. The
+[service core](../gnunet-arm-service-core/README.md) implements server state;
+its [host](../../adapters/arm-service-std/README.md) drives native listeners,
+children, readiness and shutdown. The
+[command](../../apps/gnunet-arm/README.md) owns CLI options and output.

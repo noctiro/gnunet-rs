@@ -81,6 +81,8 @@ the exact retained cause is available via `retirement`, `poll_progress` or
 `close`. Drop is a physical safety net; explicit close is needed to receive its
 original report. No EOF is turned into a notification or successful hangup.
 
+## Limits
+
 Defaults:32 retained calls,65536 CID history entries,64 pending originals,
 65535B local frames,64344B audio,1MiB pending frame capacities,8 outstanding
 audio observations/524280B,4MiB SDK retained budget and65535B syscall quantum. Initial/write/partial timeouts are30s/10s/15s, capped by caller Bounds. Limits

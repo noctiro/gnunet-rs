@@ -9,15 +9,18 @@ license.workspace = true
 name = "gnunet-qr"
 path = "src/main.rs"
 
-[target.'cfg(unix)'.dependencies]
+[dependencies]
 gnunet-qr-host.workspace = true
 gnunet-uri-host.workspace = true
 gnunet-program-host = { workspace = true, features = ["service-runtime"] }
 gnunet-config.workspace = true
-libc.workspace = true
+gnunet-native.workspace = true
 gnunet-service-runtime.workspace = true
 gnunet-service-startup.workspace = true
 tokio = { workspace = true, features = ["rt", "time", "signal"] }
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
 
 [lints]
 workspace = true

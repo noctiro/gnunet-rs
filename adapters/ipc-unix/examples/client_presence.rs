@@ -4,7 +4,6 @@ use gnunet_config::Configuration;
 use std::{
     error::Error,
     io::{self, Write},
-    os::unix::ffi::OsStrExt,
 };
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -16,7 +15,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     let mut config = Configuration::default();
     config.parse(path)?;
-    let result = match test(&config, service.as_bytes()) {
+    let result = match test(&config, gnunet_native::os_bytes::encode(&service).as_ref()) {
         Ok(ServicePresence::LikelyUp) => 1,
         Ok(ServicePresence::Down) => 0,
         Err(_) => -1,

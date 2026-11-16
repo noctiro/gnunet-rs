@@ -717,6 +717,40 @@ impl<'owner, const A: usize, const N: usize, const W: usize, const WW: usize, co
         self.sync_transport();
         Ok(())
     }
+    /// Select a finite processing-confirmation budget independently of retry
+    /// backoff. Queue admission and real DISCONNECT/CONFIRM semantics match
+    /// `destroy`; this starts no background task and never replays a mutation.
+    pub fn destroy_with_timeout(
+        &mut self,
+        sync_first: bool,
+        timeout: Duration,
+    ) -> Result<(), IpcError> {
+        let micros = u64::try_from(timeout.as_micros()).map_err(|_| Error::Overflow)?;
+        self.core.begin_destroy_with_timeout(
+            sync_first,
+            clock_now(&self.clock_source)?,
+            gnunet_types::Duration(micros),
+        )?;
+        self.sync_transport();
+        Ok(())
+    }
+    /// Drain setters and request actual processing confirmation from the current
+    /// connection, including when all setter frames have already been written.
+    /// This explicit Rust policy uses the official DISCONNECT/CONFIRM exchange;
+    /// it changes neither `destroy`'s queue condition nor older-epoch accounting.
+    /// With no current connection, close immediately without creating a new one.
+    pub fn confirm_and_destroy(&mut self, timeout: Duration) -> Result<(), IpcError> {
+        let micros = u64::try_from(timeout.as_micros()).map_err(|_| Error::Overflow)?;
+        let now = if self.core.connection_epoch().is_some() {
+            clock_now(&self.clock_source)?
+        } else {
+            AbsoluteTime::from_micros(0)
+        };
+        self.core
+            .begin_confirmed_destroy(now, gnunet_types::Duration(micros))?;
+        self.sync_transport();
+        Ok(())
+    }
     /// Whether no queued/current/transmit/continuation work remains. Idle live
     /// watches retain the connection and still need driving for notifications.
     #[must_use]

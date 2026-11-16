@@ -43,7 +43,13 @@ impl PreparedListeners {
             Type::STREAM,
             Some(Protocol::TCP),
         )?;
+        #[cfg(unix)]
         socket.set_reuse_address(true)?;
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsSocket;
+            gnunet_native::network::set_exclusive_address_use(socket.as_socket())?;
+        }
         if address.is_ipv6() {
             socket.set_only_v6(true)?;
         }
@@ -91,20 +97,20 @@ impl Listeners {
     /// Bind/adopt the original TCP descriptors before a configured process
     /// identity change. New sockets retain the existing backlog/v6-only policy.
     pub fn prepare(settings: &Settings, activation: Activation) -> io::Result<PreparedListeners> {
-        if activation.sockets.is_empty() && settings.hostname.is_some() {
+        if activation.is_empty() && settings.hostname.is_some() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "hostname BINDTO needs the original shared Resolver prebinding owner",
             ));
         }
         let mut prepared =
-            PreparedListeners::reserve(activation.sockets.len().max(settings.bindings.len()))?;
-        if activation.sockets.is_empty() {
+            PreparedListeners::reserve(activation.len().max(settings.bindings.len()))?;
+        if activation.is_empty() {
             for address in &settings.bindings {
                 prepared.bind(*address)?;
             }
         } else {
-            for original in activation.sockets {
+            for original in activation.into_sockets() {
                 match original {
                     ActivatedSocket::Tcp(listener) => {
                         listener.set_nonblocking(true)?;

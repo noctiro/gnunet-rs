@@ -9,29 +9,20 @@
 mod tests;
 use crate::durable::store::{self, Store};
 use gnunet_types::Error as ProtocolError;
-use nix::{
-    fcntl::{OFlag, open},
-    sys::stat::Mode,
-};
 use std::{
     collections::HashSet,
-    ffi::OsString,
     fmt,
     fs::File,
     io,
     mem::size_of,
-    os::unix::{
-        ffi::{OsStrExt, OsStringExt},
-        fs::MetadataExt,
-    },
-    path::{Component, Path, PathBuf},
+    path::{Path, PathBuf},
 };
 
 const MANIFEST: u16 = 0x4a00;
 const REGISTER: u16 = 0x4a01;
 const ENABLE: u16 = 0x4a02;
 const POLICY: u16 = 0x4a03;
-const MAGIC: &[u8; 8] = b"FSJCAT01";
+const MAGIC: &[u8; 8] = b"FSJCAT02";
 
 /// Explicit private catalog bounds, separate from every original task's limits.
 #[derive(Clone, Copy, Debug)]
@@ -121,13 +112,12 @@ impl From<ProtocolError> for Error {
     }
 }
 
-/// Canonical raw-byte directory path and captured device/inode. This is local
+/// Canonical native directory path and its complete platform-tagged identity. This is local
 /// configuration, not a content receipt or permission to replace the directory.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Directory {
     path: PathBuf,
-    device: u64,
-    inode: u64,
+    identity: crate::FileIdentity,
 }
 impl Directory {
     /// Canonicalize a caller-selected existing directory and capture its actual
@@ -135,11 +125,9 @@ impl Directory {
     pub fn capture(path: impl AsRef<Path>) -> Result<Self, Error> {
         let path = std::fs::canonicalize(path)?;
         let file = open_directory(&path)?;
-        let metadata = file.metadata()?;
         Ok(Self {
             path,
-            device: metadata.dev(),
-            inode: metadata.ino(),
+            identity: crate::FileIdentity::of(&file)?,
         })
     }
     /// Original canonical absolute directory name, retaining arbitrary OS bytes.
@@ -147,13 +135,10 @@ impl Directory {
     pub fn path(&self) -> &Path {
         &self.path
     }
-    /// Captured native device and inode for diagnostics only.
+    /// Captured complete native identity for diagnostics only.
     #[must_use]
     pub const fn identity(&self) -> crate::FileIdentity {
-        crate::FileIdentity {
-            device: self.device,
-            inode: self.inode,
-        }
+        self.identity
     }
     /// Refuse a replacement or symlink without changing the selected path.
     /// Runners must still compare their opened typed task's random identity.
@@ -172,18 +157,11 @@ impl Directory {
         Ok(file)
     }
     fn bytes(&self) -> usize {
-        self.path.as_os_str().as_bytes().len()
+        gnunet_native::os_bytes::encode(self.path.as_os_str()).len()
     }
 }
 fn open_directory(path: &Path) -> Result<File, Error> {
-    Ok(File::from(
-        open(
-            path,
-            OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC,
-            Mode::empty(),
-        )
-        .map_err(io::Error::from)?,
-    ))
+    Ok(gnunet_native::filesystem::Directory::open(path)?.into_file())
 }
 
 /// Existing typed task owner, never inferred from a filename or a bare WAL.
@@ -293,7 +271,7 @@ impl Registration {
                 size_of::<Owned>()
                     + size_of::<[u8; 32]>()
                     + size_of::<PathBuf>()
-                    + size_of::<(u64, u64)>(),
+                    + size_of::<crate::FileIdentity>(),
                 |total, directory| {
                     total
                         .checked_add(directory.bytes())
@@ -341,7 +319,7 @@ pub struct Catalog {
     entries: Vec<Owned>,
     ids: HashSet<[u8; 32]>,
     paths: HashSet<PathBuf>,
-    directories: HashSet<(u64, u64)>,
+    directories: HashSet<crate::FileIdentity>,
     retained: usize,
     limits: Limits,
 }
@@ -482,9 +460,7 @@ impl Catalog {
         if registration.task_id == *self.store.task_id()
             || self.ids.contains(&registration.task_id)
             || self.paths.contains(&registration.task.path)
-            || self
-                .directories
-                .contains(&(registration.task.device, registration.task.inode))
+            || self.directories.contains(&registration.task.identity)
         {
             return Err(Error::Conflict);
         }
@@ -508,18 +484,13 @@ impl Catalog {
         self.directories
             .try_reserve(1)
             .map_err(|_| ProtocolError::Capacity)?;
-        let raw = registration.task.path.as_os_str().as_bytes();
-        let mut bytes = Vec::new();
-        reserve(&mut bytes, raw.len())?;
-        bytes.extend_from_slice(raw);
-        Ok(PathBuf::from(OsString::from_vec(bytes)))
+        Ok(crate::input::owned_path(&registration.task.path)?)
     }
+
     fn commit_index(&mut self, registration: &Registration, path: PathBuf) {
         let _new_id = self.ids.insert(registration.task_id);
         let _new_path = self.paths.insert(path);
-        let _new_directory = self
-            .directories
-            .insert((registration.task.device, registration.task.inode));
+        let _new_directory = self.directories.insert(registration.task.identity);
     }
     /// Register original typed-task facts after rechecking every directory. No
     /// task is run, unlocked, cancelled, completed or authorized for retry here.
@@ -579,19 +550,11 @@ impl Catalog {
 }
 
 fn validate_path(path: &Path, limit: usize) -> Result<(), Error> {
-    let raw = path.as_os_str().as_bytes();
+    let raw = gnunet_native::os_bytes::encode(path.as_os_str());
     if raw.is_empty() || raw.len() > limit || raw.contains(&0) || !path.is_absolute() {
         return Err(ProtocolError::InvalidInput.into());
     }
-    let mut rebuilt = PathBuf::from("/");
-    for component in path.components() {
-        match component {
-            Component::RootDir => {}
-            Component::Normal(name) => rebuilt.push(name),
-            _ => return Err(ProtocolError::InvalidInput.into()),
-        }
-    }
-    if rebuilt.as_os_str().as_bytes() != raw {
+    if !crate::input::absolute_normalized(path) {
         return Err(ProtocolError::InvalidInput.into());
     }
     Ok(())
@@ -640,16 +603,15 @@ fn encode_policy(policy: Policy, out: &mut Vec<u8>) -> Result<(), Error> {
     Ok(())
 }
 fn encode_directory(directory: &Directory, out: &mut Vec<u8>) -> Result<(), Error> {
-    let path = directory.path.as_os_str().as_bytes();
+    let path = gnunet_native::os_bytes::encode(directory.path.as_os_str());
     put(
         out,
         &u32::try_from(path.len())
             .map_err(|_| ProtocolError::Overflow)?
             .to_be_bytes(),
     )?;
-    put(out, path)?;
-    put(out, &directory.device.to_be_bytes())?;
-    put(out, &directory.inode.to_be_bytes())?;
+    put(out, &path)?;
+    put(out, directory.identity.as_bytes())?;
     Ok(())
 }
 fn encode_registration(value: &Registration) -> Result<Vec<u8>, Error> {
@@ -745,12 +707,15 @@ impl<'a> Reader<'a> {
         let mut bytes = Vec::new();
         reserve(&mut bytes, len)?;
         bytes.extend_from_slice(raw);
-        let path = PathBuf::from(OsString::from_vec(bytes));
+        let path = PathBuf::from(
+            gnunet_native::os_bytes::decode_owned(bytes).map_err(|_| Error::Malformed)?,
+        );
         validate_path(&path, limits.max_path_bytes)?;
+        let mut identity = [0; 32];
+        identity.copy_from_slice(self.take(32)?);
         Ok(Directory {
             path,
-            device: self.word()?,
-            inode: self.word()?,
+            identity: crate::FileIdentity::from_bytes(identity).map_err(|_| Error::Malformed)?,
         })
     }
     fn maybe_directory(&mut self, limits: Limits) -> Result<Option<Directory>, Error> {

@@ -1,16 +1,10 @@
 //! Standard online DNS-to-NAMESTORE PROGRAM, using one actual importer owner.
 #![deny(unsafe_code)]
-#[cfg(unix)]
 mod control;
-#[cfg(unix)]
 mod early;
-#[cfg(unix)]
 mod input;
-#[cfg(unix)]
 mod run;
-#[cfg(unix)]
 mod settings;
-#[cfg(unix)]
 mod statistics;
 use std::{
     error::Error,
@@ -18,19 +12,16 @@ use std::{
     process::ExitCode,
 };
 type Cause = Box<dyn Error>;
-#[cfg(unix)]
 #[derive(Debug)]
 struct SelectedFailure {
     original: Option<Cause>,
     logging: Option<io::Error>,
 }
-#[cfg(unix)]
 impl std::fmt::Display for SelectedFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "zoneimport PROGRAM: {self:?}")
     }
 }
-#[cfg(unix)]
 impl Error for SelectedFailure {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         self.original
@@ -42,10 +33,7 @@ fn main() -> ExitCode {
     match execute() {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            #[cfg(unix)]
             let selected = error.is::<SelectedFailure>();
-            #[cfg(not(unix))]
-            let selected = false;
             if !selected {
                 let _diagnostic = writeln!(io::stderr().lock(), "gnunet-zoneimport: {error}");
             }
@@ -53,11 +41,6 @@ fn main() -> ExitCode {
         }
     }
 }
-#[cfg(not(unix))]
-fn execute() -> Result<(), Cause> {
-    Err("online zoneimport PROGRAM requires Unix".into())
-}
-#[cfg(unix)]
 fn execute() -> Result<(), Cause> {
     use gnunet_program_host::{
         foreground,
@@ -82,6 +65,7 @@ fn execute() -> Result<(), Cause> {
         select_default_filename:true,defaults:Defaults::Native,
     },selection.descriptors(),std::env::args_os(),&program::Environment::capture(),&mut NlsDisabled,&mut logger,&clock,&mut io::stdout().lock(),&mut io::stderr().lock());
     let reporter = Reporter::new(logger, clock.clone());
+    #[cfg(unix)]
     if let Some(notice) = early.notice {
         reporter.debug(
             "zoneimport.parent.notice",

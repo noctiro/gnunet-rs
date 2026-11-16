@@ -1,40 +1,43 @@
-# Normal GNS business-card server
+# gnunet-bcd
 
-`gnunet-bcd -p 8888` is the normal PROGRAM frontdoor. Standard configuration,
-log selection, shared clock, original inherited parent control and SIGINT/TERM
-precede the numeric TCP listener. READY logging means the HTTP
-listener and bounded owners exist, not that any rendering tool has run. The
-program rejects unexpected inherited listener descriptors after really retiring
-them; it does not impersonate SERVICE socket activation.
+Serve GNS business-card forms and generate PDF cards or QR PNGs on Linux, macOS,
+FreeBSD and Windows. Rendering uses a fixed escaped template with selected native
+TeX Live pdflatex and Ghostscript executables.
 
-GET `/` and `/full` show independent simple/full forms with the thirteen public
-card fields, typed GNS public key, optional nickname and OpenPGP fingerprint. The submit paths generate a PDF business card; presence of `gnspng` asks
-for the QR-only PNG even on the full route. HEAD returns simple-form headers
-without generating an artifact. Tools are not loaded or executed at startup. Provider absence or rendering/conversion failure is a HTTP500, with no
-fallback picture or false completion.
+## Usage and routes
 
-`[bcd-rust]` has numeric `BIND_TO` (default `::`). IPv6 listeners explicitly
-disable `IPV6_V6ONLY`; configured IPv4 uses a IPv4 socket. A failed selected
-bind or unavailable family is a startup error, with no hidden interface
-fallback. `PDFLATEX` and `GHOSTSCRIPT`
-default to `/usr/bin/pdflatex` and `/usr/bin/gs`. `LAUNCHER` selects the actual
-shared GNUnet spawn helper; the default comes from the selected installation's
-libexec path. Each may be overridden with an absolute configured path. Missing
-Ghostscript is irrelevant to PDF-only requests. `TEMP_ROOT` defaults to the
-existing native temporary directory; an override selects an existing parent. Each original job creates a distinct private child directory and removes it after child
-retirement. There is no arbitrary template, shell command, shell escape or
-implicit renderer installation.
+```sh
+gnunet-bcd [-c CONFIG] [-p PORT]
+```
 
-Bounded configuration keys are `CONNECTIONS`, `JOBS`, `HEADER_BYTES`, `HEADERS`,
-`QUERY_BYTES`, `FIELD_BYTES`, `RETAINED_BYTES`, `HEAD_TIMEOUT`, `WHOLE_TIMEOUT`,
-`OUTPUT_TIMEOUT`, `REQUEST_BYTES`, `TEX_BYTES`, `OUTPUT_BYTES`, `LOG_BYTES`,
-`WORK_FILES`, `WORK_BYTES`, `CHILD_POLL`, `TERM_GRACE` and `CLEANUP_GRACE`. Time values use the existing GNUnet configuration syntax. Defaults are in the
-host's public limit types. The full original HTTP lifetime caps renderer and
-response writing; retries and cleanup cannot renew business permission.
+Standard PROGRAM provides configuration, logging, help and version options.
+The default port is 8888. Numeric BIND_TO selects the listener; IPv6 explicitly
+admits dual-stack operation. Startup creates the HTTP listener; tools run only
+for rendering requests.
 
-On stop, sockets close first and every independent original rendering
-job is canceled and drained. The program keeps wait ownership if the OS has not
-reaped a still-owned child; it never calls that state clean or frees the job quota. If the original wait right is irrecoverably lost, or directory cleanup ends unsuccessfully after reaping, the original error/path and undrained report remain. Admission stops, other waitable jobs drain, and the program exits with failure; no reused PID is signaled or unproven directory removed. External
-tool CPU/RSS and filesystem blocking have the explicit limits described in the
-host README. This implementation adds the conditional BCD product only; it does
-not prove whole GNS/GNUnet or provider deployment qualification.
+| GET route | Behavior |
+| --- | --- |
+| `/`, `/full` | Simple/full contact forms |
+| `/submit/simple`, `/submit/full` | Validate typed GNS zone key and generate a card |
+
+Presence of `gnspng` selects QR PNG conversion regardless of its value. HEAD
+serves simple-form headers without rendering. Other methods return 501, unknown
+GET routes 404 and malformed typed forms 400. Missing tools and failed rendering
+return 500; PDF-only requests do not require Ghostscript. Attachments are
+`gns-business-card.pdf` (`application/pdf`) or `gns-qr-code.png` (`image/png`).
+
+## Configuration
+
+[Configuration](CONFIGURATION.md) selects absolute tool paths, private temporary
+storage and finite connection, memory, work and deadline bounds. Windows starts
+executables directly with original process handles; Unix uses the shared native
+spawn helper. Tools are not installed or downloaded by the server.
+
+## Shutdown and ownership
+
+Native stop subscriptions and original parent control stop admission and drain
+independent jobs. Original process exit, artifact observations and temporary-name
+cleanup remain separate. Jobs retain their quota during unresolved retirement.
+A lost wait right or failed original-directory cleanup produces failure and keeps
+the unconfirmed path in diagnostics. [Host contracts](../../adapters/bcd-std/README.md)
+describe application resource bounds and native blocking boundaries.

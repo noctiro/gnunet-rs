@@ -16,10 +16,7 @@ use std::{
     task::Poll,
     time::Duration,
 };
-use tokio::{
-    signal::unix::{SignalKind, signal},
-    time::Instant,
-};
+use tokio::time::Instant;
 
 const DEFAULT_MAX_RECORDS: u64 = 65536;
 const MAX_RECORDS: u64 = 1000000;
@@ -160,7 +157,10 @@ enum Wake {
     Stop,
     Signal(io::Error),
 }
-pub(super) fn run(args: &[impl AsRef<OsStr>], out: &mut impl Write) -> Result<(), Box<dyn Error>> {
+pub(super) fn run(
+    args: &[impl AsRef<OsStr>],
+    out: &mut super::Output<'_, impl Write>,
+) -> Result<(), Box<dyn Error>> {
     let interval = duration(args.get(1))?;
     let maximum = maximum(args.get(2))?;
     // Immutable native bound predates the first canonical sample and is never
@@ -168,11 +168,12 @@ pub(super) fn run(args: &[impl AsRef<OsStr>], out: &mut impl Write) -> Result<()
     let hard = Instant::now()
         .checked_add(Duration::from_micros(interval))
         .ok_or("list deadline is too large")?;
+    out.deadline(hard);
     let source = ipc::EndpointSource::unix(Path::new(args[0].as_ref()).to_path_buf());
+    out.interval(interval)?;
     let deadline = target(&source, interval)?;
     tokio::runtime::Builder::new_current_thread().enable_all().build()?.block_on(async{
-        let mut interrupt=signal(SignalKind::interrupt())?;
-        let mut terminate=signal(SignalKind::terminate())?;
+        let mut signals=super::stop::StopEvents::new()?;
         let mut alarm=Box::pin(tokio::time::sleep_until(hard));
         if Instant::now()>=hard{return Err("list deadline elapsed during setup".into());}
         let mut identity=ipc::Instance::new();
@@ -187,11 +188,9 @@ pub(super) fn run(args: &[impl AsRef<OsStr>], out: &mut impl Write) -> Result<()
                 let mut pending=std::pin::pin!(client.drive(Some(hard)));
                 poll_fn(|cx|{
                     if Instant::now()>=hard || alarm.as_mut().poll(cx).is_ready(){return Poll::Ready(Wake::NativeDeadline);}
-                    for signals in [&mut interrupt,&mut terminate]{
-                        if let Poll::Ready(value)=signals.poll_recv(cx){return Poll::Ready(match value{
-                            Some(())=>Wake::Stop,None=>Wake::Signal(io::Error::new(io::ErrorKind::UnexpectedEof,"list signal stream closed")),
-                        });}
-                    }
+                    if signals.poll(cx) { return Poll::Ready(match signals.take_failure() {
+                        Some(error) => Wake::Signal(error), None => Wake::Stop,
+                    }); }
                     pending.as_mut().poll(cx).map(Wake::Step)
                 }).await
             };
@@ -266,6 +265,7 @@ pub(super) fn run(args: &[impl AsRef<OsStr>], out: &mut impl Write) -> Result<()
             "operation_error":operation.as_ref().map(ToString::to_string),"close_error":close.as_ref().map(ToString::to_string),
             "row_output_error":output.as_ref().map(ToString::to_string),
             "scope":"one original query/source; filename/hash observations are not authority to open a path"});
+        out.cleanup()?;
         let terminal_output=(||->io::Result<()>{serde_json::to_writer(&mut *out,&summary).map_err(io::Error::other)?;writeln!(out)?;out.flush()})().err();
         if !report.index_end || operation.is_some() || close.is_some() || output.is_some() || terminal_output.is_some(){
             return Err(Box::new(Failure{report,operation,close,output,terminal_output}) as Box<dyn Error>);

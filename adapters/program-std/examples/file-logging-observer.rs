@@ -6,7 +6,6 @@ use gnunet_program_host::{
 use std::{
     cell::RefCell,
     io::{self, Write},
-    os::unix::{ffi::OsStrExt, fs::DirBuilderExt},
     rc::Rc,
 };
 fn hex(value: &[u8]) -> String {
@@ -50,10 +49,12 @@ fn main() -> io::Result<()> {
             hex(r.message)
         ));
     })?;
+    let level = gnunet_native::os_bytes::encode(&args[2]);
+    let filename = gnunet_native::os_bytes::encode(&args[3]);
     let first = logger.setup_routed(
         b"owned-errors",
-        Some(args[2].as_bytes()),
-        Some(args[3].as_bytes()),
+        Some(level.as_ref()),
+        Some(filename.as_ref()),
         &Environment::capture(),
         &Stamp::setup_now()?,
         &mut io::stderr(),
@@ -65,17 +66,23 @@ fn main() -> io::Result<()> {
     )?;
     if args[1] == "cached" || args[1] == "recover" {
         std::fs::remove_file(&args[4])?;
-        std::fs::DirBuilder::new().mode(0o755).create(&args[4])?;
-        let mut next = args[3].as_bytes().to_vec();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            std::fs::DirBuilder::new().mode(0o755).create(&args[4])?;
+        }
+        #[cfg(windows)]
+        std::fs::create_dir(&args[4])?;
+        let mut next = filename.as_ref().to_vec();
         next.extend_from_slice(b".new");
         let file = if args[1] == "cached" {
-            args[3].as_bytes()
+            filename.as_ref()
         } else {
             &next
         };
         let second = logger.setup_routed(
             b"owned-errors",
-            Some(args[2].as_bytes()),
+            Some(level.as_ref()),
             Some(file),
             &Environment::capture(),
             &Stamp::setup_now()?,
@@ -91,11 +98,11 @@ fn main() -> io::Result<()> {
         writeln!(io::stderr(), "DIRECT initial")?;
         io::stderr().flush()?;
         for index in 0..6 {
-            let mut next = args[3].as_bytes().to_vec();
+            let mut next = filename.as_ref().to_vec();
             next.extend_from_slice(format!(".{index}").as_bytes());
             let result = logger.setup_routed(
                 b"owned-errors",
-                Some(args[2].as_bytes()),
+                Some(level.as_ref()),
                 Some(&next),
                 &Environment::capture(),
                 &Stamp::setup_now()?,

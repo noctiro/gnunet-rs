@@ -164,7 +164,7 @@ pub struct Loss<'id> {
     pub(crate) layout: Option<crate::LayoutNeed<'id>>,
     pub(crate) control: Option<ControlReport<'id>>,
     pub(crate) records: Option<crate::RecordLoss<'id>>,
-    pub(crate) original: native::Loss<'id>,
+    pub(crate) original: Box<native::Loss<'id>>,
     pub(crate) cause: StopCause<'id>,
     // Exact stopped internally admitted established-subscription effect only.
     pub(crate) subscription_deadline: bool,
@@ -198,7 +198,7 @@ impl<'id> Loss<'id> {
     /// required; all their physical source work has already retired here.
     pub fn into_parts(self) -> LossParts<'id> {
         LossParts {
-            native: self.original,
+            native: *self.original,
             cause: self.cause,
             control: self.control,
             records: self.records,
@@ -225,7 +225,7 @@ impl<'id> Loss<'id> {
         self.records.as_ref()
     }
     /// Actual original low-level cause and every retained native partial prefix.
-    pub const fn native(&self) -> &native::Loss<'id> {
+    pub fn native(&self) -> &native::Loss<'id> {
         &self.original
     }
     /// Actual higher source-stop cause, independent of native transport cause.
@@ -335,6 +335,8 @@ pub enum Progress<'id> {
     State(domain::Event<'id>),
     /// Actual matching CLOSE notification and room-lease retirement, after
     /// original room-specific debts settled. The shared MQ remains alive.
+    /// The exact CLOSE and paired whole-written LEAVE jobs are consumed here;
+    /// their returned handles identify retired operations, not a LEAVE echo.
     RoomClosed {
         /// Original admitted LEAVE/close sequence.
         closing: Closing<'id>,

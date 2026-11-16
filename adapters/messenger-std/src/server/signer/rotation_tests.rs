@@ -1,14 +1,15 @@
 //! Real native PILS MQ observations; the source is a pure-Service component,
 //! not a normal CADET/Messenger daemon or a cross-language runtime profile.
-use super::profile_tests::{Directory, NoEntropy};
+use super::profile_tests::NoEntropy;
 use super::*;
+use crate::test_support::Directory;
 use gnunet_pils::{Action, HelloLimits, MasterKey, Profile, Service};
 use gnunet_service_runtime::clock::SystemClock;
-use tokio::net::{UnixListener, UnixStream};
+use gnunet_service_runtime::local::{Listener, Stream};
 
 type Failure = Box<dyn std::error::Error>;
 
-async fn write_frame(stream: &UnixStream, bytes: &[u8]) -> io::Result<()> {
+pub(super) async fn write_frame(stream: &Stream, bytes: &[u8]) -> io::Result<()> {
     let mut cursor = 0;
     while cursor < bytes.len() {
         stream.writable().await?;
@@ -26,7 +27,7 @@ async fn write_frame(stream: &UnixStream, bytes: &[u8]) -> io::Result<()> {
     }
     Ok(())
 }
-async fn read_exact(stream: &UnixStream, bytes: &mut [u8]) -> io::Result<()> {
+async fn read_exact(stream: &Stream, bytes: &mut [u8]) -> io::Result<()> {
     let mut cursor = 0;
     while cursor < bytes.len() {
         stream.readable().await?;
@@ -44,7 +45,7 @@ async fn read_exact(stream: &UnixStream, bytes: &mut [u8]) -> io::Result<()> {
     }
     Ok(())
 }
-async fn read_frame(stream: &UnixStream) -> io::Result<Zeroizing<Vec<u8>>> {
+async fn read_frame(stream: &Stream) -> io::Result<Zeroizing<Vec<u8>>> {
     let mut header = [0; 4];
     read_exact(stream, &mut header).await?;
     let length = usize::from(u16::from_be_bytes([header[0], header[1]]));
@@ -59,7 +60,7 @@ async fn read_frame(stream: &UnixStream) -> io::Result<Zeroizing<Vec<u8>>> {
     read_exact(stream, &mut bytes[4..]).await?;
     Ok(bytes)
 }
-async fn apply_next_identity<'c, 'slots, 'p>(
+pub(super) async fn apply_next_identity<'c, 'slots, 'p>(
     server: &mut Server<'c, 'slots, 'p, NoEntropy, 3>,
 ) -> Result<pc::Identity<'p>, Failure> {
     loop {
@@ -74,9 +75,9 @@ async fn apply_next_identity<'c, 'slots, 'p>(
         }
     }
 }
-async fn written_request<'c, 'slots, 'p>(
+pub(super) async fn written_request<'c, 'slots, 'p>(
     server: &mut Server<'c, 'slots, 'p, NoEntropy, 3>,
-    stream: &UnixStream,
+    stream: &Stream,
     operation: pc::OperationId<'p>,
 ) -> Result<Zeroizing<Vec<u8>>, Failure> {
     let read_request = read_frame(stream);
@@ -99,7 +100,7 @@ async fn written_request<'c, 'slots, 'p>(
 async fn complete_control<'c, 'slots, 'p>(
     server: &mut Server<'c, 'slots, 'p, NoEntropy, 3>,
     service: &mut Service<4096>,
-    stream: &UnixStream,
+    stream: &Stream,
     now: u64,
     inject_admission_pressure: bool,
 ) -> Result<Hash, Failure> {
@@ -113,7 +114,7 @@ async fn complete_control<'c, 'slots, 'p>(
         .next()
         .ok_or(Fault::NotFound)?;
     let room = sign.room;
-    let original = sign.phase.original().ok_or(Fault::NotReady)?;
+    let original = sign.original().ok_or(Fault::NotReady)?;
     let hash = *sign.binding.message();
     let request = written_request(server, stream, original.operation).await?;
     let mut scratch = [0; 2048];
@@ -163,9 +164,9 @@ async fn complete_control<'c, 'slots, 'p>(
             server.drain_events();
             let blocked = server.apply_signature(&mut |_| {});
             let retained = server.signs.iter().flatten().any(|sign| {
-                matches!(sign.phase,
-                SignPhase::Committed { original: actual, hash: actual_hash }
-                    if actual.operation == original.operation && actual_hash == hash)
+                matches!(&sign.state, SignState::Crypto(Signing { phase:
+                SignPhase::Committed { original: actual, hash: actual_hash }, .. })
+                    if actual.operation == original.operation && *actual_hash == hash)
             });
             server.messages = original_table;
             if blocked? || !retained {
@@ -179,9 +180,9 @@ async fn complete_control<'c, 'slots, 'p>(
 async fn same_mq_rotation(profile: Profile) -> Result<(), Failure> {
     let directory = Directory::new()?;
     let path = directory.0.join("p");
-    let listener = UnixListener::bind(&path)?;
+    let listener = Listener::bind(&path)?;
     let cadet_path = directory.0.join("c");
-    let cadet_listener = UnixListener::bind(&cadet_path)?;
+    let cadet_listener = Listener::bind(&cadet_path)?;
     let clock: Arc<dyn RuntimeClock> = Arc::new(SystemClock);
     let now = clock.sample()?.now.as_micros();
     let mut service = Service::<4096>::new(
@@ -204,7 +205,7 @@ async fn same_mq_rotation(profile: Profile) -> Result<(), Failure> {
         rooms: 1,
         client_rooms: 1,
         tunnels: 1,
-        deliveries: 8,
+        deliveries: 16,
         signatures: 3,
         controls: 2,
         min_routers: 0,
@@ -238,10 +239,10 @@ async fn same_mq_rotation(profile: Profile) -> Result<(), Failure> {
         let (original, stream) = tokio::join!(apply_next_identity(&mut server), send_initial);
         let original = original?;
         let stream = stream?;
-        if server.identity_ready() || server.current_peer().is_some() {
+        if server.identity_ready() || server.local_peer().is_some() {
             return Err("initial observation became Core authority before its install step".into());
         }
-        if !server.identity_step(&mut |_| {})? || !server.identity_ready() {
+        if !server.identity_step()? || !server.identity_ready() {
             return Err("actual initial identity did not install".into());
         }
         let room_slot = server.ensure_room([0x52; 64])?;
@@ -285,7 +286,7 @@ async fn same_mq_rotation(profile: Profile) -> Result<(), Failure> {
             return Err("original SIGN was not admitted".into());
         }
         let original_sign = server.signs.iter().flatten().next().ok_or(Fault::NotFound)?;
-        let operation = original_sign.phase.original().ok_or(Fault::NotReady)?.operation;
+        let operation = original_sign.original().ok_or(Fault::NotReady)?.operation;
         let binding = original_sign.binding;
         let hash = *binding.message();
         let original_until = original_sign.until;
@@ -322,7 +323,12 @@ async fn same_mq_rotation(profile: Profile) -> Result<(), Failure> {
         }
         let mut drafts = 0;
         if rotating {
-            while server.identity_step(&mut |event| { if matches!(event, Event::SignDraftRetired { .. }) { drafts += 1 } })? {}
+            loop {
+                server.drain_events();
+                if server.identity_step()? { continue; }
+                if server.apply_signature(&mut |event| { if matches!(event, Event::SignDraftRetired { .. }) { drafts += 1 } })? { continue; }
+                break;
+            }
             if drafts != 2 || server.control_budgets.iter().any(Option::is_some) || server.signs.iter().flatten().count() != 1 {
                 return Err("old unadmitted drafts were not retired independently of original SIGN".into());
             }
@@ -331,7 +337,7 @@ async fn same_mq_rotation(profile: Profile) -> Result<(), Failure> {
             }
         }
         let retained = server.signs.iter().flatten().next().ok_or(Fault::NotFound)?;
-        if retained.phase.original().is_none_or(|snapshot| snapshot.identity != original || snapshot.operation != operation) || retained.until != original_until || retained.hard != original_hard {
+        if retained.original().is_none_or(|snapshot| snapshot.identity != original || snapshot.operation != operation) || retained.until != original_until || retained.hard != original_hard {
             return Err("identity update changed the original SIGN identity, operation or bounds".into());
         }
         write_frame(&stream, &old_reply).await?;
@@ -349,7 +355,7 @@ async fn same_mq_rotation(profile: Profile) -> Result<(), Failure> {
         if server.core.service_attribution(room, &hash)?.sender != gnunet_crypto::hash512(original.peer().as_bytes()) {
             return Err("original signed message was relabelled as the new author".into());
         }
-        if rotating && !server.identity_step(&mut |_| {})? {
+        if rotating && !server.identity_step()? {
             return Err("drained same-MQ transition did not commit".into());
         }
         if !server.identity_ready() || server.current_peer() != Some(*latest.peer().as_bytes()) || !server.core.is_own_signer(original.peer().as_bytes()) || !server.core.is_own_signer(latest.peer().as_bytes()) {
@@ -385,7 +391,7 @@ async fn same_mq_rotation(profile: Profile) -> Result<(), Failure> {
                 return Err("second original SIGN did not admit".into());
             }
             let sign = server.signs.iter().flatten().next().ok_or(Fault::NotFound)?;
-            let changed_operation = sign.phase.original().ok_or(Fault::NotReady)?.operation;
+            let changed_operation = sign.original().ok_or(Fault::NotReady)?.operation;
             let changed_hash = *sign.binding.message();
             let changed_request = written_request(&mut server, &stream, changed_operation).await?;
             let mut restore = vec![0; empty_block.len() + 8];
@@ -406,10 +412,14 @@ async fn same_mq_rotation(profile: Profile) -> Result<(), Failure> {
                 server.signer_progress(progress, &mut |_| {})?;
                 if rejected { break }
             }
+            loop {
+                server.drain_events();
+                if !server.apply_signature(&mut |_| {})? { break; }
+            }
             if server.signs.iter().any(Option::is_some) || server.core.message(room, &changed_hash).is_ok() {
                 return Err("KeyChanged installed a message or retained a completed operation".into());
             }
-            if !server.identity_step(&mut |_| {})? || server.current_peer() != Some(*original.peer().as_bytes()) {
+            if !server.identity_step()? || server.current_peer() != Some(*original.peer().as_bytes()) {
                 return Err("known failed old operation prevented healthy restoration".into());
             }
             if !server.room_announcement(room_slot)? {
@@ -432,20 +442,7 @@ async fn same_mq_rotation(profile: Profile) -> Result<(), Failure> {
             server.queue_peer_control(room, Body::Connection { amount: 7, flags: 0 })?;
             complete_control(&mut server, &mut service, &stream, now, true).await?;
         }
-        // An actual EOF remains a physical source failure, even after a healthy
-        // same-MQ transition. It is never accepted as another identity update.
-        drop(stream);
-        loop {
-            let progress = server.pils.drive(None).await?;
-            match server.signer_progress(progress, &mut |_| {}) {
-                Err(Error::PilsLost(_)) => break,
-                Err(error) => return Err(error.into()),
-                Ok(()) => {}
-            }
-        }
-        if server.identity_ready() || server.current_peer().is_some() {
-            return Err("physical source loss retained live signing authority".into());
-        }
+        super::recovery_tests::recover_source(&mut server, &mut service, stream, &listener, now, profile).await?;
         Ok::<(), Failure>(())
     }).await;
     server.close_all(&mut |_| {});
@@ -457,8 +454,8 @@ async fn same_mq_rotation(profile: Profile) -> Result<(), Failure> {
 }
 
 #[test]
-fn native_same_mq_identity_update_preserves_original_signatures_and_retires_only_drafts()
--> Result<(), Failure> {
+fn native_identity_updates_and_source_recovery_preserve_original_signatures() -> Result<(), Failure>
+{
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;

@@ -7,6 +7,8 @@ pub mod proof;
 pub mod startup;
 /// Injected source-independent statistics driver/factory ports.
 pub mod statistics;
+#[cfg(test)]
+mod test_support;
 use gnunet_client_host::EndpointSource;
 use gnunet_core_client_host::{self as core, Client as CoreClient};
 use gnunet_crypto::pow;
@@ -174,8 +176,11 @@ pub struct Report {
     pub work_calls: u64,
     /// Valid original proof discoveries.
     pub proofs: u64,
-    /// Fully durable raw8 original commits.
-    pub durable: u64,
+    /// Original raw8 file-sync/publication/readback completions.
+    pub commits: u64,
+    /// Actual naming-barrier observation, separately from successful file sync.
+    /// None denotes an uninitialized report, not a successful barrier.
+    pub directory_sync: Option<gnunet_native::DirectorySync>,
     /// Actual completed original round alarms.
     pub rounds: u64,
     /// Actual verified PILS signatures applied to original leases.
@@ -223,8 +228,8 @@ pub enum Progress {
     Alarm(pure::AlarmProgress),
     /// One actual bounded Argon2 slice completed.
     Work(pure::WorkProgress),
-    /// One raw8 original commit is actually durable.
-    Durable,
+    /// Original raw8 file-sync, publication and readback completed.
+    Committed,
     /// Original service context is being retired before reactivation.
     Retired,
     /// Original backend fault remains quiescent until explicit recovery.
@@ -470,7 +475,9 @@ impl<'a, const P: usize, const S: usize> Host<'a, P, S> {
     /// Completed local effect counters.
     #[must_use]
     pub const fn report(&self) -> Report {
-        self.report
+        let mut report = self.report;
+        report.directory_sync = Some(self.store.directory_sync());
+        report
     }
     /// Read actual unique-Service metric coordinates without native activity,
     /// hashing, clock sampling or a new statistics publisher.
@@ -1052,8 +1059,8 @@ impl<'a, const P: usize, const S: usize> Host<'a, P, S> {
                     self.service.persisted(&request, Ok(()))?;
                     self.persist = None;
                     self.persist_at = now.saturating_add(self.limits.checkpoint_micros);
-                    self.report.durable = self.report.durable.saturating_add(1);
-                    return Poll::Ready(Ok(Progress::Durable));
+                    self.report.commits = self.report.commits.saturating_add(1);
+                    return Poll::Ready(Ok(Progress::Committed));
                 }
                 Err(error) => {
                     self.backend_fault = true;
@@ -1212,7 +1219,7 @@ impl<'a, const P: usize, const S: usize> Host<'a, P, S> {
                 self.store.commit(*request.bytes())?;
                 self.service.persisted(&request, Ok(()))?;
                 self.persist = None;
-                self.report.durable = self.report.durable.saturating_add(1);
+                self.report.commits = self.report.commits.saturating_add(1);
             }
             Ok::<_, Error>(())
         })();

@@ -11,7 +11,7 @@ use gnunet_regex_server_host::{
     pils::Signer,
 };
 use gnunet_service_runtime::{BoundListeners, clock::RuntimeClock};
-use gnunet_service_startup::{ParentControl, daemon::ChildReady};
+use gnunet_service_startup::StopSignals;
 use std::{
     fmt,
     future::{Future, poll_fn},
@@ -98,14 +98,14 @@ impl std::error::Error for LifecycleFailure {
             .or(self.errors.resolver_cleanup.as_deref())
     }
 }
-pub(crate) struct Inputs<'a, 'log> {
+pub(crate) struct Inputs<'a> {
     pub(crate) config: gnunet_config::Configuration,
     pub(crate) settings: Settings,
-    pub(crate) bound: BoundListeners,
+    pub(crate) bound: &'a BoundListeners,
     pub(crate) clock: Arc<dyn RuntimeClock>,
-    pub(crate) control: Option<ParentControl>,
-    pub(crate) child: &'a mut ChildReady,
-    pub(crate) diagnostics: &'a Diagnostics<'log>,
+    pub(crate) control: StopSignals,
+    pub(crate) notification: gnunet_program_host::service::native::Readiness<'a>,
+    pub(crate) diagnostics: &'a Diagnostics,
 }
 fn due(duration: Duration) -> Result<Instant, Failure> {
     Instant::now()
@@ -115,7 +115,7 @@ fn due(duration: Duration) -> Result<Instant, Failure> {
 fn poll_broker<const R: usize, const N: usize>(
     broker: &mut gnunet_resolver_broker::Driver<R, N>,
     cx: &mut Context<'_>,
-    diagnostics: &Diagnostics<'_>,
+    diagnostics: &Diagnostics,
 ) -> Poll<Result<gnunet_resolver_broker::Progress, gnunet_resolver_broker::BrokerError>> {
     // The broker documents retained cursors across canceled wait futures. Every
     // callback is synchronous; no resolution lease crosses another owner poll.
@@ -135,7 +135,7 @@ fn poll_timer(timer: &mut std::pin::Pin<Box<Sleep>>, cx: &mut Context<'_>) -> bo
 fn statistics_error(
     slot: &mut Option<Failure>,
     error: statistics::Failure,
-    diagnostics: &Diagnostics<'_>,
+    diagnostics: &Diagnostics,
 ) {
     if slot.is_none() {
         diagnostics.observe(
@@ -149,7 +149,7 @@ fn statistics_error(
 fn abort_statistics(
     stats: &mut Option<statistics::Owner<'_>>,
     errors: &mut Errors,
-    diagnostics: &Diagnostics<'_>,
+    diagnostics: &Diagnostics,
 ) {
     if let Some(stats) = stats
         && !stats.is_closed()
@@ -164,7 +164,7 @@ fn begin_stop<D: Provider>(
     stopping: &mut bool,
     notice: &mut Option<std::pin::Pin<Box<Sleep>>>,
     delay: Duration,
-    diagnostics: &Diagnostics<'_>,
+    diagnostics: &Diagnostics,
 ) -> bool {
     if *stopping {
         return false;
@@ -176,14 +176,14 @@ fn begin_stop<D: Provider>(
     *notice = Some(Box::pin(tokio::time::sleep(delay)));
     true
 }
-pub(crate) async fn run<F: Factory + 'static>(input: Inputs<'_, '_>) -> Result<Report, Failure> {
+pub(crate) async fn run<F: Factory + 'static>(input: Inputs<'_>) -> Result<Report, Failure> {
     let Inputs {
         config,
         settings,
         bound,
         clock,
         control,
-        child,
+        notification,
         diagnostics,
     } = input;
     let listeners = bound.listeners();
@@ -194,7 +194,7 @@ pub(crate) async fn run<F: Factory + 'static>(input: Inputs<'_, '_>) -> Result<R
             format_args!("REGEX alternate listener failed: {error}"),
         )?;
     }
-    let mut control = Control::new(control)?;
+    let mut control = Control::new(control);
     let startup_until = due(settings.startup)?;
     let mut startup_timer = Box::pin(tokio::time::sleep_until(startup_until));
     let core = gnunet_regex_service::Core::new(settings.core)?;
@@ -315,6 +315,7 @@ pub(crate) async fn run<F: Factory + 'static>(input: Inputs<'_, '_>) -> Result<R
     };
     let mut stopping = false;
     let mut ready = false;
+    let mut notification = Some(notification);
     let mut driver_closed = false;
     let mut stats_closing = false;
     let mut retirement_notice = None;
@@ -327,6 +328,7 @@ pub(crate) async fn run<F: Factory + 'static>(input: Inputs<'_, '_>) -> Result<R
         if turn.is_multiple_of(64) {
             tokio::task::yield_now().await;
         }
+        let mut notify = false;
         poll_fn(|cx| {
             let mut changed = false;
             let mut need_stop = false;
@@ -400,10 +402,10 @@ pub(crate) async fn run<F: Factory + 'static>(input: Inputs<'_, '_>) -> Result<R
                             let mut out = io::stdout().lock();
                             writeln!(out, "READY regex")?;
                             out.flush()?;
-                            child.ready()
+                            Ok(())
                         })();
                         match result {
-                            Ok(()) => ready = true,
+                            Ok(()) => { ready = true; notify = true; },
                             Err(error) => {
                                 errors.first(Box::new(error));
                                 begin_stop(&mut driver, &mut errors, &mut stopping,
@@ -484,6 +486,24 @@ pub(crate) async fn run<F: Factory + 'static>(input: Inputs<'_, '_>) -> Result<R
             }
             if changed { Poll::Ready(()) } else { Poll::Pending }
         }).await;
+        if notify && !stopping {
+            let result = match notification.take() {
+                Some(original) => original.signal(&mut control, diagnostics.reporter()).await,
+                None => Err("REGEX original readiness already consumed".into()),
+            };
+            if let Err(error) = result {
+                errors.first(error);
+                begin_stop(
+                    &mut driver,
+                    &mut errors,
+                    &mut stopping,
+                    &mut retirement_notice,
+                    settings.shutdown_grace,
+                    diagnostics,
+                );
+                abort_statistics(&mut stats, &mut errors, diagnostics);
+            }
+        }
         if driver_closed && stats.as_ref().is_none_or(|owner| owner.is_closed()) {
             break;
         }
@@ -527,7 +547,7 @@ async fn setup_failure<'p, D: Provider>(
     mut provider: Option<D>,
     mut stats: Option<&mut statistics::Owner<'_>>,
     broker: &mut gnunet_resolver_broker::Driver<64, 4096>,
-    diagnostics: &Diagnostics<'_>,
+    diagnostics: &Diagnostics,
     statistics_grace: Duration,
 ) -> Result<Report, Failure> {
     let mut errors = Errors {

@@ -3,17 +3,17 @@ use crate::{Failure, aggregate, control::Control, reporting::Reports, settings::
 use gnunet::{
     ipc::{
         IpcError,
-        server::{ServeContext, serve_statistics_controlled},
+        server::{ServeContext, serve_statistics_controlled_with_async_ready},
     },
     statistics::AllocatedStatistics,
     statistics_store::Store,
 };
 use gnunet_program_host::policy::Level;
 use gnunet_service_runtime::{BoundListeners, clock::RuntimeClock, private_parents};
-use gnunet_service_startup::{ParentControl, daemon::ChildReady};
+use gnunet_service_startup::ControlReceiver;
 use std::{
     cell::RefCell,
-    future::poll_fn,
+    future::{Future, poll_fn},
     io::{self, Write},
     path::{Path, PathBuf},
     sync::Arc,
@@ -31,20 +31,21 @@ fn normalized(path: &Path) -> io::Result<PathBuf> {
 }
 pub(crate) struct Inputs<'a, 'route, 'log> {
     pub(crate) bound: &'a BoundListeners,
-    pub(crate) parent: Option<ParentControl>,
+    pub(crate) parent: Option<ControlReceiver>,
     pub(crate) settings: &'a Settings,
     pub(crate) clock: Arc<dyn RuntimeClock>,
     pub(crate) reports: &'a Reports<'route, 'log>,
-    pub(crate) child: &'a mut ChildReady,
 }
-pub(crate) async fn run(input: Inputs<'_, '_, '_>) -> Result<(), Failure> {
+pub(crate) async fn run<Ready: Future<Output = Result<(), IpcError>>>(
+    input: Inputs<'_, '_, '_>,
+    ready: impl FnOnce() -> Ready,
+) -> Result<(), Failure> {
     let Inputs {
         bound,
         parent,
         settings,
         clock,
         reports,
-        child,
     } = input;
     let database = settings
         .database
@@ -96,7 +97,7 @@ pub(crate) async fn run(input: Inputs<'_, '_, '_>) -> Result<(), Failure> {
         })
     });
     let listeners = bound.listeners();
-    let result = serve_statistics_controlled(
+    let result = serve_statistics_controlled_with_async_ready(
         &listeners,
         &mut core,
         settings.host,
@@ -108,29 +109,32 @@ pub(crate) async fn run(input: Inputs<'_, '_, '_>) -> Result<(), Failure> {
         },
         shutdown,
         || {
-            reports.message(
-                Level::INFO,
-                "statistics.ready",
-                format_args!("statistics actual initialized host and database ready"),
-            );
-            if let Some(error) = reports.take_failure() {
-                return Err(IpcError::Io(error));
-            }
-            let mut output = io::stdout().lock();
-            writeln!(
-                output,
-                "READY statistics wire=0.29.1 persistence={} authentication=kernel-unix",
-                if store.is_some() {
-                    "official-set-snapshot"
-                } else {
-                    "memory-only"
+            let preparation = (|| -> Result<(), IpcError> {
+                reports.message(
+                    Level::INFO,
+                    "statistics.ready",
+                    format_args!("STATISTICS host and database ready"),
+                );
+                if let Some(error) = reports.take_failure() {
+                    return Err(IpcError::Io(error));
                 }
-            )?;
-            output.flush()?;
-            // Only the actual initialized source (and successful selected
-            // logger/stdout) may produce the original daemon-ready byte.
-            child.ready()?;
-            Ok(())
+                let mut output = io::stdout().lock();
+                writeln!(
+                    output,
+                    "READY statistics persistence={}",
+                    if store.is_some() {
+                        "official-set-snapshot"
+                    } else {
+                        "memory-only"
+                    }
+                )?;
+                output.flush()?;
+                Ok(())
+            })();
+            async move {
+                preparation?;
+                ready().await
+            }
         },
         |event| reports.observe(event),
     )

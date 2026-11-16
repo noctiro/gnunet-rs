@@ -269,6 +269,15 @@ pub enum Event<'id, 'cadet> {
     },
     /// Actual original TUN physically stopped; route cleanup is independent.
     TunLost(tun::Loss),
+    /// Windows: sealed historical absence of this retired source's native scope.
+    #[cfg(windows)]
+    InterfaceRetired(tun::WintunScopeRetirement),
+    /// Windows: original typed control error before physical recovery was selected.
+    #[cfg(windows)]
+    RecoveryError(Error),
+    /// Windows: original native action failed while physical recovery took over.
+    #[cfg(windows)]
+    RecoveryControlFailed(tun::ApplyFailure),
     /// Original exact core peer retired.
     PeerLost(core::PeerLoss<'id>),
     /// Original exact core TUN retired logically after actual device stop.

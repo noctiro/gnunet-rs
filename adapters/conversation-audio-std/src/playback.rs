@@ -2,7 +2,7 @@ use crate::{
     DECODE_SAMPLES, Error, Limits, Report, buffer,
     framing::Input,
     increment,
-    native::{Decoder, Pulse},
+    native::{Decoder, Device, Direction, Finish},
     ogg::{Page, Pages, Status},
 };
 use gnunet_types::Error as Fault;
@@ -42,7 +42,7 @@ impl Pcm {
 }
 struct Stream {
     decoder: Option<Decoder>,
-    speaker: Option<Pulse>,
+    speaker: Option<Device>,
     channels: usize,
     phase: u8,
     skip: u64,
@@ -80,7 +80,7 @@ impl Stream {
         let skip = u16::from_le_bytes([packet[10], packet[11]]);
         let gain = i16::from_le_bytes([packet[16], packet[17]]);
         if let Some(speaker) = &mut self.speaker {
-            speaker.finish(true)?;
+            speaker.finish(Finish::Drain)?;
             report.drained = true;
         }
         self.speaker = None;
@@ -174,8 +174,8 @@ impl Stream {
                 out.copy_from_slice(&value.to_le_bytes());
             }
             if self.speaker.is_none() {
-                self.speaker = Some(Pulse::new(
-                    false,
+                self.speaker = Some(Device::new(
+                    Direction::Playback,
                     u8::try_from(self.channels).map_err(|_| Fault::Overflow)?,
                 )?);
             }
@@ -190,10 +190,10 @@ impl Stream {
         pcm.samples.fill(0.0);
         Ok(samples)
     }
-    fn finish(&mut self, drain: bool, report: &mut Report) -> Result<(), Error> {
+    fn finish(&mut self, action: Finish, report: &mut Report) -> Result<(), Error> {
         if let Some(speaker) = &mut self.speaker {
-            speaker.finish(drain)?;
-            if drain {
+            speaker.finish(action)?;
+            if action == Finish::Drain {
                 report.drained = true;
             }
         }
@@ -489,7 +489,7 @@ impl Player {
         if self.serial.is_some() && !self.stream.eos {
             increment(&mut report.unterminated_streams, 1)?;
         }
-        self.stream.finish(true, report)
+        self.stream.finish(Finish::Drain, report)
     }
 }
 /// Run real730/Ogg/Opus playback in its independent helper process. Complete
@@ -538,7 +538,7 @@ pub fn playback(limits: Limits) -> Result<Report, Error> {
     match outcome {
         Ok(()) => Ok(report),
         Err(original) => {
-            let cleanup = player.stream.finish(false, &mut report).err();
+            let cleanup = player.stream.finish(Finish::Flush, &mut report).err();
             match cleanup {
                 Some(cleanup) => Err(Error::Cleanup {
                     original: Box::new(original),

@@ -1,6 +1,7 @@
 //! Persistent actual ARM owners and source CLI phase orchestration.
 use crate::{
     diagnostics::Selection,
+    locale::Locale,
     options::Options,
     state::{Action, Kind, State},
 };
@@ -17,49 +18,55 @@ use gnunet_arm_host::{
     MonitorHost,
 };
 use gnunet_config::{Configuration, ProcessEnvironment, ProjectData};
+use gnunet_native::os_bytes;
+#[cfg(unix)]
+use std::path::PathBuf;
 use std::{
     error::Error,
-    ffi::{OsStr, OsString},
+    ffi::OsString,
     future::{Future, poll_fn},
     io::{self, Write},
-    os::unix::{ffi::OsStrExt, fs::PermissionsExt},
-    path::{Path, PathBuf},
+    path::Path,
     sync::Arc,
     task::Poll,
-    time::Duration,
 };
-use tokio::time::Instant;
+mod files;
+mod signals;
+use files::remove_tree;
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
-/// Explicit auxiliary deployment and actual C ABI profile. No private argv or
-/// GNUnet configuration option is introduced for this Rust helper port.
+/// Explicit platform deployment and native ARM C ABI profile.
 #[derive(Clone, Debug)]
 pub struct Ports {
     /// Explicit reviewed fresh-helper executable.
+    #[cfg(unix)]
     pub helper: PathBuf,
     /// Actual native C struct alignment profile.
     pub abi: ArmAbi,
 }
 impl Ports {
-    /// Resolve the reviewed native deployment. A colocated Rust helper is preferred
-    /// for this standalone candidate; formal ProjectData libexec discovery is used
-    /// otherwise. Untested align4 native ABIs are not guessed from pointer width.
+    /// Select the native ABI and, on Unix, discover the colocated or ProjectData
+    /// helper. Unknown alignment profiles require explicit caller selection.
     pub fn native() -> Result<Self> {
         if std::mem::align_of::<u64>() != 8 {
             return Err(
                 "untested native ARM ABI; supply an explicit validated Ports profile".into(),
             );
         }
-        let executable = std::env::current_exe()?;
-        let sibling = executable
-            .parent()
-            .ok_or("no executable directory")?
-            .join("gnunet-arm-spawn-helper");
-        let helper = if sibling.is_file() {
-            sibling
-        } else {
-            ProjectData::default().libexec_binary_path(b"gnunet-arm-spawn-helper")?
+        #[cfg(unix)]
+        let helper = {
+            let executable = std::env::current_exe()?;
+            let sibling = executable
+                .parent()
+                .ok_or("no executable directory")?
+                .join("gnunet-arm-spawn-helper");
+            if sibling.is_file() {
+                sibling
+            } else {
+                ProjectData::default().libexec_binary_path(b"gnunet-arm-spawn-helper")?
+            }
         };
         Ok(Self {
+            #[cfg(unix)]
             helper,
             abi: ArmAbi::U64Align8,
         })
@@ -129,6 +136,7 @@ impl Drop for MonitorOwner<'_> {
 }
 #[derive(Debug, Default)]
 struct OutputErrors {
+    render: Option<io::Error>,
     stdout: Option<io::Error>,
     stderr: Option<io::Error>,
     stdout_flush: Option<io::Error>,
@@ -138,15 +146,16 @@ impl std::fmt::Display for OutputErrors {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "ARM CLI output stdout={:?}; stderr={:?}; stdout-flush={:?}; stderr-flush={:?}",
-            self.stdout, self.stderr, self.stdout_flush, self.stderr_flush
+            "ARM CLI output render={:?}; stdout={:?}; stderr={:?}; stdout-flush={:?}; stderr-flush={:?}",
+            self.render, self.stdout, self.stderr, self.stdout_flush, self.stderr_flush
         )
     }
 }
 impl Error for OutputErrors {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
-        self.stdout
+        self.render
             .as_ref()
+            .or(self.stdout.as_ref())
             .or(self.stderr.as_ref())
             .or(self.stdout_flush.as_ref())
             .or(self.stderr_flush.as_ref())
@@ -162,11 +171,13 @@ fn emit(
     // A failed write_all can have exposed a prefix. Clear each original buffer
     // immediately after its attempt, before any fallible return; cleanup never
     // replays bytes and the bounded allocation is reused on the next callback.
+    let render = state.take_output_error();
     let stdout = out.write_all(&state.stdout).err();
     state.stdout.clear();
     let stderr = err.write_all(&state.stderr).err();
     state.stderr.clear();
     let mut errors = OutputErrors {
+        render,
         stdout,
         stderr,
         ..Default::default()
@@ -176,7 +187,8 @@ fn emit(
     }
     errors.stdout_flush = out.flush().err();
     errors.stderr_flush = err.flush().err();
-    if errors.stdout.is_none()
+    if errors.render.is_none()
+        && errors.stdout.is_none()
         && errors.stderr.is_none()
         && errors.stdout_flush.is_none()
         && errors.stderr_flush.is_none()
@@ -189,7 +201,15 @@ fn emit(
 /// Load the actual PROGRAM entrypoint/defaults and arm.CONFIG fallback. No home,
 /// config or endpoint is created or removed by configuration preparation.
 pub fn configuration(options: &Options) -> Result<Configuration> {
+    configuration_with_locale(options, &Locale::disabled())
+}
+/// Load the same configuration with the parser's original locale case context.
+/// No locale transition, native source acquisition or clock is created here.
+pub fn configuration_with_locale(options: &Options, locale: &Locale) -> Result<Configuration> {
     let mut config = Configuration::default();
+    if let Some(context) = locale.case_context() {
+        config.set_case_context(context);
+    }
     let path = if let Some(value) = &options.config {
         Some(config.expand_filename(value, &ProcessEnvironment)?)
     } else {
@@ -208,31 +228,9 @@ pub fn configuration(options: &Options) -> Result<Configuration> {
     if !config.have_value(b"arm", b"CONFIG")
         && let Some(path) = path
     {
-        config.set_value(b"arm", b"CONFIG", Some(path.as_os_str().as_bytes()))?;
+        config.set_value(b"arm", b"CONFIG", Some(&os_bytes::encode(path.as_os_str())))?;
     }
     Ok(config)
-}
-/// Original disk remove semantics: chmod700 (including symlink target), unlink
-/// first, then recursively remove a directory. Test paths must be owned tmp.
-fn remove_tree(path: &Path) -> io::Result<bool> {
-    if std::fs::symlink_metadata(path).is_err() {
-        return Ok(false);
-    }
-    drop(std::fs::set_permissions(
-        path,
-        std::fs::Permissions::from_mode(0o700),
-    ));
-    if std::fs::remove_file(path).is_ok() {
-        return Ok(true);
-    }
-    if !std::fs::metadata(path)?.is_dir() {
-        return Err(io::Error::other("not a removable directory"));
-    }
-    for entry in std::fs::read_dir(path)? {
-        remove_tree(&entry?.path())?;
-    }
-    std::fs::remove_dir(path)?;
-    Ok(true)
 }
 fn delete_files(config: &Configuration, state: &State, logs: &Selection) {
     if !state.should_delete() {
@@ -246,23 +244,33 @@ fn delete_files(config: &Configuration, state: &State, logs: &Selection) {
         return;
     }
     if let Ok(path) = config.get_filename(b"arm", b"CONFIG", &ProcessEnvironment)
-        && std::fs::remove_file(&path).is_err()
+        && files::remove_file(&path).is_err()
     {
-        let mut warning = b"Failed to remove configuration file ".to_vec();
-        warning.extend_from_slice(path.as_os_str().as_bytes());
-        warning.push(b'\n');
-        logs.warning("arm.cli.delete.config", &warning);
+        logs.reporter().message_translated(
+            gnunet_program_host::policy::Level::WARNING,
+            "arm.cli.delete.config",
+            Some(b"gnunet"),
+            b"Failed to remove configuration file %s\n",
+            &[gnunet_program_host::format::Argument::Bytes(
+                &os_bytes::encode(path.as_os_str()),
+            )],
+        );
     }
     if logs.reporter().failed() {
         return;
     }
     if let Some(dir) = config.get(b"PATHS", b"GNUNET_HOME")
-        && !remove_tree(Path::new(OsStr::from_bytes(dir))).unwrap_or(false)
+        && !os_bytes::decode(dir)
+            .and_then(|path| remove_tree(Path::new(&path)))
+            .unwrap_or(false)
     {
-        let mut warning = b"Failed to remove servicehome directory ".to_vec();
-        warning.extend_from_slice(dir);
-        warning.push(b'\n');
-        logs.warning("arm.cli.delete.directory", &warning);
+        logs.reporter().message_translated(
+            gnunet_program_host::policy::Level::WARNING,
+            "arm.cli.delete.directory",
+            Some(b"gnunet"),
+            b"Failed to remove servicehome directory %s\n",
+            &[gnunet_program_host::format::Argument::Bytes(dir)],
+        );
     }
 }
 /// Original caller-selected command and actual shared diagnostic/clock owners.
@@ -357,7 +365,7 @@ pub async fn run<const R: usize, const N: usize>(
     if !Arc::ptr_eq(&logs.source(), &resolver.clock()) {
         return Err("ARM CLI Resolver must retain the selected original clock".into());
     }
-    let mut state = State::new(options);
+    let mut state = State::with_locale(options, logs.locale().clone());
     if reports.failed() {
         return logs.finish(Err(
             "selected ARM Logger is permanently failed; original cause may be held by caller"
@@ -387,6 +395,7 @@ pub async fn run<const R: usize, const N: usize>(
     let core = Client::new(&mut operations, &mut frames, &mut bytes, 1, ports.abi)?;
     let launcher = LocalLauncher::new(
         config.duplicate()?,
+        #[cfg(unix)]
         ports.helper,
         LaunchLimits::default(),
         registry,
@@ -408,10 +417,12 @@ pub async fn run<const R: usize, const N: usize>(
         },
         Err(error) => {
             if initial_error {
-                reports.message_bytes(
+                reports.message_translated(
                     gnunet_program_host::policy::Level::ERROR,
                     "arm.cli.conn_status",
+                    Some(b"gnunet"),
                     b"Fatal error initializing ARM API.\n",
+                    &[],
                 );
             }
             reports.debug(
@@ -460,23 +471,19 @@ pub async fn run<const R: usize, const N: usize>(
         let deadline = if state.options.timeout == 0 || state.options.timeout == u64::MAX {
             None
         } else {
-            Some(
-                Instant::now()
-                    .checked_add(Duration::from_micros(state.options.timeout))
-                    .ok_or("timeout overflow")?,
-            )
+            Some(gnunet_types::AbsoluteTime::from_micros(
+                logs.clock()
+                    .sample()?
+                    .now
+                    .as_micros()
+                    .saturating_add(state.options.timeout),
+            ))
         };
-        let mut alarm = deadline.map(|at| Box::pin(tokio::time::sleep_until(at)));
-        let mut interrupt =
-            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
-        let mut terminate =
-            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
-        let mut hangup = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())?;
-        let mut quit = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::quit())?;
-        // The official scheduler catches SIGPIPE with a no-op handler. Installing
-        // this port also ensures a launched child's caught disposition becomes DFL
-        // at native exec, instead of inheriting Rust entry's default IGN behavior.
-        let mut pipe = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::pipe())?;
+        let mut alarm = deadline
+            .map(|at| gnunet_program_host::runtime::Delay::until(logs.clock().clone(), at))
+            .transpose()?
+            .map(Box::pin);
+        let mut signals = signals::Signals::new()?;
         let mut once = false;
         let mut first = true;
         let mut prefer_monitor = false;
@@ -484,7 +491,11 @@ pub async fn run<const R: usize, const N: usize>(
             if reports.failed() {
                 break;
             }
-            if !first && deadline.is_some_and(|at| Instant::now() >= at) {
+            if !first
+                && let Some(at) = deadline
+                && !at.is_never()
+                && logs.clock().sample()?.now >= at
+            {
                 state.timeout();
             }
             first = false;
@@ -521,10 +532,12 @@ pub async fn run<const R: usize, const N: usize>(
                 let mut control = Box::pin(host.drive(None, |inbound, _port| match inbound {
                     Inbound::Event(Event::Connection(status)) => {
                         if status == ConnectionStatus::Error && !once {
-                            reports.message_bytes(
+                            reports.message_translated(
                                 gnunet_program_host::policy::Level::ERROR,
                                 "arm.cli.conn_status",
+                                Some(b"gnunet"),
                                 b"Fatal error initializing ARM API.\n",
+                                &[],
                             );
                             state.done = true;
                         }
@@ -592,20 +605,19 @@ pub async fn run<const R: usize, const N: usize>(
                     if reports.failed() {
                         return Poll::Ready(Ok(6u8));
                     }
-                    if let Some(alarm) = &mut alarm
-                        && alarm.as_mut().poll(cx).is_ready()
-                    {
-                        return Poll::Ready(Ok(2u8));
+                    if let Some(alarm) = &mut alarm {
+                        match alarm.as_mut().poll(cx) {
+                            Poll::Ready(Ok(())) => return Poll::Ready(Ok(2u8)),
+                            Poll::Ready(Err(error)) => return Poll::Ready(Err(error.into())),
+                            Poll::Pending => {}
+                        }
                     }
-                    if interrupt.poll_recv(cx).is_ready()
-                        || terminate.poll_recv(cx).is_ready()
-                        || hangup.poll_recv(cx).is_ready()
-                        || quit.poll_recv(cx).is_ready()
-                    {
-                        return Poll::Ready(Ok(3u8));
-                    }
-                    if let Poll::Ready(Some(())) = pipe.poll_recv(cx) {
-                        return Poll::Ready(Ok(4u8));
+                    match signals.poll(cx) {
+                        Poll::Ready(Ok(signals::Event::Stop)) => return Poll::Ready(Ok(3u8)),
+                        #[cfg(unix)]
+                        Poll::Ready(Ok(signals::Event::Continue)) => return Poll::Ready(Ok(4u8)),
+                        Poll::Ready(Err(error)) => return Poll::Ready(Err(error.into())),
+                        Poll::Pending => {}
                     }
                     if prefer_monitor
                         && let Some(monitor) = &mut monitoring
@@ -691,21 +703,103 @@ pub async fn run<const R: usize, const N: usize>(
     drop(monitor);
     drop(host);
     failures.output = emit(&mut state, out, err, &logs).err();
-    // Preserve the actual source -d condition; a logging failure must not start
-    // new destructive file work after its permanent gate has closed.
-    if !reports.failed() {
+    // Preserve the source -d condition while keeping new destructive work behind
+    // the permanent logging and catalog/format failure gates.
+    if !reports.failed() && !state.output_failed() {
         delete_files(&config, &state, &logs);
     }
     logs.finish(failures.finish(state.ret))
 }
+async fn execute(
+    config: Configuration,
+    options: Options,
+    ports: Ports,
+    logs: &Selection,
+    registry: &mut ChildRegistry,
+) -> Result<u8> {
+    if logs.reporter().failed() {
+        return Ok(1);
+    }
+    let (context, mut resolver_driver) = gnunet_resolver_broker::broker::<8, 65518>(
+        gnunet_resolver_broker::LiveConfiguration::new(config.duplicate()?),
+        Default::default(),
+        gnunet_resolver_broker::native_profile()?,
+        logs.source(),
+    )?;
+    let mut completed = None;
+    let scheduled: Result<()> = gnunet_program_host::runtime::run_tasks_with_speedup(
+        logs.clock().clone(),
+        1,
+        config,
+        None,
+        |config, scope| {
+            context.connect(config.duplicate()?)?;
+            scope.spawn(async {
+                completed = Some(
+                    run(
+                        Invocation {
+                            config,
+                            options,
+                            ports,
+                            diagnostics: logs.clone(),
+                        },
+                        &mut resolver_driver,
+                        registry,
+                        &mut io::stdout(),
+                        &mut io::stderr(),
+                    )
+                    .await,
+                );
+            })?;
+            Ok(())
+        },
+    )
+    .await;
+    let original = match scheduled {
+        Ok(()) => {
+            completed.unwrap_or_else(|| Err("ARM command task retired without an outcome".into()))
+        }
+        Err(error) => Err(error),
+    };
+    // The Resolver remains outside the scheduled task, so scheduler/clock
+    // failure cannot skip its original disconnect or hide an independent cause.
+    let resolver = resolver_driver.disconnect();
+    drop(context);
+    match resolver {
+        Ok(()) => original,
+        Err(error) => Err(Box::new(Failures {
+            original: original.err(),
+            resolver: Some(Box::new(error)),
+            ..Default::default()
+        })),
+    }
+}
+
 /// Standalone source argv entry, using real selected PROGRAM logging while
 /// retaining the source ARM-specific parser, business phases and status bytes.
 pub fn main_from(args: impl IntoIterator<Item = OsString>) -> u8 {
-    let parsed = crate::options::parse(
+    main_with_locale(args, &mut gnunet_program_host::program::NlsDisabled)
+}
+/// Standalone PROGRAM entry with an explicit locale/catalog installer. Setup
+/// precedes parsing, configuration, logging and runtime owners. The same backend
+/// is retained through callbacks and final output; enabled errors never fall back.
+pub fn main_with_locale(
+    args: impl IntoIterator<Item = OsString>,
+    setup: &mut impl gnunet_program_host::program::LocaleSetup,
+) -> u8 {
+    let locale = match Locale::configure(setup, &ProjectData::default()) {
+        Ok(locale) => locale,
+        Err(error) => {
+            let _original = writeln!(io::stderr(), "gnunet-arm locale setup: {error}");
+            return 255;
+        }
+    };
+    let mut parsed = crate::options::parse_localized(
         args,
         std::env::var_os("GNUNET_ARGS").as_deref(),
         std::env::var_os("POSIXLY_CORRECT").is_some(),
         b"0.29.1",
+        &locale,
     );
     // Immediate parser/help/version output precedes logging/file/runtime setup,
     // matching PROGRAM's early-exit boundary. No product path runs after it.
@@ -720,6 +814,10 @@ pub fn main_from(args: impl IntoIterator<Item = OsString>) -> u8 {
     {
         return 255;
     }
+    if let Some(error) = parsed.failure.take() {
+        let _original = writeln!(io::stderr(), "gnunet-arm option output: {error}");
+        return 255;
+    }
     if let Some(code) = parsed.exit {
         return code;
     }
@@ -730,11 +828,12 @@ pub fn main_from(args: impl IntoIterator<Item = OsString>) -> u8 {
             return 255;
         }
     };
-    let logs = match Selection::new(
+    let logs = match Selection::with_locale(
         &parsed.options,
         clock,
         &gnunet_program_host::logging::Environment::capture(),
         &mut io::stderr(),
+        locale,
     ) {
         Ok(logs) => logs,
         Err(error) => {
@@ -744,7 +843,7 @@ pub fn main_from(args: impl IntoIterator<Item = OsString>) -> u8 {
             return 255;
         }
     };
-    let config = match configuration(&parsed.options) {
+    let config = match configuration_with_locale(&parsed.options, logs.locale()) {
         Ok(config) => config,
         Err(error) => {
             logs.error("arm.cli.configuration.failed", format_args!("{error}"));
@@ -784,44 +883,7 @@ pub fn main_from(args: impl IntoIterator<Item = OsString>) -> u8 {
             return 1;
         }
     };
-    let result: Result<u8> = runtime.block_on(async {
-        if logs.reporter().failed() {
-            return logs.finish(Ok(1));
-        }
-        let (context, mut resolver_driver) = gnunet_resolver_broker::broker::<8, 65518>(
-            gnunet_resolver_broker::LiveConfiguration::new(config.duplicate()?),
-            Default::default(),
-            gnunet_resolver_broker::native_profile()?,
-            logs.source(),
-        )?;
-        let original: Result<u8> = async {
-            context.connect(config.duplicate()?)?;
-            run(
-                Invocation {
-                    config,
-                    options: parsed.options,
-                    ports,
-                    diagnostics: logs.clone(),
-                },
-                &mut resolver_driver,
-                &mut registry,
-                &mut io::stdout(),
-                &mut io::stderr(),
-            )
-            .await
-        }
-        .await;
-        let resolver = resolver_driver.disconnect();
-        drop(context);
-        match resolver {
-            Ok(()) => original,
-            Err(error) => Err(Box::new(Failures {
-                original: original.err(),
-                resolver: Some(Box::new(error)),
-                ..Default::default()
-            })),
-        }
-    });
+    let result = runtime.block_on(execute(config, parsed.options, ports, &logs, &mut registry));
     if let Err(error) = &result {
         logs.error("arm.cli.failed", format_args!("gnunet-arm: {error}"));
     }

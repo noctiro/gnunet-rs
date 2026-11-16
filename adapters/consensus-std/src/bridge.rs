@@ -15,6 +15,8 @@ use std::{
     task::{Context, Poll},
     time::{Duration, Instant},
 };
+mod listener;
+
 struct Source<'id> {
     id: SetId<'id>,
     native: Option<set::Set>,
@@ -100,7 +102,7 @@ fn classify(error: &set::Error) -> Fault {
     match error {
         set::Error::Protocol(e) => *e,
         set::Error::Deadline(_) => Fault::Deadline,
-        set::Error::UnexpectedStatus(_) => Fault::Malformed,
+        set::Error::UnexpectedStatus(_) | set::Error::UnexpectedResult { .. } => Fault::Malformed,
         set::Error::Clock(_) | set::Error::Client(_) => Fault::Unavailable,
         set::Error::Io(_) => Fault::Io,
     }
@@ -472,12 +474,6 @@ impl<'id, 'pils> Bridge<'id, 'pils> {
             self.cancel(Fault::Deadline)?;
         }
         Ok(expired)
-    }
-    fn listener_close(&mut self) {
-        if let Some(mut listener) = self.listener.take() {
-            self.listener_event = Some(set::ListenProgress::Lost(listener.close()));
-        }
-        self.offers.clear();
     }
     fn fail_effect(
         &mut self,
@@ -966,51 +962,6 @@ impl<'id, 'pils> Bridge<'id, 'pils> {
         }
         Ok(Some(Progress::Activity))
     }
-    fn reject_offer(
-        &mut self,
-        effect: EffectId<'id>,
-        offer: OfferId<'id>,
-    ) -> Result<Option<Progress<'id>>, Error> {
-        let Some(listener) = &mut self.listener else {
-            // Only retirement of the original listener can discharge an
-            // unwritten rejection without a corresponding whole-write fact.
-            if let Some(at) = self.offers.iter().position(|row| row.id == offer) {
-                self.offers.swap_remove(at);
-            }
-            self.settle(effect, Completion::Retired)?;
-            return Ok(Some(Progress::Activity));
-        };
-        let at = self
-            .offers
-            .iter()
-            .position(|row| row.id == offer)
-            .ok_or(Fault::StaleGeneration)?;
-        if matches!(self.offers[at].state, OfferState::Rejecting(_)) {
-            return Ok(None);
-        }
-        let OfferState::Prepared(prepared) =
-            std::mem::replace(&mut self.offers[at].state, OfferState::Committing)
-        else {
-            return Err(Fault::NotReady.into());
-        };
-        match listener.reject_prepared(prepared) {
-            Ok(rejection) => {
-                self.offers[at].state = OfferState::Rejecting(rejection);
-                Ok(Some(Progress::Activity))
-            }
-            Err(failure) => {
-                self.offers[at].state = OfferState::Prepared(failure.prepared);
-                if pressure(&failure.error) {
-                    return Ok(None);
-                }
-                let why = classify(&failure.error);
-                self.listener_close();
-                self.cancel(why)?;
-                self.fault = Some(failure.error.into());
-                Ok(Some(Progress::Activity))
-            }
-        }
-    }
     fn record_source_loss(&mut self, source: SetId<'id>, loss: &set::SetLoss) {
         // Empty requested phase closes must not hide a later genuine failure.
         // This copy adds no clock sample, payload owner or queue. Missing core
@@ -1184,139 +1135,6 @@ impl<'id, 'pils> Bridge<'id, 'pils> {
             event: set::SetProgress::Lost(work.loss),
         }))
     }
-    fn listen(&mut self, cx: &mut Context<'_>) -> Result<Option<Progress<'id>>, Error> {
-        if self.listener.is_none() {
-            return Ok(None);
-        }
-        if !self.core.listener_live()
-            && self
-                .core
-                .effect()
-                .is_none_or(|e| !matches!(e.action, Action::Listen { .. }))
-        {
-            self.listener_close();
-            return Ok(Some(Progress::Activity));
-        }
-        let free = self.free()?;
-        let max = self.limits.core.offers;
-        let core = &mut self.core;
-        let offers = &mut self.offers;
-        let mut accepted = None;
-        let mut rejected = None;
-        let step = self
-            .listener
-            .as_mut()
-            .ok_or(Fault::NotReady)?
-            .poll_progress(cx, &mut |incoming| {
-                let decide = (|| -> Result<(OfferId<'id>, RoundContext), Fault> {
-                    let context = RoundContext::decode(incoming.context)?;
-                    Self::reserve(offers, max, free).map_err(|e| match e {
-                        Error::Protocol(e) => e,
-                        Error::Set(_) | Error::Native(_) | Error::Io(_) => Fault::Capacity,
-                    })?;
-                    let id = core.offer(incoming.peer, context, self.last_now)?;
-                    Ok((id, context))
-                })();
-                match decide {
-                    Ok((id, context)) => {
-                        accepted = Some((id, incoming.epoch.clone(), incoming.peer, context));
-                        set::Decision::Accept {
-                            mode: set::ResultMode::Symmetric,
-                            options: set::Options {
-                                force_delta: 0,
-                                force_full: 0,
-                                byzantine: 1,
-                                byzantine_lower_bound: 0,
-                            },
-                        }
-                    }
-                    Err(error) => {
-                        rejected = Some((incoming.peer, error));
-                        set::Decision::Reject
-                    }
-                }
-            });
-        if let Some(rejected) = rejected {
-            self.rejection = Some(rejected);
-        }
-        let event = match step {
-            Poll::Pending => return Ok(None),
-            Poll::Ready(Ok(event)) => event,
-            Poll::Ready(Err(e)) => {
-                self.listener_close();
-                self.cancel(classify(&e))?;
-                return Ok(Some(Progress::Fault(e.into())));
-            }
-        };
-        match event {
-            set::ListenProgress::Accepted(prepared) => {
-                let (id, epoch, peer, context) = accepted.ok_or(Fault::StaleGeneration)?;
-                self.offers.push(Offer {
-                    id,
-                    state: OfferState::Prepared(prepared),
-                });
-                Ok(Some(Progress::Offer {
-                    offer: id,
-                    epoch,
-                    peer,
-                    context,
-                }))
-            }
-            set::ListenProgress::Written {
-                epoch,
-                rejected: Some(rejected),
-                complete: true,
-                bytes,
-            } => {
-                if let Some(effect) = self.core.effect()
-                    && let Action::RejectOffer { offer } = effect.action
-                    && let Some(at) = self.offers.iter().position(|row| row.id == offer)
-                    && matches!(&self.offers[at].state, OfferState::Rejecting(id) if id.matches(&epoch, rejected))
-                {
-                    let effect = effect.id;
-                    self.offers.swap_remove(at);
-                    self.settle(effect, Completion::Written)?;
-                }
-                Ok(Some(Progress::Listener(set::ListenProgress::Written {
-                    epoch,
-                    rejected: Some(rejected),
-                    complete: true,
-                    bytes,
-                })))
-            }
-            event @ set::ListenProgress::Written {
-                complete: true,
-                rejected: None,
-                ..
-            } => {
-                if let Some(effect) = self.core.effect()
-                    && matches!(effect.action, Action::Listen { .. })
-                {
-                    self.settle(effect.id, Completion::Written)?;
-                }
-                Ok(Some(Progress::Listener(event)))
-            }
-            set::ListenProgress::Lost(loss) => {
-                if let Some(effect) = self.core.effect()
-                    && matches!(effect.action, Action::Listen { .. })
-                {
-                    let completion = if loss.transport.initializer_written {
-                        Completion::Written
-                    } else if loss.transport.initializer_bytes == 0 {
-                        Completion::Unsent(cause(&loss.cause))
-                    } else {
-                        Completion::Lost(cause(&loss.cause))
-                    };
-                    self.settle(effect.id, completion)?;
-                }
-                let why = cause(&loss.cause);
-                self.listener_close();
-                self.cancel(why)?;
-                Ok(Some(Progress::Listener(set::ListenProgress::Lost(loss))))
-            }
-            other => Ok(Some(Progress::Listener(other))),
-        }
-    }
     fn actual_set(
         &mut self,
         source: SetId<'id>,
@@ -1361,8 +1179,7 @@ impl<'id, 'pils> Bridge<'id, 'pils> {
             set::SetProgress::Result {
                 operation,
                 current_size,
-                status,
-                element,
+                value,
                 terminal,
                 ..
             } => {
@@ -1374,28 +1191,43 @@ impl<'id, 'pils> Bridge<'id, 'pils> {
                 if !self.tasks[at].terminal {
                     let id = self.tasks[at].id;
                     let peer = self.tasks[at].peer;
-                    let result = match status {
-                        set::Status::AddLocal => Some(core::SetEvent::AddLocal {
+                    let result = match value {
+                        set::ResultValue::AddLocal(element) => Some(core::SetEvent::AddLocal {
                             element_type: element.element_type,
                             data: &element.data,
                         }),
-                        set::Status::AddRemote => Some(core::SetEvent::AddRemote {
+                        set::ResultValue::AddRemote(element) => Some(core::SetEvent::AddRemote {
                             element_type: element.element_type,
                             data: &element.data,
                         }),
-                        set::Status::Done if terminal.is_some() => Some(core::SetEvent::Done {
-                            current_size: *current_size,
-                        }),
-                        set::Status::Failure if terminal.is_some() => {
+                        set::ResultValue::Done if terminal.is_some() => {
+                            Some(core::SetEvent::Done {
+                                current_size: *current_size,
+                            })
+                        }
+                        set::ResultValue::Failure if terminal.is_some() => {
                             Some(core::SetEvent::Failure(Fault::Unavailable))
                         }
-                        set::Status::HalfDone => None,
+                        set::ResultValue::HalfDone => None,
                         _ => {
                             self.task_fault = Some((id, Fault::Malformed));
-                            // This is local refusal, not an actual terminal reply.
-                            // Retire original native IO before reporting failure.
-                            self.cancel(Fault::Malformed)?;
-                            None
+                            // An invalid mode/terminal result corrupts this SET
+                            // source, not the independent leader populations.
+                            // Its actual close/loss receipts retire all affected
+                            // tasks; no semantic failure or DONE is fabricated.
+                            let source_at = self.source(source)?;
+                            let loss = self.sources[source_at]
+                                .native
+                                .as_mut()
+                                .ok_or(Fault::NotReady)?
+                                .retire_after(set::Error::Protocol(Fault::Malformed));
+                            self.begin_loss_with_cause(
+                                source,
+                                loss,
+                                false,
+                                Some(Fault::Malformed),
+                            )?;
+                            return Ok(Some(Progress::Set { set: source, event }));
                         }
                     };
                     if let Some(result) = result

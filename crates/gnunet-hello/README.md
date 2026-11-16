@@ -4,6 +4,8 @@ Allocation-free, pure Rust HELLO address sets, signing, verification, blocks,
 HELLO_URI/DHT messages and `gnunet://hello/` URLs for GNUnet v0.29.1. The library
 has no default features, no allocator, OS clock, sockets, C FFI or unsafe code. Its only dependencies are the internal types, wire and crypto crates.
 
+## Inputs and verification
+
 Callers provide byte storage, finite input/address/count limits, explicit UTC and
 an explicit `SignatureProfile`. Addresses are public opaque byte URIs. Builders
 sort in the C implementation's **descending** `strcmp` order and treat
@@ -21,6 +23,8 @@ fields and computing the address count. Encoding emits zero reserved bits
 and the true count, checks all lengths first, and leaves output unchanged on
 refusal. Raw blocks support caller-bounded sizes beyond a message's 16-bit width.
 
+## Time and encoding
+
 All timestamps are absolute microseconds. Expiration equal to `now` is valid. `default_expiration(now)` adds the official two-day lifetime with saturation. Representation constructors preserve zero rather than consulting a hidden clock;
 to reproduce C's zero-expiration builder convenience, pass
 `default_expiration(now)` explicitly when the supplied expiry is zero.
@@ -32,6 +36,8 @@ truncated percent triplets, embedded literal NUL and decimal overflow safely;
 the C implementations may access freed storage or have undefined conversion
 behavior on such malformed inputs. See [UPSTREAM.md](UPSTREAM.md) for all 30 API
 mappings and intentionally safe differences.
+
+## Reference checks
 
 Run `cargo test -p gnunet-hello` and `cargo clippy -p gnunet-hello --all-targets`. For live bidirectional testing, build the **unmodified** official Meson target
 `test_hello_uri` into a separate directory, then run:
@@ -52,7 +58,7 @@ library symbols/hashes and Rust inputs. It compiles a C driver against the real
 shared libraries, regenerates deterministic C outputs, runs Rust tests
 against those outputs and a nonempty live C behavior corpus, and sends Rust
 outputs back through both C profiles. It never edits or rebuilds the supplied
-reference builds. Reports describe this HELLO boundary, not whole GNUnet readiness.
+reference builds.
 
 The live corpus separates C's `noverify` argument from the Rust verifier step:
 raw blocks and HELLO_URI can retain bad signatures or expired timestamps when C

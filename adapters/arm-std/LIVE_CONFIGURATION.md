@@ -38,20 +38,10 @@ physical connection counts is made. C's canceled ARM-stop callback NULL case is
 not executed as an oracle; the Rust tombstone safely suppresses callbacks and
 reclaims capacity. Existing explicit safe differences remain in UPSTREAM.md.
 
-## Direct tests
+## Verification
 
-`tests/live_configuration.rs` contains four owned-socket tests: mutable
-monitor config plus EOF and no invented retry; preserved old TCP with fresh Unix
-path and original queued request; live replacement during genuine kernel TX
-backpressure (100 full-size frames, no replay); and an original manually-polled
-connection future that neither moves to the new path nor is woken by replacement.
-`tests/local_start.rs` adds one child test for setup sampling and no respawn.
-`tests/loopback.rs` adds eight owned-peer negative/ownership tests. These peer
-fixtures are direct Rust tests, not C-client branch observations.
-
-Normal C/R process observations are separate receipts: 36 command profiles,
-Unix/TCP ClientHost/MonitorHost to the normal C ARM daemon, native mutable
-monitor configuration, and the zero-managed-service Unix/new-TCP-fence read
-point probe. Their original executed input hashes and limitations are retained;
-none is promoted to current whole-source evidence without a fresh frozen run.
-The old verify.py's M8 counts are historical and are not an M9 verifier.
+The Unix live-configuration suite covers monitor sampling, cached TCP versus
+fresh local paths, queued request identity, partial TX and manually polled
+connection futures. Local-start fixtures cover setup sampling without respawn.
+These are Rust owned-peer fixtures; normal C interoperability observations have
+separate source-bound receipts. Verification artifacts belong under `target/`.

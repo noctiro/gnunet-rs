@@ -1,4 +1,5 @@
 //! Actual Unix/TCP control and monitor ownership across cancellation and EOF.
+#![cfg(unix)]
 #![expect(
     clippy::panic,
     reason = "These test-only callbacks deliberately fail on unexpected invocation or result shape."

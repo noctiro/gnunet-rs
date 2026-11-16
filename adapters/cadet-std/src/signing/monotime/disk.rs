@@ -1,15 +1,13 @@
 //! Fixed-size Rust monotime state, one actual writer lock and atomic durability.
 use super::{Lease, Range};
 use gnunet_crypto::hash256;
-use std::sync::{
-    Arc,
-    atomic::{AtomicU64, Ordering},
-};
+mod files;
+use super::DirectorySync;
+use files::Files;
 use std::{
-    fs::{self, File, OpenOptions},
-    io::{self, Read, Write},
-    os::unix::fs::{MetadataExt, OpenOptionsExt},
+    io,
     path::{Path, PathBuf},
+    sync::atomic::Ordering,
 };
 const MAGIC: &[u8; 8] = b"GNCAMT01";
 const BYTES: usize = 80;
@@ -109,17 +107,10 @@ impl State {
 /// never unlinked; its kernel ownership releases when the actual File closes.
 /// This is a Rust internal format, not a C database or an on-wire field.
 pub struct Store {
-    path: PathBuf,
-    parent: PathBuf,
-    directory: File,
-    directory_identity: (u64, u64),
-    guard_path: PathBuf,
-    guard: Arc<Lease>,
-    guard_identity: (u64, u64),
+    files: Files,
     local: [u8; 32],
     loaded: Option<State>,
     unknown: Option<State>,
-    temporary: u64,
 }
 impl Store {
     /// Open the fixed state namespace for this exact peer below a configured
@@ -144,90 +135,28 @@ impl Store {
             out[1] = HEX[usize::from(byte & 15)];
         }
         // The full public identity is encoded without a collision-prone prefix.
-        use std::os::unix::ffi::OsStrExt;
-        name.push(std::ffi::OsStr::from_bytes(&suffix));
+        name.push(
+            std::str::from_utf8(&suffix).map_err(|error| {
+                fail(Stage::Fence, Outcome::NotCommitted, io::Error::other(error))
+            })?,
+        );
         Self::open(stem.with_file_name(name), local)
     }
     /// Acquire the actual exclusive OS writer lock and validate exact existing
     /// state before allocating any value. Missing state is distinct from zero.
     /// A changed public peer is refused; identity rotation uses a new state path.
     pub fn open(path: PathBuf, local: [u8; 32]) -> Result<Self, Error> {
-        gnunet_service_runtime::private_parents(&path)
-            .map_err(|e| fail(Stage::Fence, Outcome::NotCommitted, e))?;
-        let name = path
-            .file_name()
-            .ok_or_else(|| {
-                fail(
-                    Stage::Fence,
-                    Outcome::NotCommitted,
-                    io::Error::new(io::ErrorKind::InvalidInput, "monotime path has no filename"),
-                )
-            })?
-            .to_os_string();
-        let requested_parent = path
-            .parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .unwrap_or(Path::new("."));
-        let parent = fs::canonicalize(requested_parent)
-            .map_err(|e| fail(Stage::Fence, Outcome::NotCommitted, e))?;
-        let path = parent.join(&name);
-        let directory = OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_DIRECTORY)
-            .open(&parent)
-            .map_err(|e| fail(Stage::Fence, Outcome::NotCommitted, e))?;
-        let dm = directory
-            .metadata()
-            .map_err(|e| fail(Stage::Fence, Outcome::NotCommitted, e))?;
-        let mut guard_name = name;
-        guard_name.push(".cadet-monotime-lock");
-        let guard_path = parent.join(guard_name);
-        let guard = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(&guard_path)
-            .map_err(|e| fail(Stage::Fence, Outcome::NotCommitted, e))?;
-        guard
-            .try_lock()
-            .map_err(|e| fail(Stage::Fence, Outcome::NotCommitted, e.into()))?;
-        let gm = guard
-            .metadata()
-            .map_err(|e| fail(Stage::Fence, Outcome::NotCommitted, e))?;
-        if !dm.is_dir() || !gm.is_file() {
-            return Err(fail(
-                Stage::Fence,
-                Outcome::NotCommitted,
-                io::Error::other("invalid monotime writer namespace"),
-            ));
-        }
+        let files = Files::open(&path)?;
         let mut store = Self {
-            path,
-            parent,
-            directory,
-            directory_identity: (dm.dev(), dm.ino()),
-            guard_path,
-            guard: Arc::new(Lease {
-                guard,
-                issued: AtomicU64::new(0),
-            }),
-            guard_identity: (gm.dev(), gm.ino()),
+            files,
             local,
             loaded: None,
             unknown: None,
-            temporary: 0,
         };
-        store.fence()?;
-        store
-            .directory
-            .sync_all()
-            .map_err(|e| fail(Stage::DirectorySync, Outcome::Unknown, e))?;
         store.loaded = store.read()?;
         store
-            .guard
+            .files
+            .lease
             .issued
             .store(store.loaded.map_or(0, |state| state.high), Ordering::SeqCst);
         if store.loaded.is_some_and(|state| state.local != local) {
@@ -258,137 +187,34 @@ impl Store {
                 io::Error::other("original monotime reservation unresolved"),
             ));
         }
-        Ok(self.loaded.map(|state| state.high))
-    }
-    fn fence(&self) -> Result<(), Error> {
-        let guard = fs::symlink_metadata(&self.guard_path)
-            .map_err(|e| fail(Stage::Fence, Outcome::Unknown, e))?;
-        let held = self
-            .guard
-            .guard
-            .metadata()
-            .map_err(|e| fail(Stage::Fence, Outcome::Unknown, e))?;
-        let directory = fs::symlink_metadata(&self.parent)
-            .map_err(|e| fail(Stage::Fence, Outcome::Unknown, e))?;
-        let held_directory = self
-            .directory
-            .metadata()
-            .map_err(|e| fail(Stage::Fence, Outcome::Unknown, e))?;
-        if !guard.is_file()
-            || (guard.dev(), guard.ino()) != self.guard_identity
-            || (held.dev(), held.ino()) != self.guard_identity
-            || !directory.is_dir()
-            || (directory.dev(), directory.ino()) != self.directory_identity
-            || (held_directory.dev(), held_directory.ino()) != self.directory_identity
-        {
+        if self.read()? != self.loaded {
             return Err(fail(
                 Stage::Fence,
                 Outcome::Unknown,
-                io::Error::other("original monotime writer fence/directory changed"),
+                io::Error::other("monotime state changed outside original writer"),
             ));
         }
-        Ok(())
+        Ok(self.loaded.map(|state| state.high))
+    }
+    fn fence(&self) -> Result<(), Error> {
+        self.files.fence()
     }
     fn read(&self) -> Result<Option<State>, Error> {
-        self.fence()?;
-        let mut file = match OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(&self.path)
-        {
-            Ok(file) => file,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
-            Err(e) => return Err(fail(Stage::Read, Outcome::NotCommitted, e)),
-        };
-        let before = file
-            .metadata()
-            .map_err(|e| fail(Stage::Read, Outcome::NotCommitted, e))?;
-        if !before.is_file() || before.len() != BYTES as u64 {
-            return Err(fail(
-                Stage::Read,
-                Outcome::NotCommitted,
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "monotime is not an exact regular80byte state",
-                ),
-            ));
-        }
-        let mut bytes = [0; BYTES];
-        file.read_exact(&mut bytes)
-            .map_err(|e| fail(Stage::Read, Outcome::NotCommitted, e))?;
-        let after =
-            fs::symlink_metadata(&self.path).map_err(|e| fail(Stage::Read, Outcome::Unknown, e))?;
-        if !after.is_file()
-            || (after.dev(), after.ino(), after.len()) != (before.dev(), before.ino(), BYTES as u64)
-        {
-            return Err(fail(
-                Stage::Read,
-                Outcome::Unknown,
-                io::Error::other("monotime state changed during read"),
-            ));
-        }
-        State::decode(bytes)
-            .map(Some)
-            .map_err(|e| fail(Stage::Read, Outcome::NotCommitted, e))
+        self.files
+            .read()?
+            .map(State::decode)
+            .transpose()
+            .map_err(|error| fail(Stage::Read, Outcome::NotCommitted, error))
     }
-    fn temporary(&mut self) -> Result<(File, Temporary), Error> {
-        for _ in 0..64 {
-            self.temporary = self.temporary.checked_add(1).ok_or_else(|| {
-                fail(
-                    Stage::Write,
-                    Outcome::NotCommitted,
-                    io::Error::other("monotime temporary counter exhausted"),
-                )
-            })?;
-            let mut name = self
-                .path
-                .file_name()
-                .ok_or_else(|| {
-                    fail(
-                        Stage::Write,
-                        Outcome::NotCommitted,
-                        io::Error::other("missing monotime state name"),
-                    )
-                })?
-                .to_os_string();
-            name.push(format!(
-                ".cadet-new-{}-{}",
-                std::process::id(),
-                self.temporary
-            ));
-            let path = self.parent.join(name);
-            match OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .mode(0o600)
-                .custom_flags(libc::O_NOFOLLOW)
-                .open(&path)
-            {
-                Ok(file) => {
-                    let m = file
-                        .metadata()
-                        .map_err(|e| fail(Stage::Write, Outcome::NotCommitted, e))?;
-                    return Ok((
-                        file,
-                        Temporary {
-                            path,
-                            identity: (m.dev(), m.ino()),
-                            renamed: false,
-                        },
-                    ));
-                }
-                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
-                Err(e) => return Err(fail(Stage::Write, Outcome::NotCommitted, e)),
-            }
+    /// Last completed directory naming observation. Windows reports Unavailable;
+    /// an active uncertain replacement has no current observation. No I/O occurs.
+    #[must_use]
+    pub fn directory_sync(&self) -> Option<DirectorySync> {
+        if self.unknown.is_some() {
+            None
+        } else {
+            self.files.directory_sync()
         }
-        Err(fail(
-            Stage::Write,
-            Outcome::NotCommitted,
-            io::Error::new(
-                io::ErrorKind::AlreadyExists,
-                "bounded monotime temporary namespace is occupied",
-            ),
-        ))
     }
     /// Explicitly persist a checked range before exposing any value. The new
     /// start is max(wall_us, previous_high+1), so wall-clock rollback/restart
@@ -444,25 +270,27 @@ impl Store {
             local: self.local,
             high,
         };
-        let (mut file, mut temporary) = self.temporary()?;
-        file.write_all(&state.bytes())
-            .map_err(|e| fail(Stage::Write, Outcome::NotCommitted, e))?;
-        file.sync_all()
-            .map_err(|e| fail(Stage::Write, Outcome::NotCommitted, e))?;
-        self.fence()?;
-        // Even a rename error can be uncertain on a remote filesystem. No range
-        // is returned and this owner remains blocked until exact reconciliation.
+        let mut temporary = self.files.temporary()?;
+        temporary.write(&state.bytes())?;
+        let prepared = self.files.prepare(&mut temporary)?;
+        // Replacement may have applied even when native completion fails. Both
+        // original images stay pinned and no range is exposed before settlement.
         self.unknown = Some(state);
-        fs::rename(&temporary.path, &self.path)
-            .map_err(|e| fail(Stage::Rename, Outcome::Unknown, e))?;
-        temporary.renamed = true;
+        prepared.publish()?;
         after_rename().map_err(|e| fail(Stage::DirectorySync, Outcome::Unknown, e))?;
         self.reconcile()?;
         Ok(Range {
             local: self.local,
             next: first,
             left: count,
-            lease: Some(self.guard.clone()),
+            lease: Some(self.files.lease.clone()),
+            directory_sync: self.files.directory_sync().ok_or_else(|| {
+                fail(
+                    Stage::Recovery,
+                    Outcome::Unknown,
+                    io::Error::other("missing monotime naming observation"),
+                )
+            })?,
         })
     }
     /// Explicit synchronous one-value convenience. Socket/reactor paths should
@@ -473,17 +301,15 @@ impl Store {
             .take_next()
             .map_err(|reason| fail(Stage::Reserve, Outcome::Unknown, io::Error::other(reason)))
     }
-    /// Settle only the original uncertain high-water by actual directory sync
-    /// and exact readback. Its entire range remains burned; this does not return
+    /// Settle the original uncertain high-water using native file/metadata
+    /// synchronization, an observed directory barrier and exact readback. Its entire range remains burned; this does not return
     /// it to a caller or retry an already exposed signature operation.
     pub fn reconcile(&mut self) -> Result<(), Error> {
         self.fence()?;
         let Some(expected) = self.unknown else {
             return Ok(());
         };
-        self.directory
-            .sync_all()
-            .map_err(|e| fail(Stage::Recovery, Outcome::Unknown, e))?;
+        self.files.settle()?;
         let actual = self.read().map_err(|mut e| {
             e.outcome = Outcome::Unknown;
             e
@@ -495,24 +321,10 @@ impl Store {
                 io::Error::other("original monotime high-water readback differs"),
             ));
         }
+        self.files.adopt()?;
         self.loaded = Some(expected);
         self.unknown = None;
         Ok(())
-    }
-}
-struct Temporary {
-    path: PathBuf,
-    identity: (u64, u64),
-    renamed: bool,
-}
-impl Drop for Temporary {
-    fn drop(&mut self) {
-        if !self.renamed
-            && fs::symlink_metadata(&self.path)
-                .is_ok_and(|m| m.is_file() && (m.dev(), m.ino()) == self.identity)
-        {
-            let _removed = fs::remove_file(&self.path);
-        }
     }
 }
 #[cfg(test)]

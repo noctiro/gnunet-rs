@@ -7,33 +7,32 @@ use gnunet_peerstore_host::{
 };
 use gnunet_program_host::policy::Level;
 use gnunet_service_runtime::{BoundListeners, clock::RuntimeClock, service::ShutdownMode};
-use gnunet_service_startup::{ParentControl, daemon::ChildReady};
 use std::{
     future::{Future, poll_fn},
     io::{self, Write},
     sync::Arc,
     task::Poll,
 };
-pub(crate) struct Inputs<'a, 'route, 'log> {
+pub(crate) struct Inputs<'a> {
     pub(crate) bound: &'a BoundListeners,
-    pub(crate) parent: Option<ParentControl>,
+    pub(crate) control: Control,
     pub(crate) worker: &'a mut Worker,
     pub(crate) settings: &'a Settings,
     pub(crate) clock: Arc<dyn RuntimeClock>,
-    pub(crate) reports: &'a Reports<'route, 'log>,
-    pub(crate) child: &'a mut ChildReady,
+    pub(crate) reports: &'a Reports,
 }
-pub(crate) async fn run(input: Inputs<'_, '_, '_>) -> Result<(), Failure> {
+pub(crate) async fn run(
+    input: Inputs<'_>,
+    notify_ready: impl Future<Output = Result<(), Failure>>,
+) -> Result<(), Failure> {
     let Inputs {
         bound,
-        parent,
+        mut control,
         worker,
         settings,
         clock,
         reports,
-        child,
     } = input;
-    let mut control = Control::new(parent)?;
     let mut instance = core::Instance::new();
     let mut clients = Vec::new();
     clients.try_reserve_exact(settings.native.clients)?;
@@ -84,16 +83,30 @@ pub(crate) async fn run(input: Inputs<'_, '_, '_>) -> Result<(), Failure> {
             settings.directory.display()
         ),
     );
-    let ready = if reports.failed() {
-        None
-    } else {
-        let mut output = io::stdout().lock();
-        Some(writeln!(output,"READY peerstore {} wire=0.29.1 store=wal-durable iterate=uid monitor=credit authentication=cache-only",settings.directory.display())
-            .and_then(|()|output.flush()).and_then(|()|child.ready()))
-    };
+    let ready: Result<(), Failure> = async {
+        if reports.failed() {
+            return Err("PEERSTORE logger failed before readiness".into());
+        }
+        {
+            let mut output = io::stdout().lock();
+            writeln!(
+                output,
+                "READY peerstore backend=rust-wal persistence=fsync workers=1"
+            )?;
+            output.flush()?;
+        }
+        gnunet_program_host::service::acknowledge_ready(
+            notify_ready,
+            control.native(),
+            reports.reporter(),
+            settings.shutdown_grace,
+        )
+        .await
+    }
+    .await;
     let outcome = match ready {
-        Some(Err(error)) => Err(Box::new(error) as Failure),
-        None | Some(Ok(())) => {
+        Err(error) => Err(error),
+        Ok(()) => {
             let listeners = bound.listeners();
             let mut stop_at = None;
             loop {
@@ -160,4 +173,17 @@ pub(crate) async fn run(input: Inputs<'_, '_, '_>) -> Result<(), Failure> {
         cleanup.push(Box::new(error) as Failure);
     }
     aggregate(outcome, cleanup)
+}
+
+pub(crate) async fn before_start(control: &mut Control, reports: &Reports) -> Result<(), Failure> {
+    poll_fn(|cx| match control.poll(cx, reports) {
+        Poll::Ready(Err(error)) => Poll::Ready(Err(error)),
+        Poll::Ready(Ok(())) => Poll::Ready(Err(io::Error::new(
+            io::ErrorKind::Interrupted,
+            "PEERSTORE stopped before worker admission",
+        )
+        .into())),
+        Poll::Pending => Poll::Ready(Ok(())),
+    })
+    .await
 }

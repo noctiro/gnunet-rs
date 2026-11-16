@@ -7,7 +7,7 @@ this is not an unbounded general-purpose RFC6145 router.
 
 ## Bounded VPN lease/flow owner
 
-The added `Engine` is an allocation-free VPN state/translation owner over
+`Engine` is an allocation-free VPN state/translation owner over
 explicit ports, not a native TUN, sysroute, REGEX discovery or CADET runtime. No
 network, OS route, thread or success stub is created. All protocol frames use the
 existing official VPN/EXIT codec. Raw UDP/IP handling is this new VPN capability;
@@ -21,6 +21,8 @@ and its bounded peer-envelope overhead. Local IPC results use at most32 inline
 bytes per request. Instance/row/checked allocation id brand every capability;
 these local ids never become private wire RIDs or channel fields. All source/job
 and immutable output tokens remain stale across bounded row/source reuse.
+
+## Client requests and leases
 
 The native IPC service calls `attach_client`, decodes with `ipc_af()` and calls
 `redirect(client, WireRequest, absolute_now)`. Original RID bytes echo untouched. Input
@@ -42,6 +44,8 @@ wall adjustments separate from local idle duration. Idle expiry requests close
 rather than inventing a stopped channel. The original C service's
 legacy request protocol field is ignored just as its handler does; packet
 protocol, service port and EXIT policy govern forwarding.
+
+## Packet sources
 
 An verified original device first calls `attach_tun`. No lease becomes
 usable until a OS provider admits the exact `RoutingRequest{action:Install,
@@ -83,6 +87,8 @@ local IPC and peer profiles are separate. Buffered AF metadata normalizes once
 before any prepared peer effect, allowing explicit Linux2/10↔Darwin2/30 sources
 without guessing packet lengths. Prepared/native bytes never change or reseal.
 
+## Peer channels
+
 `prepare_peer` takes oldest buffered flow data and permits one original peer
 attempt per flow, preserving first TCP START before DATA. `receive_peer` accepts
 only the exact original Peer and correct reply direction, rewrites original
@@ -92,6 +98,8 @@ quotes. Capacity/WouldBlock retains caller input unchanged; permanent malformed
 input requests source close and grants no fake receive_done. A Delivery
 is eligible only after its original whole TUN packet actually writes. Semantic
 `receive_done` does not prove that the native CADET ACK itself wrote.
+
+## Effects and retirement
 
 Every final native output uses original `Effect`: queued, positive
 exposed, whole written are distinct. Native short TUN writes are real
@@ -111,11 +119,3 @@ live incoming data cannot be released early. Old delivery/source callbacks canno
 credit a new channel. `close_required`, job retirement, `release_buffer`,
 `retire_flow` and `retire_tun` allow an coordinator to drain all original
 work without hidden tasks or leaked contexts.
-
-One focused additional pure model covers allocation requiring modeled route
-receipts, UDP official peer/raw-TUN roundtrip, whole-write credit gating, active
-flow survival across lease expiry, non-reuse of its address, local cancellation
-leaving a lease, independent queued TUN drain after CADET loss, and old TUN/route
-job retirement with mandatory cleanup. OS/CADET receipts in this pure model are
-explicitly modeled ports, not native execution proof. Existing packet/EXIT/native-client evidence is not
-relabeled by this owner candidate.

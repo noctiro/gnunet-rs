@@ -4,8 +4,8 @@ An independent Rust implementation of GNUnet, targeting its full feature set and
 interoperability with official C nodes, clients and services. Protocol and service
 logic are implemented in Rust; official C software is used for reference checks.
 
-**Development is incomplete.** See [implementation status](IMPLEMENTATION_STATUS.md)
-for functionality and interoperability work that remains.
+Current limitations and pending interoperability work are tracked in
+[Implementation status](IMPLEMENTATION_STATUS.md).
 
 ## Getting started
 
@@ -14,7 +14,6 @@ Run commands from the repository root. Rust is pinned by
 compiler and platform SDK.
 
 Linux, macOS, Windows and FreeBSD are full native implementation targets.
-Remaining platform backends are tracked in [implementation status](IMPLEMENTATION_STATUS.md).
 The [platform matrix](tests/README.md#continuous-integration) describes actual
 execution coverage; embedded profiles compile selected `no_std` configurations.
 
@@ -45,7 +44,7 @@ See the [SDK guide](crates/gnunet/README.md) for feature selection and API paths
 
 ## Service processes
 
-Each executable has a guide under [apps/](apps/) covering configuration and
+Each executable has a guide under [applications](apps/README.md) covering configuration and
 runtime dependencies. For example, [STATISTICS](apps/gnunet-service-statistics/README.md)
 accepts an official configuration file:
 
@@ -65,6 +64,9 @@ Starting one service does not start its dependencies or a complete node stack.
 
 | Guide | Contents |
 | --- | --- |
+| [Core libraries](crates/README.md) | Protocol engines and public Rust interfaces |
+| [Native adapters](adapters/README.md) | Runtime composition and platform resources |
+| [Development tools](tools/README.md) | Checks, reference programs and performance tools |
 | [Architecture](ARCHITECTURE.md) | Dependency direction, ownership and resource rules |
 | [Protocol contracts](spec/gnunet/README.md) | Compatibility boundary, reference authority and release criteria |
 | [Test guide](tests/README.md) | Targeted checks, full matrix and official-C profiles |

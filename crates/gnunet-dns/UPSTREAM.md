@@ -4,6 +4,8 @@ Pinned GNUnet v0.29.1: `346358e26d4dcc2dc4f51bef5d52dca29c7d8165`.
 The public parser operations map as follows. Native text conversion composes
 with the explicit `gnunet-idna` backend.
 
+## Reference behavior
+
 | Official operation suffix | Rust operation | Remaining qualification |
 |---|---|---|
 | check_label / check_name | `check_label`, `check_name` | Compose with explicit `gnunet-idna::Backend` |

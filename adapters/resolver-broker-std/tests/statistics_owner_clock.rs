@@ -1,7 +1,7 @@
 //! Source clock owner deadlines, separate from native CLIENT socket retry.
 #![expect(
     clippy::panic_in_result_fn,
-    reason = "Finite owned Unix fixtures assert exact original GET and source task ordering"
+    reason = "Finite owned native local fixtures assert exact original GET and source task ordering"
 )]
 #[path = "../../ipc-unix/tests/support/clock_source.rs"]
 pub mod clock_source;
@@ -14,43 +14,28 @@ use gnunet_ipc_unix::handle::{Event, Progress, StatisticsHandle};
 use gnunet_resolver_broker::{FamilyProfile, Limits, LiveConfiguration, broker};
 use gnunet_types::AbsoluteTime;
 use gnunet_wire::official::{MessageHeader, message_type};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::{
     error::Error as StdError,
     future::{Future, poll_fn},
     io,
-    path::PathBuf,
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
+    sync::Arc,
     task::Poll,
     time::Duration,
 };
 use tokio::{
     io::AsyncReadExt,
-    net::{UnixListener, UnixStream},
     time::{Instant, timeout},
 };
+#[path = "support/directory.rs"]
+mod directory;
+use directory::Directory as Dir;
+#[path = "support/local.rs"]
+mod local;
+use local::Listener as LocalListener;
+use local::Stream as LocalStream;
 type Test = Result<(), Box<dyn StdError>>;
 type Stats<'owner> = StatisticsHandle<'owner, 8, 64, 4, 64, 16>;
-static NEXT: AtomicU64 = AtomicU64::new(0);
-struct Dir(PathBuf);
-impl Dir {
-    fn new() -> io::Result<Self> {
-        let p = std::env::temp_dir().join(format!(
-            "gnunet-statistics-owner-clock-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::create_dir(&p)?;
-        Ok(Self(p))
-    }
-}
-impl Drop for Dir {
-    fn drop(&mut self) {
-        drop(std::fs::remove_dir_all(&self.0));
-    }
-}
 fn profile() -> Result<FamilyProfile, Box<dyn StdError>> {
     let p = gnunet_resolver_broker::native_profile()?;
     Ok(FamilyProfile::new(
@@ -63,7 +48,7 @@ fn cfg(section: &[u8], path: &std::path::Path) -> Result<Configuration, Box<dyn 
     c.set_value(
         section,
         b"UNIXPATH",
-        Some(path.as_os_str().as_encoded_bytes()),
+        Some(&gnunet_native::os_bytes::encode(path.as_os_str())),
     )?;
     Ok(c)
 }
@@ -92,7 +77,7 @@ async fn alongside<'owner, F: Future>(
     )
     .await??)
 }
-async fn frame(socket: &mut UnixStream) -> io::Result<Vec<u8>> {
+async fn frame(socket: &mut LocalStream) -> io::Result<Vec<u8>> {
     let mut header = [0; 4];
     socket.read_exact(&mut header).await?;
     let len = usize::from(u16::from_be_bytes([header[0], header[1]]));
@@ -114,7 +99,7 @@ fn configuration_refusal_owner_retry_obeys_shared_forward_revision_and_keeps_que
   let selector=Selector{subsystem:b"owner",name:b"value"};let get=host.get(selector)?;let mut failures=0;let until=Instant::now()+Duration::from_secs(4);
   while failures<10{host.drive(Some(until),|event,_|{if matches!(event,Event::ConnectionUnavailable{..}){failures+=1;}GetFlow::Continue}).await?;assert!(Instant::now()<until);}
   assert_eq!(host.connection_epoch(),None);assert!(host.owns_get(get));
-  let listener=UnixListener::bind(&path)?;live.replace(cfg(b"statistics",&path)?)?;clock.set_offset(2_000_000)?;
+  let listener=LocalListener::bind(&path).await?;live.replace(cfg(b"statistics",&path)?)?;clock.set_offset(2_000_000)?;
   let accepted=alongside(&mut host,timeout(Duration::from_millis(100),listener.accept())).await?;
   assert!(accepted.is_ok(),"source forward revision must wake original STATISTICS-owner retry, not only native CLIENT retry");
   let(mut socket,_)=accepted??;let actual=alongside(&mut host,frame(&mut socket)).await??;let mut expected=[0;128];let len=selector.encode_get(&mut expected)?;assert_eq!(actual,&expected[..len]);assert!(host.owns_get(get));host.destroy(false)?;drop(host);assert_eq!(socket.read(&mut[0]).await?,0);Ok(())
@@ -123,7 +108,7 @@ fn configuration_refusal_owner_retry_obeys_shared_forward_revision_and_keeps_que
 #[test]
 fn deferred_destruction_uses_original_shared_absolute_deadline_not_native_elapsed_time() -> Test {
     tokio::runtime::Builder::new_current_thread().enable_all().build()?.block_on(async {
-  let dir=Dir::new()?;let path=dir.0.join("statistics");let listener=UnixListener::bind(&path)?;let clock=Arc::new(clock_source::Adjustable::frozen(1_000_000,8)?);
+  let dir=Dir::new()?;let path=dir.0.join("statistics");let listener=LocalListener::bind(&path).await?;let clock=Arc::new(clock_source::Adjustable::frozen(1_000_000,8)?);
   let(context,_driver)=broker::<4,64>(LiveConfiguration::new(cfg(b"resolver",&dir.0.join("unused"))?),Limits::default(),profile()?,clock.clone())?;
   let mut statistics_instance_2=gnunet_client::statistics_handle::Instance::new();
   let mut host=Stats::from_config(&mut statistics_instance_2, &cfg(b"statistics",&path)?,context.resolution_context(),b"owner",Default::default())?.ok_or("disabled")?;
@@ -141,7 +126,7 @@ fn deferred_destruction_uses_original_shared_absolute_deadline_not_native_elapse
 #[test]
 fn get_failure_continuation_changes_source_before_original_reconnect_registration() -> Test {
     tokio::runtime::Builder::new_current_thread().enable_all().build()?.block_on(async {
-  let dir=Dir::new()?;let path=dir.0.join("statistics");let listener=UnixListener::bind(&path)?;let clock=Arc::new(clock_source::Adjustable::frozen(1_000_000,8)?);
+  let dir=Dir::new()?;let path=dir.0.join("statistics");let listener=LocalListener::bind(&path).await?;let clock=Arc::new(clock_source::Adjustable::frozen(1_000_000,8)?);
   let(context,_driver)=broker::<4,64>(LiveConfiguration::new(cfg(b"resolver",&dir.0.join("unused"))?),Limits::default(),profile()?,clock.clone())?;
   let mut statistics_instance_3=gnunet_client::statistics_handle::Instance::new();
   let mut host=Stats::from_config(&mut statistics_instance_3, &cfg(b"statistics",&path)?,context.resolution_context(),b"owner",Default::default())?.ok_or("disabled")?;
@@ -361,7 +346,7 @@ fn actual_confirmation_ready_cleanup_does_not_resample_failed_source_or_release_
         .block_on(async {
             let dir = Dir::new()?;
             let path = dir.0.join("confirm");
-            let listener = UnixListener::bind(&path)?;
+            let listener = LocalListener::bind(&path).await?;
             let source = fault_source(4)?;
             let (context, _driver) = broker::<4, 64>(
                 LiveConfiguration::new(cfg(b"resolver", &dir.0.join("unused"))?),
@@ -481,7 +466,7 @@ fn failed_sample_after_get_failure_callback_preserves_original_admission_until_r
         .block_on(async {
             let dir = Dir::new()?;
             let path = dir.0.join("callback-error");
-            let listener = UnixListener::bind(&path)?;
+            let listener = LocalListener::bind(&path).await?;
             let source = fault_source(4)?;
             let (context, _driver) = broker::<4, 64>(
                 LiveConfiguration::new(cfg(b"resolver", &dir.0.join("unused"))?),
@@ -605,7 +590,7 @@ fn post_read_source_failure_retains_exact_complete_end_until_same_epoch_dispatch
         .block_on(async {
             let dir = Dir::new()?;
             let path = dir.0.join("frame-error");
-            let listener = UnixListener::bind(&path)?;
+            let listener = LocalListener::bind(&path).await?;
             let source = fault_source(4)?;
             let (context, _driver) = broker::<4, 64>(
                 LiveConfiguration::new(cfg(b"resolver", &dir.0.join("unused"))?),
@@ -710,7 +695,7 @@ fn post_read_source_failure_retains_exact_complete_end_until_same_epoch_dispatch
 fn retry_registration_samples_once_after_continuation_and_retains_target_across_between_read_rollback()
 -> Test {
     tokio::runtime::Builder::new_current_thread().enable_all().build()?.block_on(async {
-        let dir=Dir::new()?;let path=dir.0.join("r");let listener=UnixListener::bind(&path)?;
+        let dir=Dir::new()?;let path=dir.0.join("r");let listener=LocalListener::bind(&path).await?;
         let source=fault_source(4)?;
         let(context,_driver)=broker::<4,64>(LiveConfiguration::new(cfg(b"resolver",&dir.0.join("unused"))?),Limits::default(),profile()?,source.clone())?;
         let mut statistics_instance_13=gnunet_client::statistics_handle::Instance::new();

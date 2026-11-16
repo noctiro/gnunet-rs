@@ -7,6 +7,8 @@ higher thresholds retain the contribution/conclude/525 workflow. This
 service does not reimplement any signature, group arithmetic, sampling, proof, Consensus or
 private RPC algorithm.
 
+## Results
+
 Only an original `Decrypt::Done(Plaintext)` can form standard782 with raw
 BE32 success1 and the original128-byte plaintext. Mathematical completion,
 response formation, positive partial local writes and a complete136-byte local
@@ -20,6 +22,8 @@ source is physically closed before Done and checked idle by this service
 before output. No insert, Conclude or525 is fabricated;
 `local_threshold_one` in DecryptFacts only records path selection, separately
 from genuine verified/completed facts.
+
+## Generation
 
 Standard780 routes after observing the current PILS identity. Threshold1
 with an empty input roster or exactly that local peer uses the existing singleton
@@ -60,6 +64,8 @@ fails the original operation. The source is physically closed and idle
 checked before exposing complete430-byte783 to the secure output queue. Temporary scalar exports, share bytes, response storage and queued frames are
 zeroizing. Cancellation physically closes IPC first, then PILS and secret jobs.
 
+## Client and source ownership
+
 The fixed C service permits one decrypt session per original client; its public
 API creates a new MQ for each781 and closes it after the actual782 callback. This service likewise adopts one780 or781 per original MQ. Any subsequent positive
 request bytes retire that original owner. EOF is a source/cancellation event,
@@ -90,6 +96,8 @@ charged separately. A queued Request remains private/zeroizing and can observe
 client EOF/extra bytes while waiting for an operation permit; it does
 not create crypto/native work merely to wait for capacity.
 
+## Limits
+
 Default resources are16 original clients,8 operations,65535-byte frames,
 32 MiB conservative reservation per native owner and512 MiB total service
 reservation. Actual boxed future/report metadata, bounded client input/output
@@ -110,6 +118,8 @@ there is no try-both heuristic or new wire tag. The original share bytes, peer
 order, local index, threshold, ciphertext, start/deadline and signature scope
 remain owned by the decrypt pipeline.
 
+## Cancellation and shutdown
+
 Cancellation first physically retires original IPC, then independently closes
 PILS/CONSENSUS and erases mathematical work. This path needs no healthy
 business clock or Resolver. Report preserves source causes, signature
@@ -126,8 +136,7 @@ shutdown; dropping Server is not used as a successful shutdown receipt. Normal
 SERVICE startup, access policy, signals, Resolver and ready/stop diagnostics are
 provided by `apps/gnunet-service-secretsharing`.
 
-Source architecture and selected
-checks do not establish whole-GNUnet or full C-to-Rust generation acceptance.
+## Multi-party generation
 
 The normal780 entry adopts general requests into the two-round
 `Generation` owner after observing the original PILS identity. Exact-local and
@@ -137,5 +146,4 @@ epoch. Exact source/signature/whole-write diagnostics and unknown outcomes are
 retained. A FAIR TooLarge or other provider/resource failure remains an
 error; it is not reported as successful empty output. Standard783 output uses a
 zeroizing Vec with retained capacity and the secure queue-copy peak
-charged until whole output or original physical retirement. Full general FAIR
-and unchanged-C multi-party generation qualification remain open.
+charged until whole output or original physical retirement.

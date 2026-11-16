@@ -1,4 +1,5 @@
 //! Shared native process port with actual owned children, descriptors and waits.
+#![cfg(unix)]
 #![expect(
     clippy::panic_in_result_fn,
     reason = "Finite integration invariants assert actual native outcomes while IO/setup errors propagate"

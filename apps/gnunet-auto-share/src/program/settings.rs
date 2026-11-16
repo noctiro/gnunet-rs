@@ -2,7 +2,7 @@
 use super::Failure;
 use gnunet_config::Configuration;
 use gnunet_fs_host::{auto_share::Limits, extraction::MetadataSettings};
-use std::{ffi::OsStr, os::unix::ffi::OsStrExt, path::PathBuf, time::Duration};
+use std::time::Duration;
 pub(super) struct Settings {
     pub limits: Limits,
     pub resolver: gnunet_resolver_broker::Limits,
@@ -46,7 +46,7 @@ impl Settings {
                             "extractor library path exceeds4096 bytes or contains NUL".into()
                         );
                     }
-                    Some(PathBuf::from(OsStr::from_bytes(path)))
+                    Some(gnunet_program_host::program::native_path(path)?.into_owned())
                 }
                 None if c.get(b"fs-rust", b"EXTRACTOR_LIBRARY").is_some() => {
                     Some(c.get_path("fs-rust", "EXTRACTOR_LIBRARY")?)
@@ -54,9 +54,9 @@ impl Settings {
                 None => None,
             }
         };
-        // Pure owned selection only. Provider construction belongs to the one
-        // existing file worker, after all PROGRAM and privilege admission.
-        let metadata = MetadataSettings::new(disabled, configured, library)?;
+        // Admit the explicit native-code selection without loading it. Provider
+        // ownership starts on the file worker after PROGRAM/privilege admission.
+        let metadata = authorize_selected(MetadataSettings::new(disabled, configured, library)?)?;
         let mut l = Limits::default();
         l.entries = number(c, b"ENTRIES", l.entries)?;
         l.versions = number(c, b"VERSIONS", l.versions)?;
@@ -118,4 +118,23 @@ impl Settings {
             resolver: gnunet_resolver_broker::Limits::default(),
         })
     }
+}
+
+/// The application treats its explicit metadata-library/plugin configuration as
+/// a trusted native-code selection. Restored task bytes do not enter this path.
+#[expect(
+    unsafe_code,
+    reason = "The application explicitly admits the user's selected GNU libextractor dependency/plugins; library APIs require this unforgeable execution capability"
+)]
+fn authorize_selected(settings: MetadataSettings) -> Result<MetadataSettings, Failure> {
+    let Some(configuration) = settings.native_configuration() else {
+        return Ok(settings);
+    };
+    // SAFETY: this application defines the explicit user/config-file native
+    // extension choice as trusted code with the standard GNU ABI and plugin
+    // lifetimes. The assertion includes selected dependencies and loader state.
+    let authorization = unsafe {
+        gnunet_fs_host::extraction::NativeMetadataAuthorization::new(configuration.clone())
+    };
+    Ok(settings.with_native_authorization(&authorization)?)
 }

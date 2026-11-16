@@ -20,7 +20,7 @@ use std::{
     error::Error,
     fmt,
     future::{Future, poll_fn},
-    io::{self, Stdout},
+    io,
     rc::Rc,
     sync::Arc,
     task::Poll,
@@ -37,7 +37,7 @@ pub(super) struct Inputs {
     pub reporter: Reporter,
     pub stop: Rc<Cell<bool>>,
     pub parent: Option<ParentControl>,
-    pub output: Stdout,
+    pub retired: crate::output::Retained,
 }
 #[derive(Default, Debug)]
 pub(super) struct Report {
@@ -64,7 +64,7 @@ pub(super) struct Report {
 struct Errors {
     original: Option<Cause>,
     lookup: Option<tld::Cause>,
-    signal: Option<io::Error>,
+    signal: Option<gnunet_service_startup::StopError>,
     output: Option<io::Error>,
     resolver: Option<BrokerError>,
     disconnect: Option<BrokerError>,
@@ -170,7 +170,7 @@ struct Turn<'gns, 'id> {
     lookup: Option<Result<tld::Progress<'gns, 'id>, tld::Failure<'gns, 'id>>>,
     output: Option<io::Result<usize>>,
     resolver: Option<Result<gnunet_resolver_broker::Progress, BrokerError>>,
-    signal: Option<io::Result<()>>,
+    signal: Option<Result<(), gnunet_service_startup::StopError>>,
     budget: Option<Fault>,
 }
 impl Turn<'_, '_> {
@@ -373,11 +373,11 @@ pub(super) async fn run(inputs: Inputs) -> Result<Report, Cause> {
         reporter,
         stop,
         parent,
-        output,
+        retired,
     } = inputs;
     let mut report = Report::default();
     let mut errors = Errors::default();
-    let mut output = Output::new(output, settings.maximum_output_bytes);
+    let mut output = Output::new(retired, settings.maximum_output_bytes)?;
     let outcome = async {
         let mut control = Control::new(parent, stop, reporter.clone())?;
         if control.stopped() {

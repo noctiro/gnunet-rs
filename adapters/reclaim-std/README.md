@@ -8,7 +8,14 @@
 
 There is one shared NAMESTORE general MQ, one shared GNS query MQ and at most one dedicated NAMESTORE iterator MQ. Providers are bound only after the SDK `Connected` event. Every application request owns a private slot/allocation token and official RID. Every accepted provider operation retains its original business Effect, SDK operation/query, original epoch, immutable encoded length, positive-write count and fixed deadline. Actual local whole-write receipts permit an original remote result; they are not STORE success, GNS authentication or client delivery. NAMESTORE replies retain their raw result code. GNS answers are structurally decoded by the existing client; the configured GNS service owns resolution and record authentication.
 
-The OS provider opens `/dev/urandom` explicitly, after foreground UID/GID setup. It only derives a public zone key from an opaque private key accepted over the ACL-protected application MQ. No key file, identity file or C private material is read by this service. Key-bearing input, copies, provider frames, serialized presentations and outputs use existing zeroizing owners. Diagnostics contain original token/RID/status/cause metadata, never keys, records or ticket capability names.
+`SystemProviders::native` selects the platform kernel CSPRNG without starting
+work. Each admitted identifier requests entropy through `getrandom`; the actual
+native error is retained, with no fallback or device-path assumption. Embeddings
+can instead supply an explicitly owned CSPRNG device with `from_random_device`.
+The provider derives a public zone key only from an opaque key accepted over the
+ACL-protected MQ. No identity or key file is read. Key-bearing input, copies,
+provider frames, presentations and outputs use zeroizing owners; diagnostics
+exclude keys, records and ticket capability names.
 
 Active operations include attribute/credential store and delete, ticket issue/consume/revoke, and NEXT/STOP-controlled attribute/credential/ticket iteration. Iterator snapshots come from the NAMESTORE iterator and require its END. A failed scan does not manufacture END. Each returned row is checked against the exact original private zone key, including its key type. GNS ticket and referenced-record lookup uses the existing query client. The ordinary API recursion default is128, matching pinned `gns_api.c`; policy bits/depth are explicit settings.
 

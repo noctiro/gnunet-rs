@@ -8,7 +8,7 @@ impl<'id> Session<'id> {
         let row = &self.sets[self.set_at(source)?];
         Ok(SetContext {
             serial: row.id.serial,
-            kind: row.kind,
+            kind: row.kind.wire(),
             repetition: row.repetition,
             leader: row.leader,
             deadline: row.deadline,
@@ -87,7 +87,7 @@ impl<'id> Session<'id> {
         let set = &self.sets[at];
         for offer in &mut self.offers {
             if !offer.claimed
-                && offer.key.kind == set.kind
+                && offer.key.kind == set.kind.wire()
                 && offer.key.repetition == set.repetition
                 && offer.key.leader == set.leader
             {

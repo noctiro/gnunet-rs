@@ -1,41 +1,37 @@
 //! Typed state observations of the single native output finalizer.
-use super::{OutputDir, Temporary, components, ensure_absent, invalid_name};
+use super::{FileIdentity, OutputDir, Temporary, components, ensure_absent, invalid_name};
 use crate::{
     BlockSource, Buffers, Control, Error, Limits, Progress, ReadFile, Result as HostResult,
 };
 use gnunet_fs::Content;
-use nix::{fcntl::AtFlags, unistd::linkat};
-use std::{
-    convert::Infallible, ffi::OsStr, fmt, fs::File, io, os::unix::fs::MetadataExt, path::Path,
-};
+use gnunet_native::filesystem::Directory;
+use std::{convert::Infallible, ffi::OsStr, fmt, io, path::Path};
 
-/// Native identity of the actual selected inode. Durable attachment additionally
-/// requires its task-owner marker; identity alone does not defeat inode reuse.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct FileIdentity {
-    /// Native device number.
-    pub device: u64,
-    /// Native inode number.
-    pub inode: u64,
-}
-impl FileIdentity {
-    pub(crate) fn of(file: &File) -> io::Result<Self> {
-        let metadata = file.metadata()?;
-        Ok(Self {
-            device: metadata.dev(),
-            inode: metadata.ino(),
-        })
-    }
-}
 /// Actual output disposition independently of observation/cleanup failure.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CommitStage {
-    /// This invocation has not observed a successful final-name link.
+    /// This invocation has made no final-name publication request.
     NotLinked,
-    /// The final-name link succeeded, but its checked naming barrier did not.
+    /// Publication was attempted; the final name or its barrier is unresolved.
     LinkedUnknown,
-    /// Original final-name identity and parent sync were confirmed.
-    Durable,
+    /// Data synchronization and final-name identity were confirmed. Directory
+    /// synchronization is an independent native observation.
+    FileSynchronized(crate::DirectorySync),
+}
+impl CommitStage {
+    /// Whether a synchronized file was observed at its checked final name.
+    #[must_use]
+    pub const fn is_committed(self) -> bool {
+        matches!(self, Self::FileSynchronized(_))
+    }
+    /// Actual directory-barrier observation for a completed native file.
+    #[must_use]
+    pub const fn directory_sync(self) -> Option<crate::DirectorySync> {
+        match self {
+            Self::FileSynchronized(sync) => Some(sync),
+            _ => None,
+        }
+    }
 }
 /// Exact original exclusive temporary and selected parent binding.
 #[cfg_attr(
@@ -74,6 +70,7 @@ pub(crate) enum OutputObservation<'a, R = ReadFile> {
         final_parent: FileIdentity,
         identity: FileIdentity,
         receipt: R,
+        directory_sync: crate::DirectorySync,
     },
     Cleanup {
         temporary: TempRecord<'a>,
@@ -93,7 +90,7 @@ pub struct ObservedFailure<E, R = ReadFile> {
     /// Actual output disposition, independently of state/cleanup failures.
     pub stage: CommitStage,
     /// Actual authentication receipt of this operation; durable output additionally
-    /// requires stage Durable. It is never manufactured from saved fields.
+    /// requires a FileSynchronized stage. It is never manufactured from saved fields.
     pub receipt: Option<R>,
 }
 impl<E, R> ObservedFailure<E, R> {
@@ -149,21 +146,22 @@ pub(super) fn unobserved_failure(failure: Box<ObservedFailure<Infallible>>) -> E
     if let Some(never) = observer {
         match never {}
     }
-    match (operation, cleanup) {
-        (Some(cause), Some(source)) if stage == CommitStage::NotLinked => Error::CleanupFailed {
+    match (operation, cleanup, stage) {
+        (Some(cause), Some(source), _) => Error::CleanupFailed {
             cause: Box::new(cause),
             source,
         },
-        (Some(cause), _) => cause,
-        (None, Some(source)) if stage == CommitStage::Durable => match receipt {
+        (Some(cause), _, _) => cause,
+        (None, Some(source), CommitStage::FileSynchronized(sync)) => match receipt {
             Some(read) => Error::CleanupAfterCommit {
                 query: read.verified.content().query,
+                retention: crate::Retention::FileSynchronized(sync),
                 source,
             },
             None => Error::Io(source),
         },
-        (None, Some(source)) => Error::Io(source),
-        (None, None) => Error::Corrupt,
+        (None, Some(source), _) => Error::Io(source),
+        (None, None, _) => Error::Corrupt,
     }
 }
 
@@ -172,17 +170,7 @@ impl Temporary<'_> {
         TempRecord {
             parent,
             name: &self.name,
-            identity: FileIdentity {
-                #[cfg_attr(
-                    target_os = "linux",
-                    expect(
-                        clippy::unnecessary_cast,
-                        reason = "Preserve the native device-number widening required by the narrower macOS stat layout"
-                    )
-                )]
-                device: self.identity.st_dev as u64,
-                inode: self.identity.st_ino,
-            },
+            identity: self.identity,
             content,
         }
     }
@@ -259,7 +247,7 @@ impl OutputDir {
         }
         .map_err(ObservedFailure::operation)?;
         ensure_absent(&parent, name).map_err(ObservedFailure::operation)?;
-        let parent_id = FileIdentity::of(&parent)
+        let parent_id = FileIdentity::of(parent.as_file())
             .map_err(Error::from)
             .map_err(ObservedFailure::operation)?;
         let mut temporary = self
@@ -321,7 +309,7 @@ impl OutputDir {
         }
         .map_err(ObservedFailure::operation)?;
         ensure_absent(&parent, name).map_err(ObservedFailure::operation)?;
-        let parent_id = FileIdentity::of(&parent)
+        let parent_id = FileIdentity::of(parent.as_file())
             .map_err(Error::from)
             .map_err(ObservedFailure::operation)?;
         let mut temporary = self
@@ -366,20 +354,27 @@ impl OutputDir {
 // One physical finalizer serves whole-file and selected-range output.
 // Authentication receipts remain distinct from naming and durability facts.
 pub(super) struct FinalName<'a> {
-    pub parent: &'a File,
+    pub parent: &'a Directory,
     pub identity: FileIdentity,
     pub name: &'a OsStr,
 }
 pub(super) trait Receipt: Clone {
     fn progress(&self) -> Progress;
+    fn set_directory_sync(&mut self, sync: crate::DirectorySync);
 }
 impl Receipt for ReadFile {
+    fn set_directory_sync(&mut self, sync: crate::DirectorySync) {
+        self.directory_sync = Some(sync);
+    }
     fn progress(&self) -> Progress {
         self.progress
     }
 }
 #[cfg(feature = "service")]
 impl Receipt for crate::network::range::ReadRange {
+    fn set_directory_sync(&mut self, sync: crate::DirectorySync) {
+        self.directory_sync = Some(sync);
+    }
     fn progress(&self) -> Progress {
         self.authenticated
     }
@@ -406,7 +401,7 @@ pub(super) fn finish<E, R: Receipt>(
     };
     if observer_error.is_none()
         && operation.is_none()
-        && let Some(completed) = receipt.as_ref()
+        && let Some(completed) = receipt.as_mut()
     {
         let attempt = (|| -> HostResult<()> {
             if control(completed.progress()) == Control::Cancel {
@@ -428,34 +423,47 @@ pub(super) fn finish<E, R: Receipt>(
             if control(completed.progress()) == Control::Cancel {
                 return Err(Error::Cancelled);
             }
-            linkat(
-                temporary.parent,
-                temporary.name.as_os_str(),
-                destination.parent,
-                destination.name,
-                AtFlags::empty(),
-            )?;
             stage = CommitStage::LinkedUnknown;
+            if let Err(source) = destination.parent.link_file_from(
+                temporary.parent,
+                &temporary.name,
+                &temporary.file,
+                destination.name,
+            ) {
+                return Err(Error::CommitUnknown {
+                    query: content.query,
+                    source,
+                });
+            }
             temporary
                 .check_link_at(destination.parent, destination.name)
                 .map_err(|source| Error::CommitUnknown {
                     query: content.query,
                     source,
                 })?;
-            destination
-                .parent
-                .sync_all()
+            let directory_sync =
+                destination
+                    .parent
+                    .sync()
+                    .map_err(|source| Error::CommitUnknown {
+                        query: content.query,
+                        source,
+                    })?;
+            temporary
+                .check_link_at(destination.parent, destination.name)
                 .map_err(|source| Error::CommitUnknown {
                     query: content.query,
                     source,
                 })?;
-            stage = CommitStage::Durable;
+            stage = CommitStage::FileSynchronized(directory_sync);
+            completed.set_directory_sync(directory_sync);
             if let Err(error) = observer(OutputObservation::FileCommitted {
                 temporary: temporary.record(parent_id, content),
                 final_name: destination.name,
                 final_parent: destination.identity,
                 identity: temporary.record(parent_id, content).identity,
                 receipt: completed.clone(),
+                directory_sync,
             }) {
                 observer_error = Some(error);
             }
@@ -467,7 +475,7 @@ pub(super) fn finish<E, R: Receipt>(
     }
     let cleanup = temporary
         .remove()
-        .and_then(|()| temporary.parent.sync_all());
+        .and_then(|()| temporary.parent.sync().map(|_| ()));
     // An uncertain observer write fences subsequent state appends. Physical
     // cleanup still occurs and its independent result remains in the failure.
     if observer_error.is_none()
@@ -483,7 +491,7 @@ pub(super) fn finish<E, R: Receipt>(
     if operation.is_none()
         && observer_error.is_none()
         && cleanup.is_none()
-        && stage == CommitStage::Durable
+        && stage.is_committed()
         && let Some(read) = receipt.take()
     {
         return Ok(read);

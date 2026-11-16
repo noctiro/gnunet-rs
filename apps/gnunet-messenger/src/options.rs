@@ -175,6 +175,13 @@ impl Selection {
         };
         let timeout = duration(config, b"OPERATION_SECONDS", 30, 1, 3600)?;
         let cleanup = duration(config, b"CLEANUP_SECONDS", 5, 1, 60)?;
+        let output_bytes = number(
+            config,
+            b"OUTPUT_BYTES",
+            1024 * 1024,
+            65536,
+            16 * 1024 * 1024,
+        )?;
         let record_window = duration(config, b"RECORD_WINDOW_SECONDS", 86400, 30, 604800)?;
         let mut limits = Limits::default();
         limits.native.profile = profile;
@@ -212,6 +219,7 @@ impl Selection {
             profile,
             timeout,
             cleanup,
+            output_bytes,
             record_window,
             limits,
         })
@@ -258,6 +266,7 @@ pub(super) struct Settings {
     pub profile: Profile,
     pub timeout: Duration,
     pub cleanup: Duration,
+    pub output_bytes: usize,
     pub record_window: Duration,
     pub limits: Limits,
 }

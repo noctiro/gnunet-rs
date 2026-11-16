@@ -1,6 +1,9 @@
-//! Actual Linux, Darwin and modern FreeBSD NAT helpers. Packet algorithms belong to gnunet-nat; privileged
-//! syscalls are confined to the existing gnunet-native platform boundary.
+//! Native GNUnet NAT helpers and caller-driven child supervision.
+//! Packet algorithms remain in gnunet-nat; resources retain original native ownership.
 #![forbid(unsafe_code)]
+/// Optional native process supervision, independent of NAT network providers.
+#[cfg(feature = "supervisor")]
+pub mod supervisor;
 use std::{fmt, io};
 /// Exact original helper cause, plus independent stdout/signal cleanup failures.
 #[derive(Debug)]
@@ -60,6 +63,13 @@ fn failure(code: u8, cause: Cause) -> Failure {
         signal_cleanup: None,
     }
 }
+#[cfg(any(
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "freebsd",
+    windows
+))]
+mod arguments;
 #[cfg(target_os = "linux")]
 #[path = "linux.rs"]
 mod platform;
@@ -68,25 +78,53 @@ mod platform;
 mod platform;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 mod runner;
-/// Actual client entry. Raw capture and permanent credential drop precede CLI
-/// parsing. Returns success only after both complete original local packet writes.
+#[cfg(any(
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "freebsd",
+    windows
+))]
+mod text;
+#[cfg(windows)]
+mod windows;
+/// Run the native reversal sender. Unix captures raw sockets before dropping
+/// saved credentials; Windows uses the invoking token without elevation.
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 pub fn client() -> Result<(), Failure> {
     runner::client()
 }
-/// Actual server entry. Stdin carries no commands. Stdout is only official lines;
-/// original parent/stop, raw IO and bounded line deadlines own its lifetime.
+/// Run the native reversal observer with original output and stop ownership.
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 pub fn server() -> Result<(), Failure> {
     runner::server()
 }
-/// Unsupported targets perform no capability/socket/credential operation.
-#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "freebsd")))]
+/// Send both official reversal variants through the original Winsock socket.
+#[cfg(windows)]
+pub fn client() -> Result<(), Failure> {
+    windows::client()
+}
+/// Observe official reversal packets using the original pipe-reader lifetime.
+#[cfg(windows)]
+pub fn server() -> Result<(), Failure> {
+    windows::server()
+}
+/// Refuse targets without a qualified raw-kernel backend.
+#[cfg(not(any(
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "freebsd",
+    windows
+)))]
 pub fn client() -> Result<(), Failure> {
     Err(failure(1, Cause::Unsupported))
 }
-/// Unsupported targets perform no capability/socket/credential operation.
-#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "freebsd")))]
+/// Refuse targets without a qualified raw-kernel backend.
+#[cfg(not(any(
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "freebsd",
+    windows
+)))]
 pub fn server() -> Result<(), Failure> {
     Err(failure(1, Cause::Unsupported))
 }
@@ -94,7 +132,7 @@ pub fn server() -> Result<(), Failure> {
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 pub fn diagnostic(error: &Failure) {
     use std::fmt::Write;
-    let mut line = runner::Text::<512>::new();
+    let mut line = text::Text::<512>::new();
     let _formatted = writeln!(&mut line, "{error}");
     if let Ok(mut out) = gnunet_native::nat_helper::Output::stderr() {
         let _written = out.write(line.bytes());
@@ -102,8 +140,19 @@ pub fn diagnostic(error: &Failure) {
     }
 }
 /// Unsupported-target diagnostic has no native boundary or privileged execution.
-#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "freebsd")))]
+#[cfg(not(any(
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "freebsd",
+    windows
+)))]
 pub fn diagnostic(error: &Failure) {
     use std::io::Write;
     let _report = writeln!(std::io::stderr().lock(), "{error}");
+}
+
+/// Emit a bounded diagnostic through the original native route after socket retirement.
+#[cfg(windows)]
+pub fn diagnostic(error: &Failure) {
+    windows::diagnostic(error);
 }

@@ -3,8 +3,9 @@ use crate::{
     options::{Action, Selection, Settings},
 };
 use gnunet_abd_client_host::{Bounds, EndpointSource};
-use gnunet_program_host::{program::Prepared, reporting::Reporter, shared_clock::SharedClock};
+use gnunet_program_host::reporting::Reporter;
 use gnunet_service_runtime::clock::{Deadline, RuntimeClock};
+use gnunet_service_startup::StopSignals;
 use std::{
     cell::RefCell,
     future::{Future, poll_fn},
@@ -15,8 +16,9 @@ use std::{
     task::{Context, Poll},
     time::Instant,
 };
-use tokio::signal::unix::{Signal, SignalKind};
 mod identity;
+mod scheduling;
+pub(super) use scheduling::scheduled;
 mod namestore;
 mod request;
 
@@ -77,30 +79,6 @@ impl std::error::Error for Failed {
             .or_else(|| self.cleanup.first().map(|e| e.as_ref()))
     }
 }
-struct Signals {
-    interrupt: Signal,
-    terminate: Signal,
-}
-impl Signals {
-    fn new() -> io::Result<Self> {
-        Ok(Self {
-            interrupt: tokio::signal::unix::signal(SignalKind::interrupt())?,
-            terminate: tokio::signal::unix::signal(SignalKind::terminate())?,
-        })
-    }
-    fn poll(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        for signal in [&mut self.interrupt, &mut self.terminate] {
-            match signal.poll_recv(cx) {
-                Poll::Ready(Some(())) => return Poll::Ready(Ok(())),
-                Poll::Ready(None) => {
-                    return Poll::Ready(Err(io::Error::other("ABD signal source ended")));
-                }
-                Poll::Pending => {}
-            }
-        }
-        Poll::Pending
-    }
-}
 struct Resolver {
     driver: gnunet_resolver_broker::Driver<16, 1024>,
     closed: bool,
@@ -127,7 +105,7 @@ pub(super) struct Control {
     pub original: Bounds,
     pub facts: SharedFacts,
     reporter: Reporter,
-    signals: Signals,
+    signals: StopSignals,
     resolver: Resolver,
     canonical: Pin<Box<Deadline>>,
     native: Pin<Box<tokio::time::Sleep>>,
@@ -141,11 +119,11 @@ impl Control {
         if self.reporter.failed() {
             return Err("selected ABD Logger failed".into());
         }
-        if let Poll::Ready(result) = self.signals.poll(cx) {
+        if let Poll::Ready(result) = self.signals.poll_stop(cx) {
             result?;
             return Err(io::Error::new(
                 io::ErrorKind::Interrupted,
-                "ABD original command canceled by signal",
+                "ABD original command canceled by native or parent stop",
             )
             .into());
         }
@@ -266,92 +244,7 @@ impl Sources {
         })
     }
 }
-/// Single explicit PROGRAM work task, using the standard scheduler/Resolver.
-pub(super) async fn scheduled(
-    prepared: Prepared,
-    clock: SharedClock,
-    settings: Settings,
-    selection: Selection,
-    reporter: Reporter,
-) -> Result<(), Failure> {
-    let config = prepared.main().config.duplicate()?;
-    let canonical: Arc<dyn RuntimeClock> = Arc::new(clock.clone());
-    let live = gnunet_resolver_broker::LiveConfiguration::new(config);
-    let (mut context, driver) = gnunet_resolver_broker::broker::<16, 1024>(
-        live.clone(),
-        settings.resolver,
-        gnunet_resolver_broker::native_profile()?,
-        canonical.clone(),
-    )?;
-    let retirement = Rc::new(RefCell::new(None));
-    let facts = Rc::new(RefCell::new(Facts::default()));
-    let resolver = Resolver {
-        driver,
-        closed: false,
-        retirement: retirement.clone(),
-    };
-    let result = Rc::new(RefCell::new(None::<Result<(), Failure>>));
-    let receiving = result.clone();
-    let history = facts.clone();
-    let program = prepared
-        .run_scheduled(&mut context, clock, 1, move |_main, scope| {
-            let destination = receiving.clone();
-            let stop = scope.clone();
-            let aborted = history.clone();
-            let task_facts = aborted.clone();
-            if let Err(e) = scope.spawn(async move {
-                *destination.borrow_mut() = Some(
-                    run(
-                        resolver, live, canonical, settings, selection, reporter, history,
-                    )
-                    .await,
-                );
-                if let Err(e) = stop.shutdown() {
-                    let original = destination.borrow_mut().take().and_then(Result::err);
-                    *destination.borrow_mut() = Some(Err(Box::new(Failed {
-                        original,
-                        cleanup: vec![Box::new(e)],
-                        facts: task_facts,
-                    })));
-                }
-            }) {
-                let cleanup: Vec<Failure> = scope
-                    .shutdown()
-                    .err()
-                    .map(|e| Box::new(e) as Failure)
-                    .into_iter()
-                    .collect();
-                *receiving.borrow_mut() = Some(Err(Box::new(Failed {
-                    original: Some(Box::new(e)),
-                    cleanup,
-                    facts: aborted,
-                })));
-            }
-        })
-        .await;
-    let task = result
-        .borrow_mut()
-        .take()
-        .unwrap_or_else(|| Err("PROGRAM ended without the original ABD action result".into()));
-    let mut cleanup: Vec<Failure> = Vec::new();
-    match program {
-        Ok(1) => {}
-        Ok(code) => cleanup.push(format!("ABD PROGRAM returned {code}").into()),
-        Err(e) => cleanup.push(Box::new(e) as Failure),
-    }
-    if let Some(e) = retirement.borrow_mut().take() {
-        cleanup.push(e);
-    }
-    match task {
-        Ok(()) if cleanup.is_empty() => Ok(()),
-        task => Err(Box::new(Failed {
-            original: task.err(),
-            cleanup,
-            facts,
-        })),
-    }
-}
-async fn run(
+struct Inputs {
     resolver: Resolver,
     live: gnunet_client_host::LiveConfiguration,
     clock: Arc<dyn RuntimeClock>,
@@ -359,9 +252,22 @@ async fn run(
     selection: Selection,
     reporter: Reporter,
     facts: SharedFacts,
-) -> Result<(), Failure> {
-    let original = Bounds::new(clock.as_ref(), selection.lifetime)?;
-    let signals = Signals::new()?;
+    signals: StopSignals,
+    original: Bounds,
+}
+async fn run(input: Inputs) -> Result<(), Failure> {
+    let Inputs {
+        resolver,
+        live,
+        clock,
+        settings,
+        selection,
+        reporter,
+        facts,
+        signals,
+        original,
+    } = input;
+    original.check(clock.as_ref())?;
     let sources = Sources::new(live, &resolver, &selection.action)?;
     let canonical = Box::pin(Deadline::at(
         clock.clone(),

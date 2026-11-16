@@ -4,26 +4,27 @@ use gnunet_dht_client_host::{
     MonitorKind,
     ipc::{self, ResultMessage},
 };
-use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
+use gnunet_program_host::binary_io;
 use std::{
     future::Future,
-    io::{self, Stdout, Write},
-    os::fd::AsFd,
+    io::{self, Write},
     pin::Pin,
     task::{Context, Poll},
     time::Duration,
 };
 use tokio::time::{Instant, Sleep};
 pub(super) struct Output {
-    stdout: Stdout,
+    native: Option<binary_io::Output>,
+    pending: bool,
     bytes: Vec<u8>,
     offset: usize,
     alarm: Pin<Box<Sleep>>,
 }
 impl Output {
-    pub fn new(stdout: Stdout) -> Self {
+    pub fn new() -> Self {
         Self {
-            stdout,
+            native: None,
+            pending: false,
             bytes: Vec::new(),
             offset: 0,
             alarm: Box::pin(tokio::time::sleep(Duration::ZERO)),
@@ -162,49 +163,68 @@ impl Output {
         self.alarm.as_mut().reset(Instant::now());
         Ok(())
     }
+    /// Stop admission while retaining the actual transfer and close receivers.
+    pub fn retire(self) -> Option<binary_io::Retirement> {
+        self.native.map(binary_io::Output::retire)
+    }
     pub fn poll(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<usize>> {
         if self.finished() {
             return Poll::Pending;
         }
-        if self.alarm.as_mut().poll(cx).is_pending() {
+        if !self.pending && self.alarm.as_mut().poll(cx).is_pending() {
             return Poll::Pending;
         }
-        self.alarm
+        if self.native.is_none() {
+            // DHT TEST payloads are arbitrary bytes, including on Windows.
+            self.native = Some(binary_io::Output::stdout(512).map_err(io::Error::other)?);
+        }
+        let native = self
+            .native
             .as_mut()
-            .reset(Instant::now() + Duration::from_millis(25));
-        let mut fds = [PollFd::new(self.stdout.as_fd(), PollFlags::POLLOUT)];
-        match poll(&mut fds, PollTimeout::ZERO) {
-            Err(nix::errno::Errno::EINTR) => {}
-            Err(error) => return Poll::Ready(Err(error.into())),
-            Ok(_) => {
-                let flags = fds[0].revents().unwrap_or(PollFlags::empty());
-                if flags.intersects(PollFlags::POLLNVAL | PollFlags::POLLHUP | PollFlags::POLLERR) {
+            .ok_or_else(|| io::Error::other("missing original DHT stdout"))?;
+        if !self.pending {
+            let end = self.bytes.len().min(self.offset + 512);
+            native.begin(&self.bytes[self.offset..end])?;
+            self.pending = true;
+        }
+        let step = {
+            let completion = native.complete();
+            let mut completion = std::pin::pin!(completion);
+            completion.as_mut().poll(cx)
+        };
+        if let Poll::Ready(result) = step {
+            self.pending = false;
+            match result {
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::Interrupted | io::ErrorKind::WouldBlock
+                    ) =>
+                {
+                    self.alarm
+                        .as_mut()
+                        .reset(Instant::now() + Duration::from_millis(25));
+                }
+                Err(error) => return Poll::Ready(Err(error)),
+                Ok(0) => {
                     return Poll::Ready(Err(io::Error::new(
-                        io::ErrorKind::BrokenPipe,
-                        "DHT stdout readiness failed",
+                        io::ErrorKind::WriteZero,
+                        "DHT stdout zero write",
                     )));
                 }
-                if flags.contains(PollFlags::POLLOUT) {
-                    let end = self.bytes.len().min(self.offset + 512);
-                    match nix::unistd::write(self.stdout.as_fd(), &self.bytes[self.offset..end]) {
-                        Err(nix::errno::Errno::EINTR | nix::errno::Errno::EAGAIN) => {}
-                        Err(error) => return Poll::Ready(Err(error.into())),
-                        Ok(0) => {
-                            return Poll::Ready(Err(io::Error::new(
-                                io::ErrorKind::WriteZero,
-                                "DHT stdout zero write",
-                            )));
-                        }
-                        Ok(n) => {
-                            self.offset += n;
-                            self.alarm.as_mut().reset(Instant::now());
-                            return Poll::Ready(Ok(n));
-                        }
-                    }
+                Ok(n) if n <= 512 && n <= self.bytes.len() - self.offset => {
+                    self.offset += n;
+                    self.alarm.as_mut().reset(Instant::now());
+                    return Poll::Ready(Ok(n));
+                }
+                Ok(_) => {
+                    return Poll::Ready(Err(io::Error::other("invalid original DHT stdout count")));
                 }
             }
         }
-        let _registered = self.alarm.as_mut().poll(cx);
+        if !self.pending {
+            let _registered = self.alarm.as_mut().poll(cx);
+        }
         Poll::Pending
     }
 }

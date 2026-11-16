@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
-[target.'cfg(unix)'.dependencies]
+[target.'cfg(any(unix, windows))'.dependencies]
 gnunet-config.workspace = true
 gnunet-identity = { workspace = true, features = ["alloc"] }
 gnunet-identity-host.workspace = true
@@ -14,6 +14,12 @@ gnunet-resolver-broker.workspace = true
 gnunet-service-runtime.workspace = true
 gnunet-service-startup.workspace = true
 tokio = { workspace = true, features = ["rt", "net", "time", "signal"] }
+
+[target.'cfg(windows)'.dev-dependencies]
+gnunet-native.workspace = true
+gnunet-wire.workspace = true
+socket2.workspace = true
+zeroize = { workspace = true, features = ["alloc"] }
 
 [lints]
 workspace = true

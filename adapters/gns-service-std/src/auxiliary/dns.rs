@@ -501,6 +501,20 @@ impl RecursiveDns {
             security: None,
         })
     }
+    /// Snapshot configured Windows DNS endpoints without issuing DNS queries.
+    /// Native API order and IPv6 scopes are retained; the selected DNS port
+    /// applies consistently with the explicit resolv.conf factory.
+    #[cfg(windows)]
+    pub fn from_native(clock: Arc<dyn RuntimeClock>, limits: DnsLimits) -> Result<Self, Error> {
+        let mut servers = gnunet_native::dns::servers(gnunet_native::dns::Limits {
+            servers: limits.servers,
+            ..Default::default()
+        })?;
+        for server in &mut servers {
+            server.set_port(limits.port);
+        }
+        Self::new(clock, &servers, limits)
+    }
     /// Read explicit resolv.conf configuration with a hard byte limit. This
     /// factory performs file I/O, never name-service lookup or network I/O.
     pub fn from_resolv_conf(

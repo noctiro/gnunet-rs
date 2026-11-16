@@ -40,13 +40,18 @@ pub(super) async fn select(
     )?;
     let selected = async {
         loop {
-            checkpoint(source, options.transfer.deadline, last, progress, control)?;
-            match session
+            checkpoint(source, &options.transfer, last, progress, control)?;
+            let observation = tokio::time::Instant::now() + Duration::from_millis(50);
+            let step = session
                 .drive(Some(
-                    tokio::time::Instant::now() + Duration::from_millis(50),
+                    options
+                        .transfer
+                        .native_deadline
+                        .map_or(observation, |hard| observation.min(hard)),
                 ))
-                .await?
-            {
+                .await?;
+            checkpoint(source, &options.transfer, last, progress, control)?;
+            match step {
                 search::Step::Result { result } | search::Step::Update { result } => {
                     if matches!(
                         session

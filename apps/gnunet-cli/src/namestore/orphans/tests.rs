@@ -1,15 +1,16 @@
-//! Real local Unix peers exercise the normal command router. These fixtures
+//! Real local AF_UNIX peers exercise the normal command router. These fixtures
 //! prove local IPC behavior, not official C interoperability or remote deletion.
 use super::super::{RecordData, RecordFlags, RecordType, SecretKey, gnsrecord};
 use gnunet::wire::{MessageHeader, identity as id, namestore as ns};
+#[cfg(unix)]
+use std::os::unix::{
+    fs::DirBuilderExt,
+    net::{UnixListener, UnixStream},
+};
 use std::{
     ffi::OsString,
     fs,
     io::{self, Read, Write},
-    os::unix::{
-        fs::DirBuilderExt,
-        net::{UnixListener, UnixStream},
-    },
     path::PathBuf,
     sync::{
         Arc,
@@ -18,6 +19,21 @@ use std::{
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
+#[cfg(windows)]
+mod local;
+#[cfg(windows)]
+use local::{Listener as UnixListener, Stream as UnixStream};
+
+fn private_directory(path: &std::path::Path) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        fs::DirBuilder::new().mode(0o700).create(path)
+    }
+    #[cfg(windows)]
+    {
+        fs::create_dir(path)
+    }
+}
 use zeroize::Zeroizing;
 
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -49,7 +65,7 @@ impl Fixture {
                 std::process::id(),
                 NEXT.fetch_add(1, Ordering::Relaxed)
             ));
-            match fs::DirBuilder::new().mode(0o700).create(&directory) {
+            match private_directory(&directory) {
                 Ok(()) => {
                     return Ok(Self {
                         directory,
@@ -401,7 +417,7 @@ fn record(
             rid,
             zone: key.view().map_err(io::Error::other)?,
             label: ns::CString::new(label).map_err(io::Error::other)?,
-            expires: gnunet_types::AbsoluteTime::NEVER,
+            expires: gnunet::types::AbsoluteTime::NEVER,
             records: ns::Records::new(&bytes, 1).map_err(io::Error::other)?,
         },
     )

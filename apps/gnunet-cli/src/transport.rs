@@ -1,6 +1,7 @@
 //! Ordinary configured TRANSPORT observations over the real native CLIENT.
 //! Each record carries its actual source epoch. Only a real END plus complete
 //! output/flush is a completed snapshot; local stop never manufactures END.
+use crate::foreground::{Inherited, Signals, Stdout, capture};
 use gnunet::transport_observation::{self as native, Client, Query, Response};
 use gnunet_client_host::{EndpointSource, LiveConfiguration};
 use gnunet_program_host::{
@@ -12,24 +13,20 @@ use gnunet_program_host::{
     shared_clock::SharedClock,
 };
 use gnunet_service_runtime::clock::RuntimeClock;
-use gnunet_service_startup::{ControlReceiver, ParentControl};
+use gnunet_service_startup::ParentControl;
 use std::{
     cell::{Cell, RefCell},
     error::Error,
     ffi::{OsStr, OsString},
     future::{Future, poll_fn},
     io::{self, Write},
-    os::{fd::AsFd, unix::ffi::OsStrExt},
     pin::Pin,
     rc::Rc,
     sync::Arc,
-    task::{Context, Poll},
+    task::Poll,
     time::Duration,
 };
-use tokio::{
-    signal::unix::{Signal, SignalKind},
-    time::{Instant, Sleep},
-};
+use tokio::time::{Instant, Sleep};
 type Failure = Box<dyn Error>;
 const ROW: Duration = Duration::from_secs(30);
 const CADENCE: Duration = Duration::from_millis(10);
@@ -41,88 +38,6 @@ struct Command {
     query: Query,
     continuous: bool,
     duration: Duration,
-}
-struct Inherited {
-    parent: Option<ParentControl>,
-    notice: Option<String>,
-}
-#[expect(
-    unsafe_code,
-    reason = "Sole first operation adopts explicitly inherited descriptors before any logger/runtime/socket or competing descriptor owner"
-)]
-fn capture() -> Result<Inherited, Failure> {
-    use gnunet_service_startup::{InheritedMode, InheritedResources};
-    // SAFETY: this command is routed before the outer stdout lock; first native
-    // action in a fresh process with no concurrent descriptor/environment owner.
-    let captured = unsafe {
-        gnunet_service_startup::capture_from_environment(InheritedMode::CloseAfterConfiguredBind)?
-    };
-    match captured.inherited {
-        InheritedResources::CloseAfterBind(hold) => {
-            let nonempty = !hold.is_empty();
-            let actual = hold.abort();
-            if nonempty {
-                return Err(format!(
-                    "TRANSPORT observation CLI owns no SERVICE listener: {actual:?}"
-                )
-                .into());
-            }
-        }
-        InheritedResources::Listeners(_) => {
-            return Err("unexpected TRANSPORT CLI listener route".into());
-        }
-    }
-    Ok(Inherited {
-        parent: captured.parent_control,
-        notice: captured
-            .control_notice
-            .map(|v| format!("parent control declaration: {v:?}")),
-    })
-}
-struct Signals {
-    parent: Option<ControlReceiver>,
-    interrupt: Signal,
-    terminate: Signal,
-}
-impl Signals {
-    fn new(parent: Option<ParentControl>) -> io::Result<Self> {
-        Ok(Self {
-            parent: parent
-                .map(|p| p.register().map_err(|e| e.error))
-                .transpose()?,
-            interrupt: tokio::signal::unix::signal(SignalKind::interrupt())?,
-            terminate: tokio::signal::unix::signal(SignalKind::terminate())?,
-        })
-    }
-    fn poll(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        if let Some(parent) = &mut self.parent {
-            match parent.poll_signal(cx) {
-                Poll::Ready(Ok(Some(n)))
-                    if i32::from(n) == SignalKind::interrupt().as_raw_value()
-                        || i32::from(n) == SignalKind::terminate().as_raw_value() =>
-                {
-                    return Poll::Ready(Ok(()));
-                }
-                Poll::Ready(Ok(Some(_))) => cx.waker().wake_by_ref(),
-                Poll::Ready(Ok(None)) => self.parent = None,
-                Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
-                Poll::Pending => {}
-            }
-        }
-        for signal in [&mut self.interrupt, &mut self.terminate] {
-            match signal.poll_recv(cx) {
-                Poll::Ready(Some(())) => return Poll::Ready(Ok(())),
-                Poll::Ready(None) => {
-                    return Poll::Ready(Err(io::Error::new(
-                        io::ErrorKind::UnexpectedEof,
-                        "TRANSPORT CLI signal stream ended",
-                    )));
-                }
-                Poll::Pending => {}
-            }
-        }
-        Poll::Pending
-    }
 }
 #[derive(Clone, Copy, Debug)]
 enum End {
@@ -294,8 +209,7 @@ impl Drop for Resolver {
 struct Output {
     bytes: Vec<u8>,
     used: usize,
-    stdout: io::Stdout,
-    regular: bool,
+    stdout: Stdout,
 }
 struct Limited<'a>(&'a mut Vec<u8>);
 impl Write for Limited<'_> {
@@ -310,7 +224,18 @@ impl Write for Limited<'_> {
                 "one TRANSPORT output record exceeds its finite JSON expansion bound",
             ));
         }
-        self.0.try_reserve(data.len()).map_err(io::Error::other)?;
+        let needed = self.0.len() + data.len();
+        if needed > self.0.capacity() {
+            let target = self
+                .0
+                .capacity()
+                .saturating_mul(2)
+                .max(needed)
+                .min(OUTPUT_BYTES);
+            self.0
+                .try_reserve_exact(target - self.0.len())
+                .map_err(io::Error::other)?;
+        }
         self.0.extend_from_slice(data);
         Ok(data.len())
     }
@@ -320,16 +245,13 @@ impl Write for Limited<'_> {
 }
 impl Output {
     fn new() -> Result<Self, Failure> {
-        use nix::sys::stat::{self, SFlag};
-        let stdout = io::stdout();
-        let metadata = stat::fstat(stdout.as_fd())?;
+        let stdout = Stdout::new()?;
         let mut bytes = Vec::new();
         bytes.try_reserve_exact(4096)?;
         Ok(Self {
             bytes,
             used: 0,
             stdout,
-            regular: SFlag::from_bits_truncate(metadata.st_mode) & SFlag::S_IFMT == SFlag::S_IFREG,
         })
     }
     fn stage(&mut self, value: serde_json::Value) -> Result<(), Failure> {
@@ -342,46 +264,18 @@ impl Output {
         output.write_all(b"\n")?;
         Ok(())
     }
-    /// No flags are changed on borrowed stdout. Readiness is sampled before a
-    /// small pipe write; synchronous filesystem/TTY calls cannot be preempted.
+    /// Only confirmed native progress advances this original row's cursor.
     fn step(&mut self) -> io::Result<Option<bool>> {
-        use nix::poll::{PollFd, PollFlags, PollTimeout};
-        if !self.regular {
-            let mut descriptors = [PollFd::new(self.stdout.as_fd(), PollFlags::POLLOUT)];
-            match nix::poll::poll(&mut descriptors, PollTimeout::ZERO) {
-                Ok(_) => {
-                    let events = descriptors[0]
-                        .revents()
-                        .ok_or_else(|| io::Error::other("unknown stdout poll bits"))?;
-                    if events.contains(PollFlags::POLLNVAL) {
-                        return Err(io::Error::from_raw_os_error(nix::libc::EBADF));
-                    }
-                    if !events
-                        .intersects(PollFlags::POLLOUT | PollFlags::POLLERR | PollFlags::POLLHUP)
-                    {
-                        return Ok(None);
-                    }
-                }
-                Err(nix::errno::Errno::EINTR) => return Ok(None),
-                Err(e) => return Err(e.into()),
-            }
-        }
-        let end = if self.regular {
-            self.bytes.len()
-        } else {
-            self.used.saturating_add(512).min(self.bytes.len())
-        };
-        match nix::unistd::write(self.stdout.as_fd(), &self.bytes[self.used..end]) {
-            Ok(0) => Err(io::Error::new(
+        match self.stdout.write(&self.bytes[self.used..])? {
+            Some(0) => Err(io::Error::new(
                 io::ErrorKind::WriteZero,
-                "zero original TRANSPORT stdout write",
+                "zero TRANSPORT stdout write",
             )),
-            Ok(n) => {
+            Some(n) => {
                 self.used += n;
                 Ok(Some(self.used == self.bytes.len()))
             }
-            Err(nix::errno::Errno::EINTR | nix::errno::Errno::EAGAIN) => Ok(None),
-            Err(e) => Err(e.into()),
+            None => Ok(None),
         }
     }
     fn pending(&self) -> bool {
@@ -786,7 +680,9 @@ fn run_selected(
             if p.len() > 128 {
                 return Err("peer selector exceeds128bytes".into());
             }
-            super::peer::parse(OsStr::from_bytes(&p))
+            super::peer::parse(OsStr::new(
+                std::str::from_utf8(&p).map_err(|_| "peer selector must be ASCII")?,
+            ))
         })
         .transpose()?
         .unwrap_or([0; 32]);
@@ -866,11 +762,14 @@ fn run_selected(
         resolver,
         shared,
     });
-    runtime.block_on(gnunet_program_host::foreground::run(
+    let result = runtime.block_on(gnunet_program_host::foreground::run(
         prepared,
         &mut context,
         clock,
         stop,
         task,
-    ))
+    ));
+    #[cfg(windows)]
+    runtime.shutdown_background();
+    result
 }

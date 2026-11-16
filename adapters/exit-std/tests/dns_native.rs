@@ -16,6 +16,7 @@ use gnunet_exit_host::runtime::{Binding, Driver, Limits, Resolver};
 use gnunet_service_runtime::{
     clock::{RuntimeClock, SystemClock},
     credentials::UnixAccess,
+    local::{Listener as UnixListener, Stream as UnixStream},
     service::{Listener, ServiceOptions},
 };
 use gnunet_types::Error as Fault;
@@ -34,7 +35,7 @@ use std::{
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::{UdpSocket, UnixListener, UnixStream},
+    net::UdpSocket,
 };
 type Failure = Box<dyn Error>;
 struct Directory(PathBuf);

@@ -7,6 +7,8 @@ RustCrypto crypto-bigint0.7.9 with zeroize, the existing explicit fallible
 `gnunet_crypto::Entropy` port and gnunet-types only; no new registry package or
 download is needed.
 
+## Wire format
+
 The public key is an unsigned256-byte BE modulus. Ciphertext is exactly signed
 BE32 `remaining_ops` followed by a512-byte BE integer (4096bits). Secret export is
 lambda256BE || mu256BE in a zeroizing buffer; there is no unchecked secret import. Wire decoding alone grants no arithmetic/key/identity authorization. An admitted
@@ -15,6 +17,8 @@ its factorization or trust. Math validates ciphertext unit/range under
 that original key. Standard ciphertext bytes contain no key identifier or proof
 of encryption origin; the session must bind the original public n/transcript,
 not infer authorization merely because an integer is in the unit group.
+
+## Key generation
 
 `Keygen` draws real1024-bit odd candidates with their top2bits set, sieves small
 factors, and performs80 independent uniformly sampled strong Miller-Rabin tests
@@ -33,6 +37,8 @@ is a failure. Homomorphic addition multiplies ciphertexts modn², requires
 each original remaining counter in1..2047 and returns min(counter)-1. Zero
 remaining is a successful last addition and refuses a subsequent one. The raw
 signed count is preserved, not treated as any-nonzero success or authentication.
+
+## Encryption proofs
 
 `PublicKey::encrypt_with_witness` explicitly requests a typed
 `EncryptWithWitnessJob`. Its result owns the same unit randomizer that
@@ -53,6 +59,8 @@ SCALARPRODUCT session layer must still use its official positive offsets, masks,
 permutation, signed result/range and transcript rules; this primitive does not
 pretend that those protocol operations are complete.
 
+## Cooperative jobs
+
 Keygen/EncryptJob/DecryptJob expose bounded `advance`, once-only `take_result`
 and `cancel`. One unit advances one exponent bit, one sieve/strong-test cursor,
 one random trial, or one fixed-size arithmetic boundary. Large bigint gcd,
@@ -60,6 +68,8 @@ parameter construction and final inversion/division remain finite fixed-size
 primitives; calls are not preemptible inside those RustCrypto operations. No
 clock, deadline renewal or IO success is fabricated. The containing protocol
 continues to own its deadlines/epochs/resources and cancellation policy.
+
+## Key ownership
 
 Jobs own the original mathematical key snapshot, preventing self-references or
 later key rotation from rebinding in-flight work. Public Montgomery caches are
@@ -71,10 +81,4 @@ completion. Original error survives later cancel/cleanup. This is owned-state
 erasure, not a proof about compiler register/spill copies or side channels in
 every dependency/platform. Prime search varies by random/primality work.
 
-Their private test construction cannot
-weaken the production modulus gate and gives no2048-bit keygen, C/native, RNG,
-security, performance or interoperability credit. No crypto/model/test/parser/entropy/native/storage/network behavior
-ran. Selected macOS/GNU Linux and thumbv6m no-system checks and the three
-changed-graph architecture guards passed. The
-Paillier SCALARPRODUCT session/peer algorithm and normal host profile remain
-a separate required integration, alongside the default ECC profile.
+Test-only small moduli do not relax the production modulus gate.

@@ -6,6 +6,8 @@ client samplers. It implements the active v0.29.1 RPS peer messages through
 and shared-string subgroup KDF belong to the normal host/SDK; the core accepts
 exact public hashes and never substitutes another derivation.
 
+## Public interface
+
 Brahms rounds use independently keyed HMAC-SHA512 min-wise history, fresh
 unbiased random permutations, 45% push, 45% pull, 10% history, and the actual
 push-flooding admission bound. View targets and history sizes are bounded and
@@ -46,6 +48,8 @@ subgroup's sampler. Peer PULL_REPLY lists respect the smaller CADET
 application-frame bound, independently of the IPC view limit; an oversized
 view supplies a uniformly selected bounded subset.
 
+## Limits
+
 Limits bound groups, clients, peers, sampler slots, view entries,
 original queued/admitted effects and retained allocation capacities. Tables
 start empty and grow fallibly. A changed group's state and effects are staged
@@ -56,10 +60,7 @@ round/staging capacities; it is not a process RSS or allocator benchmark. Intern
 Rust implementation choices, not new wire profiles. Resource limits may reject
 an otherwise valid frame rather than evicting or inventing a result.
 
-Native CADET/SERVICE integration, official-C peer/client
-interop, random/HMAC providers, recovery, statistical mixing and memory/
-performance behaviour need their own evidence. Source presence is not full
-RPS or whole-node acceptance.
+## Shutdown
 
 Shutdown stops new admission and cancels unadmitted ordinary actions before
 reserving close slots. Original admitted actions and already queued retirements

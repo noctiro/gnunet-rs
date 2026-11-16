@@ -1,4 +1,5 @@
 //! Actual pre-connect CLIENT socket retries follow the original logical target.
+#![cfg(unix)]
 use gnunet_arm_core::{FrameSlot, monitor::Monitor};
 use gnunet_arm_host::{Clock, Limits, MonitorHost, Progress};
 use std::{

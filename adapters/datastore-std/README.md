@@ -1,7 +1,12 @@
 # Native DATASTORE client and service
 
-`gnunet-datastore-host` connects the allocation-free caller-buffer DATASTORE
-owner to the shared native CLIENT channel. Construct `ProtocolClient` over
+`gnunet-datastore-host` provides the native GNUnet DATASTORE client, service and
+independent storage backend on Unix and Windows.
+
+## Client interface
+
+The client connects the allocation-free caller-buffer DATASTORE owner to the
+shared native CLIENT channel. Construct `ProtocolClient` over
 reusable `Slot` and `ReservationSlot` storage, then move it into `Client` with
 one explicit `EndpointSource` and bounded frame/reply limits. No service or
 background task is started.
@@ -26,8 +31,9 @@ connection attempt existed. A later independent read may reuse the client with
 a fresh request and original new bounds.
 
 The SDK opt-in is `official-datastore`. It preserves caller-selected Resolver and
-clock ports. Local Unix test peers validate the native client; they do not prove
-official C acceptance.
+clock ports.
+
+## Service interface
 
 With `server` (SDK `official-datastore-server`), `server::Server` accepts shared
 Unix/TCP listeners over the allocation-free `gnunet-datastore::Service` and any
@@ -38,7 +44,18 @@ physical MQ and fences all service clients. `shutdown` settles original work,
 applies a requested DROP and joins the worker. Dropping the owner requests
 termination without claiming filesystem quiescence.
 
-On Unix, `backend::Store` is an independent durable implementation: metadata
+A service reservation holds one quota balance: content bytes plus 256 bytes for
+each estimated entry. PUT consumes its actual value size and entry overhead from
+that balance. An underestimated or exhausted reservation can use ordinary free
+quota; every other client's reserved balance still lowers the backend ceiling.
+This accepts normal C FS publications whose estimate omits encrypted-block tags,
+without unsigned underflow or treating entry estimates as write permissions.
+Duplicate and failed PUTs consume the covered balance. Release and disconnect
+return only the remaining quota; RIDs remain bound to their original connection.
+
+## Storage and recovery
+
+`backend::Store` is an independent native implementation: metadata
 indexes, immutable UID value files, checksummed append WAL and streamed periodic
 checkpoints. Values are arbitrary bytes under arbitrary keys. Duplicate identity
 is key plus exact value; merges preserve UID/type/anonymity, saturate counters,
@@ -47,14 +64,24 @@ the original score. PUT and required quota eviction share one atomic commit;
 a bounded refusal does not partially evict. This internal policy and score
 reporting profile do not copy every C backend's choice. Payloads stay on disk,
 with one reusable selected-value buffer; configured record/log/transaction bounds
-are separate from the official logical quota. Resource bounds are implemented;
-whole-node RAM and throughput benchmarks remain required.
+are separate from the official logical quota.
 
 An uncertain WAL append retains its original cause and candidate sequence. `recover` or reopening explicitly settles complete transactions; a torn final
-tail can be truncated, while complete corruption is refused. Cleanup problems
+tail can be truncated, while complete corruption is refused. Snapshot replacement
+retains original image handles and admits only the exact selected or pending
+candidate during explicit recovery. Cleanup problems
 after a durable logical commit remain available through `cleanup_failure`. The backend never opens or migrates C SQLite files or invokes a C service/FFI.
 
-See the [foreground process](../../apps/gnunet-service-datastore/README.md) for
-configuration and CLI use. Native Rust client/service, disk and process checks
-cover this implementation; unmodified official C client/service interoperability
-remains a separate pending acceptance requirement.
+Storage roots must be private to the process user; existing public directories
+are refused rather than silently changing their permissions. File-data
+synchronization and logical WAL commit are distinct from naming
+barriers. `Store::directory_sync` reports the last successful observation covering
+the values directory, store root and its parent. Windows reports
+`Some(DirectorySync::Unavailable)`; a pending naming operation or fenced store
+returns `None`. Neither result claims a Windows directory flush.
+
+## Configuration and examples
+
+See the [service process](../../apps/gnunet-service-datastore/README.md) for
+configuration and CLI use. External interoperability requirements are defined by
+the [central protocol contract](../../spec/gnunet/README.md).

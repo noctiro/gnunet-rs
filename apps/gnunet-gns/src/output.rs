@@ -1,20 +1,19 @@
-//! Bounded record projection and one real stdout partial-write cursor.
+//! Bounded record projection and caller-owned native output retirement.
+mod retirement;
 use crate::{Cause, options::Settings};
 use gnunet_gns_client_host::{Answer, RecordFlags};
 use gnunet_gnsrecord_text::{Codec, Limits, Profile, Workspace, type_name};
-use gnunet_program_host::reporting::Reporter;
-use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
+use gnunet_program_host::{binary_io, reporting::Reporter};
+pub(super) use retirement::{Close, Retained, retained, settle};
 use std::{
     future::Future,
-    io::{self, Stdout},
-    os::fd::AsFd,
-    pin::Pin,
+    io,
     task::{Context, Poll},
     time::Duration,
 };
-use tokio::time::{Instant, Sleep};
+use tokio::time::Instant;
 use zeroize::Zeroizing;
-
+const CHUNK: usize = 16 * 1024;
 #[derive(Default, Debug)]
 pub(super) struct Projection {
     pub records: usize,
@@ -22,27 +21,32 @@ pub(super) struct Projection {
     pub malformed: usize,
 }
 pub(super) struct Output {
-    stdout: Stdout,
+    native: Option<binary_io::Output>,
+    retired: Retained,
     bytes: Zeroizing<Vec<u8>>,
     offset: usize,
     limit: usize,
-    alarm: Pin<Box<Sleep>>,
+    pending: bool,
+    fenced: bool,
 }
 impl Output {
-    pub(super) fn new(stdout: Stdout, limit: usize) -> Self {
-        Self {
-            stdout,
+    pub(super) fn new(retired: Retained, limit: usize) -> Result<Self, Cause> {
+        let native = binary_io::Output::stdout_text(CHUNK)?;
+        Ok(Self {
+            native: Some(native),
+            retired,
             bytes: Zeroizing::new(Vec::new()),
             offset: 0,
             limit,
-            alarm: Box::pin(tokio::time::sleep(Duration::ZERO)),
-        }
+            pending: false,
+            fenced: false,
+        })
     }
     pub(super) fn extent(&self) -> (usize, usize) {
         (self.bytes.len(), self.offset)
     }
     pub(super) fn finished(&self) -> bool {
-        self.offset == self.bytes.len()
+        self.offset == self.bytes.len() && !self.pending
     }
     fn append(&mut self, bytes: &[u8]) -> Result<(), Cause> {
         let len = self
@@ -53,7 +57,19 @@ impl Output {
         if len > self.limit {
             return Err("bounded GNS output capacity exceeded".into());
         }
-        self.bytes.try_reserve_exact(bytes.len())?;
+        if len > self.bytes.capacity() {
+            let capacity = self
+                .bytes
+                .capacity()
+                .saturating_mul(2)
+                .max(len)
+                .min(self.limit);
+            // Wipe the previous allocation instead of reallocating plaintext.
+            let mut grown = Zeroizing::new(Vec::new());
+            grown.try_reserve_exact(capacity)?;
+            grown.extend_from_slice(&self.bytes);
+            self.bytes = grown;
+        }
         self.bytes.extend_from_slice(bytes);
         Ok(())
     }
@@ -162,52 +178,60 @@ impl Output {
         Ok(())
     }
     pub(super) fn poll(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<usize>> {
-        if self.finished() {
+        if self.finished() || self.fenced {
             return Poll::Pending;
         }
-        if self.alarm.as_mut().poll(cx).is_pending() {
-            return Poll::Pending;
+        let Some(native) = &mut self.native else {
+            return Poll::Ready(Err(io::ErrorKind::BrokenPipe.into()));
+        };
+        if !self.pending {
+            let maximum = self.bytes.len().min(self.offset + CHUNK);
+            let mut end = maximum;
+            // End valid UTF-8 chunks at a scalar boundary. A partial file/pipe
+            // write may leave a leading suffix byte; redirected output remains raw.
+            while end < self.bytes.len() && end > self.offset && self.bytes[end] & 0xc0 == 0x80 {
+                end -= 1;
+            }
+            if end == self.offset {
+                end = maximum;
+            }
+            if let Err(error) = native.begin(&self.bytes[self.offset..end]) {
+                self.fenced = true;
+                return Poll::Ready(Err(error));
+            }
+            self.pending = true;
         }
-        self.alarm
-            .as_mut()
-            .reset(Instant::now() + Duration::from_millis(25));
-        let mut fds = [PollFd::new(self.stdout.as_fd(), PollFlags::POLLOUT)];
-        match poll(&mut fds, PollTimeout::ZERO) {
-            Err(nix::errno::Errno::EINTR) => {}
-            Err(error) => return Poll::Ready(Err(error.into())),
-            Ok(_) => {
-                let flags = fds[0].revents().unwrap_or(PollFlags::empty());
-                if flags.intersects(PollFlags::POLLNVAL | PollFlags::POLLHUP | PollFlags::POLLERR) {
-                    return Poll::Ready(Err(io::Error::new(
-                        io::ErrorKind::BrokenPipe,
-                        "stdout readiness failed",
-                    )));
-                }
-                if flags.contains(PollFlags::POLLOUT) {
-                    let end = self.bytes.len().min(self.offset + 512);
-                    // This sole stdout owner never alters the shared OFD flags.
-                    // A synchronous OS write cannot be forcibly interrupted by
-                    // the async deadline, even after readiness was reported.
-                    match nix::unistd::write(self.stdout.as_fd(), &self.bytes[self.offset..end]) {
-                        Err(nix::errno::Errno::EINTR | nix::errno::Errno::EAGAIN) => {}
-                        Err(error) => return Poll::Ready(Err(error.into())),
-                        Ok(0) => {
-                            return Poll::Ready(Err(io::Error::new(
-                                io::ErrorKind::WriteZero,
-                                "stdout wrote zero bytes",
-                            )));
-                        }
-                        Ok(count) => {
-                            self.offset += count;
-                            self.alarm.as_mut().reset(Instant::now());
-                            return Poll::Ready(Ok(count));
-                        }
+        let result = {
+            let mut complete = std::pin::pin!(native.complete());
+            complete.as_mut().poll(cx)
+        };
+        match result {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(result) => {
+                self.pending = false;
+                match result {
+                    Ok(0) => {
+                        self.fenced = true;
+                        Poll::Ready(Err(io::ErrorKind::WriteZero.into()))
+                    }
+                    Ok(count) => {
+                        self.offset += count;
+                        Poll::Ready(Ok(count))
+                    }
+                    Err(error) => {
+                        self.fenced = true;
+                        Poll::Ready(Err(error))
                     }
                 }
             }
         }
-        let _registered = self.alarm.as_mut().poll(cx);
-        Poll::Pending
+    }
+}
+impl Drop for Output {
+    fn drop(&mut self) {
+        if let Some(native) = self.native.take() {
+            *self.retired.borrow_mut() = Some(Close::new(native.retire()));
+        }
     }
 }
 

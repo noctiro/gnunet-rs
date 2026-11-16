@@ -5,6 +5,8 @@ spawning a task or inventing an RPC. The caller supplies one `EndpointSource`
 using its shared Resolver and RuntimeClock, and mints one original
 `Bounds`. Retry before initial connection does not renew either original target. An established source is never transparently reconnected or replayed.
 
+## Public interface
+
 `Query::Sample { count }` writes the official stream request and feeds its biased
 peer batches into the shared `gnunet_rps::ClientSampler`. Every original request
 has independent random min-wise slots. Its concrete ports use native

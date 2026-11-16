@@ -2,7 +2,7 @@
 
 `gnunet-conversation-audio-host` supplies the blocking media functions
 used by the two explicit Rust helper processes. `record(Limits)` opens the
-standard PulseAudio simple capture provider, encodes Float32LE 48 kHz mono
+selected native capture provider, encodes Float32LE 48 kHz mono
 40 ms blocks with libopus VOIP, and emits standard Conversation audio type 730
 messages containing an Ogg Opus byte stream. `playback(Limits)` receives those
 messages, validates and reconstructs Ogg pages/packets in Rust, decodes actual
@@ -33,12 +33,28 @@ replace a live stream without EOS, as normal recording termination requires. Act
 complete live EOF can drain successfully while retaining an unterminated-stream
 observation. Local drain is not human-hearing or remote-delivery proof.
 
-The scoped `native` module binds only public POSIX loader, libopus and PulseAudio
-simple APIs. The rest of the crate denies unsafe code. Missing libraries, symbols,
-device permission, codec and native I/O refusals preserve provider codes
-or bounded original loader diagnostics. Native handles have matching RAII free/
-destroy owners; owned Rust PCM/compressed buffers erase on release. No installed
-library or audio device is probed during source preparation.
+## Native providers
+
+The scoped `native` module separates libopus, library loading and audio devices.
+Unix uses PulseAudio simple; Windows uses shared-mode WASAPI on the default
+communications endpoint, with system sample-rate/channel conversion. Windows
+buffers remain borrowed from the original engine until release; capture packet
+tails survive a helper read boundary. Silent packets produce zero PCM and
+`capture_discontinuities` counts native flags without inventing missing samples.
+Rendering starts after its first buffer submission and drain waits for the
+original queue before stopping. Device invalidation is returned, with no silent
+replacement. See Microsoft's [WASAPI contract](https://learn.microsoft.com/en-us/windows/win32/coreaudio/wasapi).
+
+Windows loads `libopus-0.dll` or `opus.dll` beside the installed helper, using an
+absolute path and the shared native library owner. It does not search the current
+working directory. The helper owns an STA COM reference; service and engine
+references release before its event and apartment. Unix retains its standard
+libopus/PulseAudio library candidates. Missing libraries, permissions and device
+failures preserve native codes, with HRESULT distinct from Win32 I/O errors.
+Owned Rust PCM/compressed buffers erase on release. The rest of the crate denies
+unsafe code.
+
+## Process ownership
 
 These functions deliberately block and belong only in independent helper
 processes. The normal caller owns the original call/source identity, pipes,
@@ -49,9 +65,10 @@ and reap the explicit process. SIGTERM has its normal process action and does
 not promise a final EOS. After a failure, playback attempts a flush and
 retains an independent cleanup failure alongside the original cause.
 
-Fixed GNUnet v0.29.1 `meson.build` erroneously selects the record source for its
-default playback target; this Rust playback does not copy that build defect. The official selected `gst` profile chooses the correct playback source and
+## Compatibility
+
+GNUnet v0.29.1 `meson.build` selects the record source for its
+default playback target. The official selected `gst` profile chooses the playback source and
 also carries Ogg/Opus inside 730, so it remains a possible unmodified official
-producer/consumer profile for later authorized acceptance. Neither profile has
-been built or exercised for this implementation. Source preparation and pure case
-source are not audio/device, interoperability, latency or performance evidence.
+producer/consumer profile. Native device and C↔Rust qualification remain in
+[implementation status](../../IMPLEMENTATION_STATUS.md).

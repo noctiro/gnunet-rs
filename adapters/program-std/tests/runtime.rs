@@ -165,6 +165,46 @@ fn speedup_revises_already_pending_logical_timer_instead_of_only_changing_log_te
 #[test]
 #[expect(
     clippy::panic_in_result_fn,
+    reason = "An actual timer checks the separately parsed PROGRAM entry's shared speedup and retained deadline"
+)]
+fn configured_entry_advances_the_original_standalone_logical_timer() -> Result<(), Failure> {
+    let rt = runtime()?;
+    let clock = SharedClock::native(4)?;
+    let mut config = Configuration::default();
+    config.set_value(b"testing", b"SPEEDUP_INTERVAL", Some(b"2ms"))?;
+    config.set_value(b"testing", b"SPEEDUP_DELTA", Some(b"1s"))?;
+    let completed = Cell::new(false);
+    rt.block_on(async {
+        tokio::time::timeout(
+            Duration::from_millis(300),
+            gnunet_program_host::runtime::run_tasks_with_speedup(
+                clock.clone(),
+                1,
+                config,
+                None,
+                |_, scope| {
+                    let delay = gnunet_program_host::runtime::Delay::after(
+                        clock.clone(),
+                        gnunet_types::RelativeTime::from_micros(3_000_000),
+                    )?;
+                    scope.spawn(async {
+                        assert_eq!(delay.await, Ok(()));
+                        completed.set(true);
+                    })?;
+                    Ok::<(), Failure>(())
+                },
+            ),
+        )
+        .await
+        .map_err(|_| Error::WouldBlock)?
+    })?;
+    assert!(completed.get());
+    assert!(clock.offset()? >= 3_000_000);
+    Ok(())
+}
+#[test]
+#[expect(
+    clippy::panic_in_result_fn,
     reason = "Capacity must remain reserved while the future is temporarily leased for callback polling"
 )]
 fn leased_callback_cannot_overadmit_and_cancelled_original_ticket_cannot_retire_replacement()

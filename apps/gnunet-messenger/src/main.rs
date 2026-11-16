@@ -1,12 +1,8 @@
 //! Standard interactive Messenger PROGRAM over the actual high-level client.
 #![deny(unsafe_code)]
-#[cfg(unix)]
 mod input;
-#[cfg(unix)]
 mod options;
-#[cfg(unix)]
 mod output;
-#[cfg(unix)]
 mod session;
 use std::{
     error::Error,
@@ -14,14 +10,19 @@ use std::{
     process::ExitCode,
 };
 type Failure = Box<dyn Error>;
+#[expect(
+    unsafe_code,
+    reason = "Fresh PROGRAM captures original native inheritance before competing owners"
+)]
 fn main() -> ExitCode {
-    match run() {
+    // SAFETY: first and only capture in this fresh single-threaded executable.
+    let result = unsafe { gnunet_service_startup::ClientStartup::capture() }
+        .map_err(|error| Box::new(error) as Failure)
+        .and_then(run);
+    match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            #[cfg(unix)]
             let selected = error.is::<output::ReportedFailure>();
-            #[cfg(not(unix))]
-            let selected = false;
             if !selected {
                 let _diagnostic = writeln!(io::stderr().lock(), "gnunet-messenger: {error}");
             }
@@ -29,56 +30,30 @@ fn main() -> ExitCode {
         }
     }
 }
-#[cfg(not(unix))]
-fn run() -> Result<(), Failure> {
-    Err("native Messenger PROGRAM requires Unix".into())
-}
-#[cfg(unix)]
-#[expect(
-    unsafe_code,
-    reason = "Unique initial inherited-descriptor transfer before logger, runtime, stdin owner, source or task construction"
-)]
-fn run() -> Result<(), Failure> {
+fn run(startup: gnunet_service_startup::ClientStartup) -> Result<(), Failure> {
     use gnunet_program_host::{
-        foreground,
         logging::Logger,
         program::{self, Defaults, Invocation, NlsDisabled, Preparation},
         reporting::Reporter,
         shared_clock::SharedClock,
     };
-    use gnunet_service_startup::{InheritedMode, InheritedResources};
-    use std::{cell::Cell, rc::Rc, sync::Arc};
-    // SAFETY: first process resource capture, with no prior raw-fd ownership,
-    // environment mutation, runtime, thread, stdio lock or competing source.
-    let captured = unsafe {
-        gnunet_service_startup::capture_from_environment(InheritedMode::CloseAfterConfiguredBind)?
-    };
-    match captured.inherited {
-        InheritedResources::CloseAfterBind(hold) => {
-            let nonempty = !hold.is_empty();
-            let report = hold.abort();
-            if nonempty {
-                return Err(format!(
-                    "Messenger has no listener; original inherited descriptors retired: {report:?}"
-                )
-                .into());
-            }
-        }
-        InheritedResources::Listeners(_) => {
-            return Err("unexpected Messenger activation mode".into());
-        }
-    }
+    use std::sync::Arc;
     let clock = SharedClock::native(512)?;
     let config = gnunet_config::Configuration::create(
         Arc::new(gnunet_config::ProjectData::default()),
         Default::default(),
     )?;
-    let mut logger = Logger::new(b"gnunet-messenger", std::process::id(), false)?;
+    let mut logger = Logger::new(
+        b"gnunet-messenger",
+        std::process::id(),
+        cfg!(debug_assertions),
+    )?;
     let selected = options::Selection::new();
     let preparation=program::prepare(config,Invocation {binary_name:b"gnunet-messenger",help:Some(b"Open or enter a Messenger room and exchange bounded stdin text or binary TALK data."),select_default_filename:true,defaults:Defaults::Native},selected.descriptors(),std::env::args_os(),&program::Environment::capture(),&mut NlsDisabled,&mut logger,&clock,&mut io::stdout().lock(),&mut io::stderr().lock());
     let reporter = Reporter::new(logger, clock.clone());
-    if let Some(notice) = captured.control_notice {
-        reporter.debug(
+    #[cfg(unix)]
+    if let Some(notice) = startup.notice {
+        reporter.warning(
             "messenger.parent.notice",
             format_args!("parent-control declaration: {notice:?}"),
         );
@@ -114,36 +89,14 @@ fn run() -> Result<(), Failure> {
                 .build();
             match runtime {
                 Err(error) => Err(Box::new(error) as Failure),
-                Ok(runtime) => runtime.block_on(async {
-                    use gnunet_client_host::LiveConfiguration;
-                    use gnunet_resolver_broker::{Family, FamilyProfile};
-                    use gnunet_service_runtime::clock::RuntimeClock;
-                    let source: Arc<dyn RuntimeClock> = Arc::new(clock.clone());
-                    let native = gnunet_resolver_broker::native_profile()?;
-                    let family =
-                        FamilyProfile::new(native.encode(Family::V4), native.encode(Family::V6))?;
-                    let live = LiveConfiguration::new(config);
-                    let (mut context, resolver) = gnunet_resolver_broker::broker::<128, 256>(
-                        live.clone(),
-                        Default::default(),
-                        family,
-                        source.clone(),
-                    )?;
-                    let stop = Rc::new(Cell::new(false));
-                    let product = session::run(session::Inputs {
-                        settings,
-                        live,
-                        context: context.clone(),
-                        resolver,
-                        source,
-                        reporter: reporter.clone(),
-                        stop: stop.clone(),
-                        parent: captured.parent_control,
-                    });
-                    foreground::run(prepared, &mut context, clock.clone(), stop, product)
-                        .await
-                        .map(|_report| ())
-                }),
+                Ok(runtime) => runtime.block_on(session::scheduled(
+                    prepared,
+                    config,
+                    settings,
+                    clock.clone(),
+                    reporter.clone(),
+                    startup,
+                )),
             }
         }
         Ok(None) => Ok(()),

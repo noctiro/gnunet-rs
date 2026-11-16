@@ -1,14 +1,17 @@
 # Official ARM operation core
 
-This implementation follows the complete GNUnet v0.29.1 public ARM/monitor/service source and implements all official messages plus pure control/monitor operation ownership. Production is safe no_std/noalloc Rust, depending only on existing default-feature-free gnunet-types/wire. It neither executes a managed process nor changes a system daemon/account/configuration. The source-derived daemon/config/CLI/testing lifecycle remains explicitly pending in DESIGN and requirements.json; public function mappings stay in_progress with verification=null.
-
-ARM has8 public library functions,4 callbacks,3 opaque handles,4 enums,ServiceInfo and version3. Its testing library independently has6 public functions. The CLI and service process also have distinct obligations. No message ID registry entry or passing Rust test count is treated as completing those functions/services.
+The core implements GNUnet v0.29.1 ARM/monitor messages and pure operation
+ownership in safe, allocation-free `no_std` Rust. Native processes and service
+composition belong to the [ARM host](../../adapters/arm-service-std/README.md);
+command behavior belongs to the [ARM application](../../apps/gnunet-arm/README.md).
 
 ## Wire ABI
 
 Use `wire::ArmAbi` explicitly. The normal native C build/full headers establish Message16, RESULT24 and LIST_RESULT prefix24 (uint64 alignment8), ServiceInfo28, STATUS8. GNUNET_NETWORK_STRUCT_BEGIN is empty; these ARM structs are not globally packed. The align4 profile gives20/20 and is implemented explicitly but has no normal32-bit platform interoperability evidence. Rust pointer width and no_std cross-compilation never choose the peer ABI.
 
-Native `normal_bytes.c` constructs all8 messages with unchanged official headers/calloc/field assignments. `examples/wire_trace.rs` independently executes Rust codecs;8 complete frame byte strings match, including59-byte single-row list and24-byte result. This proves only the native layout/codec component, not libgnunetarm public API callbacks or a service. The initial incorrect20/18 draft and self-consistent tests are retained separately as rejected history, never credited.
+The `normal_bytes.c` reference helper constructs frames with unchanged official
+headers and native allocation/field assignments. `examples/wire_trace.rs`
+exposes the Rust codecs for independent byte comparison.
 
 Unknown result/monitor/list-status numeric values and nonzero existing reserved/padding bytes are accepted. Canonical encoders zero padding like MQ allocation. List indices may point into another string; every in-range eventual-NUL name/binary is checked before exposing rows, without UTF8 assumptions. The source C public exit status promotes ntohs to int, soFFFF becomes65535. Request totals65535 are legal and65536 rejects atomically. Legal framed unregistered directions are ignored per the owner handler registry; registered malformed input follows MQ-error processing.
 
@@ -37,5 +40,9 @@ owned Unix scenarios. All eight C public functions are invoked; control callback
 monitor callbacks, outgoing frames and supplied peer bytes match per connection. Cross-connection interleaving is recorded without imposing a total order. This
 fixture does not replace either production ARM daemon.
 
-Still pending: host command spawn/config/stdinherit/readiness pipe; service inventory/native listen activation/child reaping/backoff/shutdown; CLI and6 testing wrappers; additional native ABI platforms. The normal ARM library/service/CLI build is an immutable reference dependency,
-not evidence of a running Rust ARM replacement.
+Native startup and readiness belong to the
+[ARM client adapter](../../adapters/arm-std/README.md). Registry, listener,
+child and shutdown ownership belong to the
+[service host](../../adapters/arm-service-std/README.md). Platform and
+interoperability qualification is tracked in
+[Implementation status](../../IMPLEMENTATION_STATUS.md).

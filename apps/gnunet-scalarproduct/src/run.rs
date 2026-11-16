@@ -5,15 +5,15 @@ use gnunet_scalarproduct_client_host::{
     Bounds, Client, EndpointSource, Epoch, Loss, Progress, Receipt, Response, ResponseStatus, Role,
 };
 use gnunet_service_runtime::clock::RuntimeClock;
+use gnunet_service_startup::{ClientStartup, StopSignals};
 use std::{
     cell::RefCell,
     future::{Future, poll_fn},
     io,
     rc::Rc,
     sync::Arc,
-    task::{Context, Poll},
+    task::Poll,
 };
-use tokio::signal::unix::{Signal, SignalKind};
 pub(super) type Failure = Box<dyn std::error::Error>;
 #[derive(Debug)]
 struct Failures {
@@ -49,30 +49,6 @@ impl std::error::Error for Failures {
                     .as_ref()
                     .map(|e| e as &dyn std::error::Error)
             })
-    }
-}
-struct Signals {
-    interrupt: Signal,
-    terminate: Signal,
-}
-impl Signals {
-    fn new() -> io::Result<Self> {
-        Ok(Self {
-            interrupt: tokio::signal::unix::signal(SignalKind::interrupt())?,
-            terminate: tokio::signal::unix::signal(SignalKind::terminate())?,
-        })
-    }
-    fn poll(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        for signal in [&mut self.interrupt, &mut self.terminate] {
-            match signal.poll_recv(cx) {
-                Poll::Ready(Some(())) => return Poll::Ready(Ok(())),
-                Poll::Ready(None) => {
-                    return Poll::Ready(Err(io::Error::other("SCALARPRODUCT signal stream ended")));
-                }
-                Poll::Pending => {}
-            }
-        }
-        Poll::Pending
     }
 }
 struct Resolver {
@@ -125,10 +101,12 @@ pub(super) async fn scheduled(
     settings: Settings,
     selection: Selection,
     reporter: Reporter,
+    startup: ClientStartup,
 ) -> Result<(), Failure> {
     if reporter.failed() {
         return Err("selected SCALARPRODUCT Logger failed".into());
     }
+    let signals = StopSignals::for_client(startup.parent)?;
     let config = prepared.main().config.duplicate()?;
     let canonical: Arc<dyn RuntimeClock> = Arc::new(clock.clone());
     let live = gnunet_resolver_broker::LiveConfiguration::new(config);
@@ -155,9 +133,16 @@ pub(super) async fn scheduled(
             let stop = scope.clone();
             if let Err(error) = scope.spawn(async move {
                 *destination.borrow_mut() = Some(
-                    run(
-                        resolver, live, canonical, settings, selection, reporter, receipt,
-                    )
+                    run(Inputs {
+                        resolver,
+                        live,
+                        clock: canonical,
+                        settings,
+                        selection,
+                        reporter,
+                        dropped: receipt,
+                        signals,
+                    })
                     .await,
                 );
                 if let Err(error) = stop.shutdown() {
@@ -255,16 +240,27 @@ pub(super) fn result_value(response: &Response) -> num_bigint::BigInt {
     let value = num_bigint::BigInt::from_signed_bytes_be(&response.product);
     if response.range > 0 { value } else { -value }
 }
-async fn run(
-    mut resolver: Resolver,
+struct Inputs {
+    resolver: Resolver,
     live: gnunet_client_host::LiveConfiguration,
     clock: Arc<dyn RuntimeClock>,
     settings: Settings,
     selection: Selection,
     reporter: Reporter,
     dropped: Rc<RefCell<Option<Failure>>>,
-) -> Result<(), Failure> {
-    let mut signals = Signals::new()?;
+    signals: StopSignals,
+}
+async fn run(input: Inputs) -> Result<(), Failure> {
+    let Inputs {
+        mut resolver,
+        live,
+        clock,
+        settings,
+        selection,
+        reporter,
+        dropped,
+        mut signals,
+    } = input;
     let bounds = Bounds::new(clock.as_ref(), settings.total)?;
     let role = selection.role;
     let source = EndpointSource::live(
@@ -292,7 +288,7 @@ async fn run(
             }
             let turn = poll_fn(|cx| -> Poll<Result<Turn, Failure>> {
                 reporter.register(cx);
-                if let Poll::Ready(result) = signals.poll(cx) {
+                if let Poll::Ready(result) = signals.poll_stop(cx) {
                     result?;
                     return Poll::Ready(Err(Box::new(io::Error::new(
                         io::ErrorKind::Interrupted,

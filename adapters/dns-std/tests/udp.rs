@@ -695,3 +695,51 @@ fn zero_retry_cannot_starve_readable_results_with_continue_callbacks() -> Result
         Ok::<(), Box<dyn std::error::Error>>(())
     })
 }
+
+#[test]
+fn reservations_keep_original_ports_after_stop() -> Result {
+    runtime()?.block_on(async {
+        let mut stub = DnsStub::<2, 64, 1>::start(2, 64)?;
+        let lease = stub.reserve_sockets(Family::V4)?;
+        let endpoints: Vec<_> = lease.endpoints().map(|(_, address)| address).collect();
+        assert_eq!(endpoints.len(), 2);
+        assert!(lease.belongs_to(&stub));
+        let other = DnsStub::<2, 64, 1>::start(2, 64)?;
+        assert!(!lease.belongs_to(&other));
+        assert!(matches!(
+            stub.reserve_sockets(Family::V4),
+            Err(HostError::Core(Error::Conflict))
+        ));
+        stub.stop();
+        assert!(!lease.belongs_to(&stub));
+        for address in &endpoints {
+            assert!(
+                std::net::UdpSocket::bind(address).is_err(),
+                "leased port was released before capture close"
+            );
+        }
+        drop(lease);
+        for address in endpoints {
+            let _rebound = std::net::UdpSocket::bind(address)?;
+        }
+        Ok(())
+    })
+}
+
+#[test]
+fn maximum_query_pool_constructs_on_small_native_stack() -> Result {
+    let thread = std::thread::Builder::new()
+        .stack_size(256 * 1024)
+        .spawn(|| {
+            let mut stub = DnsStub::<16, 65479, 4>::start(16, 65535)?;
+            stub.add_dns_sa(SocketAddr::from((Ipv4Addr::LOCALHOST, 53)))?;
+            let query = vec![7; 65479];
+            let request = stub.resolve(&query)?.request;
+            assert_eq!(stub.query(request)?, query);
+            Ok::<_, HostError>(())
+        })?;
+    thread
+        .join()
+        .map_err(|_| "DNSSTUB native stack regression")??;
+    Ok(())
+}

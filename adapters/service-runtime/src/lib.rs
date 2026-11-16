@@ -9,7 +9,7 @@
 pub mod accepted;
 /// Official service address admission policy.
 pub mod acl;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub mod activation;
 /// Logical time source, subscriptions and caller-owned deadline futures.
 pub mod clock;
@@ -20,30 +20,47 @@ pub mod credentials;
 /// Persistent secure framing and original immutable FIFO ownership.
 pub mod framing;
 mod listeners;
+/// Native AF_UNIX reactor streams and listeners; filesystem/peer policy is separate.
+pub mod local;
+/// Private local listener preparation before choosing a reactor owner.
+#[cfg(any(unix, windows))]
+pub mod local_listener;
 #[cfg(unix)]
 mod native_spawn;
-/// Official Unix address shaping shared by clients and service hosts.
-#[cfg(unix)]
+/// Official AF_UNIX address shaping shared by clients and service hosts.
+#[cfg(any(unix, windows))]
 pub mod network;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 mod path;
+/// Private Windows parent/child byte channels with explicit submission receipts.
+#[cfg(windows)]
+pub mod pipe;
 /// Native command preparation, original child/control ownership and exec helper.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub mod process;
-/// Opaque owned descriptor registration and nonconsuming readiness.
-#[cfg(unix)]
+/// Owned socket/descriptor registration and nonconsuming readiness.
+#[cfg(any(unix, windows))]
 pub mod readiness;
 /// Borrowed listeners and service policies, independent of protocol engines.
 pub mod service;
+/// Native process stop sources registered after console detachment.
+#[cfg(any(unix, windows))]
+pub mod signals;
 mod stream;
 
+#[cfg(windows)]
+pub use activation::ActivatedSocket;
+#[cfg(windows)]
+pub use activation::Activation;
 #[cfg(unix)]
 pub use activation::{
     ActivatedSocket, Activation, PrivateListener, bind_private, bind_private_with_backlog,
     bind_private_with_permissions, capture,
 };
-pub use listeners::{BoundListeners, service_options};
+pub use listeners::BoundListeners;
 #[cfg(unix)]
-pub use listeners::{ListenerPreparation, UnixListenerAccess};
-#[cfg(unix)]
+pub use listeners::ListenerPreparation;
+pub use listeners::LocalListenerAccess;
+pub use listeners::service_options;
+#[cfg(any(unix, windows))]
 pub use path::{CreatedPath, private_parents};

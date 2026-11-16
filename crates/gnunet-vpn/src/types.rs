@@ -662,6 +662,9 @@ pub enum RouteAction {
     /// Provision the owned device/prefix plan, or verify an external plan only
     /// through the explicit routing_borrowed_queued admission port.
     Install,
+    /// Read the retained original owned interface/route scope after a packet
+    /// session replacement. This neither replays mutation nor borrows away debt.
+    Verify,
     /// Remove/relinquish only that original scope's owned OS-route effects.
     Remove,
 }

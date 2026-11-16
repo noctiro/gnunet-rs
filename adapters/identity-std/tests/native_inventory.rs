@@ -1,7 +1,5 @@
-//! One actual Unix IPC/worker model, using only a published non-secret mock.
-//! No entropy or real key is used. Helpers never open or hash persisted bytes;
-//! only the production Store owns its newly marked mock-data directory.
-#![cfg(unix)]
+//! Private local IPC, original worker and restart with public structural fixtures.
+#![cfg(any(unix, windows))]
 #![forbid(unsafe_code)]
 use gnunet_identity::{Core, KeyType, SecretKeyView};
 use gnunet_identity_host::{
@@ -9,39 +7,36 @@ use gnunet_identity_host::{
     server::{Limits, Ports, Progress, Server},
     worker::Worker,
 };
+use gnunet_native::filesystem::Directory;
+use gnunet_service_runtime::local::{Listener as LocalListener, Stream};
 use gnunet_service_runtime::{
     clock::SystemClock,
     credentials::UnixAccess,
     service::{Listener, ServiceOptions},
 };
 use gnunet_wire::official::identity::{Request, Response};
+#[cfg(windows)]
+use socket2::{Domain, SockAddr, Socket, Type};
 use std::{
     error::Error,
     future::{Future, poll_fn},
-    os::unix::fs::DirBuilderExt,
     path::PathBuf,
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
+    sync::Arc,
     task::Poll,
     time::Duration,
 };
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::UnixStream,
-};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use zeroize::Zeroizing;
 type Failure = Box<dyn Error>;
-static NEXT: AtomicU64 = AtomicU64::new(0);
 struct Temporary(PathBuf);
 impl Temporary {
     fn new() -> std::io::Result<Self> {
-        let n = NEXT.fetch_add(1, Ordering::Relaxed);
-        let p =
-            std::env::temp_dir().join(format!("identity-public-mock-{}-{n}", std::process::id()));
-        std::fs::DirBuilder::new().mode(0o700).create(&p)?;
-        Ok(Self(p))
+        let mut nonce = [0; 16];
+        gnunet_native::entropy::fill(&mut nonce)?;
+        let parent = std::env::temp_dir();
+        let name = format!("gn-id-{:032x}", u128::from_be_bytes(nonce));
+        Directory::open(&parent)?.create_private_directory(std::ffi::OsStr::new(&name))?;
+        Ok(Self(parent.join(name)))
     }
 }
 impl Drop for Temporary {
@@ -49,13 +44,26 @@ impl Drop for Temporary {
         let _cleanup = std::fs::remove_dir_all(&self.0);
     }
 }
-async fn send(stream: &mut UnixStream, request: Request<'_>) -> Result<(), Failure> {
+fn listen(path: &std::path::Path) -> std::io::Result<LocalListener> {
+    #[cfg(unix)]
+    {
+        LocalListener::bind(path)
+    }
+    #[cfg(windows)]
+    {
+        let socket = Socket::new(Domain::UNIX, Type::STREAM, None)?;
+        socket.bind(&SockAddr::unix(path)?)?;
+        socket.listen(16)?;
+        LocalListener::from_bound_socket(socket)
+    }
+}
+async fn send(stream: &mut Stream, request: Request<'_>) -> Result<(), Failure> {
     let mut bytes = Zeroizing::new(vec![0; request.encoded_len()?]);
     request.encode(&mut bytes)?;
     stream.write_all(&bytes).await?;
     Ok(())
 }
-async fn frame(stream: &mut UnixStream) -> Result<Zeroizing<Vec<u8>>, Failure> {
+async fn frame(stream: &mut Stream) -> Result<Zeroizing<Vec<u8>>, Failure> {
     let mut head = [0; 4];
     stream.read_exact(&mut head).await?;
     let len = usize::from(u16::from_be_bytes([head[0], head[1]]));
@@ -90,7 +98,7 @@ fn update(bytes: &[u8], name: Option<&[u8]>, mock: &[u8; 36]) -> Result<(), Fail
     Ok(())
 }
 async fn actor(path: PathBuf) -> Result<(), Failure> {
-    let mut stream = UnixStream::connect(path).await?;
+    let mut stream = Stream::connect(path).await?;
     send(&mut stream, Request::Start).await?;
     assert!(matches!(
         Response::decode(&frame(&mut stream).await?)?,
@@ -140,7 +148,7 @@ fn actual_original_mq_durable_mock_inventory_order() -> Result<(), Failure> {
         .block_on(async {
             let temporary = Temporary::new()?;
             let path = temporary.0.join("ipc");
-            let listener = tokio::net::UnixListener::bind(&path)?;
+            let listener = listen(&path)?;
             let listeners = [Listener::Unix(&listener)];
             let (mut store, loaded) = backend::Store::open(
                 backend::Namespace::Identity,
@@ -169,7 +177,7 @@ fn actual_original_mq_durable_mock_inventory_order() -> Result<(), Failure> {
                 Ports {
                     options: ServiceOptions::default(),
                     unix: UnixAccess {
-                        match_uid: true,
+                        match_uid: cfg!(unix),
                         match_gid: false,
                     },
                     clock: Arc::new(SystemClock),

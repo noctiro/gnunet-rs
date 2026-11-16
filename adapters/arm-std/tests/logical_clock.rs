@@ -1,4 +1,5 @@
 //! Real Unix reconnects under the original adjustable PROGRAM clock domain.
+#![cfg(unix)]
 #![expect(
     clippy::panic_in_result_fn,
     reason = "Actual original socket and deadline assertions distinguish native progress from a planned retry"

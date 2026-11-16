@@ -15,7 +15,7 @@ use gnunet_fs::{
     content::{RangeReader, VerifiedChunk, VerifiedRange},
 };
 use gnunet_types::Error as ProtocolError;
-use std::{future::Future, ops::Range, task::Poll};
+use std::{future::Future, ops::Range};
 use tokio::{
     io::{AsyncWrite, AsyncWriteExt},
     time::Instant,
@@ -74,6 +74,9 @@ pub enum Destination {
 /// Successful selected authentication and explicitly identified destination work.
 #[derive(Clone, Debug)]
 pub struct ReadRange {
+    /// Set only by a native output finalizer after file-data synchronization and
+    /// checked final naming. Generic sinks and comparisons return None.
+    pub directory_sync: Option<crate::DirectorySync>,
     /// Original CHK and logical file size.
     pub content: Content,
     /// Exact original absolute selection.
@@ -158,6 +161,7 @@ impl Report {
     }
     fn complete(self, completion: Completion) -> ReadRange {
         ReadRange {
+            directory_sync: None,
             content: self.content,
             selection: self.selection,
             completion,
@@ -178,30 +182,6 @@ fn native_guard(hard: Instant) -> Result<(), Error> {
     } else {
         Ok(())
     }
-}
-
-// Retain the same sink future and its actual partial cursor while checking the
-// original lookup deadlines and caller control. No replacement sink is created.
-async fn deliver<F: Future<Output = Result<(), Error>>>(
-    lookup: &mut Lookup,
-    future: F,
-    progress: Progress,
-    control: &mut impl FnMut(Progress) -> Control,
-) -> Result<(), Error> {
-    let mut delivery = std::pin::pin!(lookup.during(future));
-    let mut observe = std::pin::pin!(async {
-        loop {
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            if control(progress) == Control::Cancel {
-                return Err(Error::Cancelled(progress));
-            }
-        }
-    });
-    std::future::poll_fn(|cx| match delivery.as_mut().poll(cx) {
-        Poll::Ready(result) => Poll::Ready(result?),
-        Poll::Pending => observe.as_mut().poll(cx),
-    })
-    .await
 }
 
 struct Writer<'output, W> {
@@ -343,13 +323,12 @@ impl Buffers {
                         return Err(Error::Cancelled(report.authenticated));
                     }
                     report.pending_delivery = Some(chunk.range());
-                    deliver(
-                        &mut lookup,
-                        sink.chunk(chunk),
+                    super::controlled(
+                        lookup.during(sink.chunk(chunk)),
                         report.authenticated,
                         &mut control,
                     )
-                    .await?;
+                    .await??;
                     report.pending_delivery = None;
                     report.delivered_bytes += length;
                     report.delivered_chunks += 1;
@@ -362,13 +341,12 @@ impl Buffers {
                 return Err(Error::Cancelled(report.authenticated));
             }
             report.finish_started = true;
-            deliver(
-                &mut lookup,
-                sink.finish(),
+            super::controlled(
+                lookup.during(sink.finish()),
                 report.authenticated,
                 &mut control,
             )
-            .await?;
+            .await??;
             Ok(verified)
         }
         .await;

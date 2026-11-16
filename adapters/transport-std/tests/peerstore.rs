@@ -1,8 +1,9 @@
-//! Real Unix MQ, durable reopen, writer exclusion and iterator snapshot checks.
+//! Real native MQ, durable reopen, writer exclusion and iterator snapshot checks.
 #![expect(
     clippy::panic_in_result_fn,
     reason = "Assertions test actual durability and original IPC outcomes"
 )]
+mod support;
 use gnunet_crypto::EddsaPublicKey;
 use gnunet_service_runtime::connection::Connection;
 use gnunet_tcp_communicator_core::{services, session::ReplayKind};
@@ -15,7 +16,7 @@ use std::{
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::UnixStream,
+    net::TcpStream,
 };
 static NEXT: AtomicU64 = AtomicU64::new(0);
 struct Directory(PathBuf);
@@ -35,7 +36,7 @@ impl Drop for Directory {
         let _cleanup = std::fs::remove_dir_all(&self.0);
     }
 }
-async fn receive(stream: &mut UnixStream) -> Result<Vec<u8>, std::io::Error> {
+async fn receive(stream: &mut TcpStream) -> Result<Vec<u8>, std::io::Error> {
     let mut header = [0; 4];
     stream.read_exact(&mut header).await?;
     let size = usize::from(u16::from_be_bytes([header[0], header[1]]));
@@ -56,8 +57,8 @@ async fn owned_backend_snapshots_and_commits_before_ack_and_never_rewinds()
     assert!(matches!(Journal::open(&path), Err(Error::Conflict)));
     let (_, reserved) = journal.reserve_monotime(9000, 1000)?;
     let mut server = Server::new(2)?;
-    let (server_stream, mut client) = UnixStream::pair()?;
-    server.admit(Connection::from_unix(server_stream))?;
+    let (server_stream, mut client) = support::pair().await?;
+    server.admit(Connection::from_tcp(server_stream))?;
     let peer = EddsaPublicKey::from_bytes([6; 32]);
     let kind = ReplayKind::Handshake;
     let work = async {
@@ -109,8 +110,8 @@ async fn owned_backend_snapshots_and_commits_before_ack_and_never_rewinds()
     let (first, _) = journal.reserve_monotime(1, 1)?;
     assert!(first > reserved);
     let mut server = Server::new(1)?;
-    let (server_stream, mut client) = UnixStream::pair()?;
-    server.admit(Connection::from_unix(server_stream))?;
+    let (server_stream, mut client) = support::pair().await?;
+    server.admit(Connection::from_tcp(server_stream))?;
     let work = async {
         let mut out = [0; 256];
         let n = services::replay_start(5, peer, kind, &mut out)?;
@@ -131,16 +132,15 @@ async fn owned_backend_snapshots_and_commits_before_ack_and_never_rewinds()
 #[test]
 fn accepted_filename_extensions_never_replace_the_directory_writer_fence()
 -> Result<(), Box<dyn std::error::Error>> {
-    use std::os::unix::fs::MetadataExt;
     for name in ["ledger.new", "ledger.lock"] {
         let directory = Directory::new()?;
         let path = directory.0.join(name);
         let mut journal = Journal::open(&path)?;
         let fence = directory.0.join(".gnunet-peerstore-owner.lock");
-        let before = std::fs::metadata(&fence)?;
+        let before = gnunet_native::filesystem::FileIdentity::of(&std::fs::File::open(&fence)?)?;
         let (_, last) = journal.reserve_monotime(10, 100)?;
-        let after = std::fs::metadata(&fence)?;
-        assert_eq!((before.dev(), before.ino()), (after.dev(), after.ino()));
+        let after = gnunet_native::filesystem::FileIdentity::of(&std::fs::File::open(&fence)?)?;
+        assert_eq!(before, after);
         assert!(matches!(
             Journal::open(directory.0.join("sibling")),
             Err(Error::Conflict)

@@ -73,6 +73,7 @@ impl<'cfg, 'id, 'slots, E: Entropy> Driver<'cfg, 'id, 'slots, E> {
     #[must_use]
     pub fn helper_initial_deadline(&self) -> Option<Instant> {
         match &self.tun {
+            #[cfg(unix)]
             Some(PacketSource::Helper(io)) => Some(io.initial_deadline()),
             _ => None,
         }
@@ -85,11 +86,15 @@ impl<'cfg, 'id, 'slots, E: Entropy> Driver<'cfg, 'id, 'slots, E> {
         }
     }
     /// Actual current kernel snapshot, retaining the original helper/native epoch.
-    pub fn snapshot_tun(&self, until: Instant) -> Result<tun::NativeSnapshot, tun::AdminFailure> {
+    pub fn snapshot_tun(
+        &self,
+        until: Instant,
+        options: tun::SnapshotOptions,
+    ) -> Result<tun::NativeSnapshot, tun::AdminFailure> {
         self.tun
             .as_ref()
             .ok_or(tun::AdminFailure::SourceRetired)?
-            .snapshot(until)
+            .snapshot(until, options)
     }
     /// Actual original read-only route reconciliation; this is never an add ACK.
     pub fn query_tun_route(
@@ -130,6 +135,7 @@ impl<'cfg, 'id, 'slots, E: Entropy> Driver<'cfg, 'id, 'slots, E> {
     }
     /// Wait the exact retired helper after physical shutdown. No clock sample or
     /// replacement PID is involved and pipe close alone is never called reap.
+    #[cfg(unix)]
     pub async fn reap_helper(&mut self) -> Option<tun::helper::Report> {
         match &mut self.retiring_tun {
             Some(owner) => owner.reap_helper().await,

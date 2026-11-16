@@ -1,84 +1,88 @@
-//! Descriptor-bound writer authority, shared by process and per-peer scopes.
+//! Original native directory and private process/identity writer exclusion.
 use super::{JournalError, LOCK, Outcome, Stage, invalid, native};
+use gnunet_native::{
+    DirectorySync,
+    filesystem::{Directory, FileIdentity, private_single_file_identity},
+};
 use std::{
-    fs::{self, File, OpenOptions},
+    ffi::OsStr,
+    fs::{self, File},
     io,
-    os::unix::fs::{MetadataExt, OpenOptionsExt},
     path::{Path, PathBuf},
 };
-
 pub(super) struct Fence {
     pub directory: PathBuf,
-    parent: File,
+    pub parent: Directory,
     guard: File,
-    parent_id: (u64, u64),
-    pub identity: (u64, u64),
+    parent_id: FileIdentity,
+    pub identity: FileIdentity,
+    pub fresh: bool,
+    pub barrier: DirectorySync,
 }
 impl Fence {
     pub fn open(directory: &Path) -> Result<Self, JournalError> {
-        let directory = fs::canonicalize(directory)
-            .map_err(|e| native(Stage::Fence, Outcome::NotCommitted, e))?;
-        let parent = OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
-            .open(&directory)
-            .map_err(|e| native(Stage::Fence, Outcome::NotCommitted, e))?;
-        let metadata = parent
-            .metadata()
-            .map_err(|e| native(Stage::Fence, Outcome::NotCommitted, e))?;
-        let parent_id = (metadata.dev(), metadata.ino());
-        let guard = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(directory.join(LOCK))
-            .map_err(|e| native(Stage::Fence, Outcome::NotCommitted, e))?;
+        let parent = Directory::open(directory)
+            .map_err(|cause| native(Stage::Fence, Outcome::NotCommitted, cause))?;
+        Self::adopt(parent, directory)
+    }
+    pub fn adopt(parent: Directory, selected: &Path) -> Result<Self, JournalError> {
+        parent
+            .validate_private()
+            .map_err(|cause| native(Stage::Fence, Outcome::NotCommitted, cause))?;
+        let directory = fs::canonicalize(selected)
+            .map_err(|cause| native(Stage::Fence, Outcome::NotCommitted, cause))?;
+        let parent_id = FileIdentity::of(parent.as_file())
+            .map_err(|cause| native(Stage::Fence, Outcome::NotCommitted, cause))?;
+        let (guard, fresh) = match parent.open_file_for_update(OsStr::new(LOCK)) {
+            Ok(file) => (file, false),
+            Err(cause) if cause.kind() == io::ErrorKind::NotFound => (
+                parent
+                    .create_private_file(OsStr::new(LOCK))
+                    .map_err(|cause| native(Stage::Fence, Outcome::NotCommitted, cause))?,
+                true,
+            ),
+            Err(cause) => return Err(native(Stage::Fence, Outcome::NotCommitted, cause)),
+        };
+        let identity = private_single_file_identity(&guard)
+            .map_err(|cause| native(Stage::Fence, Outcome::NotCommitted, cause))?;
         guard
             .try_lock()
-            .map_err(|e| native(Stage::Fence, Outcome::NotCommitted, e.into()))?;
-        let metadata = guard
-            .metadata()
-            .map_err(|e| native(Stage::Fence, Outcome::NotCommitted, e))?;
+            .map_err(|cause| native(Stage::Fence, Outcome::NotCommitted, cause.into()))?;
+        let barrier = parent
+            .sync()
+            .map_err(|cause| native(Stage::DirectorySync, Outcome::Unknown, cause))?;
         let owner = Self {
             directory,
             parent,
             guard,
             parent_id,
-            identity: (metadata.dev(), metadata.ino()),
+            identity,
+            fresh,
+            barrier,
         };
         owner.check()?;
         Ok(owner)
     }
     pub fn check(&self) -> Result<(), JournalError> {
-        let observed = || -> io::Result<bool> {
-            let parent = fs::symlink_metadata(&self.directory)?;
-            let held_parent = self.parent.metadata()?;
-            let actual = fs::symlink_metadata(self.directory.join(LOCK))?;
-            let held = self.guard.metadata()?;
-            Ok(parent.is_dir()
-                && held_parent.is_dir()
-                && (parent.dev(), parent.ino()) == self.parent_id
-                && (held_parent.dev(), held_parent.ino()) == self.parent_id
-                && actual.is_file()
-                && held.is_file()
-                && actual.nlink() == 1
-                && held.nlink() == 1
-                && (actual.dev(), actual.ino()) == self.identity
-                && (held.dev(), held.ino()) == self.identity)
-        };
-        if !observed().map_err(|e| native(Stage::Fence, Outcome::Unknown, e))? {
+        let observed = (|| -> io::Result<bool> {
+            let selected = Directory::open(&self.directory)?;
+            self.parent.validate_private()?;
+            Ok(FileIdentity::of(selected.as_file())? == self.parent_id
+                && FileIdentity::of(self.parent.as_file())? == self.parent_id
+                && private_single_file_identity(&self.guard)? == self.identity
+                && self.parent.same_file(OsStr::new(LOCK), &self.guard)?)
+        })()
+        .map_err(|cause| native(Stage::Fence, Outcome::Unknown, cause))?;
+        if !observed {
             return Err(invalid(
                 Stage::Fence,
                 Outcome::Unknown,
-                "original UDP writer fence or parent changed",
+                "original UDP writer fence or directory changed",
             ));
         }
         Ok(())
     }
-    pub fn sync(&self) -> io::Result<()> {
-        self.parent.sync_all()
+    pub fn sync(&self) -> io::Result<DirectorySync> {
+        self.parent.sync()
     }
 }

@@ -2,12 +2,8 @@
 use super::{MetadataSettings, NativeMetadataLimits, SelectionData};
 use crate::extraction::Error;
 use gnunet_extractor_host::NativeError;
-use std::{
-    ffi::OsString,
-    os::unix::ffi::{OsStrExt, OsStringExt},
-    path::PathBuf,
-};
-const MAGIC: &[u8; 8] = b"FSMETA01";
+use std::path::PathBuf;
+const MAGIC: &[u8; 8] = b"FSMETA02";
 const MAXIMUM: usize = 1 << 20;
 fn invalid() -> Error {
     Error::MetadataSettings(NativeError::Invalid(
@@ -47,14 +43,18 @@ pub(super) fn encode(settings: &MetadataSettings) -> Result<Vec<u8>, Error> {
         )));
     }
     let extra = if let SelectionData::Native(config) = &settings.selection {
-        64usize
+        72usize
             .checked_add(4)
-            .and_then(|n| n.checked_add(config.library.as_os_str().as_bytes().len()))
+            .and_then(|n| {
+                n.checked_add(
+                    gnunet_native::os_bytes::encode(config.provider.library().as_os_str()).len(),
+                )
+            })
             .and_then(|n| n.checked_add(1))
             .and_then(|n| {
                 config
-                    .extractors
-                    .as_ref()
+                    .provider
+                    .configured()
                     .map_or(Some(n), |b| n.checked_add(4)?.checked_add(b.len()))
             })
             .ok_or_else(capacity)?
@@ -82,6 +82,7 @@ pub(super) fn encode(settings: &MetadataSettings) -> Result<Vec<u8>, Error> {
         let limits = config.limits;
         limits.validate().map_err(Error::MetadataSettings)?;
         add(&mut out, &limits.source_bytes.to_be_bytes())?;
+        add(&mut out, &limits.mapped_input_bytes.to_be_bytes())?;
         for limit in [
             limits.memory_input_bytes,
             limits.config_bytes,
@@ -93,8 +94,11 @@ pub(super) fn encode(settings: &MetadataSettings) -> Result<Vec<u8>, Error> {
         ] {
             number(&mut out, limit)?;
         }
-        blob(&mut out, config.library.as_os_str().as_bytes())?;
-        match &config.extractors {
+        blob(
+            &mut out,
+            &gnunet_native::os_bytes::encode(config.provider.library().as_os_str()),
+        )?;
+        match config.provider.configured() {
             None => add(&mut out, &[0])?,
             Some(bytes) => {
                 add(&mut out, &[1])?;
@@ -142,6 +146,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<MetadataSettings, Error> {
         3 => {
             let limits = NativeMetadataLimits {
                 source_bytes: input.u64()?,
+                mapped_input_bytes: input.u64()?,
                 memory_input_bytes: input.size()?,
                 config_bytes: input.size()?,
                 callbacks: input.size()?,
@@ -152,13 +157,15 @@ pub(super) fn decode(bytes: &[u8]) -> Result<MetadataSettings, Error> {
             };
             limits.validate().map_err(Error::MetadataSettings)?;
             let raw = input.blob()?;
-            if raw.len() > limits.config_bytes
-                || raw.contains(&0)
-                || !std::path::Path::new(std::ffi::OsStr::from_bytes(raw)).is_absolute()
-            {
+            if raw.len() > limits.config_bytes || raw.contains(&0) {
                 return Err(invalid());
             }
-            let library = PathBuf::from(OsString::from_vec(super::super::copy(raw)?));
+            let library = PathBuf::from(gnunet_native::os_bytes::decode_owned(
+                super::super::copy(raw)?,
+            )?);
+            if !library.is_absolute() {
+                return Err(invalid());
+            }
             let configured = match input.byte()? {
                 0 => None,
                 1 => Some(input.blob()?),
@@ -193,9 +200,11 @@ mod tests {
     }
     #[test]
     fn restored_selection_preserves_native_config_domain_and_disabled_meanings() -> Result {
-        let library = PathBuf::from(OsString::from_vec(
-            b"/not-opened/provider-\xff.dylib".to_vec(),
-        ));
+        #[cfg(unix)]
+        let encoded = b"/not-opened/provider-\xff.dylib".as_slice();
+        #[cfg(windows)]
+        let encoded = b"C:\\not-opened\\provider-\xed\xa0\x80.dll".as_slice();
+        let library = PathBuf::from(gnunet_native::os_bytes::decode_owned(encoded.to_vec())?);
         let limits = NativeMetadataLimits {
             callbacks: 13,
             items: 7,
@@ -217,8 +226,9 @@ mod tests {
                 return Err("native selection lost".into());
             };
             check(
-                actual.library == library
-                    && actual.extractors.as_deref() == configured
+                actual.provider.library() == library
+                    && actual.provider.configured() == configured
+                    && actual.limits.mapped_input_bytes == limits.mapped_input_bytes
                     && actual.limits.callbacks == 13
                     && actual.limits.items == 7,
             )?;

@@ -1,6 +1,6 @@
 //! Real original-MQ NAT registration and NATauto query clients. No wire RID,
 //! ACK/CANCEL, implicit Resolver/task, mutation replay or fabricated NAT truth.
-#![cfg(unix)]
+#![cfg(any(unix, windows))]
 #![forbid(unsafe_code)]
 pub use gnunet_client_host::{EndpointSource, LiveConfiguration, resolution};
 use gnunet_service_runtime::framing::OwnedFrame;
@@ -75,7 +75,9 @@ pub fn native_profile() -> Result<ipc::Profile, Error> {
     } else {
         ipc::Endian::Big
     };
-    if cfg!(target_os = "linux") {
+    if cfg!(windows) {
+        Ok(ipc::Profile::windows(order))
+    } else if cfg!(target_os = "linux") {
         Ok(ipc::Profile::linux(order))
     } else if cfg!(target_os = "macos") || cfg!(target_os = "ios") {
         Ok(ipc::Profile::darwin(order))

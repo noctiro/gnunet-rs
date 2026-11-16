@@ -19,15 +19,11 @@ use std::{
     fmt,
     future::{Future, poll_fn},
     io::{self, Write},
-    os::unix::ffi::OsStrExt,
     path::Path,
     task::Poll,
     time::Duration,
 };
-use tokio::{
-    signal::unix::{SignalKind, signal},
-    time::Instant,
-};
+use tokio::time::Instant;
 
 const QUERIES: usize = 64;
 const KNOWN: usize = 1024;
@@ -235,13 +231,13 @@ pub(super) fn anonymity_option<T: AsRef<OsStr>>(
         .get(*at)
         .ok_or("missing search option")?
         .as_ref()
-        .as_bytes();
+        .as_encoded_bytes();
     let (value, consumed) = if matches!(raw, b"-a" | b"--anonymity") {
         (
             args.get(*at + 1)
                 .ok_or("-a/--anonymity requires a level")?
                 .as_ref()
-                .as_bytes(),
+                .as_encoded_bytes(),
             2,
         )
     } else if let Some(value) = raw.strip_prefix(b"--anonymity=") {
@@ -286,7 +282,7 @@ fn arguments<T: AsRef<OsStr>>(args: &[T]) -> Result<Arguments<'_>, Box<dyn Error
     let mut index = 0;
     while index < args.len() {
         let value = args[index].as_ref();
-        let raw = value.as_bytes();
+        let raw = value.as_encoded_bytes();
         if !literal && raw == b"--" {
             literal = true;
             index += 1;
@@ -312,19 +308,28 @@ fn arguments<T: AsRef<OsStr>>(args: &[T]) -> Result<Arguments<'_>, Box<dyn Error
                 .ok_or("FS search option requires a value")?
                 .as_ref();
             Some((raw, argument))
-        } else if let Some(argument) = raw.strip_prefix(b"--output=") {
-            Some((b"--output".as_slice(), OsStr::from_bytes(argument)))
-        } else if let Some(argument) = raw.strip_prefix(b"--keywords=") {
-            Some((b"--keywords".as_slice(), OsStr::from_bytes(argument)))
-        } else if let Some(argument) = raw.strip_prefix(b"--timeout=") {
-            Some((b"--timeout".as_slice(), OsStr::from_bytes(argument)))
-        } else if let Some(argument) = raw.strip_prefix(b"--max-visible-results=") {
-            Some((
-                b"--max-visible-results".as_slice(),
-                OsStr::from_bytes(argument),
-            ))
+        } else if let Some(argument) =
+            gnunet_native::os_bytes::strip_ascii_prefix(value, b"--output=")
+        {
+            Some((b"--output".as_slice(), argument))
+        } else if let Some(argument) =
+            gnunet_native::os_bytes::strip_ascii_prefix(value, b"--keywords=")
+        {
+            Some((b"--keywords".as_slice(), argument))
+        } else if let Some(argument) =
+            gnunet_native::os_bytes::strip_ascii_prefix(value, b"--timeout=")
+        {
+            Some((b"--timeout".as_slice(), argument))
+        } else if let Some(argument) =
+            gnunet_native::os_bytes::strip_ascii_prefix(value, b"--max-visible-results=")
+        {
+            Some((b"--max-visible-results".as_slice(), argument))
         } else if raw.starts_with(b"-o") && raw.len() > 2 {
-            Some((b"--output".as_slice(), OsStr::from_bytes(&raw[2..])))
+            Some((
+                b"--output".as_slice(),
+                gnunet_native::os_bytes::strip_ascii_prefix(value, b"-o")
+                    .ok_or("invalid attached output option")?,
+            ))
         } else {
             None
         };
@@ -373,12 +378,12 @@ fn arguments<T: AsRef<OsStr>>(args: &[T]) -> Result<Arguments<'_>, Box<dyn Error
         if positional.len() != 1 {
             return Err("--keywords requires only the socket as a positional argument".into());
         }
-        QueryInput::Text(text.as_bytes())
+        QueryInput::Text(crate::argument::wire_bytes(text)?)
     } else {
         let first = *positional
             .get(1)
             .ok_or("FS search requires a URI or keyword arguments")?;
-        if first.as_bytes().starts_with(b"gnunet://fs/") {
+        if first.as_encoded_bytes().starts_with(b"gnunet://fs/") {
             if positional.len() > 4 {
                 return Err("too many positional FS URI search arguments".into());
             }
@@ -396,11 +401,13 @@ fn arguments<T: AsRef<OsStr>>(args: &[T]) -> Result<Arguments<'_>, Box<dyn Error
                     "search result limit specified more than once",
                 )?;
             }
-            QueryInput::Uri(first.as_bytes())
+            QueryInput::Uri(crate::argument::wire_bytes(first)?)
         } else {
             let mut terms = Vec::new();
             terms.try_reserve_exact(positional.len() - 1)?;
-            terms.extend(positional[1..].iter().map(|value| value.as_bytes()));
+            for value in &positional[1..] {
+                terms.push(crate::argument::wire_bytes(value)?);
+            }
             QueryInput::Args(terms)
         }
     };
@@ -417,7 +424,8 @@ fn arguments<T: AsRef<OsStr>>(args: &[T]) -> Result<Arguments<'_>, Box<dyn Error
 fn export_value(value: &search_export::Report) -> Value {
     json!({"visible_results":value.visible_results,"prepared_entries":value.entries,"wire_bytes":value.wire_bytes,
         "written_bytes":value.write.bytes,"commit_stage":format!("{:?}",value.write.stage),
-        "durable":value.write.stage==gnunet::fs_host::CommitStage::Durable,
+        "file_synchronized":value.write.stage.is_committed(),
+        "directory_sync":value.write.stage.directory_sync().map(|sync|match sync {gnunet::fs_host::DirectorySync::Synchronized=>"synchronized",gnunet::fs_host::DirectorySync::Unavailable=>"unavailable"}),
         "partial_search":true,"complete_visible_records_only":true,"metadata_omissions":0})
 }
 #[expect(
@@ -431,7 +439,10 @@ enum Observation {
     Signal(io::Error),
 }
 
-pub(super) fn run(args: &[impl AsRef<OsStr>], out: &mut impl Write) -> Result<(), Box<dyn Error>> {
+pub(super) fn run(
+    args: &[impl AsRef<OsStr>],
+    out: &mut super::Output<'_, impl Write>,
+) -> Result<(), Box<dyn Error>> {
     let arguments = arguments(args)?;
     let interval = duration(arguments.timeout.as_ref())?;
     let uri_limits = UriLimits::default();
@@ -460,6 +471,8 @@ pub(super) fn run(args: &[impl AsRef<OsStr>], out: &mut impl Write) -> Result<()
     let hard = Instant::now()
         .checked_add(Duration::from_micros(interval))
         .ok_or("search native deadline is too large")?;
+    out.deadline(hard);
+    out.interval(interval)?;
     let deadline = target(&source, interval)?;
     let options = search::Options {
         anonymity: arguments.anonymity,
@@ -485,8 +498,7 @@ pub(super) fn run(args: &[impl AsRef<OsStr>], out: &mut impl Write) -> Result<()
         Err(error) => return Err(error.into()),
     };
     tokio::runtime::Builder::new_current_thread().enable_all().build()?.block_on(async {
-        let mut interrupt=signal(SignalKind::interrupt())?;
-        let mut terminate=signal(SignalKind::terminate())?;
+        let mut signals=super::stop::StopEvents::new()?;
         let mut native=Box::pin(tokio::time::sleep_until(hard));
         if Instant::now()>=hard {return Err("search deadline elapsed during setup".into());}
         let mut identities:[Instance;QUERIES]=std::array::from_fn(|_|Instance::new());
@@ -513,11 +525,9 @@ pub(super) fn run(args: &[impl AsRef<OsStr>], out: &mut impl Write) -> Result<()
                     let mut driving=std::pin::pin!(session.drive(Some(wait)));
                     poll_fn(|cx| {
                         if Instant::now()>=hard || native.as_mut().poll(cx).is_ready() {return Poll::Ready(Observation::NativeDeadline);}
-                        for signal in [&mut interrupt,&mut terminate] {
-                            if let Poll::Ready(value)=signal.poll_recv(cx) {
-                                return Poll::Ready(match value {Some(())=>Observation::Stop,None=>Observation::Signal(io::Error::new(io::ErrorKind::UnexpectedEof,"search signal stream closed"))});
-                            }
-                        }
+                        if signals.poll(cx) { return Poll::Ready(match signals.take_failure() {
+                            Some(error)=>Observation::Signal(error), None=>Observation::Stop,
+                        }); }
                         driving.as_mut().poll(cx).map(Observation::Step)
                     }).await
                 };
@@ -589,6 +599,7 @@ pub(super) fn run(args: &[impl AsRef<OsStr>], out: &mut impl Write) -> Result<()
             "native_deadline":native_deadline.as_ref().map(|(id,cause)|json!({"query_id":id.map(|id|id.index()),"cause":error_value(cause)})),
             "directory":archive.as_ref().map(export_value),"directory_error":export_failure.as_ref().map(ToString::to_string),
             "scope":"caller observation stopped; no whole-network completion or absence conclusion"});
+        out.cleanup()?;
         let diagnostic=row(out,&final_row).err();
         if cause.is_some() || cleanup.is_some() || diagnostic.is_some() || !terminal.is_empty() || export_failure.is_some() {
             return Err(Box::new(Failure{cause,queries:terminal,cleanup,diagnostic,export:export_failure}) as Box<dyn Error>);
@@ -600,6 +611,43 @@ pub(super) fn run(args: &[impl AsRef<OsStr>], out: &mut impl Write) -> Result<()
 #[cfg(test)]
 mod anonymity_tests {
     use super::*;
+    #[test]
+    fn attached_output_options_borrow_nonunicode_native_paths() -> Result<(), Box<dyn Error>> {
+        #[cfg(unix)]
+        let native = {
+            use std::os::unix::ffi::OsStringExt;
+            std::ffi::OsString::from_vec(b"native-\xff".to_vec())
+        };
+        #[cfg(windows)]
+        let native = {
+            use std::os::windows::ffi::OsStringExt;
+            std::ffi::OsString::from_wide(&[0xd800, u16::from(b'x')])
+        };
+        for prefix in ["--output=", "-o"] {
+            let mut option = std::ffi::OsString::from(prefix);
+            option.push(&native);
+            let input = ["fs".into(), "gnunet://fs/ksk/query".into(), option];
+            let selected = arguments(&input)?;
+            if selected.output != Some(native.as_os_str()) {
+                return Err("native attached output path changed".into());
+            }
+        }
+        Ok(())
+    }
+    #[cfg(windows)]
+    #[test]
+    fn nonunicode_keywords_never_enter_the_wire() {
+        use std::os::windows::ffi::OsStringExt;
+        let keyword = std::ffi::OsString::from_wide(&[0xd800]);
+        let mut inline = std::ffi::OsString::from("--keywords=");
+        inline.push(&keyword);
+        for input in [
+            vec!["fs".into(), "--keywords".into(), keyword],
+            vec!["fs".into(), inline],
+        ] {
+            assert!(arguments(&input).is_err());
+        }
+    }
     #[test]
     fn selected_search_level_preserves_query_values_and_literal_option_keywords()
     -> Result<(), Box<dyn Error>> {

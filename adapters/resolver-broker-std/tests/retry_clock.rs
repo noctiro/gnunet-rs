@@ -17,7 +17,6 @@ use std::{
     error::Error as StdError,
     future::{Future, poll_fn},
     io,
-    path::PathBuf,
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -27,28 +26,15 @@ use std::{
 };
 use tokio::{
     io::AsyncReadExt,
-    net::UnixListener,
     time::{Instant, timeout},
 };
+#[path = "support/directory.rs"]
+mod directory;
+use directory::Directory as Dir;
+#[path = "support/local.rs"]
+mod local;
+use local::Listener as LocalListener;
 type Test = Result<(), Box<dyn StdError>>;
-static NEXT: AtomicU64 = AtomicU64::new(0);
-struct Dir(PathBuf);
-impl Dir {
-    fn new() -> io::Result<Self> {
-        let path = std::env::temp_dir().join(format!(
-            "gnunet-retry-clock-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::create_dir(&path)?;
-        Ok(Self(path))
-    }
-}
-impl Drop for Dir {
-    fn drop(&mut self) {
-        drop(std::fs::remove_dir_all(&self.0));
-    }
-}
 fn profile() -> Result<FamilyProfile, Box<dyn StdError>> {
     let p = gnunet_resolver_broker::native_profile()?;
     Ok(FamilyProfile::new(
@@ -61,11 +47,24 @@ fn config(section: &[u8], path: &std::path::Path) -> Result<Configuration, Box<d
     c.set_value(
         section,
         b"UNIXPATH",
-        Some(path.as_os_str().as_encoded_bytes()),
+        Some(&gnunet_native::os_bytes::encode(path.as_os_str())),
     )?;
     Ok(c)
 }
 type Stats<'owner> = StatisticsHandle<'owner, 4, 64, 2, 64, 8>;
+// Preserve the platform's observed error rather than assuming a Unix errno.
+async fn local_failure(path: &std::path::Path) -> io::Result<io::Error> {
+    match local::Stream::connect(path).await {
+        Err(error) if error.raw_os_error().is_some() => Ok(error),
+        Err(error) => Err(error),
+        Ok(_) => Err(io::Error::other(
+            "missing fixture endpoint unexpectedly connected",
+        )),
+    }
+}
+fn native_signature(error: &io::Error) -> (io::ErrorKind, Option<i32>) {
+    (error.kind(), error.raw_os_error())
+}
 async fn alongside<'owner, F: Future>(
     host: &mut Stats<'owner>,
     future: F,
@@ -93,6 +92,7 @@ async fn alongside<'owner, F: Future>(
 async fn statistics(rollback: bool) -> Test {
     let dir = Dir::new()?;
     let path = dir.0.join("statistics");
+    let native_failure = local_failure(&path).await?;
     let clock = Arc::new(clock_source::Adjustable::advancing(1_000_000, 4)?);
     let (context, _driver) = broker::<4, 64>(
         LiveConfiguration::new(config(b"resolver", &dir.0.join("unused-resolver"))?),
@@ -129,12 +129,12 @@ async fn statistics(rollback: bool) -> Test {
         })
         .await?;
         if let Some(e) = host.take_io_error() {
-            assert_eq!(e.kind(), io::ErrorKind::NotFound);
+            assert_eq!(native_signature(&e), native_signature(&native_failure));
             failures += 1;
         }
         assert!(Instant::now() < until);
     }
-    let listener = UnixListener::bind(&path)?;
+    let listener = LocalListener::bind(&path).await?;
     if rollback {
         clock.set_offset(-1_000_000)?;
         assert!(
@@ -217,14 +217,15 @@ fn broker_native_retry_deadline_samples_source_after_the_actual_socket_failure()
         }
     }
     tokio::runtime::Builder::new_current_thread().enable_all().build()?.block_on(async{
-  let dir=Dir::new()?;let source=Arc::new(Source{now:AtomicU64::new(1_000_000),advance_after_read:AtomicBool::new(false)});
-  let (context,mut driver)=broker::<4,64>(LiveConfiguration::new(config(b"resolver",&dir.0.join("missing"))?),Limits::default(),profile()?,source.clone())?;
+  let dir=Dir::new()?;
+let path=dir.0.join("missing");let native_failure=local_failure(&path).await?;let source=Arc::new(Source{now:AtomicU64::new(1_000_000),advance_after_read:AtomicBool::new(false)});
+  let (context,mut driver)=broker::<4,64>(LiveConfiguration::new(config(b"resolver",&path)?),Limits::default(),profile()?,source.clone())?;
   let query=context.ip_get(b"remote-fixture",Family::Any,CoreDuration(30_000_000))?;
   source.now.store(2_000_000,Ordering::SeqCst);
   source.advance_after_read.store(true,Ordering::SeqCst);let mut deadline=None;let until=Instant::now()+Duration::from_secs(1);
   while deadline.is_none(){driver.drive(Some(until),|event|{if let DriverEvent::SocketRetry{at,..}=event{deadline=Some(at);}}).await?;assert!(Instant::now()<until);}
-  assert_eq!(driver.take_io_error().ok_or("missing original native error")?.kind(),io::ErrorKind::NotFound);
-  assert_eq!(deadline,Some(AbsoluteTime::from_micros(3_002_000)),"source add_delayed samples after actual ENOENT, not before polling its native connect");
+  assert_eq!(native_signature(&driver.take_io_error().ok_or("missing original native error")?),native_signature(&native_failure));
+  assert_eq!(deadline,Some(AbsoluteTime::from_micros(3_002_000)),"source add_delayed samples after actual native connect failure, not before polling its native connect");
   drop(query);Ok(())
  })
 }
@@ -247,7 +248,7 @@ async fn statistics_registration_refusal(capacity: bool) -> Test {
         }
         fn subscribe(&self) -> Result<Box<dyn ClockSubscription>, Error> {
             let lease = self.clock.subscribe()?;
-            // Only native retry registration (after the consumed ENOENT) is
+            // Only native retry registration (after the consumed native connect failure) is
             // refused. The new persistent owner subscription is independent.
             if self.arm_time_refusal.swap(false, Ordering::SeqCst) {
                 self.failed.store(true, Ordering::SeqCst);
@@ -257,6 +258,7 @@ async fn statistics_registration_refusal(capacity: bool) -> Test {
     }
     let dir = Dir::new()?;
     let path = dir.0.join("registration");
+    let native_failure = local_failure(&path).await?;
     let source = Arc::new(Source {
         clock: clock_source::Adjustable::frozen(1_000_000, 3)?,
         failed: AtomicBool::new(false),
@@ -320,7 +322,7 @@ async fn statistics_registration_refusal(capacity: bool) -> Test {
     assert_eq!(host.connection_epoch(), epoch);
     assert!(host.get_callbacks_enabled(get));
     assert!(host.take_io_error().is_none());
-    let listener = UnixListener::bind(&path)?;
+    let listener = LocalListener::bind(&path).await?;
     drop(held.take());
     source.failed.store(false, Ordering::SeqCst);
     source.clock.set(2_000_000)?;
@@ -340,8 +342,12 @@ async fn statistics_registration_refusal(capacity: bool) -> Test {
     .await?;
     assert_eq!(retried, 1);
     assert_eq!(
-        host.take_io_error().ok_or("lost original ENOENT")?.kind(),
-        io::ErrorKind::NotFound
+        native_signature(
+            &host
+                .take_io_error()
+                .ok_or("lost original native connect failure")?
+        ),
+        native_signature(&native_failure)
     );
     assert_eq!(source.clock.listeners()?, 3);
     source.clock.set(2_001_999)?;
@@ -447,6 +453,7 @@ fn broker_post_error_sample_failure_retries_only_registration_and_preserves_orig
         .block_on(async {
             let dir = Dir::new()?;
             let path = dir.0.join("broker-post-error");
+            let native_failure = local_failure(&path).await?;
             let source = Arc::new(Source {
                 now: AtomicU64::new(1_000_000),
                 armed: AtomicBool::new(false),
@@ -468,10 +475,10 @@ fn broker_post_error_sample_failure_retries_only_registration_and_preserves_orig
                     result,
                     Err(gnunet_resolver_broker::BrokerError::Core(Error::Io))
                 ),
-                "post-ENOENT sample failure must remain explicit: {result:?}"
+                "post-native connect failure sample failure must remain explicit: {result:?}"
             );
             assert!(driver.take_io_error().is_none());
-            let listener = UnixListener::bind(&path)?;
+            let listener = LocalListener::bind(&path).await?;
             let mut retries = Vec::new();
             driver
                 .drive(None, |event| {
@@ -482,8 +489,12 @@ fn broker_post_error_sample_failure_retries_only_registration_and_preserves_orig
                 .await?;
             assert_eq!(retries, [AbsoluteTime::from_micros(3_002_000)]);
             assert_eq!(
-                driver.take_io_error().ok_or("lost original ENOENT")?.kind(),
-                io::ErrorKind::NotFound
+                native_signature(
+                    &driver
+                        .take_io_error()
+                        .ok_or("lost original native connect failure")?
+                ),
+                native_signature(&native_failure)
             );
             assert!(
                 alongside(
@@ -528,6 +539,8 @@ fn canceled_statistics_drive_retains_original_retry_and_destroy_returns_only_its
         .build()?
         .block_on(async {
             let dir = Dir::new()?;
+            let path = dir.0.join("missing");
+            let native_failure = local_failure(&path).await?;
             let clock = Arc::new(clock_source::Adjustable::frozen(1_000_000, 3)?);
             let (context, driver) = broker::<4, 64>(
                 LiveConfiguration::new(config(b"resolver", &dir.0.join("unused"))?),
@@ -538,7 +551,7 @@ fn canceled_statistics_drive_retains_original_retry_and_destroy_returns_only_its
             let mut statistics_instance_3 = gnunet_client::statistics_handle::Instance::new();
             let mut host = Stats::from_config(
                 &mut statistics_instance_3,
-                &config(b"statistics", &dir.0.join("missing"))?,
+                &config(b"statistics", &path)?,
                 context.resolution_context(),
                 b"fixture",
                 Default::default(),
@@ -551,8 +564,8 @@ fn canceled_statistics_drive_retains_original_retry_and_destroy_returns_only_its
             let epoch = host.connection_epoch();
             host.drive(None, |_, _| GetFlow::Continue).await?;
             assert_eq!(
-                host.take_io_error().ok_or("missing native failure")?.kind(),
-                io::ErrorKind::NotFound
+                native_signature(&host.take_io_error().ok_or("missing native failure")?),
+                native_signature(&native_failure)
             );
             assert_eq!(clock.listeners()?, 3);
             {
@@ -597,13 +610,14 @@ fn canceled_statistics_drive_retains_original_retry_and_destroy_returns_only_its
 #[test]
 fn broker_initial_ready_at_max_runs_once_but_saturated_delayed_retry_remains_never() -> Test {
     tokio::runtime::Builder::new_current_thread().enable_all().build()?.block_on(async {
-        let dir=Dir::new()?;let clock=Arc::new(clock_source::Adjustable::frozen(1_000_000,2)?);
-        let(context,mut driver)=broker::<4,64>(LiveConfiguration::new(config(b"resolver",&dir.0.join("missing-at-max"))?),Limits::default(),profile()?,clock.clone())?;
+        let dir=Dir::new()?;
+let path=dir.0.join("missing-at-max");let native_failure=local_failure(&path).await?;let clock=Arc::new(clock_source::Adjustable::frozen(1_000_000,2)?);
+        let(context,mut driver)=broker::<4,64>(LiveConfiguration::new(config(b"resolver",&path)?),Limits::default(),profile()?,clock.clone())?;
         let query=context.ip_get(b"remote-fixture",Family::Any,CoreDuration(u64::MAX))?;
         clock.set(u64::MAX)?;let mut retries=Vec::new();
         assert_eq!(driver.drive(Some(Instant::now()+Duration::from_secs(1)),|event|{if let DriverEvent::SocketRetry{at,..}=event{retries.push(at);}}).await?,gnunet_resolver_broker::Progress::Activity);
         assert_eq!(retries,[AbsoluteTime::from_micros(u64::MAX)],"initial already-ready CLIENT creation must still run at MAX");
-        assert_eq!(driver.take_io_error().ok_or("initial ready attempt did not perform actual ENOENT")?.kind(),io::ErrorKind::NotFound);
+        assert_eq!(native_signature(&driver.take_io_error().ok_or("initial ready attempt did not perform actual native connect failure")?),native_signature(&native_failure));
         retries.clear();let result=driver.drive(Some(Instant::now()+Duration::from_millis(20)),|event|{if let DriverEvent::SocketRetry{at,..}=event{retries.push(at);}}).await?;
         assert_eq!(result,gnunet_resolver_broker::Progress::WaitDeadline,"a saturated delayed retry is not initial ready work; public NEVER profile must hold after independent wake at MAX");
         assert!(retries.is_empty());assert!(driver.take_io_error().is_none());drop(query);Ok(())

@@ -1,4 +1,4 @@
-//! Standard datastore binary dump/import PROGRAM; no private key or FS repository.
+//! GNUnet datastore binary dump/import command.
 #![deny(unsafe_code)]
 use std::{
     error::Error,
@@ -6,15 +6,10 @@ use std::{
     process::ExitCode,
 };
 type Failure = Box<dyn Error>;
-#[cfg(unix)]
 mod control;
-#[cfg(unix)]
 mod early;
-#[cfg(unix)]
 mod foreground;
-#[cfg(unix)]
 mod format;
-#[cfg(unix)]
 mod stream;
 fn main() -> ExitCode {
     match run() {
@@ -25,11 +20,6 @@ fn main() -> ExitCode {
         }
     }
 }
-#[cfg(not(unix))]
-fn run() -> Result<(), Failure> {
-    Err("DATASTORE native PROGRAM requires Unix".into())
-}
-#[cfg(unix)]
 fn run() -> Result<(), Failure> {
     use gnunet_program_host::{
         getopt::Options,
@@ -73,7 +63,24 @@ fn run() -> Result<(), Failure> {
         filename.clone(),
     ));
     let mut logger = Logger::new(b"gnunet-datastore", std::process::id(), false)?;
-    let prepared=program::prepare(config,Invocation{binary_name:b"gnunet-datastore",help:Some(b"Manipulate GNUnet datastore. -d writes the official binary format to stdout; -i reads it from stdin. -f selects a file. Both flags dump first, then insert. No FS repository semantics or automatic mutation replay."),select_default_filename:true,defaults:Defaults::Native},options,std::env::args_os(),&program::Environment::capture(),&mut NlsDisabled,&mut logger,&clock,&mut io::stdout().lock(),&mut io::stderr().lock())?;
+    let invocation = Invocation {
+        binary_name: b"gnunet-datastore",
+        help: Some(b"Dump or insert GNUnet datastore records. -d writes binary records to stdout; -i reads them from stdin. -f selects a file. With both flags, dump completes before insert begins."),
+        select_default_filename: true,
+        defaults: Defaults::Native,
+    };
+    let prepared = program::prepare(
+        config,
+        invocation,
+        options,
+        std::env::args_os(),
+        &program::Environment::capture(),
+        &mut NlsDisabled,
+        &mut logger,
+        &clock,
+        &mut io::stdout().lock(),
+        &mut io::stderr().lock(),
+    )?;
     let prepared = match prepared {
         Preparation::Ready(p) => *p,
         Preparation::Stopped(s) => {
@@ -100,8 +107,12 @@ fn run() -> Result<(), Failure> {
         return Err(Box::new(FilenameFailure(error)));
     }
     let reports = Reporter::new(logger, clock.clone());
+    #[cfg(unix)]
     if let Some(notice) = inherited.notice.as_ref() {
-        reports.warning("datastore.parent", format_args!("{notice}"));
+        reports.warning(
+            "datastore.parent",
+            format_args!("parent control declaration: {notice:?}"),
+        );
     }
     if reports.failed() {
         return Err(reports.take_error().map_or_else(
@@ -128,9 +139,11 @@ fn run() -> Result<(), Failure> {
         source.clone(),
     )?;
     let resolution = context.resolution_context();
+    let streams = stream::retained();
     let original = foreground::command(foreground::Inputs {
         dump,
         insert,
+        streams: streams.clone(),
         path: filename.path,
         parent: inherited.parent,
         live,
@@ -147,18 +160,16 @@ fn run() -> Result<(), Failure> {
         stop,
         original,
     ));
-    foreground::finish(result, reports)
+    runtime.block_on(stream::settle(&streams));
+    foreground::finish(result, reports, streams)
 }
-#[cfg(unix)]
 #[derive(Debug)]
 struct FilenameFailure(std::rc::Rc<gnunet_config::Error>);
-#[cfg(unix)]
 impl std::fmt::Display for FilenameFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.0.fmt(f)
     }
 }
-#[cfg(unix)]
 impl Error for FilenameFailure {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         Some(&*self.0)

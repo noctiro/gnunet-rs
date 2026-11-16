@@ -61,7 +61,7 @@ pub(super) fn snapshot(config: Config, bound: &[SocketAddr]) -> io::Result<Vec<A
         .map_err(|_| io::Error::other("IP address allocation refused"))?;
     for local in bound {
         for row in &rows {
-            if !row.is_up()
+            if !row.is_usable()
                 || row.address.is_ipv4() != local.is_ipv4()
                 || row.address.ip().is_unspecified()
                 || row.address.ip().is_multicast()

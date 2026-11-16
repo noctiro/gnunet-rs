@@ -114,7 +114,7 @@ fn cancelled(stop: &Stop) -> Result<(), ScanError> {
     }
 }
 fn identity(a: Stamp, b: Stamp) -> bool {
-    a.kind == b.kind && a.device == b.device && a.inode == b.inode
+    a.kind == b.kind && a.identity == b.identity
 }
 fn item(hash: &mut Hash512State, name: &[u8], stamp: Stamp) {
     hash.update(&(name.len() as u64).to_be_bytes());
@@ -136,7 +136,7 @@ fn tree(
 ) -> Result<([u8; 64], u64, u64), ScanError> {
     cancelled(stop)?;
     let mut hash = Hash512State::new();
-    hash.update(b"gnunet-rs auto-share stat tree v1\0");
+    hash.update(b"gnunet-rs auto-share stat tree v2\0");
     original.hash(&mut hash);
     let mut objects = 1u64;
     if objects > limits.objects {
@@ -186,7 +186,11 @@ fn tree(
         if observed != name.stamp {
             return Err(ScanError::Changed);
         }
-        item(&mut hash, &name.bytes, observed);
+        item(
+            &mut hash,
+            &gnunet_native::os_bytes::encode(&name.native),
+            observed,
+        );
         objects = objects
             .checked_add(1)
             .filter(|n| *n <= limits.objects)
@@ -218,14 +222,14 @@ fn tree(
 }
 pub(crate) fn observe(
     root: &Path,
-    expected: (u64, u64),
+    expected: crate::FileIdentity,
     limits: ScanLimits,
     stop: &Stop,
 ) -> Result<Snapshot, ScanError> {
     cancelled(stop)?;
     let input = InputDir::open(root)?;
     let original = stamp(input.descriptor())?;
-    if (original.device, original.inode) != expected {
+    if original.identity != expected {
         return Err(ScanError::Changed);
     }
     let frame = FrameSource::scan(
@@ -245,12 +249,18 @@ pub(crate) fn observe(
         cancelled(stop)?;
         // C's private state and this independently marked Rust state are never part
         // of published content. No C state body is opened/read/adopted.
-        if name.bytes.starts_with(b".auto-share") {
+        let local_name = gnunet_native::os_bytes::encode(&name.native);
+        if local_name.starts_with(b".auto-share")
+            || cfg!(windows)
+                && local_name
+                    .get(..b".auto-share".len())
+                    .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b".auto-share"))
+        {
             continue;
         }
         let child = frame.open(index)?;
         output_names = output_names
-            .checked_add(name.bytes.len())
+            .checked_add(local_name.len())
             .ok_or(ScanError::Limit)?;
         let mut available = limits;
         available.names_bytes = limits
@@ -270,7 +280,7 @@ pub(crate) fn observe(
         objects = objects.checked_add(count).ok_or(ScanError::Limit)?;
         bytes = bytes.checked_add(size).ok_or(ScanError::Limit)?;
         entries.push(Entry {
-            name: copy(&name.bytes)?,
+            name: copy(&local_name)?,
             fingerprint,
             kind: if name.kind == Kind::File {
                 EntryKind::File
@@ -296,54 +306,23 @@ pub(crate) fn observe(
 /// Recheck one original top-level path without scanning all other subtrees.
 pub(super) fn single(
     root: &Path,
-    expected: (u64, u64),
+    expected: crate::FileIdentity,
     name: &[u8],
     limits: ScanLimits,
     stop: &Stop,
 ) -> Result<Entry, ScanError> {
-    use nix::{
-        fcntl::{AtFlags, OFlag, openat},
-        sys::stat::{Mode, fstatat},
-    };
-    use std::os::unix::ffi::OsStrExt;
     cancelled(stop)?;
     let directory = InputDir::open(root)?;
-    let parent = stamp(directory.descriptor())?;
-    if (parent.device, parent.inode) != expected {
+    if stamp(directory.descriptor())?.identity != expected {
         return Err(ScanError::Changed);
     }
-    let component = std::ffi::OsStr::from_bytes(name);
-    let before = fstatat(
-        directory.descriptor(),
-        component,
-        AtFlags::AT_SYMLINK_NOFOLLOW,
-    )
-    .map_err(SourceError::from)?;
-    let fd = openat(
-        directory.descriptor(),
-        component,
-        OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK | OFlag::O_CLOEXEC,
-        Mode::empty(),
-    )
-    .map_err(SourceError::from)?;
-    let file = File::from(fd);
+    let component = gnunet_native::os_bytes::decode(name).map_err(SourceError::from)?;
+    let file = directory.open_child(component.as_ref())?;
     let observed = stamp(&file)?;
-    if observed.device != before.st_dev as u64 || observed.inode != before.st_ino as u64 {
-        return Err(ScanError::Changed);
-    }
     let (fingerprint, objects, bytes) = tree(file, observed, limits, stop)?;
-    let after = fstatat(
-        directory.descriptor(),
-        component,
-        AtFlags::AT_SYMLINK_NOFOLLOW,
-    )
-    .map_err(SourceError::from)?;
+    let after = directory.open_child(component.as_ref())?;
     let named = InputDir::open(root)?;
-    let end = stamp(named.descriptor())?;
-    if observed.device != after.st_dev as u64
-        || observed.inode != after.st_ino as u64
-        || (end.device, end.inode) != expected
-    {
+    if stamp(&after)? != observed || stamp(named.descriptor())?.identity != expected {
         return Err(ScanError::Changed);
     }
     Ok(Entry {
@@ -362,13 +341,13 @@ pub(super) fn single(
 /// is read. This is not physical block/RSS accounting or a storage ACK.
 pub(super) fn owned_bytes(
     path: &Path,
-    expected: (u64, u64),
+    expected: crate::FileIdentity,
     limits: ScanLimits,
     stop: &Stop,
 ) -> Result<u64, ScanError> {
     let input = InputDir::open(path)?;
     let original = stamp(input.descriptor())?;
-    if (original.device, original.inode) != expected {
+    if original.identity != expected {
         return Err(ScanError::Changed);
     }
     let (_, _, bytes) = tree(

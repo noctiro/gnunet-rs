@@ -2,7 +2,6 @@ use super::{
     Call, Completion, Error, Fault, LocalEvent, NativeKind, Packet, PendingNative, Reject, Source,
     State, cadet,
 };
-use gnunet_conversation::Session;
 use std::task::{Context, Poll};
 impl<'s, 'p, 'c, 'slots> State<'s, 'p, 'c, 'slots> {
     pub(super) fn reject_call(&mut self, index: usize, reason: Fault) -> Result<bool, Error> {
@@ -14,26 +13,12 @@ impl<'s, 'p, 'c, 'slots> State<'s, 'p, 'c, 'slots> {
         if call.gone || call.retiring.is_some() {
             return Ok(false);
         }
-        let channel = call.channel.ok_or(Fault::NotReady)?;
-        call.retiring = Some(reason);
-        if self
-            .pending_native
-            .as_ref()
-            .is_some_and(|p| p.call == Some(call.id) && !p.closing)
-        {
-            return Err(reason.into());
-        }
-        if self.rejects.len() > self.limits.core.calls {
-            return Err(Fault::Capacity.into());
-        }
-        self.rejects.push(Reject {
-            channel,
-            reason,
-            bound: self.origin.after(std::time::Duration::from_micros(
-                self.limits.core.close_timeout,
-            ))?,
-            queued: false,
-        });
+        let id = call.id;
+        self.session
+            .core_mut()
+            .ok_or(Fault::NotReady)?
+            .reject_call(id, reason, self.last_now)?;
+        self.calls[index].as_mut().ok_or(Fault::Stale)?.retiring = Some(reason);
         self.mark();
         Ok(true)
     }
@@ -165,6 +150,14 @@ impl<'s, 'p, 'c, 'slots> State<'s, 'p, 'c, 'slots> {
         Ok(true)
     }
     pub(super) fn written(&mut self, written: cadet::Written<'c>) -> Result<bool, Error> {
+        if self.cadet_recovery.is_some()
+            && self
+                .pending_native
+                .as_ref()
+                .is_none_or(|pending| matches!(pending.kind, NativeKind::RestorePort))
+        {
+            return self.port_restored(written);
+        }
         let Some(pending) = self.pending_native.as_mut() else {
             return Err(Fault::StaleGeneration.into());
         };
@@ -238,6 +231,7 @@ impl<'s, 'p, 'c, 'slots> State<'s, 'p, 'c, 'slots> {
                 self.gone(channel, reason)?;
             }
             NativeKind::Internal => {}
+            NativeKind::RestorePort => return Err(Fault::StaleGeneration.into()),
         }
         self.pending_native = None;
         self.mark();
@@ -261,42 +255,24 @@ impl<'s, 'p, 'c, 'slots> State<'s, 'p, 'c, 'slots> {
         let internal_bound = self.origin.at(entry
             .checked_add(self.limits.core.write_timeout)
             .ok_or(Fault::Overflow)?)?;
-        let pending_id = self.pending_native.as_ref().and_then(|p| match p.kind {
-            NativeKind::Effect(id) => Some((id, p.call, p.closing)),
-            _ => None,
-        });
         if let Some(p) = self.pending_native.as_mut() {
             p.attempted = true;
         }
+        let pending = self.pending_native.as_ref();
         let control = &self.control;
         let clock = &self.sources.clock;
         let pils = &self.pils;
         let expected = self.session.observed();
         let core = self.session.core();
-        let identity = core.map(Session::identity);
         let calls = &self.calls;
         let origin = self.origin;
         let mut guard = || -> Result<(), cadet::Error> {
             control.check(clock.as_ref(), true)?;
             super::identity::current(pils, expected)?;
-            if let Some((id, call, closing)) = pending_id {
-                let current = identity.ok_or(Fault::NotReady)?;
-                if !core
-                    .ok_or(Fault::NotReady)?
-                    .effect_io_allowed(id, &current, origin.now()?)?
-                {
-                    return Err(Fault::Cancelled.into());
-                }
-                if !closing
-                    && call.is_some_and(|id| {
-                        calls
-                            .iter()
-                            .flatten()
-                            .any(|c| c.id == id && (c.gone || c.retiring.is_some()))
-                    })
-                {
-                    return Err(Fault::Cancelled.into());
-                }
+            if let Some(pending) = pending
+                && !pending.io_allowed(core.ok_or(Fault::NotReady)?, calls, origin.now()?)?
+            {
+                return Err(Fault::Cancelled.into());
             }
             Ok(())
         };
@@ -304,11 +280,13 @@ impl<'s, 'p, 'c, 'slots> State<'s, 'p, 'c, 'slots> {
         // The current Packet owns the original DATA and its input credit.
         // Drain only existing output until its final real ACK is Written;
         // dispatching a later Destroyed must not erase these received bytes.
-        let event = match if held_input {
+        let result = if held_input {
             self.cadet.poll_output_guarded(cx, wait, &mut guard)
         } else {
             self.cadet.poll_guarded(cx, wait, &mut guard)
-        } {
+        };
+        self.track_port_restore();
+        let event = match result {
             Poll::Pending => return Ok(false),
             Poll::Ready(event) => event?,
         };
@@ -331,6 +309,9 @@ impl<'s, 'p, 'c, 'slots> State<'s, 'p, 'c, 'slots> {
                 }
                 self.source = Some(Source::new(epoch.value())?);
                 self.startup = None;
+                if self.port.is_none() {
+                    self.cadet_recovery = None;
+                }
                 self.mark();
                 Ok(true)
             }
@@ -364,6 +345,7 @@ impl<'s, 'p, 'c, 'slots> State<'s, 'p, 'c, 'slots> {
                 if let Some(diagnostic) = diagnostic {
                     self.events.emit(diagnostic)?;
                 }
+                self.reconcile_cancelled()?;
                 if !self.pending_allowed()? {
                     return Err(Fault::Cancelled.into());
                 }
@@ -414,10 +396,7 @@ impl<'s, 'p, 'c, 'slots> State<'s, 'p, 'c, 'slots> {
                 }
                 Ok(false)
             }
-            cadet::Step::Lost { report, cause, .. } => {
-                self.retired = Some(report);
-                Err(Error::Cadet(cause))
-            }
+            cadet::Step::Lost { report, cause, .. } => self.cadet_lost(report, cause),
             cadet::Step::ConnectRetry { error, .. } => {
                 self.report.first_cadet_retry.get_or_insert(error);
                 Ok(true)

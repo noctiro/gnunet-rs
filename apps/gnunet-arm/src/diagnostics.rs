@@ -1,5 +1,5 @@
 //! Actual selected PROGRAM logging over the shared Logger/Reporter and clock.
-use crate::options::Options;
+use crate::{locale::Locale, options::Options};
 use gnunet_program_host::{
     logging::{Environment, Logger, Stamp},
     policy::Level,
@@ -35,11 +35,12 @@ pub struct Selection {
     source: Arc<dyn RuntimeClock>,
     cleanup: Rc<RefCell<Option<gnunet_arm_host::HostError>>>,
     initial: Rc<RefCell<InitialErrors>>,
+    locale: Locale,
 }
 impl Selection {
     /// Use the same actual policy/destination operation as PROGRAM preparation.
-    /// ARM already owns a byte-preserving complete option parser; its selected
-    /// -L/-l are passed unchanged instead of parsing those options a second time.
+    /// The shared GETOPT pass already selected -L/-l; setup uses those values
+    /// without a second option-processing pass.
     /// No process stderr replacement or fallback logger is installed.
     pub fn new(
         options: &Options,
@@ -47,7 +48,22 @@ impl Selection {
         environment: &Environment,
         stderr: &mut impl Write,
     ) -> Result<Self, Failure> {
+        Self::with_locale(options, clock, environment, stderr, Locale::disabled())
+    }
+    /// Select logging with the same retained locale as parser and business output.
+    /// Catalog formatting occurs only after the Logger admits a message.
+    pub fn with_locale(
+        options: &Options,
+        clock: SharedClock,
+        environment: &Environment,
+        stderr: &mut impl Write,
+        locale: Locale,
+    ) -> Result<Self, Failure> {
         let mut logger: Logger<'static> = Logger::new(b"gnunet-arm", std::process::id(), true)?;
+        logger.set_translations(locale.port());
+        if let Some(context) = locale.case_context() {
+            logger.set_case_context(context);
+        }
         logger.bind_clock(clock.clone());
         let stamp = Stamp::now(clock.offset().map_err(io::Error::other)?)?;
         logger.setup_routed(
@@ -65,7 +81,13 @@ impl Selection {
             source,
             cleanup: Rc::new(RefCell::new(None)),
             initial: Rc::new(RefCell::new(InitialErrors::default())),
+            locale,
         })
+    }
+    /// Original locale retained across parser, configuration and callbacks.
+    #[must_use]
+    pub fn locale(&self) -> &Locale {
+        &self.locale
     }
     /// Original same-domain selected clock, including explicit testing skew.
     #[must_use]

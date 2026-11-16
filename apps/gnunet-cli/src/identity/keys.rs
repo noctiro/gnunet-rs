@@ -2,7 +2,7 @@
 use super::{Result, SecretKey, ipc};
 use gnunet::{gnsrecord, types::Error as Fault};
 use serde_json::Value;
-use std::{ffi::OsString, io::Write, os::unix::ffi::OsStrExt};
+use std::{ffi::OsString, io::Write};
 use zeroize::Zeroizing;
 
 // 36 bytes: official BE32 key type followed by the original32 secret bytes.
@@ -35,7 +35,7 @@ pub(super) fn extract(args: &mut [OsString]) -> Result<Option<Imported>> {
         _ => 0,
     };
     while at < args.len() {
-        let option = args[at].as_os_str().as_bytes();
+        let option = args[at].as_os_str().as_encoded_bytes();
         let separate = matches!(option, b"--private-key" | b"--privkey" | b"-P");
         let prefix = [b"--private-key=".as_slice(), b"--privkey=".as_slice()]
             .iter()

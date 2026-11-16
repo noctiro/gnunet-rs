@@ -1,21 +1,165 @@
-# Native DNS interception SERVICE and Rust Linux helper
+# DNS interception host and helper transport
 
-The chain is accepted official IPC -> bounded interception core -> shared native DNSSTUB -> original helper pipe. `Server` owns accepted MQs, ACL/Unix credentials, immutable single-frame TX and partial RX/TX cursors. Each MQ has at most one outstanding callback including its application decision; other intercepted requests remain fairly queued in the fixed core directory rather than starting an unbounded per-client callback queue. `Gateway` owns one Server, one Rust helper process and one `DnsStub<16,65479,4>` shared across requests. Actual DNSSTUB admission/eviction/cancel/datagram IDs are mapped to original core operations; no callback declaration becomes a provider result. A resolver admission refusal drops only its original query without a fabricated DNS failure answer.
+The host composes official DNS client IPC, the bounded interception engine,
+DNSSTUB and an explicit packet source. Shared code owns packet decisions and framing;
+platform modules own child processes, pipes, devices and routing controls.
 
-`Helper::spawn` launches the explicitly configured Rust `gnunet-helper-dns` executable with the official six arguments and standard MQ214 + TUN_PI framing. It does not wrap a C helper or use production libgnunet FFI. Official framing has no READY or per-packet TUN-written ACK. READY output therefore describes process creation with interception setup still unacknowledged. Pipe prefix and whole write facts do not claim TUN/remote delivery. Helper exit retains wait status, signal failure, forced-kill fact, pending original output bytes and incomplete input-prefix metadata.
+## Interfaces and framing
 
-## Linux platform implementation
+`Server` owns accepted client connections, ACL checks, credentials and partial
+frame cursors. Each client has at most one outstanding callback and decision.
+`Gateway` owns the server, `PacketSource` and a shared `Upstream` profile with 16 socket slots, the core DNS byte bound and
+four numeric exit entries.
+`PacketSource::helper` adopts an original process/pipe owner;
+`PacketSource::device` adopts an already configured `AsyncTun`. Windows
+`PacketSource::capture` adopts the original upstream-port lease and opens its
+WinDivert filter. `Gateway::with_upstream` retains that same configured stub. Resolver
+admission failure drops its query without fabricating a DNS answer.
 
-`platform::run` opens an exclusive Linux TUN with PI framing, applies the configured IPv4 address/netmask, IPv6 address/prefix, MTU and link-up through source-bound TUN actions, then pumps original packets with nonblocking owned stdio descriptors and `AsyncTun`. It captures only UDP destination53 and permits only UDP source53 replies from the original service pipe. IP lengths and checksums use the shared VPN packet primitives. IPv6 replies correctly use source port53 (the pinned C service's swapped source-port bug is not copied).
+`Helper::spawn` launches the configured absolute executable with six official
+arguments: interface, IPv6 address, IPv6 prefix, IPv4 address, IPv4 mask and the
+skip-routing flag. Standard input/output use MQ214 and TUN_PI/raw-IP framing.
+There is no helper setup acknowledgement or TUN-written acknowledgement.
+Process creation and local pipe writes establish neither fact.
 
-Unless SKIP_ROUTING_SETUP is true, fixed-purpose real `ip`/`iptables`/`ip6tables` subprocesses install the official mark136708149/table53 policy. The implementation owns a root-only locked `/run/gnunet-dns-rust.lock`, refuses preexisting table53/priority1053 state, tags its own mangle rules, installs routes before marks, and queries original selectors before removal. It captures and conditionally restores the exact original `rp_filter` settings. It does not silently remove administrator state, infer ownership from EEXIST, or take over an old unknown cleanup debt. Run in a dedicated network namespace or otherwise dedicate these mark/table controls. External concurrent administrator mutation is not an atomic kernel transaction and may produce explicit unknown/refused cleanup.
+## Native packet devices
 
-Control binaries must be regular root-owned files without group/world write bits, selected from fixed system paths; no shell or PATH lookup occurs. The helper requires effective root for configuration, keeps its original saved-root capability, drops effective UID during packet pumping, then regains root only for original cleanup. It never changes GID. Both ends check effective group coherence: the daemon's outgoing DNSSTUB sockets must match the helper's owner exemption group, or recursion would result.
+Native devices feed normalized raw IP into the same interception engine. Receive
+allocations transfer into the zeroizing packet owner without another packet
+copy. The core's raw output encoder shares reply construction with its helper
+envelope encoder. A native write retains one original effect, device write ID,
+byte extent and absolute deadline; canceled waits preserve that operation.
 
-## Ownership, resource and shutdown boundaries
+Gateway reports distinguish helper pipe acceptance from native whole-packet
+submission. `source_retirement` retains either the original process exit or
+native device loss/close. Device-close receipts are captured during synchronous
+shutdown, including `into_report`; helper processes still require exit polling.
+A void Wintun close does not acknowledge final kernel interface removal.
 
-Default16 clients/128 live requests/4MiB shared payload capacity. The native Server has one shared65535-byte encode slab plus one lazy accepted MQ RX and one bounded immutable TX per live MQ. Gateway has one65535-byte encode slab, at most one retained helper input and16 resolver mappings; DNSSTUB has its fixed bounded query/socket buffers. Helper has one65535-byte input, one bounded output and one original TUN write. Packet buffers zeroize. No detached task, per-request thread, hidden resolver, C wrapper, replay or private ACK is used.
+## Windows automatic capture
 
-Original native INIT/partial input, callback and request hard bounds are armed/checked before logical-clock waits. Caller wait cancellation preserves original cursors. Slow/faulted management is not relevant here; a slow interception client can delay its own request only to the finite original budget, then its MQ is closed and the request advances/drops according to its original state. Loss never substitutes a new source or replays an exposed payload. `close` needs no clock: stop all MQs, helper pipe owners and DNSSTUB sockets independently, then retire corresponding core effects; the same helper remains owned until its wait result. Force-killing a helper does **not** confirm firewall removal. Drop can initiate stop but cannot claim wait/cleanup completion; production foreground explicitly drives it.
+The capture backend uses the [native WinDivert boundary](../native-std/WINDIVERT.md)
+with outbound UDP destination-port 53 filtering. Before filter creation, DNSSTUB
+binds every upstream slot exclusively. The immutable filter excludes those
+original ports by address family; the socket lease prevents their reuse even
+when logical requests or the stub stop. Loss of an original socket generation
+closes gateway admission before further upstream work.
 
-Report counters are local observations. The production foreground feeds the six original official DNS totals to the admitted STATISTICS owner; local helper queue admission retains the historical answered label without asserting a TUN ACK. Platform/runtime/TUN/firewall qualification and native execution remain outstanding. Standalone DNS monitor/redirector PROGRAM utilities are supplied separately by gnunet-dns-tools-host and reuse the typed DNS client. Windows/macOS interception provisioning is explicitly unavailable in this Linux helper foreground.
+Each intercepted request retains its opaque original reply address, including
+the inbound identity selected from capture-time interface observations. Two
+complete views bound the history; refresh keeps the original filter and native
+I/O loans. Native observation failures have separate events and counters and
+retain the previous views. Qualification or revalidation failure drops
+only that query; subsequent captures qualify fresh routes without replaying the
+old reply. The shared core builds the checksummed reply, and capture injects it
+through the same session. Local checksum-offload fields are normalized after IP/UDP extent
+validation. No helper envelope or alternate DNS wire format is introduced.
+The source keeps one native receive and one original injection; canceled waits
+retain their storage. Expiry cancels only that injection and waits for its
+original native completion, with a fixed five-second retirement bound after
+the first cancellation or hard deadline, whichever is earlier. Known packet-local native network errors also retire only their
+query. Failed cancellation, violated packet extent or unconfirmed retirement
+closes the source. Original injection completion is polled before logical-clock
+work and cannot be stranded by a fresh clock refusal.
+
+Injection admission, late whole acceptance and unknown exposure remain separate
+from helper pipe prefixes and unsubmitted TUN packets. The pure engine settles
+one stopped packet effect only after actual native retirement. An unsubmitted
+TUN write can be canceled independently; partial helper-pipe output still
+requires retiring its original source.
+
+Shutdown retains filter-close errors synchronously when no I/O is outstanding;
+otherwise retirement drives the original completion loans within the caller's
+grace interval. An unconfirmed filter close retains its finite upstream-port
+lease until process exit, including post-open setup failure. Atomic driver
+classification/interface binding, check-to-injection races, subinterface
+replacement and native driver execution remain in the central qualification
+worklist.
+
+## Process ownership and shutdown
+
+The shared transport runs on Linux, macOS, Windows and FreeBSD. Unix children
+remain exclusively wait-owned; failed wait authority fences PID-based signaling.
+Windows uses direct `CreateProcessW`, selected inherited handles and owner-only
+connected pipes. Parent ends use IOCP; child stdio ends remain synchronous.
+Pipe creation and reactor registration precede child creation. No command shell
+or standard-pipe blocking worker is introduced.
+
+A failed exit-notification registration retains the created process for cleanup.
+Windows graceful stop closes original stdio admission; the fixed grace deadline
+requests termination on that process handle. Unix uses SIGTERM followed by
+SIGKILL. Full native exit status, stop errors, wait errors, forced termination,
+pending output and incomplete input prefixes remain separate observations.
+Windows wait errors retain the original process handle for bounded observation;
+Unix wait-authority failure fences further PID actions and wait retries. Neither
+becomes an exit receipt. Forced process exit does not prove routing cleanup.
+
+Dropping pipe owners stops local admission; pending IOCP operations remain
+reactor-owned until native retirement. Neither write acceptance nor pipe close
+establishes child consumption. `Drop` initiates stop; the service foreground
+must drive exit and cleanup within its original grace interval.
+
+## Linux interception policy
+
+The Linux helper exclusively creates TUN, configures both address families,
+MTU and link state, and pumps nonblocking stdio and native packet I/O. Only UDP
+destination-port 53 queries and source-port 53 replies pass the packet filter.
+IP structure and checksums use the shared VPN packet primitives.
+
+Unless `SKIP_ROUTING_SETUP` is enabled, fixed-purpose `ip`, `iptables` and
+`ip6tables` commands install mark 136708149, routing table 53 and priority 1053.
+The helper owns a root-only locked `/run/gnunet-dns-rust.lock`, refuses preexisting
+policy state, tags its mangle rules, installs routes before marks and checks
+selectors before removal. It conditionally restores captured `rp_filter`
+values. Concurrent administrator changes can leave explicit cleanup uncertainty;
+use dedicated network policy or a network namespace.
+
+Control binaries come from fixed system paths and must be regular root-owned
+files without group/world write permission. The helper requires effective root,
+drops effective UID while pumping and regains it for cleanup. It never changes
+GID. Daemon/helper group checks protect the upstream-DNS exemption from recursion.
+
+## macOS and FreeBSD interfaces
+
+These helpers create exclusive native utun/TUN interfaces, configure addresses,
+MTU and link state, and pump the same IPC framing. The TUN adapter translates
+native family headers. macOS accepts `utun` for kernel selection or `utunN` for
+an exact unit. FreeBSD creates and optionally renames a new TUN after retiring
+any checkpoint-qualified previous owner; a foreign existing interface is refused.
+Cleanup remains with the original device owner.
+
+Automatic policy uses an enabled PF instance, an administrator-delegated anchor
+and unskipped native IP interfaces, verified after installation and during pumping.
+Changed policy or the startup address scope stops the pump without adopting a
+replacement. Its locked
+durable record lets startup retire an exactly matching old
+policy before a new installation. FreeBSD device startup also uses the shared
+TUN checkpoint to retire the saved native owner before allocation. See
+[PF policy](PF.md) for setup, record ownership and crash-recovery constraints.
+`SKIP_ROUTING_SETUP=YES` instead leaves interception and routing policy with the
+administrator, including exemption of the daemon's upstream DNS traffic. Effective UID is reduced
+while pumping; fixed read-only PF children use the setup user through inherited
+saved credentials, without changing the parent's identity. It is restored for
+cleanup; setup, packet, privilege-restoration and
+close failures remain independent. Windows provider selection is configured by
+the service. Remaining PF and native runtime profiles are tracked in the
+[implementation status](../../IMPLEMENTATION_STATUS.md).
+
+## Resource bounds
+
+Each packet source allocates one concrete backend owner at construction.
+Packet and operation buffers retain their separate bounds.
+
+Defaults allow 16 clients, 128 live requests and 4 MiB of shared payload storage.
+Each connection has bounded RX/TX state. Gateway retains one helper input and
+at most 16 resolver mappings. Helper reuses one 65535-byte input slab and one
+65535-byte output slab, with one pending TUN write. Gateway-owned frames zeroize.
+
+Partial input, callback and request deadlines remain tied to their original
+operation. Canceling a waiter preserves its cursor. Source loss never substitutes
+a connection or replays exposed payload. The service publishes the six official
+DNS counters through STATISTICS; queue/write counters do not acknowledge delivery.
+
+See [service configuration](../../apps/gnunet-service-dns/README.md) for Windows
+provider selection, creation/borrow policy and administrator routing, and
+[monitor/redirector tools](../dns-tools-std/README.md) for executable interfaces.

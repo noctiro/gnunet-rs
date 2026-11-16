@@ -5,6 +5,8 @@ canonical clock and retained framing layers. It creates no task, hidden Resolver
 service, room, key or storage. The higher Messenger domain owns room/member
 state, message authentication, history and notification interpretation.
 
+## Public interface
+
 The port exposes the CREATE, DESTROY, OPEN, ENTRY, CLOSE, SYNC, SEND and
 GET containers and every active asynchronous notification. There is no wire RID,
 generic response, SEND ACK or invented cancellation. Local `Operation` and

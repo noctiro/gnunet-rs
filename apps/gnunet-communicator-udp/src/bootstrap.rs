@@ -19,14 +19,7 @@ pub(super) fn ipv6_supported() -> io::Result<bool> {
         Some(socket2::Protocol::UDP),
     ) {
         Ok(_socket) => Ok(true),
-        Err(error)
-            if matches!(
-                error.raw_os_error(),
-                Some(nix::libc::EAFNOSUPPORT | nix::libc::EPROTONOSUPPORT)
-            ) =>
-        {
-            Ok(false)
-        }
+        Err(error) if gnunet_native::network::socket_family_unavailable(&error) => Ok(false),
         Err(error) => Err(error),
     }
 }

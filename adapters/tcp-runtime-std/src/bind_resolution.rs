@@ -138,11 +138,7 @@ pub async fn prepare<
         result.map_err(Failure::new)?;
         return Ok(None);
     }
-    let Some(hostname) = settings
-        .hostname
-        .as_ref()
-        .filter(|_| activation.sockets.is_empty())
-    else {
+    let Some(hostname) = settings.hostname.as_ref().filter(|_| activation.is_empty()) else {
         return Listeners::prepare(settings, activation)
             .map(Some)
             .map_err(Failure::new);

@@ -5,6 +5,8 @@ scheduler, C ABI, native transport, or implicit DNS fallback. Default `no_std`
 builds expose allocation-free Start Zone selection. `alloc` adds a bounded
 multi-query `Resolver` with fallible allocation and explicit local policy.
 
+## Public interface
+
 For each admitted query, retain `QueryId`, read its original `Effect`, and return
 the matching typed receipt. Effect IDs are instance-branded and never reused. Cancellation invalidates all authority and nameserver children immediately. Transport retries may reread an effect but must retain its original identity. `failed` supplies dependency exhaustion/deadline; no operation succeeds merely
 because an action was issued. Completed results are owned records or
@@ -31,11 +33,10 @@ NICK publication belongs to namestore/publication; its result gating belongs
 here. VPN address mapping belongs to a DNS bridge/client adapter. Numeric address
 interpretation is an explicit `address_literal` application convenience.
 
-This implementation covers a pure recursive owner with abstract effects. It does not
-claim a native GNS server, full GNUnet node, completed application adapters,
-standards certification, or benchmarked performance. The pure tests use actual
-Rust PKEY/EDKEY-signed encrypted blocks and record payloads. See UPSTREAM.md
-and the independent requirement/test matrix for exact scope and differences.
+The pure recursive owner emits explicit effects. The
+[native GNS host](../../adapters/gns-service-std/README.md) supplies providers and
+service I/O. See [reference behavior](UPSTREAM.md) for format and validation
+differences.
 
 The pure resolver can explicitly enable a single optional near-expiry cache
 refresh hint. It is disabled unless an independent background owner is supplied. An authenticated, currently valid cache block with less than five minutes left

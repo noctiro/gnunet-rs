@@ -1,7 +1,6 @@
 //! Official MESSENGER application SERVICE, shared CADET relay and purpose12 PILS
 //! signer. All owners are caller driven; no resolver, task or worker is hidden.
 #![forbid(unsafe_code)]
-#![cfg(unix)]
 mod carrier;
 /// Actual bounded application daemon and original CADET/PILS ownership.
 pub mod server;
@@ -15,3 +14,6 @@ pub mod history;
 
 /// Explicit bounded original producer and relay profile policy.
 pub mod layout;
+
+#[cfg(test)]
+mod test_support;

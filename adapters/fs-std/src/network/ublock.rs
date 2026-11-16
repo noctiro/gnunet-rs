@@ -429,7 +429,7 @@ impl Buffers {
                 .ok_or(ProtocolError::Overflow)?;
             crate::resize(&mut self.record, wire_bytes, 0)
                 .map_err(|e| FailureCause::Transfer(e.into()))?;
-            let mut time = TimeLimit::new(store.clock(), options.deadline)?;
+            let mut time = TimeLimit::new(store.clock(), options.deadline, None)?;
             for (index, term) in labels.iter().enumerate() {
                 failed_index = index;
                 query = None;

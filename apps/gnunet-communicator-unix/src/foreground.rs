@@ -116,6 +116,8 @@ fn observe(event: Event<'_>) {
         Event::Bound(_)
         | Event::Attached(_)
         | Event::Identity { .. }
+        | Event::IdentityPaused { .. }
+        | Event::IdentityResumed { .. }
         | Event::ConnectRetry(_)
         | Event::Closed { .. }
         | Event::SendRetired { .. }

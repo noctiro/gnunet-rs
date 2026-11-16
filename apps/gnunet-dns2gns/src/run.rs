@@ -5,7 +5,7 @@ use gnunet_dns2gns_host as gateway;
 use gnunet_program_host::reporting::Reporter;
 use gnunet_resolver_broker::{BrokerError, Context as Broker, Driver, DriverEvent};
 use gnunet_service_runtime::clock::RuntimeClock;
-use gnunet_service_startup::ParentControl;
+use gnunet_service_startup::{ParentControl, StopError};
 use gnunet_types::Error as Fault;
 use std::{
     cell::Cell,
@@ -53,7 +53,7 @@ struct Errors {
     runtime: Option<gateway::Failure>,
     close: Option<gateway::Failure>,
     additional_close_errors: u64,
-    signal: Option<io::Error>,
+    signal: Option<StopError>,
     resolver: Option<BrokerError>,
     resolver_loss: Option<(u64, Fault)>,
     resolver_unavailable: bool,
@@ -185,7 +185,7 @@ fn apply_observation(value: Observed, errors: &mut Errors) {
 struct Turn {
     gateway: Option<Result<gateway::Progress, gateway::Failure>>,
     resolver: Option<Result<gnunet_resolver_broker::Progress, BrokerError>>,
-    signal: Option<io::Result<()>>,
+    signal: Option<Result<(), StopError>>,
     timed_out: bool,
     event: Option<gateway::Event>,
 }
@@ -230,6 +230,10 @@ fn gateway_observation(
         gateway::Event::ListenerLost(index) => reporter.warning(
             "dns2gns.listener.lost",
             format_args!("Original listener {index} closed; original IO cause retained"),
+        ),
+        gateway::Event::DatagramRejected(index) => reporter.debug(
+            "dns2gns.datagram.rejected",
+            format_args!("Isolated receive error on listener {index}; source retained"),
         ),
         gateway::Event::Closed => reporter.debug(
             "dns2gns.gateway.closed",

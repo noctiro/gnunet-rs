@@ -1,6 +1,79 @@
 //! Actual verified TUN whole-packet ownership, never partial-suffix replay.
 use super::*;
 impl<'cfg, 'id, 'slots, E: Entropy> Driver<'cfg, 'id, 'slots, E> {
+    /// On an observer failure, distinguish actual physical-interface loss from
+    /// a live interface with invalid configuration before selecting recovery.
+    /// Complete native-table errors remain errors; no route absence is assumed.
+    #[cfg(windows)]
+    pub fn retire_missing_wintun(
+        &mut self,
+        observe: &mut impl FnMut(Event<'id>),
+    ) -> Result<bool, Error> {
+        let loss = match self.tun.as_mut() {
+            Some(PacketSource::Native(io)) => io.retire_missing_wintun()?,
+            None => None,
+        };
+        if let Some(loss) = loss {
+            self.tun_loss(loss, observe)?;
+            return Ok(true);
+        }
+        Ok(false)
+    }
+    /// Attach an explicitly prepared replacement after the original TUN loss.
+    /// The caller verifies its addresses/routes/DAD before admission. Original
+    /// CADET owners, DNS jobs, flow deadlines and old-flow cleanup stay intact;
+    /// no old packet or administrative operation is replayed. A helper's old
+    /// child must be actually retired before another packet source is admitted.
+    #[expect(
+        clippy::result_large_err,
+        reason = "Refusal returns the original linear packet source without another cleanup allocation"
+    )]
+    pub fn replace_tun(&mut self, source: PacketSource) -> Result<(), TunReplacementFailure> {
+        if self.stopping || self.stopped {
+            return Err(TunReplacementFailure {
+                source,
+                error: Fault::Closed.into(),
+            });
+        }
+        if self.tun.is_some()
+            || self.retiring_tun.is_some()
+            || self.core_tun.is_some()
+            || self.tun_epoch.is_some()
+            || self.tun_pending.is_some()
+            || self.tun_held.is_some()
+            || self.tun_input.is_some()
+        {
+            return Err(TunReplacementFailure {
+                source,
+                error: Fault::Conflict.into(),
+            });
+        }
+        let epoch = source.epoch();
+        if !epoch.current() {
+            return Err(TunReplacementFailure {
+                source,
+                error: Fault::Stale.into(),
+            });
+        }
+        let core = match self.engine.tun_attached() {
+            Ok(core) => core,
+            Err(error) => {
+                return Err(TunReplacementFailure {
+                    source,
+                    error: error.into(),
+                });
+            }
+        };
+        self.tun = Some(source);
+        self.tun_epoch = Some(epoch);
+        self.core_tun = Some(core);
+        for port in &mut self.ports {
+            if port.binding.target != Target::Dns {
+                port.disabled = false;
+            }
+        }
+        Ok(())
+    }
     pub(super) fn cancel_flow_tun(
         &mut self,
         flow: &Flow,

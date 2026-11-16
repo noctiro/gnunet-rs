@@ -9,7 +9,7 @@ license.workspace = true
 name = "gnunet-bcd"
 path = "src/main.rs"
 
-[target.'cfg(unix)'.dependencies]
+[dependencies]
 gnunet-bcd-host.workspace = true
 gnunet-program-host = { workspace = true, features = ["service-runtime"] }
 gnunet-config.workspace = true

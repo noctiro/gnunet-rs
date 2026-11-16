@@ -1,22 +1,76 @@
-# Native NSE subscription and installed command
+# Native NSE subscription and command
 
-This package implements the missing native CLIENT side of official NSE, independently of the existing NSE service, cryptography, history and PoW workers. It depends on the already admitted `gnunet_client::nse` and shared CLIENT/framing/clock ports, and never imports or instantiates `gnunet-nse` or `gnunet-nse-host`.
+This package implements official NSE subscriptions over shared CLIENT, framing
+and clock ports. Protocol state lives in `gnunet_client::nse`; NSE algorithms,
+PoW, private keys and service ownership are separate.
 
-`Subscription::new(&mut Instance, EndpointSource, Option<Bounds>, Limits)` reserves one native source; `poll`/`drive` performs endpoint selection, original socket attachment, one immutable 4-byte NSE_START321 queue/write, and fixed 32-byte NSE_ESTIMATE323 reception. Every observation is bound by the pure original Epoch. Whole START write is reported as Written only, never ACK/readiness/estimate. Well-framed unknown messages are ignored; malformed known frames retire only that original source. Binary64 bits, NaN deviation, signed zero and repeated/older timestamps remain unchanged; estimates are public source-service statistical observations, not authenticated peer counts.
+## Subscription API
 
-Original framing cursors survive canceled drive futures. `close` physically closes first, then invalidates pure epoch/latest state; there is no wire CANCEL/DONE. Loss reports retain the exact epoch and START prefix/full-write facts. Replacement sources use a fresh epoch and fresh subscription, with no old callbacks or suffix replay. The shared Channel exponential reconnect policy is reset only after a matching valid estimate, exactly like active `nse_api.c`; the added reset_backoff method changes only a future exponent, not an existing timer/source/deadline. Clock/Resolver port refusal requires explicit recovery. No hidden Resolver, task, key, entropy or service is created.
+`Subscription::new(&mut Instance, EndpointSource, Option<Bounds>, Limits)`
+reserves one original source. `poll`/`drive` selects an endpoint, attaches the
+native socket, writes the immutable four-byte START321 and receives fixed
+32-byte ESTIMATE323 frames. Each observation belongs to its original pure epoch.
+A complete START write is a local write fact, not readiness or an estimate.
 
-All targets are original. Optional total Bounds are finite canonical and native targets retained across reconnect. A missing total permits continuous monitoring until explicit close, while every connection-selection/session has a finite 24h default lease, every attachment-to-first-estimate has a native30s bound, and first partial input has its independent10s bound. Native guards check/register these before canonical waits and before outer stdout/Resolver work. Logical adjustment does not remint/extend a native target or revive an old source. The API also exposes poll_native_guard for compositions. Resource use is one original 4-byte output frame, one bounded receive frame, one public latest observation and constant metadata/timers.
+Well-framed unknown messages are ignored; malformed known frames retire only
+that source. Binary64 bits, NaN deviation, signed zero and repeated/older timestamps
+are preserved. Estimates are public statistical observations, not authenticated
+peer counts.
 
-With `program`, `cli::scheduled` supplies gnunet-nse behavior: default first observation, or `-m/--monitor` continuous output until SIGINT/SIGTERM/optional original configured monitor deadline. It uses shared PROGRAM, one Resolver and one Arc clock. Actual output shows server UTC timestamp, 2^logestimate, original logestimate and deviation with C-style six decimal places/nonfinite spelling. UTC rendering is explicit and stable rather than depending on the C process locale/timezone; no wire field differs. Default one-shot has an explicit finite60s first-result budget; monitor total is unbounded unless configured, with finite original source/phase bounds throughout. `[nse-client-rust]` provides FIRST_ESTIMATE_TIMEOUT, MONITOR_TIMEOUT, SOURCE_LIFETIME, INITIAL_TIMEOUT, INPUT_TIMEOUT and OUTPUT_TIMEOUT local budgets; no NSE PoW/service settings are interpreted.
+Partial framing survives canceled waits. `close` physically closes first, then
+invalidates the epoch and latest state; there is no wire CANCEL/DONE. Loss reports
+retain the exact epoch and START write prefix. Replacement uses a new epoch and
+subscription without replaying old callbacks or suffixes. Reconnect backoff
+resets only after a matching valid estimate, as in the active official API.
+Clock/Resolver refusal requires explicit recovery.
 
-stdout uses conventional synchronous stdio with exactly one fixed2048-byte line and its accepted prefix cursor. It never duplicates/adopts stdout, changes shared open-file-description flags, registers an asynchronous descriptor or creates an output thread/task. Each call processes only this bounded original line; stdio write/flush failures are reported. Accepted bytes are stdio facts, not an exact kernel-exposure count, durable flush/fsync or remote receipt. Backpressure bounds memory by halting reception of more estimates. Before each call the original output target is checked, but synchronous OS write/flush duration is an explicit blocking boundary: neither a network deadline nor signal is claimed able to force that syscall to end. Cancellation asserts no rollback of previously accepted/exposed stdout bytes. Original network guards are checked before output calls and remain unchanged.
+## Resource and time bounds
 
-The command reports success only after an estimate's entire original output line wrote. Default then physically disconnects; monitor closes on signal. Signal before an estimate yields status1, after completed monitor output status0; an incomplete output line or runtime IO failure yields1. PROGRAM/option preparation failure yields2. Signal/output/native/Resolver cleanup facts remain separate.
+Optional total `Bounds` retain finite canonical and native targets across
+reconnection. A missing total permits continuous monitoring. Each selected
+source still has a default 24-hour lifetime, attachment-to-first-estimate has a
+30-second native bound, and partial input has an independent ten-second bound.
+`poll_native_guard` checks these before outer output or Resolver work. Logical
+clock adjustment cannot extend an original native target or revive an old source.
 
-No compiler/Cargo/model/socket/helper/process/crypto/PoW/key/entropy/storage/privilege execution, and no private key/fixture or stopped owner/directory read/hash occurred. Actual runtime and official-C interoperability acceptance remain unexecuted.
+Retained data is one START frame, one bounded receive frame, one latest public
+observation and constant metadata/timers. No hidden Resolver or service is created.
 
-SDK `official-nse-client` exposes `gnunet::clients::nse::native`; the pure state
-stays at `gnunet::clients::nse`. The native library is Unix-only and can be built
-without its PROGRAM feature. Original total native expiry is checked before any
-caller clock sampling during subscription admission.
+## PROGRAM integration
+
+The `program` feature exposes `cli::scheduled` and its explicit captured parent
+control input. It uses one shared PROGRAM, clock, Resolver and native stop owner.
+The [installed command](../../apps/gnunet-nse/) prints one estimate by default;
+`-m` monitors until stop or an explicit finite monitor target.
+
+`[nse-client-rust]` provides `FIRST_ESTIMATE_TIMEOUT`, `MONITOR_TIMEOUT`,
+`SOURCE_LIFETIME`, `INITIAL_TIMEOUT`, `INPUT_TIMEOUT` and `OUTPUT_TIMEOUT`.
+These are local client budgets and do not configure PoW or the NSE service.
+
+## Native output and retirement
+
+One fixed 2048-byte line and a capacity-one 2048-byte I/O worker own stdout.
+Windows consoles use native text output; redirected bytes remain exact. The
+worker never changes shared descriptor flags or blocks the network driver.
+Positive native counts advance only the original line; an interrupted/uncertain
+write fails without replaying its prefix. Backpressure stops further estimate
+reception while that line remains pending.
+
+The output owner outlives the cancellable PROGRAM task. After PROGRAM finishes,
+a separate one-second retirement observes the original transfer and actual
+flush/close, retaining their independent errors. A blocked syscall can outlive
+that wait; no timeout claims force-cancellation, rollback, thread join, directory
+durability or downstream consumption.
+
+Success requires a complete real estimate line. Finite monitoring succeeds after
+its configured target only if a full line was delivered and none remains pending.
+Signals before an estimate yield status 1; completed monitor output may exit 0.
+Incomplete output or runtime failure yields 1; preparation errors yield 2.
+
+## SDK
+
+`official-nse-client` exposes `gnunet::clients::nse::native`; pure state is at
+`gnunet::clients::nse`. The native library supports Unix and Windows without
+requiring its PROGRAM feature. See the central
+[compatibility contract](../../spec/gnunet/compatibility.md) for external
+interoperability requirements.

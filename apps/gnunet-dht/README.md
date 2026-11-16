@@ -1,28 +1,51 @@
 # DHT commands
 
 `gnunet-dht-get`, `gnunet-dht-put`, `gnunet-dht-monitor` and
-`gnunet-dht-hello` use the configured official DHT IPC client. They share one PROGRAM lifecycle, configuration, clock, Resolver and cancellation
-owner. No DHT service or peer network is started by these commands.
+`gnunet-dht-hello` use the configured official DHT IPC endpoint. Their shared
+PROGRAM lifecycle owns configuration, clock, Resolver and cancellation on Linux,
+macOS, FreeBSD and Windows. These commands connect to an existing DHT service.
 
-The official key, replication, route, block type, GET timeout and PUT expiration
-options follow v0.29.1. PUT additionally accepts `-T` to bound its total wait. GET defaults to 60 seconds; PUT records default to a one-hour expiration. `-K`
-decodes the 103-character printed key; otherwise the exact input is SHA-512 hashed. GET consumes matched results, retaining one bounded output buffer before
-accepting another. Route output is unverified metadata from the DHT service.
+## Configuration and options
 
-A PUT succeeds only when its original local MQ frame is fully written. There is
-no official PUT acknowledgement; loss never causes an automatic replay. An empty
-DATA value is rejected like the official client API. Native signal/parent stops,
-clock changes, Resolver failures, timeout and original client close share the
-same cleanup path. No runtime or official interoperability result is claimed by
-the presence or compilation of these commands.
+The `[dht]` endpoint uses the shared [client configuration](../../adapters/client-std/README.md).
+Standard `-c`, `-L`, `-l`, `-h` and `-v` apply. Key, replication, route, block type,
+GET timeout and PUT expiration options follow GNUnet v0.29.1.
 
-`gnunet-dht-monitor` observes GET, PUT and RESULT notifications, with an
-optional exact key and block-type selector. Its key is decoded as Base32 first,
-then hashed on decode failure unless `-K` requires a raw key. The default is
-60 seconds. Message expiration is printed in absolute microseconds.
+```sh
+gnunet-dht-put -k example -d value -T '10 s'
+gnunet-dht-get -k example -T '10 s'
+gnunet-dht-monitor -T '10 s'
+gnunet-dht-hello -T '10 s'
+```
 
-`gnunet-dht-hello` without arguments obtains the public HELLO URL (or its
-explicit absence). A single positional URL offers it, using the existing
-metadata signature/expiry checker; v0.29.1 does not authenticate its addresses. An offer completes only after its original IPC frame is written. HELLO defaults
-to an unlimited wait and adds `-T` for an optional finite total budget. A native
-MQ loss may restore an observation, and never replays an offered URL.
+GET and PUT default to a 60-second wait; PUT expiration defaults to one hour.
+`-K` decodes a 103-character printed key; otherwise the exact key is SHA-512
+hashed. Empty PUT data is rejected. `-R` records routes and `-x` enables
+demultiplexing. Route output is unverified service metadata.
+
+MONITOR observes GET, PUT and RESULT notifications with optional key and
+block-type selectors. It tries Base32 first, then hashes on decode failure
+unless `-K` requires a raw key. Its default wait is 60 seconds; message
+expiration is printed in absolute microseconds.
+
+HELLO without arguments obtains a public HELLO URL or its explicit absence.
+One positional URL offers it using the existing signature/expiry checker;
+v0.29.1 does not authenticate HELLO addresses. The default wait is unlimited;
+`-T` supplies a finite bound.
+
+## Completion and recovery
+
+PUT and HELLO offers complete only after their original local MQ frame is fully
+written. PUT has no official service, replication or durability acknowledgement.
+MQ loss may restore observations but never replays an issued PUT or offered URL.
+Native stops, parent control, clock changes, Resolver failure and timeout use
+the same cleanup path.
+
+## Output ownership
+
+GET and MONITOR retain one bounded result before admitting another delivery.
+A capacity-one native byte writer preserves arbitrary TEST payload bytes on all
+platforms. Only actual native completions advance its cursor. Stops and expiry
+end output admission; cleanup retains any submitted write and observes transfer,
+flush and close under one three-second bound. A pending write is never reported
+as canceled, and independent output-retirement failures fail the command.

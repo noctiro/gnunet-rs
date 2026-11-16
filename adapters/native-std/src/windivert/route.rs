@@ -1,0 +1,193 @@
+//! Original-session reply routes with stable native interface observations.
+use super::{Device, abi};
+use crate::interfaces::{self, Identity};
+use std::{
+    fmt, io,
+    sync::{Arc, Weak},
+};
+/// Native reply route could not be qualified or no longer matches its observation.
+/// This is a packet refusal before injection, not filter loss or an unsent claim
+/// about an earlier admitted operation.
+#[derive(Clone, Debug)]
+pub struct RouteUnavailable {
+    interface: u32,
+    cause: Arc<io::Error>,
+}
+impl fmt::Display for RouteUnavailable {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "captured interface {} unavailable: {}",
+            self.interface, self.cause
+        )
+    }
+}
+impl std::error::Error for RouteUnavailable {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.cause.as_ref())
+    }
+}
+/// Captured NETWORK metadata, bound to one original session allocation.
+#[derive(Clone)]
+pub struct CapturedAddress {
+    pub(super) raw: abi::Address,
+    pub(super) owner: Weak<Device>,
+    observed: Result<Option<Identity>, RouteUnavailable>,
+}
+impl fmt::Debug for CapturedAddress {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CapturedPacketAddress")
+            .field("interface", &self.interface())
+            .field("loopback", &self.loopback())
+            .finish()
+    }
+}
+impl CapturedAddress {
+    pub(super) fn received(raw: abi::Address, owner: &Arc<Device>) -> Self {
+        let observed = (|| -> io::Result<_> {
+            if interfaces::compartment() != owner.compartment {
+                return Err(io::Error::new(
+                    io::ErrorKind::NotConnected,
+                    "original capture compartment changed",
+                ));
+            }
+            if raw.flags & abi::LOOPBACK != 0 || raw.flags & abi::OUTBOUND == 0 {
+                return Ok(None);
+            }
+            if raw.timestamp > counter()? {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "capture timestamp exceeds native observation clock",
+                ));
+            }
+            let observations = owner.route_observations();
+            observations
+                .get(raw.timestamp, raw.data[0] as u32)
+                .cloned()
+                .map(Some)
+        })()
+        .map_err(|cause| RouteUnavailable {
+            interface: raw.data[0] as u32,
+            cause: Arc::new(cause),
+        });
+        Self {
+            raw,
+            owner: Arc::downgrade(owner),
+            observed,
+        }
+    }
+    /// Captured interface/subinterface indices; not immutable physical identity.
+    pub fn interface(&self) -> (u32, u32) {
+        (self.raw.data[0] as u32, (self.raw.data[0] >> 32) as u32)
+    }
+    /// Whether Windows classified the original packet as host-local traffic.
+    pub fn loopback(&self) -> bool {
+        self.raw.flags & abi::LOOPBACK != 0
+    }
+    /// Whether the original packet used the IPv6 layout.
+    pub fn ipv6(&self) -> bool {
+        self.raw.flags & abi::IPV6 != 0
+    }
+    /// Original native checksum-validation observations.
+    pub fn checksums(&self) -> (bool, bool) {
+        (
+            self.raw.flags & abi::IP_CHECKSUM != 0,
+            self.raw.flags & abi::UDP_CHECKSUM != 0,
+        )
+    }
+    /// Qualify a return route in the original session's network compartment.
+    /// Inbound injection retains the LUID/GUID/index selected at receive
+    /// completion from the packet's capture-time observation, then rechecks it.
+    /// Loopback stays outbound; WinDivert ignores interface indices on that path.
+    pub fn reply(&self) -> Result<ReplyAddress, RouteUnavailable> {
+        let interface = self.observed.clone()?;
+        let qualify = || -> io::Result<_> {
+            let owner = self.owner.upgrade().ok_or(io::ErrorKind::NotConnected)?;
+            if interfaces::compartment() != owner.compartment {
+                return Err(io::Error::new(
+                    io::ErrorKind::NotConnected,
+                    "original capture compartment changed",
+                ));
+            }
+            let mut raw = self.raw;
+            if !self.loopback() {
+                raw.flags ^= abi::OUTBOUND;
+            }
+            raw.flags |= abi::IP_CHECKSUM | abi::UDP_CHECKSUM;
+            if let Some(interface) = &interface {
+                interface.check()?;
+            }
+            Ok(ReplyAddress {
+                raw,
+                owner: self.owner.clone(),
+                compartment: owner.compartment,
+                interface,
+            })
+        };
+        qualify().map_err(|cause| RouteUnavailable {
+            interface: self.interface().0,
+            cause: Arc::new(cause),
+        })
+    }
+}
+/// Reply metadata bound to its original session and observed inbound interface.
+#[derive(Clone)]
+pub struct ReplyAddress {
+    pub(super) raw: abi::Address,
+    pub(super) owner: Weak<Device>,
+    compartment: u32,
+    interface: Option<Identity>,
+}
+impl fmt::Debug for ReplyAddress {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ReplyPacketAddress")
+            .field("interface", &self.interface)
+            .field("compartment", &self.compartment)
+            .finish_non_exhaustive()
+    }
+}
+impl ReplyAddress {
+    /// Recheck the original route without adopting a replacement interface.
+    /// This observation does not lock the kernel route through later injection.
+    pub fn check(&self) -> Result<(), RouteUnavailable> {
+        let result = if interfaces::compartment() != self.compartment {
+            Err(io::Error::new(
+                io::ErrorKind::NotConnected,
+                "original capture compartment changed",
+            ))
+        } else if let Some(interface) = &self.interface {
+            interface.check()
+        } else {
+            Ok(())
+        };
+        result.map_err(|cause| RouteUnavailable {
+            interface: self.raw.data[0] as u32,
+            cause: Arc::new(cause),
+        })
+    }
+}
+
+#[expect(
+    unsafe_code,
+    reason = "QueryPerformanceCounter writes one initialized scalar and shares WinDivert's documented packet timestamp clock"
+)]
+fn counter() -> io::Result<i64> {
+    let mut value = 0;
+    // SAFETY: initialized scalar output remains live for the synchronous SDK call.
+    if unsafe { windows_sys::Win32::System::Performance::QueryPerformanceCounter(&mut value) } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    if value < 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "negative capture observation clock",
+        ));
+    }
+    Ok(value)
+}
+
+pub(super) fn interface_snapshot() -> io::Result<(i64, Vec<Identity>)> {
+    let identities = Identity::snapshot(super::observations::MAX_INTERFACES)?;
+    Ok((counter()?, identities))
+}

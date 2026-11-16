@@ -7,7 +7,7 @@ use gnunet_nse::crypto;
 use gnunet_nse_host::proof::{self, Store};
 use gnunet_program_host::{policy::Level, reporting::Reporter};
 use gnunet_service_runtime::clock::{Deadline, RuntimeClock};
-use gnunet_service_startup::{ControlReceiver, ParentControl};
+use gnunet_service_startup::{ParentControl, StopSignals};
 use gnunet_types::AbsoluteTime;
 use std::{
     fmt, fs,
@@ -17,16 +17,13 @@ use std::{
     sync::Arc,
     task::{Context, Poll},
 };
-use tokio::{
-    signal::unix::{Signal, SignalKind, signal},
-    time::{Instant, Sleep},
-};
+use tokio::time::{Instant, Sleep};
 
 const ROUND: u8 = 10;
 const CHECKPOINT: u128 = 1000;
 #[derive(Debug)]
 enum Stop {
-    Signal(i32),
+    Requested,
     Deadline,
     HashLimit,
     Exhausted,
@@ -36,7 +33,7 @@ enum Stop {
 impl fmt::Display for Stop {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Signal(s) => write!(f, "original proof operation cancelled by signal {s}"),
+            Self::Requested => f.write_str("original proof operation stopped"),
             Self::Deadline => f.write_str("original proof operation deadline reached"),
             Self::HashLimit => f.write_str("original proof operation hash bound reached"),
             Self::Exhausted => {
@@ -68,6 +65,7 @@ struct Facts {
     last_committed: Option<u64>,
     persistence_failed: bool,
     persistence_outcome: Option<proof::Outcome>,
+    directory_sync: Option<gnunet_native::DirectorySync>,
     stdout_bytes: u64,
 }
 #[derive(Debug)]
@@ -155,44 +153,16 @@ impl Whole {
         }
         Ok(())
     }
-    fn preparation(&mut self, parent: &mut Option<ParentControl>) -> Result<(), Failure> {
-        if let Some(parent) = parent {
-            match parent.try_read_signal() {
-                Ok(Some(s)) if s == libc::SIGINT as i8 || s == libc::SIGTERM as i8 => {
-                    return Err(Box::new(Stop::Signal(i32::from(s))));
-                }
-                Ok(_) => {}
-                Err(e)
-                    if matches!(
-                        e.kind(),
-                        io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
-                    ) => {}
-                Err(e) => return Err(e.into()),
-            }
-        }
-        self.check()
-    }
 }
-pub(super) struct Prepared {
-    settings: Settings,
-    whole: Whole,
-    public: [u8; 32],
-    store: Store,
-    counter: u64,
-}
-/// This is synchronous key/store startup, before any runtime or worker. All
-/// private material is dropped before a Prepared public work snapshot returns.
-pub(super) fn prepare(
-    settings: Settings,
-    clock: Arc<dyn RuntimeClock>,
-    reporter: Reporter,
-    parent: &mut Option<ParentControl>,
-) -> Result<Prepared, Failure> {
-    let mut whole = Whole::new(&settings, clock, reporter)?;
-    whole.preparation(parent)?;
+/// Synchronous native steps are bracketed by the same registered stop sources
+/// and fixed whole-operation targets used during mining.
+async fn prepare(
+    settings: &Settings,
+    guard: &mut Guard,
+) -> Result<([u8; 32], Store, u64), Failure> {
+    guard.check().await?;
     let public = match fs::symlink_metadata(&settings.key) {
         Ok(_) => {
-            // Existing malformed/disappearing inputs cannot trigger replacement.
             let initial = gnunet_pils_host::identity::load_existing(&settings.key)?;
             *initial.initial_public_key().as_bytes()
         }
@@ -205,24 +175,17 @@ pub(super) fn prepare(
         }
         Err(e) => return Err(e.into()),
     };
-    whole.preparation(parent)?;
+    tokio::task::yield_now().await;
+    guard.check().await?;
     let store = Store::open(settings.proof.clone())?;
-    whole.preparation(parent)?;
+    guard.check().await?;
     let counter = store.loaded()?.map(u64::from_ne_bytes).unwrap_or(0);
-    whole.preparation(parent)?;
-    Ok(Prepared {
-        settings,
-        whole,
-        public,
-        store,
-        counter,
-    })
+    guard.check().await?;
+    Ok((public, store, counter))
 }
 struct Guard {
     whole: Whole,
-    parent: Option<ControlReceiver>,
-    interrupt: Signal,
-    terminate: Signal,
+    stops: StopSignals,
     deadline: Option<Deadline>,
     native: Option<Pin<Box<Sleep>>>,
 }
@@ -235,44 +198,17 @@ impl Guard {
         let native = whole.hard.map(|at| Box::pin(tokio::time::sleep_until(at)));
         Ok(Self {
             whole,
-            parent: parent
-                .map(|p| p.register().map_err(|f| f.error))
-                .transpose()?,
-            interrupt: signal(SignalKind::interrupt())?,
-            terminate: signal(SignalKind::terminate())?,
+            stops: StopSignals::for_client(parent)?,
             deadline,
             native,
         })
     }
     fn signals(&mut self, cx: &mut Context<'_>) -> Result<(), Failure> {
-        if let Some(parent) = &mut self.parent {
-            match parent.poll_signal(cx) {
-                Poll::Ready(Ok(Some(s))) if s == libc::SIGINT as i8 || s == libc::SIGTERM as i8 => {
-                    return Err(Box::new(Stop::Signal(i32::from(s))));
-                }
-                Poll::Ready(Ok(Some(_))) => cx.waker().wake_by_ref(),
-                Poll::Ready(Ok(None)) => self.parent = None,
-                Poll::Ready(Err(e)) => return Err(e.into()),
-                Poll::Pending => {}
-            }
+        match self.stops.poll_stop(cx) {
+            Poll::Ready(Ok(())) => Err(Box::new(Stop::Requested)),
+            Poll::Ready(Err(error)) => Err(error.into()),
+            Poll::Pending => Ok(()),
         }
-        for (stream, code) in [
-            (&mut self.interrupt, libc::SIGINT),
-            (&mut self.terminate, libc::SIGTERM),
-        ] {
-            match stream.poll_recv(cx) {
-                Poll::Ready(Some(())) => return Err(Box::new(Stop::Signal(code))),
-                Poll::Ready(None) => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::UnexpectedEof,
-                        "original proof termination stream ended",
-                    )
-                    .into());
-                }
-                Poll::Pending => {}
-            }
-        }
-        Ok(())
     }
     fn poll_check(&mut self, cx: &mut Context<'_>) -> Result<(), Failure> {
         self.whole.reporter.register(cx);
@@ -352,7 +288,9 @@ impl Guard {
 }
 fn checkpoint(store: &mut Store, facts: &mut Facts, dirty: &mut bool) -> Result<(), Failure> {
     facts.checkpoint_attempts += 1;
-    match store.commit(facts.next_counter.to_ne_bytes()) {
+    let result = store.commit(facts.next_counter.to_ne_bytes());
+    facts.directory_sync = Some(store.directory_sync());
+    match result {
         Ok(()) => {
             facts.checkpoints += 1;
             facts.last_committed = Some(facts.next_counter);
@@ -455,18 +393,18 @@ async fn mine(
         }
     }
 }
-pub(super) async fn run(prepared: Prepared, parent: Option<ParentControl>) -> Result<(), Failure> {
-    let Prepared {
-        settings,
-        whole,
-        public,
-        mut store,
-        counter,
-    } = prepared;
-    let reporter = whole.reporter.clone();
+pub(super) async fn run(
+    settings: Settings,
+    clock: Arc<dyn RuntimeClock>,
+    reporter: Reporter,
+    parent: Option<ParentControl>,
+) -> Result<(), Failure> {
+    let whole = Whole::new(&settings, clock, reporter.clone())?;
     let mut guard = Guard::new(whole, parent)?;
+    let (public, mut store, counter) = prepare(&settings, &mut guard).await?;
     let mut facts = Facts {
         next_counter: counter,
+        directory_sync: Some(store.directory_sync()),
         ..Facts::default()
     };
     let mut dirty = false;

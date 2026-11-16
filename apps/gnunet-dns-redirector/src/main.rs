@@ -1,5 +1,6 @@
 //! Actual official DNS utility PROGRAM entry point.
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
+mod early;
 use std::{
     io::{self, Write},
     process::ExitCode,
@@ -13,11 +14,7 @@ fn main() -> ExitCode {
         }
     }
 }
-#[cfg(unix)]
 fn run() -> Result<(), Box<dyn std::error::Error>> {
-    gnunet_dns_tools_host::run(gnunet_dns_tools_host::Action::Redirect)
-}
-#[cfg(not(unix))]
-fn run() -> Result<(), Box<dyn std::error::Error>> {
-    Err("DNS native utility needs Unix CLIENT transport".into())
+    let early = early::capture()?;
+    gnunet_dns_tools_host::run(gnunet_dns_tools_host::Action::Redirect, early.parent)
 }

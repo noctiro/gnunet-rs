@@ -1,5 +1,4 @@
 //! Actual WAL, bounded storage worker, IPC credit and durable restart model.
-#![cfg(unix)]
 #![expect(
     clippy::panic_in_result_fn,
     reason = "One focused actual worker/socket/restart model asserts original durable and wire observations"
@@ -37,12 +36,12 @@ struct Directory(PathBuf);
 impl Directory {
     fn new() -> Result<Self, Failure> {
         let mut id = [0; 16];
-        getrandom::fill(&mut id)?;
-        let p = std::env::temp_dir().join(format!(
-            "gnunet-peerstore-model-{:032x}",
-            u128::from_be_bytes(id)
-        ));
-        fs::create_dir(&p)?;
+        gnunet_native::entropy::fill(&mut id[..12])?;
+        let base = fs::canonicalize(std::env::temp_dir())?;
+        let name = format!("peerstore-{:024x}", u128::from_le_bytes(id));
+        gnunet_native::filesystem::Directory::open(&base)?
+            .create_private_directory(std::ffi::OsStr::new(&name))?;
+        let p = base.join(name);
         Ok(Self(p))
     }
 }

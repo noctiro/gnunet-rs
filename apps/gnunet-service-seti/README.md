@@ -1,50 +1,35 @@
-# gnunet-service-seti
+# SETI service
 
-A standard SERVICE entry for the existing active GNUnet v0.29.1 SETI IPC and
-Bloom exchanges over the configured CADET CLIENT. The existing pure
-SETI protocol, Server, slot pools, CADET frames and source/operation retirement
-algorithms are unchanged.
+`gnunet-service-seti` implements the official GNUnet SETI IPC and Bloom exchanges
+through the configured CADET client. The protocol core, bounded slot pools and
+source/operation retirement stay in the SETI core and host layers.
 
-The shared SERVICE parser supplies `-c/--config`, `-d/--daemonize`,
-`-h/--help`, `-L/--log`, `-l/--logfile` and `-v/--version`; `-v` is version. It does not invent a SERVICE `-V/verbose` option. SERVICE's XDG/user/default
-configuration policy uses the shared loader rather than PROGRAM's filename
-search. `[seti]` supplies endpoints, ACL, USERNAME, Unix credentials and
-TOLERANT; `[cadet]` supplies the existing carrier. Existing `[seti-rust]`
-resource/time bounds remain unchanged. No private flag migration is added.
+## Startup and configuration
 
-The process captures the original inherited descriptors once. Actual daemon
-split happens before runtime, account lookup, listeners, native sources or
-protocol resources. The parent closes its own inherited copies and waits for
-the original startup status; the child refreshes the selected Logger's PID. Within one current-thread runtime, inherited/TCP listeners prepare before USER,
-then new Unix listeners finish with the configured match access under the target
-identity. Inherited sockets keep their original ownership. All listeners finish
-before constructing SETI/CADET resources.
+Run `gnunet-service-seti -c service.conf`. The shared
+[native SERVICE driver](../../adapters/program-std/README.md#service-startup)
+provides `-c/-d/-h/-L/-l/-v`, standard configuration loading, selected diagnostics,
+process identity, inherited listeners and original-parent control/readiness.
+Unix uses privilege changes and fork detachment; Windows uses process-token
+verification, native activation, managed console detachment or standalone re-exec.
 
-One SharedClock reaches the selected Reporter, the Resolver context and
-existing Server source composition. SETI retains its existing CADET
-attachment readiness condition. The installed stop stream is checked again
-before the READY stdout write and flush; only then is the original
-once-only ChildReady signalled. This is local initialization, not remote
-operation acceptance or a crypto/store receipt.
+`[seti]` supplies endpoints, ACLs, `USERNAME`, Unix credential policy and `TOLERANT`.
+`[cadet]` supplies the carrier; `[seti-rust]` selects finite slot, work, memory and
+time bounds. Explicit Unix UID/GID checks remain unsupported on Windows. Native
+endpoint ACLs and configured process identity retain their own mechanisms.
+See the [host configuration and wire profiles](../../adapters/seti-std/README.md)
+for the resource keys and explicit counterpart ABI.
 
-SIGINT, SIGTERM or original parent-control stop admissions. A soft stop captures
-one native grace target and reuses it; the original alarm is checked before
-canonical/Resolver work, even when another class is continuously ready. The
-selected Reporter has a permanent failure latch with a same-turn gate before
-further normal source work. Logging failure cannot busy-loop on a repeated Stop:
-the same Server retires existing work under the original grace and is always
-physically closed. No new Resolver IO starts after a logging failure; its
-original owner is physically retired without a fresh clock sample.
+## Readiness and shutdown
 
-Every fallible path after Server construction rejoins the same Server.close
-finally seam. Actual original errors, independent native cleanup, Resolver
-physical disconnect, stdout failure and the original entropy backend cause are
-kept separately. First source diagnostic causes are retained in bounded slots;
-no payload/key or per-peer diagnostic allocation is added. Branded CADET tickets
-are consumed within their scope; static terminal metadata is not a
-quiescence proof. STOPPED retains `remote-drain=not-claimed`, and selected
-terminal diagnostics do not bypass `-L/-l` through a second fd2 write.
+One shared clock reaches the selected Reporter, Resolver and SETI/CADET owners.
+Readiness requires actual CADET attachment. After the final stop check, the service
+writes its READY line and submits the original startup status through a finite wait
+that still observes logging and native/parent stop. This proves local initialization.
 
-Resource settings and original protocol/source semantics remain documented in
-`adapters/seti-std/README.md`. Synchronous OS stdout or
-configuration operations are not claimed to be deadline-preemptible.
+A soft stop captures one native grace target. Native guards run before canonical
+or Resolver work, including continuously ready traffic. Logging failure fences
+new work; the same server and Resolver are physically retired. Every fallible path
+after server construction reaches its close seam. Original failures, independent
+native cleanup, Resolver disconnect, stdout errors and entropy failures remain
+separate. STOPPED retains `remote-drain=not-claimed`.

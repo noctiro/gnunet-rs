@@ -5,11 +5,12 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
-[target.'cfg(unix)'.dependencies]
+[dependencies]
 gnunet-scalarproduct-client-host.workspace = true
 gnunet-config.workspace = true
 gnunet-crypto.workspace = true
-gnunet-program-host = { workspace = true, features = ["runtime", "resolver-broker"] }
+gnunet-program-host = { workspace = true, features = ["runtime", "resolver-broker", "service-runtime"] }
+gnunet-service-startup.workspace = true
 gnunet-client-host.workspace = true
 gnunet-resolver-broker.workspace = true
 gnunet-service-runtime.workspace = true

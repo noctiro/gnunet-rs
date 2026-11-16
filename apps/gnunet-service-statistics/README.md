@@ -1,6 +1,6 @@
 # STATISTICS service
 
-Serves official SET, GET and WATCH IPC over configured Unix/TCP listeners.
+Serves official SET, GET and WATCH IPC over configured AF_UNIX/TCP listeners.
 Clients share one bounded statistics core; persistent rows use the official
 concatenated-SET database format.
 
@@ -35,11 +35,18 @@ rows are saved during service shutdown, not by that confirmation alone.
 
 ## Startup and storage
 
-The normal entry uses shared GNUnet SERVICE options `-c/--config`, `-d/--daemonize`, `-L/--loglevel`, `-l/--logfile`, help and version. It uses the selected Logger, original inherited listener/control owners, one SharedClock, two-stage listener binding and the configured `[statistics] USERNAME` transition.
+The normal entry uses shared GNUnet SERVICE options `-c/--config`, `-d/--daemonize`, `-L/--loglevel`, `-l/--logfile`, help and version. `main.rs` owns shared diagnostics; `unix.rs` and `windows.rs` compose native startup around `host.rs`, `settings.rs` and `control.rs`. Both use the selected Logger, original listener/control owners and one SharedClock. Unix binds listeners around the configured `[statistics] USERNAME` transition. Windows verifies the current account; it never treats a requested different account as a successful transition.
 
 The `gnunet-ipc-unix` server and `gnunet-statistics-store` remain the protocol and persistence owners. The ordinary host uses `AllocatedStatistics` with the same protocol/business algorithm as the allocation-free fixed-capacity core. Rows, names, connections, subscriptions, notifications and GET snapshots grow on demand within explicit bounds; startup does not allocate the maximum row count times the maximum name size. Global rows survive client disconnection and are never silently evicted to make room. Capacity or allocation failure is a refusal.
 
 All listeners share this one core. Actual address ACLs and Unix UID/GID credentials are checked before core admission. Newly created Unix socket/parent modes follow UID 0700/0700, otherwise GID 0770/0750, otherwise 0777/0755; existing parent permissions and inherited listener paths are retained. Filesystem permissions alone do not establish peer credentials.
+
+On Windows, use native absolute paths and set `UNIX_MATCH_UID = NO` and
+`UNIX_MATCH_GID = NO` for the owner-only AF_UNIX endpoint DACL. Requested Unix
+credential matching fails closed; SIDs are not Unix IDs. TCP retains its configured
+address ACLs. Activation consumes original native listeners without rebinding or
+claiming their filesystem nodes. Standalone `-d` uses shared native re-exec;
+supervised `-d` detaches before provider import, runtime and signal registration.
 
 Startup loads the official concatenated SET database into a fresh unpublished core with the selected resource limits. Invalid, truncated or capacity-exceeding files fail without replacing them with empty state. With no DATABASE, state is explicitly memory-only. Actual host metadata, bound listeners, database load and the saving buffer's retained-byte admission precede Ready, stdout flush and the original daemon-parent ready byte. A dropped parent control pipe is detached; only interrupt/terminate requests initiate shutdown. The daemon parent never continues service initialization.
 
@@ -47,7 +54,14 @@ Startup loads the official concatenated SET database into a fresh unpublished co
 
 Soft shutdown stops admission and lets existing non-monitor clients finish before retiring WATCH sources. `[statistics-rust] SHUTDOWN_GRACE` defaults to 5 seconds and fixes one native deadline on the first request; at that boundary remaining original sources physically close without acknowledging unprocessed requests. Default idle lifetime remains unlimited as in C. Optional `IDLE_TIMEOUT` is a native resource bound. Clock failure closes original MQ owners independently of obtaining another clock sample.
 
-After all original client generations retire, shutdown saves persistent rows through the existing file-sync/atomic-replace/directory-sync store. Empty persistent state removes the database. Actual save errors retain their stage and uncertain-commit classification and are not retried. A prior driver/control error remains primary, with save/output/logging failures retained separately. DISCONNECT_CONFIRM is a processing barrier, never a durable save receipt.
+After all original client generations retire, shutdown saves persistent rows
+through the [snapshot store](../../adapters/statistics-store/README.md#saving-and-publication).
+The report separates actual file synchronization/publication from directory
+barriers; Windows reports its unavailable directory barrier explicitly. Empty
+persistent state removes the database. Actual save errors retain their stage
+and uncertain-commit classification and are not retried. A prior driver/control
+error remains primary, with save/output/logging failures retained separately.
+DISCONNECT_CONFIRM is a processing barrier, never a durable save receipt.
 
 ## Resource limits
 

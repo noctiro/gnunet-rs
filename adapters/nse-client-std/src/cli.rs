@@ -3,16 +3,15 @@
 use crate::{Bounds, Cause, EndpointSource, Instance, Limits, Progress, Stop, Subscription};
 use gnunet_program_host::{program::Prepared, reporting::Reporter, shared_clock::SharedClock};
 use gnunet_service_runtime::clock::RuntimeClock;
+use gnunet_service_startup::{ParentControl, StopSignals as Signals};
 use std::{
     cell::RefCell,
     future::{Future, poll_fn},
-    io,
     rc::Rc,
     sync::Arc,
-    task::{Context, Poll},
+    task::Poll,
     time::Duration,
 };
-use tokio::signal::unix::{Signal, SignalKind};
 mod output;
 /// Original failure with independent actual cleanup errors.
 pub type Failure = Box<dyn std::error::Error>;
@@ -48,8 +47,8 @@ pub struct Settings {
     pub first_timeout: Duration,
     /// Optional original total monitor lifetime; None runs until actual signal.
     pub monitor_timeout: Option<Duration>,
-    /// Original pre-write output target. Synchronous stdio syscall duration
-    /// remains an explicit OS blocking boundary, not a cancellable deadline.
+    /// Fixed original line target. A blocked native syscall remains owned for
+    /// separate retirement and is never reported as force-canceled.
     pub output_timeout: Duration,
     /// Existing shared process Resolver resources.
     pub resolver: gnunet_resolver_broker::Limits,
@@ -93,30 +92,6 @@ impl Settings {
         })
     }
 }
-struct Signals {
-    interrupt: Signal,
-    terminate: Signal,
-}
-impl Signals {
-    fn new() -> io::Result<Self> {
-        Ok(Self {
-            interrupt: tokio::signal::unix::signal(SignalKind::interrupt())?,
-            terminate: tokio::signal::unix::signal(SignalKind::terminate())?,
-        })
-    }
-    fn poll(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        for signal in [&mut self.interrupt, &mut self.terminate] {
-            match signal.poll_recv(cx) {
-                Poll::Ready(Some(())) => return Poll::Ready(Ok(())),
-                Poll::Ready(None) => {
-                    return Poll::Ready(Err(io::Error::other("NSE signal stream ended")));
-                }
-                Poll::Pending => {}
-            }
-        }
-        Poll::Pending
-    }
-}
 struct Resolver {
     driver: gnunet_resolver_broker::Driver<16, 1024>,
     closed: bool,
@@ -147,10 +122,12 @@ pub async fn scheduled(
     settings: Settings,
     monitor: bool,
     reporter: Reporter,
+    parent: Option<ParentControl>,
 ) -> Result<bool, Failure> {
     if reporter.failed() {
         return Err("selected NSE Logger failed".into());
     }
+    let signals = Signals::for_client(parent)?;
     let config = prepared.main().config.duplicate()?;
     let canonical: Arc<dyn RuntimeClock> = Arc::new(clock.clone());
     let live = gnunet_resolver_broker::LiveConfiguration::new(config);
@@ -163,7 +140,7 @@ pub async fn scheduled(
     let dropped = Rc::new(RefCell::new(None));
     // Establish the cleanup owner before offering the future to the scheduler;
     // even a refused/unpolled task retains its real disconnect failure here.
-    let resolver = Resolver {
+    let mut resolver = Resolver {
         driver: resolver,
         closed: false,
         reporter: reporter.clone(),
@@ -171,13 +148,44 @@ pub async fn scheduled(
     };
     let result = Rc::new(RefCell::new(None::<Result<bool, Failure>>));
     let receiving = result.clone();
+    // This owner remains outside the cancellable PROGRAM scope. A dropped task
+    // cannot discard an admitted native write or manufacture its close receipt.
+    let output = match output::Output::new(settings.output_timeout) {
+        Ok(output) => Rc::new(RefCell::new(output)),
+        Err(original) => {
+            let cleanup = resolver
+                .driver
+                .disconnect()
+                .err()
+                .map(|cause| Box::new(cause) as Failure)
+                .into_iter()
+                .collect();
+            resolver.closed = true;
+            return Err(Box::new(Failures {
+                original: Some(original),
+                cleanup,
+            }));
+        }
+    };
+    let task_output = output.clone();
     let program = prepared
         .run_scheduled(&mut context, clock, 1, move |_main, scope| {
             let destination = receiving.clone();
             let stop = scope.clone();
             if let Err(error) = scope.spawn(async move {
-                *destination.borrow_mut() =
-                    Some(run(resolver, live, canonical, settings, monitor, reporter).await);
+                *destination.borrow_mut() = Some(
+                    run(Command {
+                        resolver,
+                        live,
+                        clock: canonical,
+                        settings,
+                        monitor,
+                        reporter,
+                        signals,
+                        output: task_output,
+                    })
+                    .await,
+                );
                 if let Err(error) = stop.shutdown() {
                     let original = destination.borrow_mut().take().and_then(Result::err);
                     *destination.borrow_mut() = Some(Err(Box::new(Failures {
@@ -207,6 +215,15 @@ pub async fn scheduled(
         Err(error) => Some(Box::new(error) as Failure),
     };
     let mut cleanup: Vec<Failure> = program.into_iter().collect();
+    let retirement = output.borrow_mut().retire();
+    match retirement {
+        Some(native) => {
+            if let Err(error) = output::settle(native).await {
+                cleanup.push(error);
+            }
+        }
+        None => cleanup.push("NSE output owner ended without its retirement".into()),
+    }
     if let Some(error) = dropped.borrow_mut().take() {
         cleanup.push(error);
     }
@@ -256,15 +273,27 @@ fn original<'a>(
         _ => Ok(None),
     }
 }
-async fn run(
-    mut resolver: Resolver,
+struct Command {
+    resolver: Resolver,
     live: gnunet_client_host::LiveConfiguration,
     clock: Arc<dyn RuntimeClock>,
     settings: Settings,
     monitor: bool,
     reporter: Reporter,
-) -> Result<bool, Failure> {
-    let mut signals = Signals::new()?;
+    signals: Signals,
+    output: Rc<RefCell<output::Output>>,
+}
+async fn run(command: Command) -> Result<bool, Failure> {
+    let Command {
+        mut resolver,
+        live,
+        clock,
+        settings,
+        monitor,
+        reporter,
+        mut signals,
+        output,
+    } = command;
     let source = EndpointSource::live(live, b"nse", resolver.driver.context().resolution_context());
     let total = if monitor {
         settings
@@ -276,7 +305,6 @@ async fn run(
     };
     let mut instance = Instance::new();
     let mut subscription = Subscription::new(&mut instance, source, total, settings.native)?;
-    let mut output = output::Output::new(settings.output_timeout)?;
     let mut delivered = false;
     let mut finishing = false;
     let outcome = loop {
@@ -292,7 +320,7 @@ async fn run(
             }));
             poll_fn(|cx| {
                 reporter.register(cx);
-                if let Poll::Ready(result) = signals.poll(cx) {
+                if let Poll::Ready(result) = signals.poll_stop(cx) {
                     return Poll::Ready(
                         result
                             .map(|()| Turn::Signal)
@@ -318,10 +346,10 @@ async fn run(
                 if reporter.failed() {
                     return Poll::Ready(Err("selected NSE Logger failed".into()));
                 }
-                if let Poll::Ready(result) = output.poll(cx) {
+                if let Poll::Ready(result) = output.borrow_mut().poll(cx) {
                     return Poll::Ready(result.map(|_| Turn::Output));
                 }
-                if !output.pending()
+                if !output.borrow().pending()
                     && !finishing
                     && let Poll::Ready(result) = subscription.poll(cx, None)
                 {
@@ -338,7 +366,7 @@ async fn run(
         };
         match result {
             Ok(Turn::Signal) => {
-                if output.pending() {
+                if output.borrow().pending() {
                     break Err("NSE canceled with an incomplete original stdout line".into());
                 }
                 break Ok(delivered);
@@ -350,9 +378,19 @@ async fn run(
                 }
             }
             Ok(Turn::Activity) => {}
+            Ok(Turn::Native(Progress::Stopped {
+                reason: Stop::Deadline,
+                ..
+            })) if monitor
+                && settings.monitor_timeout.is_some()
+                && delivered
+                && !output.borrow().pending() =>
+            {
+                break Ok(true);
+            }
             Ok(Turn::Native(progress)) => match original(progress, &reporter) {
                 Ok(Some(observation)) => {
-                    if let Err(error) = output.admit(observation.estimate) {
+                    if let Err(error) = output.borrow_mut().admit(observation.estimate) {
                         break Err(error);
                     }
                     if !monitor {
@@ -370,8 +408,8 @@ async fn run(
             Err(error) => break Err(error),
         }
     };
-    // Physical original source retirement precedes Resolver shutdown. stdout
-    // has an explicit synchronous OS boundary; no descriptor flags changed.
+    // Physical original source retirement precedes Resolver shutdown. Native
+    // stdout work stays with its outer owner through PROGRAM cancellation.
     let actual = subscription.close();
     reporter.debug(
         "nse.source.close",

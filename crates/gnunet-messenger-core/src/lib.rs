@@ -21,6 +21,8 @@ mod identity;
 #[cfg(feature = "alloc")]
 mod ingest;
 #[cfg(feature = "alloc")]
+mod lease;
+#[cfg(feature = "alloc")]
 mod outgoing;
 #[cfg(feature = "alloc")]
 mod slots;

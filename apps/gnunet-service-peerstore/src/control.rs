@@ -1,58 +1,33 @@
-//! Original signal/control ownership, plus an actual diagnostic-stop request.
+//! Registered native stop source; logging remains an independent stop reason.
 use crate::{Failure, reporting::Reports};
-use gnunet_service_startup::{ControlReceiver, ParentControl};
+use gnunet_service_startup::{ControlReceiver, StopSignals};
 use std::task::{Context, Poll};
-use tokio::signal::unix::{Signal, SignalKind};
 pub(crate) struct Control {
-    parent: Option<ControlReceiver>,
-    interrupt: Signal,
-    terminate: Signal,
+    native: StopSignals,
     diagnostic_stop: bool,
 }
 impl Control {
-    pub(crate) fn new(parent: Option<ParentControl>) -> Result<Self, Failure> {
+    pub(crate) fn new(parent: Option<ControlReceiver>) -> Result<Self, Failure> {
         Ok(Self {
-            parent: parent
-                .map(|p| p.register().map_err(|error| error.error))
-                .transpose()?,
-            interrupt: tokio::signal::unix::signal(SignalKind::interrupt())?,
-            terminate: tokio::signal::unix::signal(SignalKind::terminate())?,
+            native: StopSignals::new(parent)?,
             diagnostic_stop: false,
         })
+    }
+    pub(crate) fn native(&mut self) -> &mut StopSignals {
+        &mut self.native
     }
     pub(crate) fn poll(
         &mut self,
         cx: &mut Context<'_>,
-        reports: &Reports<'_, '_>,
+        reports: &Reports,
     ) -> Poll<Result<(), Failure>> {
         reports.register(cx);
         if reports.failed() && !self.diagnostic_stop {
             self.diagnostic_stop = true;
             return Poll::Ready(Ok(()));
         }
-        if let Some(parent) = &mut self.parent {
-            match parent.poll_signal(cx) {
-                Poll::Ready(Ok(Some(signal)))
-                    if i32::from(signal) == SignalKind::interrupt().as_raw_value()
-                        || i32::from(signal) == SignalKind::terminate().as_raw_value() =>
-                {
-                    return Poll::Ready(Ok(()));
-                }
-                Poll::Ready(Ok(Some(_))) => cx.waker().wake_by_ref(),
-                Poll::Ready(Ok(None)) => self.parent = None,
-                Poll::Ready(Err(error)) => return Poll::Ready(Err(Box::new(error))),
-                Poll::Pending => {}
-            }
-        }
-        for signal in [&mut self.interrupt, &mut self.terminate] {
-            match signal.poll_recv(cx) {
-                Poll::Ready(Some(())) => return Poll::Ready(Ok(())),
-                Poll::Ready(None) => {
-                    return Poll::Ready(Err("PEERSTORE signal stream ended".into()));
-                }
-                Poll::Pending => {}
-            }
-        }
-        Poll::Pending
+        self.native
+            .poll_stop(cx)
+            .map(|result| result.map_err(|error| Box::new(error) as Failure))
     }
 }

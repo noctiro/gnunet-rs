@@ -19,6 +19,8 @@ impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
         if loss.epoch != self.device.epoch() {
             return Err(Fault::StaleGeneration.into());
         }
+        #[cfg(windows)]
+        let recovering = self.arm_recovery(&loss)?;
         // An unexpected source loss is not this coordinator's explicit
         // same-epoch device-removal receipt, even if its close returned no errno.
         self.control.uncertain = true;
@@ -50,6 +52,12 @@ impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
             }
             self.control.dead = true;
             self.report.tun_losses = self.report.tun_losses.saturating_add(1);
+        }
+        #[cfg(windows)]
+        if recovering {
+            let result = self.retire_control_for_recovery(observe);
+            observe(Event::TunLost(loss));
+            return result;
         }
         observe(Event::TunLost(loss));
         self.request_shutdown();

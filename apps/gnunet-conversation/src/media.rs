@@ -1,17 +1,25 @@
-use crate::{Failure, options::Settings, terminal::Descriptor};
+use crate::{Failure, options::Settings};
+#[cfg(unix)]
+mod unix;
+#[cfg(windows)]
+mod windows;
 use gnunet_conversation_client_host::{Audio, Bounds, Call, Epoch};
 use gnunet_service_runtime::clock::{Deadline, RuntimeClock};
-use gnunet_service_runtime::process::{self, ChildRegistry, OriginalChild, Reaped};
+use gnunet_service_runtime::process::{ChildRegistry, OriginalChild, Reaped};
 use gnunet_wire::official::{MessageHeader, conversation::Message, message_type};
+use platform::{PlaybackPipe, Record};
 use std::sync::Arc;
 use std::{
     collections::VecDeque,
     future::Future,
-    os::fd::AsFd,
     pin::Pin,
     task::{Context, Poll},
     time::Instant,
 };
+#[cfg(unix)]
+use unix as platform;
+#[cfg(windows)]
+use windows as platform;
 use zeroize::{Zeroize, Zeroizing};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -88,8 +96,11 @@ pub(super) struct Report {
     pub cleanup: Vec<Failure>,
     pub cleanup_overflow: bool,
     pub undrained: usize,
-    pub term_succeeded: [bool; 2],
-    pub kill_succeeded: [bool; 2],
+    pub playback_pending: bool,
+    pub retired_playback_bytes: usize,
+    pub playback_cancelled: bool,
+    pub stop_succeeded: [bool; 2],
+    pub force_succeeded: [bool; 2],
 }
 impl Report {
     fn error(&mut self, error: Failure) {
@@ -107,8 +118,8 @@ pub(super) enum Event {
 /// One explicitly owned process pair, never a SDK background worker.
 pub(super) struct Media {
     registry: ChildRegistry,
-    record: Option<Descriptor>,
-    playback: Option<Descriptor>,
+    record: Option<Record>,
+    playback: Option<PlaybackPipe>,
     input: Zeroizing<Vec<u8>>,
     used: usize,
     need: usize,
@@ -164,7 +175,7 @@ impl Media {
         })
     }
     pub fn idle(&self) -> bool {
-        self.report.is_none() && self.registry.pending_children() == 0
+        self.report.is_none() && self.settled()
     }
     pub fn binding(&self) -> Option<&Binding> {
         self.report.as_ref().map(|r| &r.binding)
@@ -202,88 +213,14 @@ impl Media {
             cleanup,
             cleanup_overflow: false,
             undrained: 0,
-            term_succeeded: [false; 2],
-            kill_succeeded: [false; 2],
+            playback_pending: false,
+            retired_playback_bytes: 0,
+            playback_cancelled: false,
+            stop_succeeded: [false; 2],
+            force_succeeded: [false; 2],
         });
         self.reap_error = false;
-        let clock = self.clock.clone();
-        let result = (|| -> Result<(), Failure> {
-            let (rec_read, rec_write) = process::pipe()?;
-            let (play_read, play_write) = process::pipe()?;
-            for fd in [&rec_write, &play_read] {
-                use nix::fcntl::{FcntlArg, OFlag, fcntl};
-                let flags = OFlag::from_bits_retain(fcntl(fd, FcntlArg::F_GETFL)?);
-                fcntl(fd, FcntlArg::F_SETFL(flags & !OFlag::O_NONBLOCK))?;
-            }
-            self.record = Some(Descriptor::pipe(rec_read)?);
-            self.playback = Some(Descriptor::pipe(play_write)?);
-            let spawn = |path: &std::path::Path,
-                         mapping: process::DescriptorMap<'_>,
-                         registry: &mut ChildRegistry|
-             -> Result<OriginalChild, Failure> {
-                let filename = path.as_os_str().to_os_string();
-                let command = process::NativeCommand {
-                    filename: filename.clone(),
-                    argv: vec![filename],
-                    environment: process::EnvironmentSnapshot::system()?,
-                    environment_changes: Vec::new(),
-                    cwd: None,
-                    stdio: 4,
-                    stdio_snapshot: None,
-                    listeners: Vec::new(),
-                    mappings: vec![mapping],
-                };
-                // Same original call budget after synchronous environment /
-                // descriptor preparation, including before the second child.
-                bounds.check(clock.as_ref())?;
-                match process::spawn(
-                    c,
-                    &s.launcher,
-                    command,
-                    process::ProcessLimits {
-                        launch: process::LaunchLimits {
-                            max_children: 2,
-                            max_arguments: 8,
-                            max_command_bytes: 16384,
-                            ..Default::default()
-                        },
-                        ..Default::default()
-                    },
-                    registry,
-                )? {
-                    process::SpawnResult::Admitted(child) => Ok(child.child),
-                    process::SpawnResult::Refused { error: Some(e) } => Err(e.into()),
-                    process::SpawnResult::Refused { error: None } => {
-                        Err("media executable/native admission was refused without a child".into())
-                    }
-                }
-            };
-            let child = spawn(
-                &s.record,
-                process::DescriptorMap {
-                    source: rec_write.as_fd(),
-                    target: 1,
-                },
-                &mut self.registry,
-            )?;
-            self.report
-                .as_mut()
-                .ok_or("media report missing after actual admission")?
-                .record_child = Some(child);
-            let child = spawn(
-                &s.playback,
-                process::DescriptorMap {
-                    source: play_read.as_fd(),
-                    target: 0,
-                },
-                &mut self.registry,
-            )?;
-            self.report
-                .as_mut()
-                .ok_or("media report missing after actual admission")?
-                .playback_child = Some(child);
-            Ok(())
-        })();
+        let result = self.launch(bounds, c, s);
         if let Err(error) = result {
             self.report.as_mut().ok_or("media report missing")?.original = Some(error);
             self.begin_stop(s.shutdown);
@@ -309,20 +246,20 @@ impl Media {
             None => [None, None],
         }
     }
-    fn signal_all(&mut self, signal: i32) {
+    fn signal_all(&mut self, force: bool) {
         for (index, child) in self.children().into_iter().enumerate() {
             if let Some(child) = child {
-                let result = self.registry.signal_native(&child, signal);
+                let result = platform::stop_child(&mut self.registry, &child, force);
                 if let Some(report) = &mut self.report {
                     match result {
                         Ok(()) => {
-                            if signal == nix::libc::SIGTERM {
-                                report.term_succeeded[index] = true;
-                            } else if signal == nix::libc::SIGKILL {
-                                report.kill_succeeded[index] = true;
+                            if force {
+                                report.force_succeeded[index] = true;
+                            } else {
+                                report.stop_succeeded[index] = true;
                             }
                         }
-                        Err(e) => report.error(e.into()),
+                        Err(e) => report.error(e),
                     }
                 }
             }
@@ -342,7 +279,7 @@ impl Media {
         {
             report.error(error.into());
         }
-        if let Some(mut fd) = self.playback.take()
+        if let Some(fd) = self.playback.as_mut()
             && let Some(error) = fd.close()
             && let Some(report) = &mut self.report
         {
@@ -352,7 +289,7 @@ impl Media {
             report.partial_record = self.used;
             report.partial_playback = self.output.front().map_or(0, |p| p.at);
         }
-        self.output.clear();
+
         self.input_budget = None;
         self.input.zeroize();
         self.used = 0;
@@ -366,7 +303,7 @@ impl Media {
             alarm: Box::pin(tokio::time::sleep_until(kill_at.into())),
             killed: false,
         });
-        self.signal_all(nix::libc::SIGTERM);
+        self.signal_all(false);
     }
     pub fn record_chunk(&self, maximum: usize) -> Option<&[u8]> {
         if self.stop.is_some()
@@ -585,7 +522,24 @@ impl Media {
                 "original media helper terminated while active; real exit retained".into(),
             ));
         }
-        if self.registry.pending_children() == 0 {
+        if self.stop.is_some() {
+            let result = self.playback.as_mut().map(|pipe| pipe.poll_close(cx));
+            if let Some(Poll::Ready(result)) = result {
+                if let Some(report) = &mut self.report {
+                    report.playback_pending = false;
+                    match result {
+                        Ok(bytes) => report.retired_playback_bytes = bytes,
+                        Err(error) if platform::cancelled(&error) => {
+                            report.playback_cancelled = true
+                        }
+                        Err(error) => report.error(error.into()),
+                    }
+                }
+                self.playback = None;
+                self.output.clear();
+            }
+        }
+        if self.settled() {
             return if self.stop.is_some() {
                 Poll::Ready(Ok(Event::Ended))
             } else {
@@ -599,10 +553,12 @@ impl Media {
                 if !stop.killed {
                     stop.killed = true;
                     stop.alarm.as_mut().reset(stop.hard.into());
-                    self.signal_all(nix::libc::SIGKILL);
+                    self.signal_all(true);
                 } else {
                     if let Some(report) = &mut self.report {
                         report.undrained = self.registry.pending_children();
+                        report.playback_pending =
+                            self.playback.as_ref().is_some_and(|pipe| !pipe.closed());
                     }
                     return Poll::Ready(Err(
                         "original media stop target expired with unreaped child debt".into(),
@@ -637,7 +593,7 @@ impl Media {
         }
     }
     pub fn take_report(&mut self) -> Option<Report> {
-        if self.registry.pending_children() != 0 {
+        if !self.settled() {
             return None;
         }
         self.record = None;
@@ -651,18 +607,21 @@ impl Media {
         self.segment = 4;
         self.report.take()
     }
-    pub fn pending_children(&self) -> usize {
-        self.registry.pending_children()
+    pub fn settled(&self) -> bool {
+        self.registry.pending_children() == 0 && self.playback.as_ref().is_none_or(|p| p.closed())
     }
 }
 impl Drop for Media {
     fn drop(&mut self) {
         // This fallback performs no new allocation and never claims a reap. The
         // explicit foreground cleanup normally drains these owners beforehand.
+        if let Some(report) = &mut self.report {
+            report.playback_pending = self.playback.as_ref().is_some_and(|pipe| !pipe.closed());
+        }
         self.record = None;
         self.playback = None;
         self.output.clear();
-        self.signal_all(nix::libc::SIGKILL);
+        self.signal_all(true);
         if let Err(e) = self.registry.reap_completed()
             && let Some(report) = &mut self.report
         {

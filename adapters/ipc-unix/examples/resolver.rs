@@ -11,7 +11,6 @@ use std::{
     future::{Future, poll_fn},
     io::{self, Write},
     net::IpAddr,
-    os::unix::ffi::OsStrExt,
     path::PathBuf,
     sync::Arc,
     task::Poll,
@@ -175,6 +174,6 @@ fn main() -> Result<()> {
         .block_on(run(
             cfg,
             mode.to_str().ok_or("mode UTF8")?,
-            value.as_bytes(),
+            gnunet_native::os_bytes::encode(&value).as_ref(),
         ))
 }

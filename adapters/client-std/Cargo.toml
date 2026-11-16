@@ -12,6 +12,8 @@ socket2.workspace = true
 tokio = { workspace = true, features = ["net", "time", "io-util", "rt"] }
 [target.'cfg(unix)'.dependencies]
 nix.workspace = true
+[target.'cfg(windows)'.dependencies]
+gnunet-native.workspace = true
 
 [dev-dependencies]
 gnunet-resolver-broker.workspace = true

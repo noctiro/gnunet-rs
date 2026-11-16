@@ -4,103 +4,27 @@
 pub use crate::reporting::{Notice, Reports};
 use crate::{Failure, Failures, generation::Reservations, owner, settings::Settings, time::Clock};
 use gnunet_program_host::{program::Prepared, shared_clock::SharedClock};
-use gnunet_service_runtime::{Activation, BoundListeners, clock::RuntimeClock};
-use gnunet_service_startup::{ControlReceiver, ParentControl};
+use gnunet_service_runtime::{BoundListeners, clock::RuntimeClock};
 use std::{
     cell::RefCell,
     future::{Future, poll_fn},
-    io::Read,
     rc::Rc,
     sync::Arc,
-    task::{Context, Poll},
+    task::Poll,
 };
-use tokio::{
-    signal::unix::{Signal, SignalKind},
-    time::Instant,
-};
-/// First-operation inherited descriptor ownership, adopted once by PROGRAM.
-pub struct Inherited {
-    /// Original parent-transferred service listener ownership.
-    pub activation: Activation,
-    /// Original parent control descriptor, if one was actually transferred.
-    pub parent: Option<ParentControl>,
-}
-/// Actual service listeners prepared across the explicit process identity
-/// transition, plus the original parent-control owner. The standard binary
-/// completes deferred Unix binding before creating its reservation worker.
-/// Neither this container nor the scheduler changes process identity.
+use tokio::time::Instant;
+mod control;
+pub use control::Readiness;
+pub(crate) use control::{Entropy, Signals};
+/// Completed native listeners, registered stop subscriptions and optional
+/// original parent notification. Callers prepare these before starting workers.
 pub struct Listening {
-    /// Original inherited/prebound sockets and guarded new Unix endpoint.
+    /// Original sockets and local-path guards.
     pub bound: BoundListeners,
-    /// Original parent control descriptor, never reconstructed from a number.
-    pub parent: Option<ParentControl>,
-}
-pub(crate) struct Signals {
-    reports: Reports,
-    reporting_stop: bool,
-    parent: Option<ControlReceiver>,
-    interrupt: Signal,
-    terminate: Signal,
-}
-impl Signals {
-    pub(crate) fn new(parent: Option<ParentControl>, reports: Reports) -> Result<Self, Failure> {
-        Ok(Self {
-            reports,
-            reporting_stop: false,
-            parent: parent
-                .map(|p| p.register().map_err(|e| e.error))
-                .transpose()?,
-            interrupt: tokio::signal::unix::signal(SignalKind::interrupt())?,
-            terminate: tokio::signal::unix::signal(SignalKind::terminate())?,
-        })
-    }
-    pub(crate) fn reports(&self) -> Reports {
-        self.reports.clone()
-    }
-    pub(crate) fn poll(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Failure>> {
-        self.reports.register(cx);
-        if self.reports.failed() && !self.reporting_stop {
-            self.reporting_stop = true;
-            return Poll::Ready(Ok(()));
-        }
-        if let Some(parent) = &mut self.parent {
-            match parent.poll_signal(cx) {
-                Poll::Ready(Ok(Some(s)))
-                    if i32::from(s) == SignalKind::interrupt().as_raw_value()
-                        || i32::from(s) == SignalKind::terminate().as_raw_value() =>
-                {
-                    return Poll::Ready(Ok(()));
-                }
-                Poll::Ready(Ok(Some(_))) => cx.waker().wake_by_ref(),
-                Poll::Ready(Ok(None)) => self.parent = None,
-                Poll::Ready(Err(e)) => return Poll::Ready(Err(Box::new(e))),
-                Poll::Pending => {}
-            }
-        }
-        for signal in [&mut self.interrupt, &mut self.terminate] {
-            match signal.poll_recv(cx) {
-                Poll::Ready(Some(())) => return Poll::Ready(Ok(())),
-                Poll::Ready(None) => {
-                    return Poll::Ready(Err("TRANSPORT signal stream ended".into()));
-                }
-                Poll::Pending => {}
-            }
-        }
-        Poll::Pending
-    }
-}
-pub(crate) struct Entropy(std::fs::File);
-impl Entropy {
-    pub(crate) fn open() -> Result<Self, Failure> {
-        Ok(Self(std::fs::File::open("/dev/urandom")?))
-    }
-}
-impl gnunet_crypto::Entropy for Entropy {
-    fn fill(&mut self, bytes: &mut [u8]) -> Result<(), gnunet_types::Error> {
-        self.0
-            .read_exact(bytes)
-            .map_err(|_| gnunet_types::Error::EntropyUnavailable)
-    }
+    /// Original native/parent stop subscriptions, already registered.
+    pub stop: gnunet_service_startup::StopSignals,
+    /// Original asynchronous parent notification, if the native entry needs one.
+    pub readiness: Option<Readiness>,
 }
 /// Run one actual service task in the existing PROGRAM scheduler/Resolver.
 /// An admitted disk job remains owned until its real worker completion/join.
@@ -309,8 +233,12 @@ async fn run_service(
     generation: &mut Reservations,
     reports: Reports,
 ) -> Result<(), Failure> {
-    let Listening { bound, parent } = listening;
-    let mut signals = Signals::new(parent, reports.clone())?;
+    let Listening {
+        bound,
+        stop,
+        readiness,
+    } = listening;
+    let mut signals = Signals::new(stop, readiness, reports.clone());
     for failure in bound.failures() {
         reports.diagnostic(format_args!("TRANSPORT alternate listener: {failure}"));
     }
@@ -386,6 +314,12 @@ async fn run_service(
                 ));
                 if stable {
                     failures.clear();
+                }
+                if signals.readiness_failed() {
+                    break Err(Box::new(Failures {
+                        original: Some(failure),
+                        cleanup: failures,
+                    }) as Failure);
                 }
                 // A finite consecutive-failure budget bounds metadata and
                 // prevents an unavailable dependency from an idle retry spin.
@@ -465,7 +399,10 @@ async fn run_service(
     stats.refresh(owner::Statistics {
         foreign_address_failures: foreign_base,
     });
-    let cleanup = stats.close().into_iter().collect::<Vec<_>>();
+    let mut cleanup = stats.close().into_iter().collect::<Vec<_>>();
+    if let Err(cause) = signals.finish_readiness() {
+        cleanup.push(cause);
+    }
     if result.is_ok() && cleanup.is_empty() {
         Ok(())
     } else {

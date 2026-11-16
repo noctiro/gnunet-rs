@@ -12,7 +12,7 @@ import sys
 import time
 
 PACKAGE = Path(__file__).resolve().parents[1]
-SOURCES = ["Cargo.toml", "Cargo.toml.in", "tools/migration-baseline.json", "README.md", "PROCESS.md", "tools/activation_process.py", "tools/extraction.py", "tools/verify.py"] + sorted(str(path.relative_to(PACKAGE)) for directory in ["src", "tests", "examples"] for path in (PACKAGE/directory).rglob('*') if path.is_file())
+SOURCES = ["Cargo.toml", "Cargo.toml.in", "README.md", "PROCESS.md", "tools/activation_process.py", "tools/verify.py"] + sorted(str(path.relative_to(PACKAGE)) for directory in ["src", "tests", "examples"] for path in (PACKAGE/directory).rglob('*') if path.is_file())
 
 def digest(path): return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 def identity(paths): return {str(p): digest(p) for p in sorted(paths, key=lambda p: str(p).encode())}
@@ -104,7 +104,6 @@ def main():
         before = identity(inputs)
         generated_before = identity([p for p in generated.rglob("*") if p.is_file()])
         run("format", cargo + ["fmt", "--manifest-path", generated / "Cargo.toml", "--check"])
-        run("extraction", [sys.executable, PACKAGE / "tools/extraction.py", "--repository", repository, "--upstream", upstream, "--output", output / "extraction.json"])
         run("clippy", cargo + ["clippy", *base, "--locked", "--all-targets"])
         # Private original-child counter/write boundaries execute a real helper.
         # The sole production helper remains published by ARM's package and calls
@@ -132,14 +131,14 @@ def main():
         result = {"status": "passed", "scope": "Shared service startup and listener ownership candidate, not all generic service/util APIs", "toolchain": run("toolchain", ["cargo", "+1.99.1", "--version"]).stdout.strip(),
                   "elapsed_seconds": time.time() - started, "commands": commands, "source_inputs": before, "inputs_unchanged": before == after,
                   "generated_rust_inputs": generated_after, "generated_inputs_unchanged": generated_before == generated_after,
-                  "package_inputs": package_inputs, "rust_tests": {"activation_unit": 3, "private_bind_failure": 1, "readiness_unit": 1, "shared_native_process_unit": 5, "readiness_integration": 3, "local_endpoint_integration": 16, "borrow_compile_fail": 1},
+                  "package_inputs": package_inputs,
                   "fresh_shared_process_helper": {"path": str(helper), "sha256": helper_before},
                   "production_manifest_matches_generated_dependencies_and_features": True, "activation_checks": len(activation["checks"]), "actual_shared_runtime_sections": ["statistics", "resolver"],
-                  "normal_unmodified_c_service": activation["reference"], "extraction": {"path": str(output / "extraction.json"), "sha256": digest(output / "extraction.json")},
+                  "normal_unmodified_c_service": activation["reference"],
                   "activation": {"path": str(output / "activation/result.json"), "sha256": digest(output / "activation/result.json")},
                   "limitations": ["No USERNAME, daemonize, CLOSE_LSOCKS or UNIX_MATCH_UID/GID credential implementation", "Host must apply returned service_options; obtaining a policy does not itself enforce admission", "Temporary umask excludes foreign concurrent creators by documented startup precondition", "Metadata/inode guard and unlink remain separate syscalls; hostile concurrent path replacement must be excluded", "Original C malformed activation prefix acceptance is deliberately rejected before Rust ownership; no unsafe behavior reproduced", "BINDTO native name resolution may consult NSS/DNS; tests use numeric owned loopback only"]}
         (output / "result.json").write_text(json.dumps(result, indent=2) + "\n")
-        print(json.dumps({"status": "passed", "rust_tests": 30, "activation_checks": len(activation["checks"]), "inputs_unchanged": True}))
+        print(json.dumps({"status": "passed", "activation_checks": len(activation["checks"]), "inputs_unchanged": True}))
     except BaseException as error:
         (output / "failure.json").write_text(json.dumps({"status": "failed", "error": str(error), "commands": commands}, indent=2) + "\n")
         raise

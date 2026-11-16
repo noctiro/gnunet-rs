@@ -13,7 +13,7 @@ use gnunet_wire::official::AbsoluteTime;
 pub const MAX_EVENT_BYTES: usize = 64 * 1024 * 1024;
 /// One actual complete native response/diagnostic frame.
 pub const MAX_RESPONSE_BYTES: usize = u16::MAX as usize;
-pub(super) const VERSION: u16 = 3;
+pub(super) const VERSION: u16 = 5;
 const MANIFEST: u16 = 1;
 const INTENT: u16 = 2;
 const ACCEPTED: u16 = 3;
@@ -22,7 +22,7 @@ const REFUSED: u16 = 5;
 const UNKNOWN: u16 = 6;
 const RETRY_REFUSED: u16 = 7;
 const PHASE: u16 = 8;
-const MAGIC: &[u8; 8] = b"GFSPU003";
+const MAGIC: &[u8; 8] = b"GFSPU005";
 const GRAPH_RECORDED: u16 = 0x200;
 
 /// Encode a fully checked private event with no runtime deadline/native tokens.
@@ -505,36 +505,34 @@ fn put_source(
     source: &plan::indexed::Source,
     limits: plan::Limits,
 ) -> Result<(), ModelError> {
-    w.blob(&source.path, 4096.min(limits.max_plan_bytes))?;
+    w.blob(
+        gnunet_native::os_bytes::encode(source.path.as_os_str()).as_ref(),
+        4096.min(limits.max_plan_bytes),
+    )?;
     w.raw(&source.file_id)?;
     let stamp = source.stamp;
-    w.u64(stamp.device)?;
-    w.u64(stamp.inode)?;
+    w.raw(stamp.identity.as_bytes())?;
     w.u64(stamp.bytes)?;
-    for n in [
-        stamp.modified,
-        stamp.modified_nanos,
-        stamp.changed,
-        stamp.changed_nanos,
-    ] {
-        w.raw(&n.to_be_bytes())?;
-    }
+    w.raw(&stamp.times.modified.to_be_bytes())?;
+    w.raw(&stamp.times.changed.to_be_bytes())?;
     Ok(())
 }
 fn get_source(
     r: &mut Reader<'_>,
     limits: plan::Limits,
 ) -> Result<plan::indexed::Source, ModelError> {
-    let path = copy(r.blob(4096.min(limits.max_plan_bytes))?)?;
+    let path = std::path::PathBuf::from(
+        gnunet_native::os_bytes::decode_owned(copy(r.blob(4096.min(limits.max_plan_bytes))?)?)
+            .map_err(|_| ModelError::Format)?,
+    );
     let file_id = r.array()?;
     let stamp = plan::indexed::SourceStamp {
-        device: r.u64()?,
-        inode: r.u64()?,
+        identity: crate::FileIdentity::from_bytes(r.array()?).map_err(|_| ModelError::Format)?,
         bytes: r.u64()?,
-        modified: i64::from_be_bytes(r.array()?),
-        modified_nanos: i64::from_be_bytes(r.array()?),
-        changed: i64::from_be_bytes(r.array()?),
-        changed_nanos: i64::from_be_bytes(r.array()?),
+        times: gnunet_native::filesystem::FileTimes {
+            modified: i128::from_be_bytes(r.array()?),
+            changed: i128::from_be_bytes(r.array()?),
+        },
     };
     Ok(plan::indexed::Source {
         path,

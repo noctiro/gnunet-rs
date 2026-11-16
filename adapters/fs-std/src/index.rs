@@ -11,15 +11,13 @@ use gnunet_datastore_host::backend::{self, Store};
 use gnunet_fs::content::{self, BLOCK_BYTES, BlockKey};
 use gnunet_types::Error as ProtocolError;
 use gnunet_wire::official::{AbsoluteTime, datastore::MAX_VALUE_BYTES};
+mod filename;
+mod source;
+use filename::Filename;
 use std::{
     fmt,
-    fs::{self, File, Metadata, OpenOptions},
     io::{self, Read, Seek, SeekFrom},
-    os::unix::{
-        ffi::{OsStrExt, OsStringExt},
-        fs::{MetadataExt, OpenOptionsExt},
-    },
-    path::{Path, PathBuf},
+    path::Path,
     slice,
 };
 
@@ -206,7 +204,7 @@ pub struct Registered {
 }
 struct OwnedEntry {
     file_id: [u8; 64],
-    filename: PathBuf,
+    filename: Filename,
 }
 /// One registration lent from the actual current private index.
 #[derive(Clone, Copy, Debug)]
@@ -220,7 +218,7 @@ impl OwnedEntry {
     fn borrowed(&self) -> Entry<'_> {
         Entry {
             file_id: self.file_id,
-            filename: self.filename.as_os_str().as_bytes(),
+            filename: self.filename.as_bytes(),
         }
     }
 }
@@ -262,26 +260,6 @@ impl Resolved<'_> {
         self.source
     }
 }
-#[derive(Clone, Copy, Eq, PartialEq)]
-struct Stamp {
-    device: u64,
-    inode: u64,
-    bytes: u64,
-    modified: (i64, i64),
-    changed: (i64, i64),
-}
-impl Stamp {
-    fn new(metadata: &Metadata) -> Self {
-        Self {
-            device: metadata.dev(),
-            inode: metadata.ino(),
-            bytes: metadata.len(),
-            modified: (metadata.mtime(), metadata.mtime_nsec()),
-            changed: (metadata.ctime(), metadata.ctime_nsec()),
-        }
-    }
-}
-
 /// Bounded registrations over one private, fenced, single-writer Rust WAL store.
 /// No C INDEXDB file, service, plugin ABI or whole-file buffer is used.
 pub struct Index {
@@ -337,7 +315,7 @@ impl Index {
             }
             let filename = decode(record.value, limits)?;
             path_bytes = path_bytes
-                .checked_add(filename.as_os_str().as_bytes().len())
+                .checked_add(filename.as_bytes().len())
                 .ok_or(ProtocolError::Overflow)?;
             if path_bytes > limits.max_total_path_bytes || entries.len() == limits.max_entries {
                 return Err(ProtocolError::Capacity.into());
@@ -401,6 +379,12 @@ impl Index {
     pub fn cleanup_failure(&self) -> Option<&backend::CleanupFailure> {
         self.store.cleanup_failure()
     }
+    /// Last successful native observation of the private store's directory names.
+    /// Independent of file-data and logical commit; Windows returns Unavailable.
+    #[must_use]
+    pub fn directory_sync(&self) -> Option<crate::DirectorySync> {
+        self.store.directory_sync()
+    }
     /// Streamed private metadata checkpoint, never an implicit Drop action.
     pub fn checkpoint(&mut self) -> Result<(), Error> {
         self.store.checkpoint().map_err(Into::into)
@@ -451,16 +435,19 @@ impl Index {
         mut keep_going: impl FnMut(u64) -> bool,
     ) -> Result<Registered, Error> {
         self.ready()?;
-        if filename.as_os_str().as_bytes().len() > self.limits.max_path_bytes {
+        if crate::input::protocol_filename(filename)?.len() > self.limits.max_path_bytes {
             return Err(ProtocolError::TooLarge.into());
         }
-        let filename = if filename.is_absolute() {
-            copy_path(filename)?
+        let absolute;
+        let path = if filename.is_absolute() {
+            filename
         } else {
-            std::env::current_dir()?.join(filename)
+            absolute = std::env::current_dir()?.join(filename);
+            &absolute
         };
-        let raw = filename.as_os_str().as_bytes();
-        if raw.len() > self.limits.max_path_bytes || raw.contains(&0) {
+        let filename = Filename::new(path)?;
+        let raw = filename.as_bytes();
+        if raw.len() > self.limits.max_path_bytes {
             return Err(ProtocolError::TooLarge.into());
         }
         let position = self
@@ -479,18 +466,15 @@ impl Index {
         {
             return Err(ProtocolError::Capacity.into());
         }
-        let mut source = open_source(&filename)?;
-        let before = Stamp::new(&source.metadata()?);
+        let mut source = crate::input::open(filename.as_path())?;
+        let before = source::info(&source)?;
         if before.bytes > self.limits.max_file_bytes {
             return Err(ProtocolError::TooLarge.into());
         }
         if !keep_going(0) {
             return Err(ProtocolError::Cancelled.into());
         }
-        let fast = (device != 0 || inode != 0)
-            && inode == before.inode
-            && nix::sys::statvfs::fstatvfs(&source)
-                .is_ok_and(|v| u128::from(v.filesystem_id()) == u128::from(device));
+        let fast = source::identifiers(&source, before, device, inode);
         let verification = if fast {
             Verification::Identifiers
         } else {
@@ -519,9 +503,7 @@ impl Index {
             }
             Verification::WholeFileHash
         };
-        if Stamp::new(&source.metadata()?) != before
-            || Stamp::new(&fs::metadata(&filename)?) != before
-        {
+        if source::info(&source)? != before || source::named_info(filename.as_path())? != before {
             return Err(Error::SourceChanged);
         }
         if !keep_going(before.bytes) {
@@ -584,7 +566,7 @@ impl Index {
             return Err(ProtocolError::Conflict.into());
         }
         let removed = self.entries.remove(position);
-        self.path_bytes -= removed.filename.as_os_str().as_bytes().len();
+        self.path_bytes -= removed.filename.as_bytes().len();
         Ok(true)
     }
     /// Resolve one actual FS_ONDEMAND value into the official DBLOCK. The file
@@ -603,8 +585,8 @@ impl Index {
             .entries
             .binary_search_by_key(&record.file_id, |entry| entry.file_id)
             .map_err(|_| Error::NotIndexed)?;
-        let mut source = open_source(&self.entries[position].filename)?;
-        let before = Stamp::new(&source.metadata()?);
+        let mut source = crate::input::open(self.entries[position].filename.as_path())?;
+        let before = source::info(&source)?;
         if before.bytes > self.limits.max_file_bytes {
             return Err(ProtocolError::TooLarge.into());
         }
@@ -618,7 +600,7 @@ impl Index {
                 Err(error) => return Err(error.into()),
             }
         }
-        if Stamp::new(&source.metadata()?) != before {
+        if source::info(&source)? != before {
             return Err(Error::SourceChanged);
         }
         let (key, length) = {
@@ -636,30 +618,8 @@ impl Index {
         })
     }
 }
-fn copy_path(path: &Path) -> Result<PathBuf, Error> {
-    let raw = path.as_os_str().as_bytes();
-    let mut bytes = Vec::new();
-    bytes
-        .try_reserve_exact(raw.len())
-        .map_err(|_| ProtocolError::Capacity)?;
-    bytes.extend_from_slice(raw);
-    Ok(PathBuf::from(std::ffi::OsString::from_vec(bytes)))
-}
-fn open_source(path: &Path) -> io::Result<File> {
-    let source = OpenOptions::new()
-        .read(true)
-        .custom_flags(nix::fcntl::OFlag::O_NONBLOCK.bits() | nix::fcntl::OFlag::O_CLOEXEC.bits())
-        .open(path)?;
-    if !source.metadata()?.is_file() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "FS indexed source must be a regular file",
-        ));
-    }
-    Ok(source)
-}
-fn encode(path: &Path) -> Result<Vec<u8>, Error> {
-    let raw = path.as_os_str().as_bytes();
+fn encode(path: &Filename) -> Result<Vec<u8>, Error> {
+    let raw = path.as_bytes();
     let length = HEADER
         .checked_add(raw.len())
         .ok_or(ProtocolError::Overflow)?;
@@ -676,7 +636,7 @@ fn encode(path: &Path) -> Result<Vec<u8>, Error> {
     value.extend_from_slice(raw);
     Ok(value)
 }
-fn decode(value: &[u8], limits: Limits) -> Result<PathBuf, Error> {
+fn decode(value: &[u8], limits: Limits) -> Result<Filename, Error> {
     if value.len() < HEADER || &value[..8] != MAGIC {
         return Err(ProtocolError::Malformed.into());
     }
@@ -687,11 +647,7 @@ fn decode(value: &[u8], limits: Limits) -> Result<PathBuf, Error> {
     if raw.len() != length || raw.len() > limits.max_path_bytes || raw.contains(&0) {
         return Err(ProtocolError::Malformed.into());
     }
-    let path = Path::new(std::ffi::OsStr::from_bytes(raw));
-    if !path.is_absolute() {
-        return Err(ProtocolError::Malformed.into());
-    }
-    copy_path(path)
+    Filename::from_bytes(raw)
 }
 
 #[cfg(test)]

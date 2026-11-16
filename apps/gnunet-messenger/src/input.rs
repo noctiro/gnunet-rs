@@ -1,59 +1,100 @@
-//! Sole caller-owned stdin; no background reader or shared-OFD flag changes.
-use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
+//! One original read; no data is supplied to the protocol until completion.
+use std::{pin::Pin, time::Duration};
+struct Retry(Pin<Box<tokio::time::Sleep>>);
+impl Retry {
+    fn new() -> Self {
+        Self(Box::pin(tokio::time::sleep(Duration::ZERO)))
+    }
+    fn ready(&mut self, cx: &mut Context<'_>) -> bool {
+        self.0.as_mut().poll(cx).is_ready()
+    }
+    fn pause(&mut self, cx: &mut Context<'_>) {
+        self.0
+            .as_mut()
+            .reset(tokio::time::Instant::now() + Duration::from_millis(25));
+        let _registered = self.0.as_mut().poll(cx);
+    }
+}
+fn temporary(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::Interrupted | io::ErrorKind::WouldBlock
+    )
+}
+
+use gnunet_program_host::binary_io;
 use std::{
     future::Future,
-    io::{self, Read, Stdin},
-    os::fd::AsFd,
-    pin::Pin,
+    io,
     task::{Context, Poll},
-    time::Duration,
 };
-use tokio::time::{Instant, Sleep};
 pub(super) struct Input {
-    stdin: Stdin,
-    alarm: Pin<Box<Sleep>>,
+    owner: Option<binary_io::Input>,
+    chunk: usize,
+    pending: bool,
+    retry: Retry,
 }
 impl Input {
     pub(super) fn new() -> Self {
         Self {
-            stdin: io::stdin(),
-            alarm: Box::pin(tokio::time::sleep_until(Instant::now())),
+            owner: None,
+            chunk: crate::options::INPUT_BYTES,
+            pending: false,
+            retry: Retry::new(),
         }
     }
     pub(super) fn poll(
         &mut self,
         cx: &mut Context<'_>,
-        output: &mut [u8],
+        bytes: &mut [u8],
     ) -> Poll<io::Result<usize>> {
-        if self.alarm.as_mut().poll(cx).is_pending() {
+        if !self.pending && !self.retry.ready(cx) {
             return Poll::Pending;
         }
-        self.alarm
+        if !self.pending && !binary_io::Input::stdin_ready()? {
+            self.retry.pause(cx);
+            return Poll::Pending;
+        }
+        if self.owner.is_none() {
+            self.owner = Some(binary_io::Input::stdin(self.chunk).map_err(io::Error::other)?);
+        }
+        let owner = self
+            .owner
             .as_mut()
-            .reset(Instant::now() + Duration::from_millis(25));
-        let mut fds = [PollFd::new(self.stdin.as_fd(), PollFlags::POLLIN)];
-        if let Err(error) = poll(&mut fds, PollTimeout::ZERO) {
-            return Poll::Ready(Err(error.into()));
+            .ok_or_else(|| io::Error::other("missing original stdin"))?;
+        if !self.pending {
+            owner.begin(bytes.len().min(self.chunk))?;
+            self.pending = true;
         }
-        let flags = fds[0].revents().unwrap_or(PollFlags::empty());
-        if flags.intersects(PollFlags::POLLNVAL | PollFlags::POLLERR) {
-            return Poll::Ready(Err(io::Error::other("stdin descriptor readiness failed")));
-        }
-        let readable = flags.intersects(PollFlags::POLLIN | PollFlags::POLLHUP);
-        if readable {
-            // The CLI is the sole reader. The actual bounded syscall may still
-            // block in the OS (notably regular-file IO); no hard-preemption claim
-            // is made. No thread/task or changed parent OFD flags outlive cleanup.
-            match self.stdin.read(output) {
-                Err(error)
-                    if matches!(
-                        error.kind(),
-                        io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
-                    ) => {}
-                result => return Poll::Ready(result),
+        let step = {
+            let completion = owner.complete();
+            let mut completion = std::pin::pin!(completion);
+            match completion.as_mut().poll(cx) {
+                Poll::Pending => Poll::Pending,
+                Poll::Ready(Err(error)) => Poll::Ready(Err(error)),
+                Poll::Ready(Ok(input)) => {
+                    if input.len() > bytes.len() {
+                        Poll::Ready(Err(io::ErrorKind::InvalidData.into()))
+                    } else {
+                        bytes[..input.len()].copy_from_slice(input);
+                        Poll::Ready(Ok(input.len()))
+                    }
+                }
+            }
+        };
+        match step {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(result) => {
+                self.pending = false;
+                if result.as_ref().is_err_and(temporary) {
+                    self.retry.pause(cx);
+                    return Poll::Pending;
+                }
+                Poll::Ready(result)
             }
         }
-        let _armed = self.alarm.as_mut().poll(cx);
-        Poll::Pending
+    }
+    pub(super) fn retire(self) -> Option<binary_io::Retirement> {
+        self.owner.map(binary_io::Input::retire)
     }
 }

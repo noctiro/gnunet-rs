@@ -1,7 +1,12 @@
-//! Byte-preserving source CLI/PROGRAM option processing (C locale).
+//! ARM option metadata on the shared byte-preserving PROGRAM/GETOPT engine.
+use crate::locale::Locale;
+use gnunet_native::os_bytes;
+use gnunet_program_host::{format::Argument as Value, getopt, helpers};
 use std::{
+    cell::RefCell,
     ffi::{OsStr, OsString},
-    os::unix::ffi::OsStrExt,
+    io,
+    rc::Rc,
 };
 /// Program-specific flags and inherited PROGRAM values.
 #[derive(Clone, Debug, Default)]
@@ -49,10 +54,12 @@ pub struct Parsed {
     pub options: Options,
     /// Immediate help/version bytes already produced by option processors.
     pub stdout: Vec<u8>,
-    /// Exact C-locale parser diagnostics.
+    /// Parser diagnostics in the selected locale.
     pub stderr: Vec<u8>,
     /// Immediate source exit status; None means run the program.
     pub exit: Option<u8>,
+    /// Original catalog/format/native-argument failure; no command may start.
+    pub failure: Option<io::Error>,
     /// Remaining native positional arguments; gnunet-arm ignores them.
     pub remaining: Vec<OsString>,
 }
@@ -63,7 +70,7 @@ struct Opt {
     arg: Option<&'static str>,
     description: &'static str,
 }
-const FLAGS: [Opt; 18] = [
+const FLAGS: [Opt; 16] = [
     Opt {
         short: b'e',
         name: "end",
@@ -149,12 +156,6 @@ const FLAGS: [Opt; 18] = [
         description: "use configuration file FILENAME",
     },
     Opt {
-        short: b'h',
-        name: "help",
-        arg: None,
-        description: "print this help",
-    },
-    Opt {
         short: b'L',
         name: "log",
         arg: Some("LOGLEVEL"),
@@ -166,264 +167,162 @@ const FLAGS: [Opt; 18] = [
         arg: Some("FILENAME"),
         description: "configure logging to write logs to FILENAME",
     },
-    Opt {
-        short: b'v',
-        name: "version",
-        arg: None,
-        description: "print the version number",
-    },
 ];
-/// Actual English help layout: the original29/31/78 column rules.
+/// Standard C-locale help through the same PROGRAM formatter used at runtime.
 pub fn help() -> Vec<u8> {
-    let mut out = String::from(
-        "gnunet-arm\nControl services and the Automated Restart Manager (ARM)\nArguments mandatory for long options are also mandatory for short options.\n",
-    );
-    let mut options = FLAGS;
-    options.sort_by_key(|o| (o.short.to_ascii_uppercase(), o.short));
-    for option in options {
-        let mut title = format!("  -{}, --{}", option.short as char, option.name);
-        if let Some(arg) = option.arg {
-            title.push('=');
-            title.push_str(arg);
-        }
-        let mut column = title.len();
-        out.push_str(&title);
-        if column > 29 {
-            out.push('\n');
-            out.push_str(&" ".repeat(29));
-            column = 29;
-        }
-        if column < 29 {
-            out.push_str(&" ".repeat(29 - column));
-            column = 29;
-        }
-        let bytes = option.description.as_bytes();
-        let mut pos = 0;
-        while bytes.len() - pos > 78 - column {
-            let split = (pos + 1..=pos + 78 - column)
-                .rev()
-                .find(|&i| bytes[i].is_ascii_whitespace())
-                .unwrap_or(pos + 78 - column);
-            out.push_str(&option.description[pos..split]);
-            out.push('\n');
-            out.push_str(&" ".repeat(31));
-            pos = split + 1;
-            column = 31;
-        }
-        out.push_str(&option.description[pos..]);
-        out.push('\n');
-    }
-    out.push_str("\nReport bugs to gnunet-developers@gnu.org.\nHome page: http://www.gnu.org/s/gnunet/\nGeneral help using GNU software: http://www.gnu.org/gethelp/\n");
-    out.into_bytes()
+    parse(
+        [OsString::from("gnunet-arm"), OsString::from("--help")],
+        None,
+        false,
+        b"0.29.1",
+    )
+    .stdout
 }
-impl Parsed {
-    fn diagnostic(&mut self, binary: &[u8], message: &[u8]) {
-        self.stderr.extend_from_slice(binary);
-        self.stderr.extend_from_slice(b": ");
-        self.stderr.extend_from_slice(message);
-        self.stderr
-            .extend_from_slice(b"\nUse --help to get a list of options.\n");
-        self.exit = Some(255);
-    }
-    fn apply(&mut self, option: Opt, value: Option<&[u8]>, binary: &[u8], version: &[u8]) {
-        if self.exit.is_some() {
-            return;
-        }
-        match option.short {
-            b'e' => self.options.end = true,
-            b's' => self.options.start = true,
-            b'r' => self.options.restart = true,
-            b'd' => self.options.delete = true,
-            b'q' => self.options.quiet = true,
-            b'a' => self.options.all = true,
-            b'm' => self.options.monitor = true,
-            b'I' => self.options.list = true,
-            b'O' => self.options.no_stdout = true,
-            b'E' => self.options.no_stderr = true,
-            b'i' => self.options.init = value.map(<[u8]>::to_vec),
-            b'k' => self.options.term = value.map(<[u8]>::to_vec),
-            b'c' => self.options.config = value.map(<[u8]>::to_vec),
-            b'L' => self.options.log = value.map(<[u8]>::to_vec),
-            b'l' => self.options.logfile = value.map(<[u8]>::to_vec),
-            b'T' => match gnunet_config::parse_relative_time(value.unwrap_or_default()) {
-                Ok(time) => self.options.timeout = time,
-                Err(_) => {
-                    self.stderr.extend_from_slice(
-                        b"You must pass relative time to the `timeout' option.\n",
-                    );
-                    self.exit = Some(255);
-                }
-            },
-            b'h' => {
-                self.stdout.extend(help());
-                self.exit = Some(0);
+fn apply(
+    options: &mut Options,
+    short: u8,
+    name: &[u8],
+    value: Option<&[u8]>,
+    output: &mut getopt::Output<'_>,
+) -> i32 {
+    match short {
+        b'e' => options.end = true,
+        b's' => options.start = true,
+        b'r' => options.restart = true,
+        b'd' => options.delete = true,
+        b'q' => options.quiet = true,
+        b'a' => options.all = true,
+        b'm' => options.monitor = true,
+        b'I' => options.list = true,
+        b'O' => options.no_stdout = true,
+        b'E' => options.no_stderr = true,
+        b'i' => options.init = value.map(<[u8]>::to_vec),
+        b'k' => options.term = value.map(<[u8]>::to_vec),
+        b'c' => options.config = value.map(<[u8]>::to_vec),
+        b'L' => options.log = value.map(<[u8]>::to_vec),
+        b'l' => options.logfile = value.map(<[u8]>::to_vec),
+        b'T' => match value.and_then(|v| gnunet_config::parse_relative_time(v).ok()) {
+            Some(time) => options.timeout = time,
+            None => {
+                output.error(
+                    b"You must pass relative time to the `%s' option.\n",
+                    &[Value::Bytes(name)],
+                );
+                return -1;
             }
-            b'v' => {
-                self.stdout.extend_from_slice(binary);
-                self.stdout.extend_from_slice(b" v");
-                self.stdout.extend_from_slice(version);
-                self.stdout.push(b'\n');
-                self.exit = Some(0);
-            }
-            _ => {}
-        }
+        },
+        _ => return -1,
     }
+    1
 }
-/// Process actual native argv. GNUNET_ARGS appends literal-space-separated tokens,
-/// not shell words. POSIXLY_CORRECT stops at the first non-option; otherwise
-/// non-options are permuted/ignored by this CLI's run function, as in C.
+/// Parse native argv with the explicit disabled-NLS profile. GNUNET_ARGS uses
+/// literal spaces, and POSIXLY_CORRECT retains the shared GNU ordering rules.
 pub fn parse(
     args: impl IntoIterator<Item = OsString>,
     gnunet_args: Option<&OsStr>,
     posix: bool,
     version: &[u8],
 ) -> Parsed {
-    let mut args: Vec<OsString> = args.into_iter().collect();
-    if let Some(extra) = gnunet_args {
-        args.extend(
-            extra
-                .as_bytes()
-                .split(|b| *b == b' ')
-                .filter(|b| !b.is_empty())
-                .map(|b| OsStr::from_bytes(b).to_os_string()),
-        );
-    }
-    let binary = args
-        .first()
-        .map(|s| s.as_bytes())
-        .unwrap_or(b"gnunet-arm")
-        .to_vec();
-    let mut out = Parsed {
-        options: Options::default(),
-        stdout: Vec::new(),
-        stderr: Vec::new(),
-        exit: None,
-        remaining: Vec::new(),
+    parse_localized(args, gnunet_args, posix, version, &Locale::disabled())
+}
+/// Parse with one retained locale for help, option errors and helper callbacks.
+/// Catalog/format failures stay in `Parsed::failure` and force exit 255. Raw
+/// option values remain data; a translated template never interprets them.
+pub fn parse_localized(
+    args: impl IntoIterator<Item = OsString>,
+    gnunet_args: Option<&OsStr>,
+    posix: bool,
+    version: &[u8],
+    locale: &Locale,
+) -> Parsed {
+    let arguments = getopt::append_environment(args, gnunet_args.map(os_bytes::encode).as_deref());
+    let arguments = match arguments {
+        Ok(arguments) => arguments,
+        Err(error) => {
+            return Parsed {
+                options: Options::default(),
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+                exit: Some(255),
+                remaining: Vec::new(),
+                failure: Some(error),
+            };
+        }
     };
-    let mut i = 1;
-    let mut matches = 0;
-    let mut exclusive = None;
-    while i < args.len() {
-        let current = args[i].as_bytes().to_vec();
-        i += 1;
-        if current == b"--" {
-            out.remaining.extend_from_slice(&args[i..]);
-            break;
-        }
-        if current.len() < 2 || current[0] != b'-' {
-            out.remaining
-                .push(OsStr::from_bytes(&current).to_os_string());
-            if posix {
-                out.remaining.extend_from_slice(&args[i..]);
-                break;
-            }
-            continue;
-        }
-        if current[1] == b'-' {
-            let body = &current[2..];
-            let split = body.iter().position(|b| *b == b'=');
-            let name = &body[..split.unwrap_or(body.len())];
-            let equal = split.map(|n| &body[n + 1..]);
-            let exact = FLAGS.iter().find(|o| o.name.as_bytes() == name);
-            let candidates: Vec<_> = FLAGS
-                .iter()
-                .filter(|o| o.name.as_bytes().starts_with(name))
-                .collect();
-            let option = exact.or_else(|| {
-                if candidates.len() == 1 {
-                    Some(candidates[0])
+    let project = gnunet_config::ProjectData::default();
+    let values = Rc::new(RefCell::new(Options::default()));
+    let mut table = getopt::Options::new();
+    table.add(helpers::help(
+        &project,
+        Some(b"Control services and the Automated Restart Manager (ARM)"),
+    ));
+    table.add(helpers::version(version));
+    for option in FLAGS {
+        let short = option.short;
+        let values = Rc::clone(&values);
+        table.push(
+            getopt::Spec {
+                short,
+                name: option.name.as_bytes(),
+                argument_help: option.arg.map(str::as_bytes),
+                description: Some(option.description.as_bytes()),
+                argument: if option.arg.is_some() {
+                    getopt::Argument::Required
                 } else {
-                    None
-                }
-            });
-            let Some(&option) = option else {
-                let mut message = if candidates.len() > 1 {
-                    b"option `".to_vec()
-                } else {
-                    b"unrecognized option `".to_vec()
-                };
-                message.extend_from_slice(&current);
-                message.extend_from_slice(if candidates.len() > 1 {
-                    b"' is ambiguous"
-                } else {
-                    b"'"
-                });
-                out.diagnostic(&binary, &message);
-                continue;
-            };
-            let value = if option.arg.is_some() {
-                if let Some(v) = equal {
-                    Some(v.to_vec())
-                } else if i < args.len() {
-                    let v = args[i].as_bytes().to_vec();
-                    i += 1;
-                    Some(v)
-                } else {
-                    let mut message = b"option `".to_vec();
-                    message.extend_from_slice(&current);
-                    message.extend_from_slice(b"' requires an argument");
-                    out.diagnostic(&binary, &message);
-                    continue;
-                }
-            } else {
-                if equal.is_some() {
-                    let mut message = b"option `--".to_vec();
-                    message.extend_from_slice(option.name.as_bytes());
-                    message.extend_from_slice(b"' does not allow an argument");
-                    out.diagnostic(&binary, &message);
-                    continue;
-                }
-                None
-            };
-            matches += 1;
-            if matches!(option.short, b'h' | b'v') {
-                exclusive = Some(option.name);
-            }
-            out.apply(option, value.as_deref(), &binary, version);
-        } else {
-            let mut at = 1;
-            while at < current.len() {
-                let short = current[at];
-                at += 1;
-                let Some(&option) = FLAGS.iter().find(|o| o.short == short) else {
-                    let mut message = b"invalid option -- ".to_vec();
-                    message.push(short);
-                    out.diagnostic(&binary, &message);
-                    continue;
-                };
-                let value = if option.arg.is_some() {
-                    if at < current.len() {
-                        let value = current[at..].to_vec();
-                        at = current.len();
-                        Some(value)
-                    } else if i < args.len() {
-                        let value = args[i].as_bytes().to_vec();
-                        i += 1;
-                        Some(value)
-                    } else {
-                        let mut message = b"option requires an argument -- ".to_vec();
-                        message.push(short);
-                        out.diagnostic(&binary, &message);
-                        continue;
+                    getopt::Argument::None
+                },
+                mandatory: false,
+                exclusive: false,
+            },
+            move |_: getopt::Context<'_>,
+                  name: &[u8],
+                  value: Option<&[u8]>,
+                  output: &mut getopt::Output<'_>| {
+                match values.try_borrow_mut() {
+                    Ok(mut values) => apply(&mut values, short, name, value, output),
+                    Err(error) => {
+                        output.failure = Some(io::Error::other(error));
+                        -1
                     }
-                } else {
-                    None
-                };
-                matches += 1;
-                if matches!(short, b'h' | b'v') {
-                    exclusive = Some(option.name);
                 }
-                out.apply(option, value.as_deref(), &binary, version);
+            },
+        );
+    }
+    table.sort_program();
+    let mut run = table.run_translated(b"gnunet-arm", arguments, posix, locale.port());
+    let mut remaining = Vec::new();
+    if let Some(arguments) = run.remaining() {
+        for value in arguments {
+            match os_bytes::decode(value) {
+                Ok(value) => remaining.push(value.into_owned()),
+                Err(error) => {
+                    run.output.failure = Some(error);
+                    break;
+                }
             }
         }
     }
-    if let Some(name) = exclusive
-        && matches > 1
-    {
-        out.stderr.extend_from_slice(
-            format!("Option `{name}' can't be used with other options.\n").as_bytes(),
-        );
-        out.exit = Some(255);
+    let options = match Rc::try_unwrap(values) {
+        Ok(values) => values.into_inner(),
+        Err(_) => {
+            run.output.failure = Some(io::Error::other(
+                "ARM option callbacks remain owned after GETOPT completion",
+            ));
+            Options::default()
+        }
+    };
+    Parsed {
+        options,
+        stdout: run.output.stdout,
+        stderr: run.output.stderr,
+        exit: if run.output.failure.is_some() || run.code < 0 {
+            Some(255)
+        } else if run.code == 0 {
+            Some(0)
+        } else {
+            None
+        },
+        remaining,
+        failure: run.output.failure,
     }
-    out
 }

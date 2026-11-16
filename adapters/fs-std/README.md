@@ -16,11 +16,71 @@ engine. Public contracts are documented in the [API reference](API.md).
 The `service` feature enables native FS requests; `network` adds publication.
 The facade exposes local hosts through `official-fs`, clients through
 `official-fs-client` and publication through `official-fs-network`.
+Clients, publication, namespace keys, task catalogs, automatic sharing and
+download/search/probe/unindex recovery share their Unix and Windows implementation.
+Provider integration remains in the
+[open platform work](../../IMPLEMENTATION_STATUS.md).
+
+## Native storage
+
+`Repository`, input opening and buffered file/directory encoding and reading
+share their content logic on Unix and Windows. The repository separates
+[shared admission](src/store/repository.rs) from [native operations](src/store/native.rs).
+`Insert` distinguishes new and existing objects and carries `Retention`:
+volatile backing or a synchronized file with a `DirectorySync` observation.
+Windows reports `Unavailable` for directory barriers; it still synchronizes
+the actual data file. Cleanup errors retain the completed retention separately.
+
+Anchored plaintext output shares [path validation](src/output/path.rs),
+[publication](src/output/observed.rs) and original directory owners on Unix and
+Windows. `ReadFile::directory_sync` is present only after real file synchronization
+and checked final naming; generic caller writers make no filesystem observation.
+Windows output refuses device names, streams and spellings rewritten by Win32.
+
+[Input roots](src/input_tree.rs) share original-handle child opening on Unix
+and Windows. Bounded extraction snapshots live in
+[input_tree/frame.rs](src/input_tree/frame.rs) and consume native enumeration,
+full identities and change fences. Local names remain native; publication
+metadata checks protocol encoding separately. Source fingerprints and automatic
+sharing catalogs use tagged complete identities.
+
+Builtin extraction, directory inspection and metadata snapshots share their
+implementation on Unix and Windows. The optional [GNU libextractor provider](../extractor-std/README.md)
+uses platform input backends below that shared layer.
+
+The [task WAL](src/durable/store.rs) shares bounded framing, recovery and
+unknown-write fencing. It uses native entropy, private directories, single-link
+files and physical exclusive locks. `Store::directory_sync` reports the actual
+root/parent naming barrier separately from synchronized WAL contents.
+
+## Ownership and effects
 
 Operations retain their source, deadline, partial effects and cleanup outcome.
 Unknown storage mutations are not automatically replayed. Output uses held
 parent descriptors and no-clobber commits. A verified range does not certify
 unselected content; a local write does not certify remote delivery.
+
+The [index queue](src/server/index_worker/queue.rs) serializes admission and
+closure without retaining senders in capacity waiters. Stopping or losing a
+client discards its unsubmitted index work; already queued jobs retain their
+original result and settle before the index thread joins. Weak resolution ports
+cannot reopen the index or keep it alive after shutdown. FIFO capacity permits
+bound queued jobs and prevent new readonly requests from starving waiting
+registrations, removals or enumeration.
+
+The shared [operation limit](src/time_limit.rs) retains the original
+source-clock target and, for finite operations, one native allowance captured
+before clock registration. Progress, block changes and reconnects cannot renew
+it; an explicit outer native target can only tighten it. FOREVER remains
+unlimited unless an outer native bound was selected. Directory downloads and
+full/indexed tree publication pass the same stop target to every child operation.
+Durable runs include WAL setup and revalidation; native targets are not persisted.
+Search retains one limit across its query graph, reconnects and staged results;
+expiry closes the original MQs. Historical replay and independent completed
+probes preserve their own clock observations. Construction registers the clock;
+native timers are created on first poll. The persistent publication runner shares
+one limit across verification, index registrations and PUTs. Synchronous provider work cannot be forcibly interrupted. Actual storage
+receipts, partial output and uncertain effects remain independent observations.
 
 See the [CLI guide](../../apps/gnunet-cli/README.md) and
 [FS service configuration](../../apps/gnunet-service-fs/README.md).

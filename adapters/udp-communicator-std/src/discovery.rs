@@ -1,5 +1,6 @@
 //! Official clear LAN presence on the original UDP sockets. A signature check
 //! yields only an address hint for the independent TRANSPORT application owner.
+use crate::socket::SocketError;
 use gnunet_crypto::hash512;
 use gnunet_types::Error;
 use gnunet_udp_communicator_core::{Identity, PeerId, wire::Broadcast};
@@ -92,19 +93,53 @@ pub struct Discovered {
     /// Caller classifier's real network category.
     pub network: u32,
 }
+/// Original local discovery action, independent from authenticated peer work.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Operation {
+    /// One original signed announcement; source is the observed interface row.
+    Send {
+        /// Original complete interface observation.
+        interface: Interface,
+        /// Intended broadcast/multicast destination.
+        target: SocketAddr,
+    },
+    /// Join the fixed discovery group on this native interface index.
+    Join {
+        /// Original native interface index.
+        interface: u32,
+    },
+    /// Retire an actually admitted membership on this native interface index.
+    Leave {
+        /// Original native interface index.
+        interface: u32,
+    },
+}
+#[derive(Clone, Copy)]
+pub(crate) struct Pending {
+    pub operation: u64,
+    pub interface: Interface,
+    pub target: SocketAddr,
+}
+pub(crate) struct Membership {
+    pub index: u32,
+    pub retry: u64,
+}
 pub(crate) struct Row {
     pub interface: Interface,
     pub due: u64,
+    pub join_due: u64,
     pub packet: Option<Broadcast>,
 }
 pub(crate) struct State {
+    profile: Profile,
     pub configuration: Configuration,
     pub rows: Vec<Row>,
-    pub memberships: Vec<u32>,
+    pub memberships: Vec<Membership>,
     pub cursor: usize,
     pub sequence: u64,
     pub hint: Option<Discovered>,
-    pub pending: [Option<(u64, SocketAddr)>; 2],
+    pub pending: [Option<Pending>; 2],
+    pub failures: [Option<(Operation, SocketError)>; 2],
 }
 impl State {
     pub fn new(configuration: Configuration) -> Result<Self, Error> {
@@ -115,6 +150,7 @@ impl State {
         {
             return Err(Error::InvalidInput);
         }
+        let profile = native_profile()?;
         let mut rows = Vec::new();
         rows.try_reserve_exact(configuration.interfaces)
             .map_err(|_| Error::Capacity)?;
@@ -123,6 +159,7 @@ impl State {
             .try_reserve_exact(configuration.interfaces)
             .map_err(|_| Error::Capacity)?;
         Ok(Self {
+            profile,
             configuration,
             rows,
             memberships,
@@ -130,9 +167,10 @@ impl State {
             sequence: 0,
             hint: None,
             pending: [None, None],
+            failures: [None, None],
         })
     }
-    pub fn update(&mut self, interfaces: &[Interface], now: u64) -> Result<(), Error> {
+    pub fn prepare(&self, interfaces: &[Interface], now: u64) -> Result<Vec<Row>, Error> {
         if interfaces.len() > self.configuration.interfaces {
             return Err(Error::Capacity);
         }
@@ -154,10 +192,15 @@ impl State {
             rows.push(Row {
                 interface: *interface,
                 due: old.map_or(now, |old| old.due),
+                join_due: old.map_or(now, |old| old.join_due),
                 packet: old.and_then(|old| old.packet),
             });
         }
-        self.rows = rows;
+        Ok(rows)
+    }
+    #[cfg(test)]
+    pub fn update(&mut self, interfaces: &[Interface], now: u64) -> Result<(), Error> {
+        self.rows = self.prepare(interfaces, now)?;
         self.cursor = 0;
         Ok(())
     }
@@ -167,7 +210,7 @@ impl State {
             Some(packet) if packet.sender == identity.peer() => packet,
             _ => {
                 let packet =
-                    identity.broadcast(&address_hash(row.interface.source, native_profile()?)?)?;
+                    identity.broadcast(&address_hash(row.interface.source, self.profile)?)?;
                 row.packet = Some(packet);
                 packet
             }
@@ -179,7 +222,8 @@ impl State {
     pub fn next_wakeup(&self, now: u64) -> Option<u64> {
         self.rows
             .iter()
-            .map(|row| row.due)
+            .flat_map(|row| [row.due, row.join_due])
+            .chain(self.memberships.iter().map(|membership| membership.retry))
             .filter(|due| *due > now && *due != u64::MAX)
             .min()
     }
@@ -198,6 +242,8 @@ fn native_profile() -> Result<Profile, Error> {
         Ok(Profile::darwin(endian()))
     } else if cfg!(target_os = "freebsd") {
         Ok(Profile::freebsd(endian()))
+    } else if cfg!(windows) {
+        Ok(Profile::windows(endian()))
     } else {
         Err(Error::Unsupported)
     }
@@ -220,6 +266,8 @@ fn address_hash(address: SocketAddr, profile: Profile) -> Result<[u8; 64], Error
     let size = address.encode(profile, &mut bytes)?;
     Ok(hash512(&bytes[..size]))
 }
+#[cfg(test)]
+mod tests;
 /// Parse/verify only the actual96-byte source-bound broadcast. The fixed C
 /// signature hashes producer-native sockaddr bytes. Try the finite supported C
 /// ABI profiles, preserving exactly the same observed source IP, flow and scope
@@ -240,6 +288,8 @@ pub(crate) fn verify(
         Profile::darwin(Endian::Big),
         Profile::freebsd(Endian::Little),
         Profile::freebsd(Endian::Big),
+        Profile::windows(Endian::Little),
+        Profile::windows(Endian::Big),
     ];
     for profile in profiles {
         if packet.verify(&address_hash(source, profile)?).is_ok() {

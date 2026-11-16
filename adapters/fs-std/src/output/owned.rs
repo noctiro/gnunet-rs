@@ -1,18 +1,12 @@
-//! Explicit durable directory ownership and descriptor-only recovery helpers.
+//! Explicit directory ownership and original-handle recovery helpers.
 use super::FileIdentity;
-use super::{DIRECTORY, OutputDir, components, invalid_name};
+use super::{OutputDir, components, invalid_name};
 use crate::{Error, Result};
-use nix::{
-    fcntl::{OFlag, openat},
-    sys::stat::{Mode, mkdirat},
-    unistd::{UnlinkatFlags, unlinkat},
-};
+use gnunet_native::filesystem::{Directory, validate_private_file};
 use std::{
     ffi::OsStr,
     fmt,
-    fs::File,
     io::{self, Read, Write},
-    os::unix::{ffi::OsStrExt, fs::PermissionsExt},
     path::Path,
 };
 
@@ -20,11 +14,7 @@ use std::{
 /// refuse authenticated user entries with this exact basename.
 pub const OWNER_MARKER_NAME: &str = ".gnunet-fs-owner-v1";
 const MAGIC: &[u8; 8] = b"GNOFOWN1";
-const REGULAR: OFlag = OFlag::O_RDONLY
-    .union(OFlag::O_NOFOLLOW)
-    .union(OFlag::O_NONBLOCK)
-    .union(OFlag::O_CLOEXEC);
-/// Actual ownership/durability phase reached by a directory operation.
+/// Actual ownership/creation phase reached by a directory operation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DirectoryStage {
     /// This invocation established neither a new directory nor ownership proof.
@@ -56,40 +46,31 @@ impl std::error::Error for OwnedDirectoryFailure {
         Some(&self.operation)
     }
 }
-fn same_name(parent: &File, name: &OsStr, expected: FileIdentity, directory: bool) -> Result<()> {
-    let file = File::from(openat(
-        parent,
-        name,
-        if directory { DIRECTORY } else { REGULAR },
-        Mode::empty(),
-    )?);
-    if FileIdentity::of(&file)? != expected
-        || (directory && !file.metadata()?.is_dir())
-        || (!directory && !file.metadata()?.is_file())
-    {
+fn same_name(
+    parent: &Directory,
+    name: &OsStr,
+    expected: FileIdentity,
+    directory: bool,
+) -> Result<()> {
+    let actual = if directory {
+        FileIdentity::of(parent.open_directory(name)?.as_file())?
+    } else {
+        FileIdentity::of(&parent.open_file(name)?)?
+    };
+    if actual != expected {
         return Err(Error::SourceChanged);
     }
     Ok(())
 }
-fn private(file: &File, directory: bool) -> Result<()> {
-    let metadata = file.metadata()?;
-    if (directory && !metadata.is_dir())
-        || (!directory && !metadata.is_file())
-        || metadata.permissions().mode() & 0o077 != 0
-    {
-        return Err(invalid_name());
-    }
-    Ok(())
-}
 impl OutputDir {
-    /// Identity of this actual directory descriptor, never its old pathname.
+    /// Identity of this actual directory handle, never its old pathname.
     pub fn identity(&self) -> Result<FileIdentity> {
-        Ok(FileIdentity::of(&self.root)?)
+        Ok(FileIdentity::of(self.root.as_file())?)
     }
-    pub(super) fn parent_existing(&self, parts: &[&OsStr]) -> Result<File> {
-        let mut parent = self.root.try_clone()?;
+    pub(super) fn parent_existing(&self, parts: &[&OsStr]) -> Result<Directory> {
+        let mut parent = self.root.duplicate()?;
         for name in parts {
-            parent = File::from(openat(&parent, *name, DIRECTORY, Mode::empty())?);
+            parent = parent.open_directory(name)?;
         }
         Ok(parent)
     }
@@ -100,10 +81,11 @@ impl OutputDir {
             return self.identity();
         }
         Ok(FileIdentity::of(
-            &self.parent_existing(&components(relative.as_ref())?)?,
+            self.parent_existing(&components(relative.as_ref())?)?
+                .as_file(),
         )?)
     }
-    /// Create one new 0700 directory and its exclusive synced task-owner marker.
+    /// Create one native private directory and its exclusive synced owner marker.
     /// Existing ancestors must already exist; an existing final name is refused.
     /// Failures never remove/adopt a directory through an unverified pathname.
     pub fn create_owned_directory(
@@ -118,23 +100,13 @@ impl OutputDir {
             let parts = components(relative.as_ref())?;
             let (name, ancestors) = parts.split_last().ok_or_else(invalid_name)?;
             let parent = self.parent_existing(ancestors)?;
-            mkdirat(&parent, *name, Mode::S_IRWXU)?;
+            let root = parent.create_private_directory(name)?;
             created = true;
             stage = DirectoryStage::Created;
-            let root = File::from(openat(&parent, *name, DIRECTORY, Mode::empty())?);
-            let id = FileIdentity::of(&root)?;
+            let id = FileIdentity::of(root.as_file())?;
             identity = Some(id);
-            private(&root, true)?;
-            let mut marker = File::from(openat(
-                &root,
-                OWNER_MARKER_NAME,
-                OFlag::O_WRONLY
-                    | OFlag::O_CREAT
-                    | OFlag::O_EXCL
-                    | OFlag::O_NOFOLLOW
-                    | OFlag::O_CLOEXEC,
-                Mode::S_IRUSR | Mode::S_IWUSR,
-            )?);
+            root.validate_private()?;
+            let mut marker = root.create_private_file(OsStr::new(OWNER_MARKER_NAME))?;
             let marker_id = FileIdentity::of(&marker)?;
             marker.write_all(MAGIC)?;
             marker.write_all(&owner)?;
@@ -142,8 +114,8 @@ impl OutputDir {
             same_name(&root, OsStr::new(OWNER_MARKER_NAME), marker_id, false)?;
             stage = DirectoryStage::OwnerVerified;
             same_name(&parent, name, id, true)?;
-            root.sync_all()?;
-            parent.sync_all()?;
+            root.sync()?;
+            parent.sync()?;
             same_name(&parent, name, id, true)?;
             Ok(Self { root, nonce: 0 })
         })();
@@ -169,15 +141,15 @@ impl OutputDir {
             let parts = components(relative.as_ref())?;
             let (name, ancestors) = parts.split_last().ok_or_else(invalid_name)?;
             let parent = self.parent_existing(ancestors)?;
-            let root = File::from(openat(&parent, *name, DIRECTORY, Mode::empty())?);
-            let id = FileIdentity::of(&root)?;
+            let root = parent.open_directory(name)?;
+            let id = FileIdentity::of(root.as_file())?;
             identity = Some(id);
             if expected.is_some_and(|expected| expected != id) {
                 return Err(Error::SourceChanged);
             }
-            private(&root, true)?;
-            let mut marker = File::from(openat(&root, OWNER_MARKER_NAME, REGULAR, Mode::empty())?);
-            private(&marker, false)?;
+            root.validate_private()?;
+            let mut marker = root.open_file_for_sync(OsStr::new(OWNER_MARKER_NAME))?;
+            validate_private_file(&marker)?;
             let marker_id = FileIdentity::of(&marker)?;
             if marker.metadata()?.len() != 40 {
                 return Err(Error::Corrupt);
@@ -200,8 +172,8 @@ impl OutputDir {
             stage = DirectoryStage::OwnerVerified;
             marker.sync_all()?;
             same_name(&parent, name, id, true)?;
-            root.sync_all()?;
-            parent.sync_all()?;
+            root.sync()?;
+            parent.sync()?;
             same_name(&parent, name, id, true)?;
             Ok(Self { root, nonce: 0 })
         })();
@@ -218,9 +190,9 @@ impl OutputDir {
         let parts = components(relative.as_ref())?;
         let (name, ancestors) = parts.split_last().ok_or_else(invalid_name)?;
         let parent = self.parent_existing(ancestors)?;
-        let file = match openat(&parent, *name, REGULAR, Mode::empty()) {
-            Ok(file) => File::from(file),
-            Err(nix::errno::Errno::ENOENT) => return Ok(None),
+        let file = match parent.open_file(name) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(error.into()),
         };
         if !file.metadata()?.is_file() {
@@ -239,31 +211,25 @@ impl OutputDir {
         let parts = components(relative_temp.as_ref())?;
         let (temp_name, ancestors) = parts.split_last().ok_or_else(invalid_name)?;
         let temp_name = *temp_name;
-        let raw = temp_name.as_bytes();
-        if !raw.starts_with(super::TEMP_PREFIX.as_bytes())
-            || raw.contains(&b'/')
-            || raw.contains(&0)
-            || raw.is_empty()
-        {
+        if !super::temporary_name_valid(temp_name) {
             return Err(invalid_name());
         }
         let parent = self.parent_existing(ancestors)?;
-        if FileIdentity::of(&parent)? != parent_id {
+        if FileIdentity::of(parent.as_file())? != parent_id {
             return Err(Error::SourceChanged);
         }
-        match openat(&parent, temp_name, REGULAR, Mode::empty()) {
+        match parent.open_file(temp_name) {
             Ok(file) => {
-                let file = File::from(file);
                 if !file.metadata()?.is_file() || FileIdentity::of(&file)? != temp_id {
                     return Err(Error::SourceChanged);
                 }
                 same_name(&parent, temp_name, temp_id, false)?;
-                unlinkat(&parent, temp_name, UnlinkatFlags::NoRemoveDir)?;
+                parent.remove_file(temp_name, &file)?;
             }
-            Err(nix::errno::Errno::ENOENT) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(error.into()),
         }
-        parent.sync_all()?;
+        parent.sync()?;
         Ok(())
     }
     /// Enumerate one existing anchored directory without retaining its children.
@@ -277,59 +243,28 @@ impl OutputDir {
         max_entries: usize,
         mut visit: impl FnMut(&OsStr, FileIdentity, bool) -> Result<()>,
     ) -> Result<()> {
-        use std::os::unix::fs::MetadataExt as _;
+        use gnunet_native::filesystem::{EntryInfo, file_info};
         let parts = if relative.as_os_str().is_empty() {
             Vec::new()
         } else {
             components(relative)?
         };
         let parent = self.parent_existing(&parts)?;
-        let original = parent.metadata()?;
-        let original_id = FileIdentity::of(&parent)?;
-        // openat(".") creates an independent open description at offset zero;
-        // dup/try_clone alone would share and mutate the caller's readdir cursor.
-        let enumeration = openat(&parent, c".", DIRECTORY, Mode::empty())?;
-        let mut directory = nix::dir::Dir::from_fd(enumeration)?;
-        let mut count = 0;
-        for entry in directory.iter() {
-            let entry = entry?;
-            let bytes = entry.file_name().to_bytes();
-            if bytes == b"." || bytes == b".." {
-                continue;
-            }
+        let original = file_info(parent.as_file())?;
+        for (count, entry) in parent.entries()?.enumerate() {
             if count == max_entries {
                 return Err(Error::Limit);
             }
-            count += 1;
-            if bytes.is_empty() || bytes.contains(&0) || bytes.contains(&b'/') {
-                return Err(invalid_name());
-            }
-            let name = OsStr::from_bytes(bytes);
-            let actual =
-                nix::sys::stat::fstatat(&parent, name, nix::fcntl::AtFlags::AT_SYMLINK_NOFOLLOW)?;
-            let kind = nix::sys::stat::SFlag::from_bits_truncate(actual.st_mode)
-                & nix::sys::stat::SFlag::S_IFMT;
-            let is_dir = kind == nix::sys::stat::SFlag::S_IFDIR;
-            if !is_dir && kind != nix::sys::stat::SFlag::S_IFREG {
-                return Err(invalid_name());
-            }
-            visit(
-                name,
-                FileIdentity {
-                    device: actual.st_dev as u64,
-                    inode: actual.st_ino as u64,
-                },
-                is_dir,
-            )?;
+            let name = entry?;
+            let (actual, is_dir) = match parent.entry_info(&name)? {
+                EntryInfo::Directory(info) => (info, true),
+                EntryInfo::File(info) => (info, false),
+                EntryInfo::Other => return Err(invalid_name()),
+            };
+            visit(&name, actual.identity, is_dir)?;
         }
-        let current = parent.metadata()?;
-        if FileIdentity::of(&parent)? != original_id
-            || current.len() != original.len()
-            || current.mtime() != original.mtime()
-            || current.mtime_nsec() != original.mtime_nsec()
-            || current.ctime() != original.ctime()
-            || current.ctime_nsec() != original.ctime_nsec()
-            || FileIdentity::of(&self.parent_existing(&parts)?)? != original_id
+        if file_info(parent.as_file())? != original
+            || file_info(self.parent_existing(&parts)?.as_file())? != original
         {
             return Err(Error::SourceChanged);
         }

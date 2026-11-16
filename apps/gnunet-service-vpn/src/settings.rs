@@ -70,7 +70,9 @@ fn af(s: &str) -> Result<AfProfile, Failure> {
         "native" => Ok(AfProfile::native()),
         "linux" => Ok(AfProfile::LINUX),
         "darwin" => Ok(AfProfile::DARWIN),
-        _ => Err("AF profile must be native, linux or darwin".into()),
+        "freebsd" => Ok(AfProfile::FREEBSD),
+        "windows" => Ok(AfProfile::WINDOWS),
+        _ => Err("AF profile must be native, linux, darwin, freebsd or windows".into()),
     }
 }
 fn address(a: IpAddr) -> Address {
@@ -82,11 +84,18 @@ fn address(a: IpAddr) -> Address {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum TunMode {
     Fresh,
+    #[cfg(unix)]
     Preopened,
+    #[cfg(windows)]
+    Existing,
 }
 pub(super) struct Settings {
     pub mode: TunMode,
     pub ifname: String,
+    #[cfg(windows)]
+    pub wintun: crate::device::windows::Settings,
+    #[cfg(target_os = "freebsd")]
+    pub checkpoint: Option<std::path::PathBuf>,
     #[cfg(target_os = "linux")]
     pub helper: Option<PathBuf>,
     #[cfg(target_os = "linux")]
@@ -111,14 +120,60 @@ pub(super) struct Settings {
     pub regex: Option<crate::discovery::Limits>,
     pub options: ServiceOptions,
     pub unix: UnixAccess,
+    #[cfg(windows)]
+    pub local_access: gnunet_service_runtime::LocalListenerAccess,
     pub startup: Duration,
+}
+fn tun_checkpoint(c: &Configuration, mode: TunMode) -> Result<Option<std::path::PathBuf>, Failure> {
+    use gnunet_config::ProcessEnvironment;
+    let selected = c.get(LOCAL, b"TUN_RECOVERY_FILE").is_some();
+    if !cfg!(target_os = "freebsd") || mode != TunMode::Fresh {
+        if selected {
+            return Err("TUN_RECOVERY_FILE requires fresh FreeBSD TUN ownership".into());
+        }
+        return Ok(None);
+    }
+    if selected {
+        return Ok(Some(c.get_filename(
+            LOCAL,
+            b"TUN_RECOVERY_FILE",
+            &ProcessEnvironment,
+        )?));
+    }
+    let input = b"${GNUNET_DATA_HOME}/vpn/tun-recovery";
+    let expanded = c.expand_dollar(input, &ProcessEnvironment)?;
+    if expanded == input {
+        return Err(
+            "set [vpn-rust] TUN_RECOVERY_FILE or GNUNET_DATA_HOME for native FreeBSD TUN recovery"
+                .into(),
+        );
+    }
+    Ok(Some(c.expand_filename(&expanded, &ProcessEnvironment)?))
 }
 impl Settings {
     pub fn read(c: &Configuration) -> Result<Self, Failure> {
-        let mode=match text(c,LOCAL,b"TUN_MODE")?.unwrap_or("fresh"){"fresh"=>TunMode::Fresh,"preopened"=>TunMode::Preopened,_=>return Err("TUN_MODE must be fresh or preopened; no unavailable mode is presented as forwarding".into())};
+        #[cfg(windows)]
+        if yes(c, b"vpn", b"UNIX_MATCH_UID", false)? || yes(c, b"vpn", b"UNIX_MATCH_GID", false)? {
+            return Err(
+                "Windows VPN has native endpoint ACLs; Unix UID/GID peer checks are unavailable"
+                    .into(),
+            );
+        }
+        let mode = match text(c, LOCAL, b"TUN_MODE")?.unwrap_or("fresh") {
+            "fresh" => TunMode::Fresh,
+            #[cfg(unix)]
+            "preopened" => TunMode::Preopened,
+            #[cfg(windows)]
+            "existing" => TunMode::Existing,
+            _ => return Err("invalid native TUN_MODE for this platform".into()),
+        };
+        let checkpoint = tun_checkpoint(c, mode)?;
+        #[cfg(not(target_os = "freebsd"))]
+        drop(checkpoint);
         let ifname = text(c, b"vpn", b"IFNAME")?
             .unwrap_or("vpn-gnunet")
             .to_owned();
+        #[cfg(unix)]
         if ifname.is_empty()
             || ifname.len() >= libc::IFNAMSIZ
             || !ifname
@@ -126,6 +181,10 @@ impl Settings {
                 .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
         {
             return Err("invalid official [vpn] IFNAME".into());
+        }
+        #[cfg(windows)]
+        if ifname.is_empty() || ifname.contains('\0') || ifname.encode_utf16().count() > 256 {
+            return Err("invalid Windows [vpn] IFNAME".into());
         }
         #[cfg(target_os = "macos")]
         if mode == TunMode::Fresh
@@ -218,7 +277,7 @@ impl Settings {
             || !(1..=65536).contains(&requests)
             || !(1..=4096).contains(&leases)
             || !(1..=4096).contains(&flows)
-            || !(48..=65575).contains(&packet_bytes)
+            || !(48..=gnunet_tun_host::Limits::MAX_PACKET_BYTES).contains(&packet_bytes)
             || small_count > 4096
             || large_count > 4096
             || large_count == 0
@@ -327,6 +386,10 @@ impl Settings {
         Ok(Self {
             mode,
             ifname,
+            #[cfg(windows)]
+            wintun: crate::device::windows::Settings::read(c)?,
+            #[cfg(target_os = "freebsd")]
+            checkpoint,
             #[cfg(target_os = "linux")]
             helper: if mode == TunMode::Fresh {
                 Some(c.suid_binary_path(b"gnunet-helper-vpn")?)
@@ -358,6 +421,13 @@ impl Settings {
                 match_uid: yes(c, b"vpn", b"UNIX_MATCH_UID", false)?,
                 match_gid: yes(c, b"vpn", b"UNIX_MATCH_GID", false)?,
             },
+            #[cfg(windows)]
+            local_access: match text(c, LOCAL, b"LOCAL_ACCESS")?.unwrap_or("owner") {
+                "owner" => gnunet_service_runtime::LocalListenerAccess::Owner,
+                "group" => gnunet_service_runtime::LocalListenerAccess::Group,
+                "everyone" => gnunet_service_runtime::LocalListenerAccess::Everyone,
+                _ => return Err("LOCAL_ACCESS must be owner, group or everyone".into()),
+            },
             startup: duration(c, b"STARTUP_TIMEOUT", 30_000_000)?,
         })
     }
@@ -383,7 +453,7 @@ fn policies(c: &Configuration) -> Result<Vec<ConfiguredExit>, Failure> {
             fields.next(),
             fields.next(),
         ) else {
-            return Err("CONFIGURED_EXITS entry is: PEER prefix|any tcp|udp|icmp|icmp6|any first-last native|linux|darwin".into());
+            return Err("CONFIGURED_EXITS entry is: PEER prefix|any tcp|udp|icmp|icmp6|any first-last native|linux|darwin|freebsd|windows".into());
         };
         let network = if net == "any" {
             None
@@ -471,4 +541,33 @@ pub(super) fn filled<T>(count: usize, mut make: impl FnMut() -> T) -> Result<Vec
 }
 pub(super) fn bytes(count: usize) -> Result<Vec<u8>, Failure> {
     filled(count, || 0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn recovery_path_cannot_be_ignored_by_another_platform_or_device_owner() -> Result<(), Failure>
+    {
+        let mut config = Configuration::default();
+        let path = b"/tmp/private-vpn/tun-recovery";
+        config.set_value(LOCAL, b"TUN_RECOVERY_FILE", Some(path))?;
+        #[cfg(unix)]
+        let borrowed = TunMode::Preopened;
+        #[cfg(windows)]
+        let borrowed = TunMode::Existing;
+        if tun_checkpoint(&config, borrowed).is_ok() {
+            return Err("preopened VPN accepted an administrative recovery checkpoint".into());
+        }
+        let selected = tun_checkpoint(&config, TunMode::Fresh);
+        #[cfg(target_os = "freebsd")]
+        if selected? != Some(std::path::PathBuf::from("/tmp/private-vpn/tun-recovery")) {
+            return Err("selected VPN recovery checkpoint changed".into());
+        }
+        #[cfg(not(target_os = "freebsd"))]
+        if selected.is_ok() {
+            return Err("another platform silently ignored the VPN recovery checkpoint".into());
+        }
+        Ok(())
+    }
 }

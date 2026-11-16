@@ -1,6 +1,6 @@
 //! Original FS registration and DATASTORE PUTs through real local native peers.
 //! These task recovery profiles establish no unchanged-C or P2P acceptance.
-#![cfg(all(unix, feature = "network"))]
+#![cfg(all(any(unix, windows), feature = "network"))]
 #![expect(
     clippy::panic_in_result_fn,
     reason = "Native task fixtures assert actual original replies, uncertain mutations and WAL receipt recovery"
@@ -28,45 +28,30 @@ use gnunet_wire::official::{
 use std::{
     fs,
     io::{self, Write},
-    os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, Ordering},
     },
     time::Duration,
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::{UnixListener, UnixStream},
     sync::oneshot,
     time::timeout,
 };
+#[path = "support/local_peer.rs"]
+mod local_peer;
+use gnunet_service_runtime::local::Stream;
+use local_peer::{Listener, Temporary};
+
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 const WAIT: Duration = Duration::from_secs(8);
-struct Temporary(PathBuf);
-impl Temporary {
-    fn new() -> io::Result<Self> {
-        static NEXT: AtomicU64 = AtomicU64::new(1);
-        let p = std::env::temp_dir().join(format!(
-            "gnunet-pubix-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        fs::create_dir(&p)?;
-        Ok(Self(p))
-    }
-}
-impl Drop for Temporary {
-    fn drop(&mut self) {
-        let _cleanup = fs::remove_dir_all(&self.0);
-    }
-}
 struct Socket(PathBuf);
 impl Socket {
-    fn bind(root: &Path, name: &str) -> io::Result<(Self, UnixListener)> {
+    async fn bind(root: &Path, name: &str) -> TestResult<(Self, Listener)> {
         let path = root.join(name);
-        let listener = UnixListener::bind(&path)?;
+        let listener = Listener::bind(&path).await?;
         Ok((Self(path), listener))
     }
 }
@@ -131,7 +116,7 @@ fn endpoints(
     );
     Ok((fs_source, ds_source, deadline))
 }
-async fn frame(stream: &mut UnixStream) -> io::Result<Vec<u8>> {
+async fn frame(stream: &mut Stream) -> io::Result<Vec<u8>> {
     let mut header = [0; 4];
     stream.read_exact(&mut header).await?;
     let length = usize::from(u16::from_be_bytes([header[0], header[1]]));
@@ -143,12 +128,12 @@ async fn frame(stream: &mut UnixStream) -> io::Result<Vec<u8>> {
     stream.read_exact(&mut bytes[4..]).await?;
     Ok(bytes)
 }
-async fn closed(stream: &mut UnixStream) -> io::Result<()> {
+async fn closed(stream: &mut Stream) -> io::Result<()> {
     let mut extra = [0];
     assert_eq!(stream.read(&mut extra).await?, 0);
     Ok(())
 }
-async fn no_connection(listener: &UnixListener) -> TestResult {
+async fn no_connection(listener: &Listener) -> TestResult {
     assert!(
         timeout(Duration::from_millis(60), listener.accept())
             .await
@@ -185,12 +170,12 @@ fn inspect_index(bytes: &[u8], source: &Source) -> TestResult<[u8; 64]> {
     };
     assert_eq!((device, inode), (0, 0));
     assert_eq!(file_id, source.file_id);
-    assert_eq!(filename, source.path);
+    assert_eq!(filename, source.path.as_os_str().as_encoded_bytes());
     let request = IndexRequest::IndexStart {
         device: 0,
         inode: 0,
         file_id: source.file_id,
-        filename: &source.path,
+        filename: source.path.as_os_str().as_encoded_bytes(),
     };
     let mut exact = vec![0; request.encoded_len()?];
     request.encode(&mut exact)?;
@@ -245,8 +230,8 @@ fn index_and_put_prefixes_resume_independently_without_replay_and_changed_source
         let temp = Temporary::new()?;
         let (mut task, source, binding, content, puts) = prepared(&temp)?;
         let task_path = temp.0.join("task");
-        let (fs_socket, fs_listener) = Socket::bind(&temp.0, "fs.sock")?;
-        let (ds_socket, ds_listener) = Socket::bind(&temp.0, "ds.sock")?;
+        let (fs_socket, fs_listener) = Socket::bind(&temp.0, "fs.sock").await?;
+        let (ds_socket, ds_listener) = Socket::bind(&temp.0, "ds.sock").await?;
         let (fs_done_tx, fs_done_rx) = oneshot::channel();
         let (ds_done_tx, ds_done_rx) = oneshot::channel();
         let ack = index_ack()?;
@@ -402,8 +387,8 @@ fn written_index_start_without_reply_remains_unknown_after_reopen_and_cancel() -
         let temp = Temporary::new()?;
         let (mut task, _, binding, _, _) = prepared(&temp)?;
         let task_path = temp.0.join("task");
-        let (fs_socket, fs_listener) = Socket::bind(&temp.0, "fs.sock")?;
-        let (ds_socket, ds_listener) = Socket::bind(&temp.0, "ds.sock")?;
+        let (fs_socket, fs_listener) = Socket::bind(&temp.0, "fs.sock").await?;
+        let (ds_socket, ds_listener) = Socket::bind(&temp.0, "ds.sock").await?;
         let (done_tx, done_rx) = oneshot::channel();
         let peer = async {
             let (mut stream, _) = fs_listener.accept().await?;
@@ -502,11 +487,11 @@ fn actual_index_started_survives_wal_failure_and_original_receipt_records_withou
 -> TestResult {
     runtime()?.block_on(async{
         let temp=Temporary::new()?;let (mut task,_,binding,content,puts)=prepared(&temp)?;let task_path=temp.0.join("task");let saved=temp.0.join("original-task");let task_id=*task.task_id();
-        let (fs_socket,fs_listener)=Socket::bind(&temp.0,"fs.sock")?;let (ds_socket,ds_listener)=Socket::bind(&temp.0,"ds.sock")?;let ack=index_ack()?;
+        let (fs_socket,fs_listener)=Socket::bind(&temp.0,"fs.sock").await?;let (ds_socket,ds_listener)=Socket::bind(&temp.0,"ds.sock").await?;let ack=index_ack()?;
         let (fs_done_tx,fs_done_rx)=oneshot::channel();let (ds_done_tx,ds_done_rx)=oneshot::channel();let permitted=Arc::new(AtomicBool::new(false));let released=permitted.clone();
         let fs_peer=async{
             let (mut stream,_)=fs_listener.accept().await?;let original=frame(&mut stream).await?;let hash=inspect_index(&original,&binding)?;
-            fs::rename(&task_path,&saved)?;fs::create_dir(&task_path)?;fs::set_permissions(&task_path,fs::Permissions::from_mode(0o700))?;
+            fs::rename(&task_path,&saved)?;drop(gnunet_native::filesystem::Directory::open(&temp.0)?.create_private_directory("task".as_ref())?);
             stream.write_all(&ack).await?;closed(&mut stream).await?;fs_done_rx.await?;no_connection(&fs_listener).await?;Ok::<_,Box<dyn std::error::Error>>(hash)
         };
         let ds_peer=async{

@@ -949,3 +949,69 @@ fn independent_management_snapshots_partial_loss_and_application_origins_stay_se
     })??;
     Ok(())
 }
+
+#[test]
+fn original_destroy_drain_survives_sender_eof_until_destination_write() -> Result<(), Failure> {
+    runtime()?.block_on(async {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let listeners = [Listener::Tcp(&listener)];
+        let mut instance = core::Instance::new();
+        let mut clients = [core::ClientSlot::new(); 2];
+        let mut ports = [core::PortSlot::new(); 2];
+        let mut channels = [core::ChannelSlot::new(); 4];
+        let mut storage = [[0; 16]; 8];
+        let mut messages = storage.each_mut().map(|bytes| core::MessageSlot::new(bytes));
+        let service = core::Service::new(
+            &mut instance, [1; 32], &mut clients, &mut ports, &mut channels, &mut messages,
+            core::Limits { window: 2, loop_payload_bytes: 16, remote_payload_bytes: 16 },
+        )?;
+        let mut server = Server::new(service, Limits { clients: 2, io_slice_bytes: 3 },
+            ServiceOptions::default(), UnixAccess::default(), Arc::new(SystemClock))?;
+        let mut receiver = TcpStream::connect(listener.local_addr()?).await?;
+        request(&mut receiver, Request::PortOpen { port: PORT }).await?;
+        until(&mut server, &listeners, |server| server.report().inputs == 1, &mut |_| {}).await?;
+        let mut sender = TcpStream::connect(listener.local_addr()?).await?;
+        request(&mut sender, Request::ChannelCreate {
+            channel: CLIENT_CHANNEL_BOUNDARY, peer: [1; 32], port: PORT, options: 0,
+        }).await?;
+        let mut outgoing = None;
+        until(&mut server, &listeners, |server| server.report().written_frames == 5,
+            &mut |event| {
+                if let Event::Input { event: core::Event::ChannelCreated(channel), .. } = event { outgoing = Some(channel); }
+            }).await?;
+        let outgoing = outgoing.ok_or("missing original sending channel")?;
+        for _ in 0..3 { let _actual = frame(&mut receiver).await?; }
+        for _ in 0..2 { let _actual = frame(&mut sender).await?; }
+        request(&mut sender, Request::Data { channel: CLIENT_CHANNEL_BOUNDARY, priority: 1, messages: &BATCH }).await?;
+        until(&mut server, &listeners, |server| server.report().written_frames == 7, &mut |_| {}).await?;
+        let first = frame(&mut receiver).await?;
+        assert!(matches!(Response::decode(&first)?, Response::Data { messages, .. } if messages == BATCH));
+        let _actual_credit = frame(&mut sender).await?;
+        // The first DATA remains unacknowledged by the application, so the
+        // second immutable DATA cannot yet be written to this destination.
+        request(&mut sender, Request::Data { channel: CLIENT_CHANNEL_BOUNDARY, priority: 2, messages: &BATCH }).await?;
+        request(&mut sender, Request::ChannelDestroy { channel: CLIENT_CHANNEL_BOUNDARY }).await?;
+        until(&mut server, &listeners, |server| server.channel_info(outgoing).is_ok_and(|info| info.draining), &mut |_| {}).await?;
+        request(&mut sender, Request::PortOpen { port: [4; 64] }).await?;
+        request(&mut sender, Request::ChannelCreate {
+            channel: CLIENT_CHANNEL_BOUNDARY + 1, peer: [2; 32], port: [4; 64], options: 0,
+        }).await?;
+        until(&mut server, &listeners, |server| server.report().inputs == 7, &mut |_| {}).await?;
+        let original_hard = server.drains.iter().flatten().find(|drain| drain.channel == outgoing)
+            .ok_or("missing original drain bound")?.hard;
+        drop(sender);
+        until(&mut server, &listeners, |server| server.peers.iter().flatten().any(|peer| peer.retiring.is_some()), &mut |_| {}).await?;
+        assert!(matches!(server.core.receive(outgoing.client(), Request::PortOpen { port: [9; 64] }), Err(ProtocolError::Closed)));
+        assert!(server.next_open().is_none(), "lost source left a new remote open dispatchable");
+        assert_eq!(server.drains.iter().flatten().find(|drain| drain.channel == outgoing)
+            .ok_or("sender EOF discarded its original drain")?.hard, original_hard);
+        request(&mut receiver, Request::Ack { channel: 0 }).await?;
+        until(&mut server, &listeners, |server| server.report().written_frames == 9 && server.report().closed == 1, &mut |_| {}).await?;
+        let second = frame(&mut receiver).await?;
+        assert_eq!(Response::decode(&second)?, Response::Data { channel: 0, priority: 2, messages: &BATCH });
+        let terminal = frame(&mut receiver).await?;
+        assert_eq!(Response::decode(&terminal)?, Response::ChannelDestroy { channel: 0 });
+        server.close_all(&mut |_| {})?;
+        Ok(())
+    })
+}

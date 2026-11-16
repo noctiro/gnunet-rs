@@ -1,4 +1,7 @@
 //! Windows identity observations and private file security descriptors.
+mod file_access;
+pub(crate) use file_access::validate_parent;
+pub(crate) use file_access::validate_private;
 use std::{
     ffi::OsStr,
     fmt, io,
@@ -42,9 +45,14 @@ impl Sid {
         unsafe_code,
         reason = "Private callers supply a live native SID in bounded initialized API output storage; validation precedes GetLengthSid and CopySid"
     )]
-    fn copy_native(source: PSID, available: usize) -> io::Result<Self> {
+    pub(crate) fn copy_native(source: PSID, available: usize) -> io::Result<Self> {
         if source.is_null() || available < 8 {
             return Err(invalid("missing native SID"));
+        }
+        // SAFETY: private callers provide at least the initialized SID header.
+        let subauthorities = unsafe { *source.cast::<u8>().add(1) } as usize;
+        if 8 + subauthorities * 4 > available {
+            return Err(invalid("native SID subauthorities exceed its buffer"));
         }
         // SAFETY: initialized native output includes at least the SID header.
         if unsafe { IsValidSid(source) } == 0 {
@@ -95,6 +103,41 @@ fn invalid(message: &'static str) -> io::Error {
 }
 
 pub(crate) struct SecurityDescriptor(pub(crate) windows_sys::Win32::Security::PSECURITY_DESCRIPTOR);
+
+/// Owner-only native descriptor for synchronous interoperability with Windows
+/// resource constructors. No inheritable handle or process privilege is granted.
+pub struct PrivateSecurityDescriptor(SecurityDescriptor);
+/// Borrowed initialized SECURITY_ATTRIBUTES. Its descriptor owner must outlive
+/// the synchronous native constructor; the constructor must not retain this pointer.
+pub struct SecurityAttributes<'a> {
+    native: windows_sys::Win32::Security::SECURITY_ATTRIBUTES,
+    _descriptor: &'a PrivateSecurityDescriptor,
+}
+impl PrivateSecurityDescriptor {
+    /// Allocate a protected DACL granting only the primary-token user full access.
+    /// Native conversion/token errors retain their original domain and cause.
+    pub fn owner_only() -> io::Result<Self> {
+        private_file_descriptor().map(Self)
+    }
+    /// Borrow noninheritable attributes for a synchronous Windows constructor.
+    pub fn attributes(&self) -> SecurityAttributes<'_> {
+        SecurityAttributes {
+            native: windows_sys::Win32::Security::SECURITY_ATTRIBUTES {
+                nLength: size_of::<windows_sys::Win32::Security::SECURITY_ATTRIBUTES>() as u32,
+                lpSecurityDescriptor: self.0.0,
+                bInheritHandle: 0,
+            },
+            _descriptor: self,
+        }
+    }
+}
+impl SecurityAttributes<'_> {
+    /// Pointer valid only while this borrow and descriptor remain live. The
+    /// callee may inspect/copy attributes, not free or retain their storage.
+    pub fn as_mut_ptr(&mut self) -> *mut std::ffi::c_void {
+        (&mut self.native as *mut windows_sys::Win32::Security::SECURITY_ATTRIBUTES).cast()
+    }
+}
 impl Drop for SecurityDescriptor {
     #[expect(
         unsafe_code,
@@ -106,19 +149,20 @@ impl Drop for SecurityDescriptor {
     }
 }
 
+pub(crate) fn private_file_descriptor() -> io::Result<SecurityDescriptor> {
+    let sid = process_user()?;
+    security_descriptor(&format!("O:{sid}D:P(A;;FA;;;{sid})"))
+}
+
 #[expect(
     unsafe_code,
-    reason = "ConvertStringSecurityDescriptorToSecurityDescriptorW copies bounded generated SDDL containing only a validated native SID into one LocalFree-owned descriptor"
+    reason = "Native conversion copies generated NUL-terminated SDDL into one LocalFree-owned security descriptor"
 )]
-pub(crate) fn private_file_descriptor() -> io::Result<SecurityDescriptor> {
+pub(crate) fn security_descriptor(sddl: &str) -> io::Result<SecurityDescriptor> {
     use windows_sys::Win32::Security::Authorization::{
         ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
     };
-    let sid = process_user()?;
-    let text: Vec<u16> = format!("O:{sid}D:P(A;;FA;;;{sid})")
-        .encode_utf16()
-        .chain(Some(0))
-        .collect();
+    let text: Vec<u16> = sddl.encode_utf16().chain(Some(0)).collect();
     let mut descriptor = ptr::null_mut();
     // SAFETY: generated SDDL is NUL terminated; output is one native allocation.
     if unsafe {
@@ -136,6 +180,50 @@ pub(crate) fn private_file_descriptor() -> io::Result<SecurityDescriptor> {
         return Err(invalid("private file descriptor is missing"));
     }
     Ok(SecurityDescriptor(descriptor))
+}
+
+/// Observe the primary group SID of the process token. This is a native Windows
+/// group, not a POSIX GID, and does not authenticate a socket peer.
+#[expect(
+    unsafe_code,
+    reason = "GetTokenInformation writes bounded aligned TOKEN_PRIMARY_GROUP and SID storage; the SID is copied before the token and buffer are released"
+)]
+pub fn process_primary_group() -> io::Result<Sid> {
+    use windows_sys::Win32::Security::TOKEN_PRIMARY_GROUP;
+    use windows_sys::Win32::Security::TokenPrimaryGroup;
+    #[repr(C)]
+    struct Buffer {
+        group: TOKEN_PRIMARY_GROUP,
+        sid: [u32; SECURITY_MAX_SID_SIZE as usize / size_of::<u32>()],
+    }
+    let token = primary_token()?;
+    // SAFETY: these native scalar/pointer fields permit zero initialization.
+    let mut output: Buffer = unsafe { zeroed() };
+    let mut written = 0;
+    // SAFETY: the output has the exact aligned capacity supplied to the API.
+    if unsafe {
+        GetTokenInformation(
+            token.as_raw_handle(),
+            TokenPrimaryGroup,
+            (&mut output as *mut Buffer).cast(),
+            size_of::<Buffer>() as u32,
+            &mut written,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    if written as usize > size_of::<Buffer>() {
+        return Err(invalid("invalid TOKEN_PRIMARY_GROUP output extent"));
+    }
+    let offset = (output.group.PrimaryGroup as usize)
+        .checked_sub(&output as *const Buffer as usize)
+        .filter(|offset| *offset >= size_of::<TOKEN_PRIMARY_GROUP>())
+        .ok_or_else(|| invalid("primary group SID is outside its buffer"))?;
+    let available = (written as usize)
+        .checked_sub(offset)
+        .ok_or_else(|| invalid("primary group SID exceeds returned extent"))?;
+    Sid::copy_native(output.group.PrimaryGroup, available)
 }
 
 /// Query the owner SID of this original opened file/directory handle. READ_CONTROL
@@ -241,6 +329,45 @@ pub fn process_user() -> io::Result<Sid> {
         .checked_sub(offset)
         .ok_or_else(|| invalid("TOKEN_USER SID exceeds returned extent"))?;
     Sid::copy_native(output.user.User.Sid, available)
+}
+
+/// Resolve the actual primary-token user's native account name. This uses the
+/// token SID rather than mutable USERNAME environment data. Name service may
+/// block; a lookup error grants no default username or peer identity.
+#[expect(
+    unsafe_code,
+    reason = "LookupAccountSidW borrows a validated owned token SID and two bounded initialized exclusive wide buffers for one synchronous name lookup"
+)]
+pub fn process_account_name() -> io::Result<std::ffi::OsString> {
+    use std::os::windows::ffi::OsStringExt;
+    let sid = process_user()?;
+    let mut account = [0_u16; 1024];
+    let mut domain = [0_u16; 1024];
+    let mut account_units = account.len() as u32;
+    let mut domain_units = domain.len() as u32;
+    let mut kind = 0;
+    // SAFETY: SID validation and ownership precede the call; both initialized
+    // buffers and their exact extents remain live until synchronous completion.
+    if unsafe {
+        windows_sys::Win32::Security::LookupAccountSidW(
+            ptr::null(),
+            sid.as_bytes().as_ptr().cast_mut().cast(),
+            account.as_mut_ptr(),
+            &mut account_units,
+            domain.as_mut_ptr(),
+            &mut domain_units,
+            &mut kind,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    let units = usize::try_from(account_units).map_err(|_| invalid("account name extent"))?;
+    let name = account
+        .get(..units)
+        .filter(|name| !name.is_empty() && !name.contains(&0))
+        .ok_or_else(|| invalid("account name exceeds its native buffer"))?;
+    Ok(std::ffi::OsString::from_wide(name))
 }
 
 /// Resolve a native account name through LookupAccountNameW. Unicode is passed

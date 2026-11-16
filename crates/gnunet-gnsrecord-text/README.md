@@ -4,6 +4,8 @@ Allocation-free conversion for all35 value formats in the four active GNUnet
 v0.29.1 GNS-record plugins at commit
 `346358e26d4dcc2dc4f51bef5d52dca29c7d8165`:
 
+## Public interface
+
 - DNS: A, NS, CNAME, SOA, PTR, MX, TXT, AAAA, SRV, CERT, URI, TLSA, SMIMEA, CAA.
 - GNS: PKEY, EDKEY, NICK, LEHO, VPN, GNS2DNS, BOX, SBOX, REDIRECT, `✞`.
 - RECLAIM: ATTRIBUTE, ATTRIBUTE_REF, CREDENTIAL, PRESENTATION, OIDC_CLIENT,
@@ -17,6 +19,8 @@ active plugin. The installed ABD command additionally requires the DEL
 and ATTR grammar from its public library/contrib text source. Those two formats
 are supported without claiming that the unbuilt C ABD plugin is installed. Unbuilt conversation formats, DID/FAEST and other unhandled registry entries
 remain explicitly unsupported rather than receiving invented text.
+
+## Conversion and workspace
 
 `Codec::new(idna, Workspace::new(stage, names, work), profile, limits)` takes an
 explicit complete `gnunet_dns::Idna` provider and a Messenger producer `Profile`. Call `string_to_value(kind, text, output)` or `value_to_string(kind, data, output)`;
@@ -40,6 +44,8 @@ two bounded passes to preflight conjunction count/extent before encoding. Format
 Base32GNS lives in `gnunet-gnsrecord` and is reused by typed zone identifiers and
 all relevant record families. There is no heap JSON/value tree or plugin loader.
 
+## Format constraints
+
 External formats and differences are explicit:
 
 - TXT/NICK/LEHO/REDIRECT and RECLAIM string values are raw UTF-8 record bytes,
@@ -62,12 +68,7 @@ External formats and differences are explicit:
   instead of silently wrapping or using unchecked offsets. Exact C acceptance
   of malformed text is not an interoperability requirement.
 
-The pure aggregate model checks independently specified wire values for every
-active family, packed field order, Unicode conversion, maximum-length
-hex expansion, nesting/capacity refusal and complete scratch erasure. It uses
-only fixed public mock data. No crypto, key generation/derivation, private
-key fixture/file, storage, native socket, C actor or node executes. This library
-does not by itself complete REST, NAMESTORE applications or GNUnet services.
+## NAMESTORE line grammar
 
 `recordline` provides the allocation-free active NAMESTORE line grammar, separate
 from OS IO and authority lookup. `parse` returns a borrowed empty line, header or

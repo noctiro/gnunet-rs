@@ -38,7 +38,7 @@ pub(super) struct Group {
 }
 pub(super) struct Prepare {
     pub root: PathBuf,
-    pub root_id: (u64, u64),
+    pub root_id: crate::FileIdentity,
     pub entry: Entry,
     pub group: PathBuf,
     pub blocks: BlockOptions,
@@ -48,7 +48,7 @@ pub(super) struct Prepare {
 }
 struct Preparation {
     input: Prepare,
-    group_id: (u64, u64),
+    group_id: crate::FileIdentity,
 }
 
 pub(super) struct Load {
@@ -63,13 +63,13 @@ enum Job {
     Load(Box<Load>),
     Scan {
         root: PathBuf,
-        root_id: (u64, u64),
+        root_id: crate::FileIdentity,
         limits: scan::ScanLimits,
     },
     Prepare(Box<Preparation>),
     Size {
         path: PathBuf,
-        identity: (u64, u64),
+        identity: crate::FileIdentity,
         limits: scan::ScanLimits,
     },
 }
@@ -89,9 +89,9 @@ pub(super) struct Worker {
     busy: Arc<AtomicBool>,
     stop: Stop,
 }
-fn identity(file: &File) -> Result<(u64, u64), Error> {
+fn identity(file: &File) -> Result<crate::FileIdentity, Error> {
     let s = stamp(file).map_err(super::ScanError::from)?;
-    Ok((s.device, s.inode))
+    Ok(s.identity)
 }
 fn internal_limits(limits: Limits) -> Result<scan::ScanLimits, Error> {
     let mut scan = limits.scan;
@@ -154,6 +154,7 @@ fn prepare(request: Preparation, buffers: &mut Buffers, stop: &Stop) -> Result<G
         keywords,
         content_uri,
         metadata,
+        directory_sync: _,
     } = prepared;
     let mut tasks = Vec::new();
     tasks
@@ -170,9 +171,8 @@ fn prepare(request: Preparation, buffers: &mut Buffers, stop: &Stop) -> Result<G
         uri: content_uri.clone(),
         target: content_uri.clone(),
     });
-    use std::os::unix::ffi::OsStrExt;
     for keyword in keywords {
-        let name = keyword.name.as_os_str().as_bytes();
+        let name = keyword.name.as_os_str().as_encoded_bytes();
         super::component(name)?;
         let mut owned = Vec::new();
         owned
@@ -202,7 +202,7 @@ fn prepare(request: Preparation, buffers: &mut Buffers, stop: &Stop) -> Result<G
         .try_reserve_exact(metadata.len())
         .map_err(|_| Error::Binding("metadata binding allocation"))?;
     for artifact in &metadata {
-        super::component(artifact.name.as_os_str().as_bytes())?;
+        super::component(artifact.name.as_os_str().as_encoded_bytes())?;
         if artifact.relative.is_absolute()
             || artifact
                 .relative
@@ -230,8 +230,9 @@ fn prepare(request: Preparation, buffers: &mut Buffers, stop: &Stop) -> Result<G
         let mut hash = gnunet_crypto::Hash512State::new();
         hash.update(&artifact.wire);
         retained.push(MetadataRef {
-            name: artifact.name.as_os_str().as_bytes().to_vec(),
-            relative: artifact.relative.as_os_str().as_bytes().to_vec(),
+            name: artifact.name.as_os_str().as_encoded_bytes().to_vec(),
+            relative: crate::input_tree::protocol_path(&artifact.relative)
+                .map_err(super::ScanError::from)?,
             target: artifact.target.clone(),
             hash: hash.finish(),
             bytes: artifact.wire.len(),
@@ -344,7 +345,7 @@ impl Worker {
     pub async fn scan(
         &mut self,
         root: PathBuf,
-        root_id: (u64, u64),
+        root_id: crate::FileIdentity,
         limits: scan::ScanLimits,
     ) -> Result<Snapshot, Error> {
         match self
@@ -487,7 +488,10 @@ fn restore_members(request: &Load, root: &InputDir, stop: &Stop) -> Result<Frame
             .names
             .iter()
             .zip(&wanted)
-            .any(|(actual, (name, kind))| actual.bytes.as_slice() != *name || actual.kind != *kind)
+            .any(|(actual, (name, kind))| {
+                gnunet_native::os_bytes::encode(&actual.native).as_ref() != *name
+                    || actual.kind != *kind
+            })
     {
         return Err(Error::Binding(
             "restored group Task/metadata collection mismatch",
@@ -498,10 +502,6 @@ fn restore_members(request: &Load, root: &InputDir, stop: &Stop) -> Result<Frame
 }
 
 fn load(request: Load, stop: &Stop) -> Result<Group, Error> {
-    use nix::{
-        fcntl::{OFlag, openat},
-        sys::stat::Mode,
-    };
     use std::io::Read;
     let root = InputDir::open(&request.path).map_err(super::ScanError::from)?;
     let original = identity(root.descriptor())?;
@@ -515,14 +515,8 @@ fn load(request: Load, stop: &Stop) -> Result<Group, Error> {
         }
         let dir = InputDir::open(request.path.join(super::component(&t.name)?))
             .map_err(super::ScanError::from)?;
-        let fd = openat(
-            dir.descriptor(),
-            "records.wal",
-            OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK | OFlag::O_CLOEXEC,
-            Mode::empty(),
-        )
-        .map_err(|e| std::io::Error::from_raw_os_error(e as i32))?;
-        let file = File::from(fd);
+        let file = gnunet_native::filesystem::Directory::from_file(dir.descriptor())?
+            .open_file(std::ffi::OsStr::new("records.wal"))?;
         let m = file.metadata()?;
         if !m.is_file() {
             return Err(Error::Binding("restored task WAL not regular"));
@@ -591,14 +585,8 @@ fn load(request: Load, stop: &Stop) -> Result<Group, Error> {
             return Err(super::ScanError::Stopped.into());
         }
         metadata_relative(&m.relative)?;
-        let fd = openat(
-            root.descriptor(),
-            super::component(&m.name)?,
-            OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK | OFlag::O_CLOEXEC,
-            Mode::empty(),
-        )
-        .map_err(|e| std::io::Error::from_raw_os_error(e as i32))?;
-        let file = File::from(fd);
+        let file = gnunet_native::filesystem::Directory::from_file(root.descriptor())?
+            .open_file(super::component(&m.name)?.as_ref())?;
         let stat = file.metadata()?;
         if !stat.is_file()
             || stat.len() != m.bytes as u64

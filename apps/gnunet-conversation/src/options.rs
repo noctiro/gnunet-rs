@@ -4,7 +4,7 @@ use gnunet_program_host::{
     getopt::Options,
     helpers::{self, Target},
 };
-use std::{ffi::OsString, os::unix::ffi::OsStringExt, path::PathBuf, time::Duration};
+use std::{path::PathBuf, time::Duration};
 pub(super) struct Arguments {
     ego: Target<Option<Vec<u8>>>,
     phone: Target<Option<Vec<u8>>>,
@@ -112,6 +112,7 @@ pub(super) struct Settings {
     pub playback_frames: usize,
     pub record: PathBuf,
     pub playback: PathBuf,
+    #[cfg(unix)]
     pub launcher: PathBuf,
     pub native: gnunet_conversation_client_host::Limits,
     pub identity: gnunet_identity_client_host::Limits,
@@ -155,8 +156,19 @@ impl Settings {
         };
         let path = |key: &[u8], name: &str| -> Result<PathBuf, Failure> {
             let p = match c.get(section, key) {
-                Some(v) => PathBuf::from(OsString::from_vec(copy(v, 4096, false)?)),
-                None => defaults.join(name),
+                Some(v) => {
+                    if v.is_empty() || v.len() > 4096 || v.contains(&0) {
+                        return Err("invalid or over-bound native helper path".into());
+                    }
+                    PathBuf::from(gnunet_native::os_bytes::decode(v)?.into_owned())
+                }
+                None => {
+                    let mut path = defaults.join(name);
+                    if cfg!(windows) {
+                        path.set_extension("exe");
+                    }
+                    path
+                }
             };
             if !p.is_absolute() {
                 return Err(
@@ -210,6 +222,7 @@ impl Settings {
             playback_frames,
             record: path(b"HELPER_RECORD", "gnunet-helper-audio-record")?,
             playback: path(b"HELPER_PLAYBACK", "gnunet-helper-audio-playback")?,
+            #[cfg(unix)]
             launcher: path(b"HELPER_LAUNCHER", "gnunet-arm-spawn-helper")?,
             native,
             identity,

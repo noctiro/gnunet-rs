@@ -18,6 +18,7 @@ getrandom.workspace = true
 zeroize = { workspace = true, features = ["alloc"] }
 socket2.workspace = true
 libc.workspace = true
+gnunet-native.workspace = true
 tokio = { workspace = true, features = ["net", "io-util", "rt", "time"] }
 
 gnunet-pils = { workspace = true, optional = true }
@@ -28,7 +29,6 @@ gnunet-service-runtime = { workspace = true, optional = true }
 gnunet-nat-burst-host = { workspace = true, optional = true }
 
 [dev-dependencies]
-gnunet-native.workspace = true
 gnunet-transport-host.workspace = true
 gnunet-transport = { workspace = true, features = ["alloc"] }
 tokio = { workspace = true, features = ["macros", "time"] }

@@ -4,6 +4,8 @@
     reason = "These bounded actual-socket tests assert independently observed lifecycle, wire bytes and cleanup results"
 )]
 
+#[path = "support/local.rs"]
+mod local;
 use gnunet_client::resolver::{Family, Request, WireId};
 use gnunet_dns::{AbsoluteTime, Idna};
 use gnunet_idna::{Backend, NativeProfile, Workspace};
@@ -12,6 +14,7 @@ use gnunet_resolver_host::{
     storage::{Geometry, Store},
 };
 use gnunet_resolver_service_core::{owner::Resolver, storage::Limits as CoreLimits};
+use gnunet_service_runtime::local::Stream as UnixStream;
 use gnunet_service_runtime::service::{Listener, ServiceOptions, ShutdownMode};
 use std::{
     future::{Future, poll_fn},
@@ -22,7 +25,7 @@ use std::{
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::{UdpSocket, UnixListener, UnixStream},
+    net::UdpSocket,
     time::Instant,
 };
 type E = Box<dyn std::error::Error>;
@@ -141,7 +144,7 @@ fn eof_cleans_more_than_one_effect_budget_without_external_wakeup() -> Result<()
     rt()?.block_on(async {
         let path =
             std::env::temp_dir().join(format!("gnunet-review-budget-{}.sock", std::process::id()));
-        let listener = UnixListener::bind(&path)?;
+        let listener = local::bind(&path)?;
         let udp = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await?;
         setup!(host, budget_utc);
         host.add_dns_endpoint(udp.local_addr()?)?;
@@ -188,7 +191,7 @@ fn rx_clock_failure_discards_only_undated_packet_then_new_response_recovers() ->
         UTC_CALLS.store(0, Ordering::Relaxed);
         let path =
             std::env::temp_dir().join(format!("gnunet-review-utc-{}.sock", std::process::id()));
-        let listener = UnixListener::bind(&path)?;
+        let listener = local::bind(&path)?;
         let udp = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await?;
         setup!(host, clock_utc);
         host.add_dns_endpoint(udp.local_addr()?)?;
@@ -250,7 +253,7 @@ fn expired_queued_start_cannot_deadlock_full_effects_with_older_timeouts() -> Re
             "gnunet-review-expired-full-{}.sock",
             std::process::id()
         ));
-        let listener = UnixListener::bind(&path)?;
+        let listener = local::bind(&path)?;
         let udp = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await?;
         let g = Geometry {
             clients: 4,

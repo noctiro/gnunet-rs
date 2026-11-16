@@ -2,10 +2,14 @@
 //! No raw FD owner or ancillary pointer is manufactured in this crate.
 use super::{DatagramSocket, Profile, Sent, SocketError};
 use gnunet_types::Error;
-use socket2::{MsgHdr, SockAddr, SockRef};
+use socket2::SockRef;
+#[cfg(unix)]
+use socket2::{MsgHdr, SockAddr};
+#[cfg(unix)]
+use std::io::IoSlice;
 use std::{
     future::Future,
-    io::{self, IoSlice},
+    io,
     net::{Ipv6Addr, SocketAddr},
     pin::Pin,
     task::{Context, Poll},
@@ -67,6 +71,7 @@ impl DatagramSocket {
         }
         // Validate/prepare ancillary metadata before publishing this pending
         // packet, preserving the existing pending packet on all refusals.
+        #[cfg(unix)]
         control(source, index)?;
         self.discovery = Some(Pending {
             source,
@@ -104,6 +109,9 @@ impl DatagramSocket {
             Poll::Pending => return Poll::Pending,
             Poll::Ready(result) => result?,
         }
+        if Instant::now() >= pending.hard {
+            return Poll::Ready(Err(Error::Deadline.into()));
+        }
         let result = socket.try_io(Interest::WRITABLE, || send(socket, pending));
         match result {
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
@@ -138,6 +146,7 @@ impl DatagramSocket {
         self.discovery = None;
     }
 }
+#[cfg(unix)]
 fn send(socket: &tokio::net::UdpSocket, pending: &Pending) -> io::Result<usize> {
     let (control, len) = control(pending.source, pending.index)?;
     let address = SockAddr::from(pending.target);
@@ -147,6 +156,17 @@ fn send(socket: &tokio::net::UdpSocket, pending: &Pending) -> io::Result<usize> 
         .with_buffers(&buffers)
         .with_control(&control[..len]);
     SockRef::from(socket).sendmsg(&message, 0)
+}
+#[cfg(windows)]
+fn send(socket: &tokio::net::UdpSocket, pending: &Pending) -> io::Result<usize> {
+    use std::os::windows::io::AsSocket;
+    gnunet_native::network::send_datagram_from(
+        socket.as_socket(),
+        pending.source,
+        pending.index,
+        pending.target,
+        &pending.packet,
+    )
 }
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 fn field(out: &mut [u8], offset: usize, bytes: &[u8]) {
@@ -264,7 +284,10 @@ fn control(source: SocketAddr, index: u32) -> io::Result<([u8; 64], usize)> {
     }
     Ok((bytes, total))
 }
-#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "freebsd")))]
+#[cfg(all(
+    unix,
+    not(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))
+))]
 fn control(_source: SocketAddr, _index: u32) -> io::Result<([u8; 64], usize)> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
@@ -272,10 +295,7 @@ fn control(_source: SocketAddr, _index: u32) -> io::Result<([u8; 64], usize)> {
     ))
 }
 
-#[cfg(all(
-    test,
-    any(target_os = "linux", target_os = "macos", target_os = "freebsd")
-))]
+#[cfg(test)]
 mod tests {
     use super::*;
     #[tokio::test(flavor = "current_thread")]

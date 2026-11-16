@@ -1842,6 +1842,44 @@ impl Configuration {
         result
     }
 
+    /// Publish this owner's serialized bytes relative to an original directory.
+    /// The caller excludes administrative namespace mutation and supplies its
+    /// original target/deadline fence, checked after staging and before rename.
+    /// New output uses native private permissions, without path expansion,
+    /// symlink resolution or implicit parent creation. A receipt distinguishes
+    /// file publication from the platform's directory-sync capability.
+    pub fn write_serialized_in(
+        &mut self,
+        directory: &gnunet_native::filesystem::Directory,
+        target: &std::ffi::OsStr,
+        contents: &[u8],
+        before_publish: impl FnOnce() -> std::io::Result<()>,
+    ) -> Result<
+        gnunet_native::filesystem::publication::Published,
+        gnunet_native::filesystem::publication::Failure,
+    > {
+        let result = if contents.len() > self.limits.max_expanded_bytes {
+            Err(gnunet_native::filesystem::publication::refused(
+                "capacity",
+                std::io::ErrorKind::InvalidInput.into(),
+            ))
+        } else {
+            gnunet_native::filesystem::publication::publish(
+                directory,
+                target,
+                contents,
+                gnunet_native::filesystem::publication::Destination::Replace,
+                before_publish,
+            )
+        };
+        self.dirty = if result.is_ok() {
+            Dirty::Clean
+        } else {
+            Dirty::WriteFailed
+        };
+        result
+    }
+
     /// Atomic publication with a synchronous local observer replacing the
     /// persistent route through filename, directory, write and commit checks.
     pub fn write_observed(

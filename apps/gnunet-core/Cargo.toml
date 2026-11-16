@@ -9,7 +9,7 @@ license.workspace = true
 name = "gnunet-core"
 path = "src/main.rs"
 
-[target.'cfg(unix)'.dependencies]
+[dependencies]
 gnunet-config.workspace = true
 gnunet-core-client-host.workspace = true
 gnunet-client-host.workspace = true
@@ -19,6 +19,9 @@ gnunet-resolver-broker.workspace = true
 gnunet-service-runtime.workspace = true
 gnunet-service-startup.workspace = true
 tokio = { workspace = true, features = ["rt", "net", "time", "signal"] }
+
+[dev-dependencies]
+gnunet-native.workspace = true
 
 [lints]
 workspace = true

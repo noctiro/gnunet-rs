@@ -7,7 +7,7 @@ license.workspace = true
 [features]
 default = []
 [dependencies]
-libc.workspace = true
+gnunet-native.workspace = true
 gnunet-transport = { workspace = true, features = ["alloc"] }
 gnunet-types.workspace = true
 gnunet-wire.workspace = true

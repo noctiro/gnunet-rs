@@ -1,22 +1,19 @@
 //! Same actual configured-handler child, retained across dropped observation futures.
 use crate::{
     Settings,
+    child::{self, Child, StopMethod},
     control::{Signals, Wake},
 };
 use gnunet_program_host::reporting::Reporter;
 use gnunet_service_runtime::clock::{Deadline, RuntimeClock};
 use gnunet_service_startup::ParentControl;
 use gnunet_types::Error as Fault;
-use nix::{
-    sys::signal::{Signal, kill},
-    unistd::Pid,
-};
 use std::{
     fmt,
     future::{Future, poll_fn},
     io,
     pin::Pin,
-    process::{Child, Command, ExitStatus, Stdio},
+    process::ExitStatus,
     sync::Arc,
     task::{Context, Poll},
     time::{Duration, Instant},
@@ -69,6 +66,10 @@ impl Bounds {
 pub enum Cause {
     /// Actual signal, native process or reactor error.
     Io(io::Error),
+    /// Original native inheritance/stop-registration failure.
+    Startup(gnunet_service_startup::ClientError),
+    /// Original registered stop-subscription failure.
+    Control(gnunet_service_startup::StopError),
     /// Actual original clock/deadline/resource refusal.
     Clock(Fault),
 }
@@ -76,6 +77,8 @@ impl fmt::Display for Cause {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Io(e) => e.fmt(f),
+            Self::Startup(e) => e.fmt(f),
+            Self::Control(e) => e.fmt(f),
             Self::Clock(e) => e.fmt(f),
         }
     }
@@ -84,6 +87,8 @@ impl std::error::Error for Cause {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         Some(match self {
             Self::Io(e) => e,
+            Self::Startup(e) => e,
+            Self::Control(e) => e,
             Self::Clock(e) => e,
         })
     }
@@ -96,8 +101,8 @@ impl From<io::Error> for Cause {
 /// First original stop intent. It never proves the child exited.
 #[derive(Clone, Copy, Debug)]
 pub enum Stop {
-    /// Actual original signal.
-    Signal(i32),
+    /// Actual original parent or native termination request.
+    Requested,
     /// Selected diagnostic failure.
     Diagnostic,
     /// Original parent/signal port failure.
@@ -118,8 +123,10 @@ pub struct Report {
     pub status: Option<ExitStatus>,
     /// First original stop intent.
     pub stop: Option<Stop>,
-    /// A TERM syscall was actually attempted.
-    pub term_attempted: bool,
+    /// The platform-specific original-child stop was actually attempted.
+    pub stop_attempted: bool,
+    /// Actual native mechanism, independently of its return or later exit.
+    pub stop_method: Option<StopMethod>,
     /// A KILL syscall was actually attempted.
     pub kill_attempted: bool,
     /// Original child still lacks a consuming exit observation.
@@ -129,11 +136,12 @@ impl fmt::Display for Report {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "spawned={} status={:?} stop={:?} TERM-attempted={} KILL-attempted={} undrained={}",
+            "spawned={} status={:?} stop={:?} stop-attempted={} stop-method={:?} force-attempted={} undrained={}",
             self.spawned,
             self.status,
             self.stop,
-            self.term_attempted,
+            self.stop_attempted,
+            self.stop_method,
             self.kill_attempted,
             self.undrained
         )
@@ -144,7 +152,7 @@ impl fmt::Display for Report {
 pub struct DispatchFailure {
     /// First actual cancellation/provider/native error.
     pub original: Option<Cause>,
-    /// Independent actual TERM error.
+    /// Independent original-platform stop error.
     pub terminate: Option<io::Error>,
     /// Independent actual KILL error.
     pub kill: Option<io::Error>,
@@ -157,7 +165,7 @@ impl fmt::Display for DispatchFailure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "URI handler {}; original={:?}; TERM={:?}; KILL={:?}; wait={:?}",
+            "URI handler {}; original={:?}; stop={:?}; force={:?}; wait={:?}",
             self.report, self.original, self.terminate, self.kill, self.wait
         )
     }
@@ -261,16 +269,17 @@ impl Dispatcher {
             ));
         }
         match self.signals.poll(cx) {
-            Poll::Ready(Ok(Wake::Stop(value))) => {
+            Poll::Ready(Ok(Wake::Stop)) => {
                 return Err((
-                    Stop::Signal(value),
+                    Stop::Requested,
                     Cause::Io(io::Error::new(
                         io::ErrorKind::Interrupted,
-                        "original URI/QR signal canceled the operation",
+                        "original URI/QR stop request canceled the operation",
                     )),
                 ));
             }
-            Poll::Ready(Err(e)) => return Err((Stop::Control, Cause::Io(e))),
+            Poll::Ready(Err(e)) => return Err((Stop::Control, e)),
+            #[cfg(unix)]
             Poll::Ready(Ok(Wake::Child)) => cx.waker().wake_by_ref(),
             Poll::Pending => {}
         }
@@ -389,41 +398,34 @@ impl Dispatcher {
                 self.original = Some(Cause::Clock(Fault::NotReady));
                 return self.terminal();
             };
-            let mut command = Command::new(settings.handler);
-            command.args(settings.arguments).arg(settings.uri);
-            if settings.inherit_stdio {
-                command
-                    .stdin(Stdio::inherit())
-                    .stdout(Stdio::inherit())
-                    .stderr(Stdio::inherit());
-            } else {
-                command
-                    .stdin(Stdio::null())
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null());
-            }
-            for key in [
-                "GNUNET_OS_CONTROL_PIPE",
-                "LISTEN_PID",
-                "LISTEN_FDS",
-                "LISTEN_FDNAMES",
-            ] {
-                command.env_remove(key);
-            }
             if let Err((why, cause)) = self.ordinary(cx) {
                 self.stop(why, cause);
                 return self.terminal();
             }
-            match command.spawn() {
+            match child::spawn(settings) {
                 Ok(child) => {
                     self.child = Some(child);
                     self.report.spawned = true;
+                    #[cfg(windows)]
+                    if let Some(child) = &mut self.child
+                        && let Err(error) = child.register()
+                    {
+                        self.stop(Stop::Control, Cause::Io(error));
+                    }
                 }
                 Err(e) => {
                     self.original = Some(Cause::Io(e));
                     return self.terminal();
                 }
             }
+        }
+        #[cfg(windows)]
+        if let Some(child) = &mut self.child
+            && let Err(error) = child.poll_notification(cx)
+        {
+            // Notification failure does not consume the original child's wait
+            // authority. Stop it and collect its actual wait result separately.
+            self.stop(Stop::Control, Cause::Io(error));
         }
         let observation = self.child.as_mut().map(Child::try_wait);
         match observation {
@@ -458,25 +460,23 @@ impl Dispatcher {
             }
         } else {
             match self.signals.poll(cx) {
-                Poll::Ready(Ok(Wake::Stop(_))) => self.stop_hard = Some(Instant::now()),
+                Poll::Ready(Ok(Wake::Stop)) => self.stop_hard = Some(Instant::now()),
                 Poll::Ready(Err(e)) => {
-                    self.original.get_or_insert(Cause::Io(e));
+                    self.original.get_or_insert(e);
                 }
+                #[cfg(unix)]
                 Poll::Ready(Ok(Wake::Child)) => cx.waker().wake_by_ref(),
                 Poll::Pending => {}
             }
         }
-        if self.report.stop.is_some() && !self.report.term_attempted {
-            self.report.term_attempted = true;
-            if let Some(child) = &self.child {
-                let result = i32::try_from(child.id())
-                    .map_err(|_| io::Error::other("original PID exceeds native range"))
-                    .and_then(|pid| {
-                        kill(Pid::from_raw(pid), Signal::SIGTERM).map_err(io::Error::from)
-                    });
-                if let Err(e) = result {
-                    self.terminate = Some(e);
-                }
+        if self.report.stop.is_some()
+            && !self.report.stop_attempted
+            && let Some(child) = &mut self.child
+        {
+            self.report.stop_attempted = true;
+            self.report.stop_method = Some(child::STOP_METHOD);
+            if let Err(error) = child::stop(child) {
+                self.terminate = Some(error);
             }
         }
         if self.report.stop.is_some() && self.stop_hard.is_none_or(|at| Instant::now() >= at) {

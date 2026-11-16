@@ -1,18 +1,12 @@
 //! Official UDP PROGRAM composed from explicit native protocol owners.
 #![deny(unsafe_code)]
-#[cfg(unix)]
 mod addresses;
-#[cfg(unix)]
 mod bootstrap;
-#[cfg(unix)]
 mod control;
-#[cfg(unix)]
 mod early;
-#[cfg(unix)]
+mod identity;
 mod network;
-#[cfg(unix)]
 mod run;
-#[cfg(unix)]
 mod settings;
 use std::{
     error::Error,
@@ -20,19 +14,16 @@ use std::{
     process::ExitCode,
 };
 type Cause = Box<dyn Error>;
-#[cfg(unix)]
 #[derive(Debug)]
 struct ProgramFailure {
     original: Option<Cause>,
     logging: Option<io::Error>,
 }
-#[cfg(unix)]
 impl std::fmt::Display for ProgramFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "UDP PROGRAM: {self:?}")
     }
 }
-#[cfg(unix)]
 impl Error for ProgramFailure {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         self.original
@@ -49,11 +40,6 @@ fn main() -> ExitCode {
         }
     }
 }
-#[cfg(not(unix))]
-fn execute() -> Result<u8, Cause> {
-    Err("native UDP communicator requires Unix".into())
-}
-#[cfg(unix)]
 fn execute() -> Result<u8, Cause> {
     use gnunet_program_host::{
         foreground,
@@ -63,7 +49,6 @@ fn execute() -> Result<u8, Cause> {
         reporting::Reporter,
         shared_clock::SharedClock,
     };
-    use gnunet_service_startup::{GroupsProfile, apply_privileges, configured_user, resolve_user};
     use std::{cell::Cell, rc::Rc, sync::Arc};
     let early = early::capture()?;
     let clock = SharedClock::native(128)?;
@@ -92,6 +77,7 @@ fn execute() -> Result<u8, Cause> {
             return Err("UDP communicator accepts no positional arguments".into());
         }
         clock.testing_skew(prepared.main().config)?;
+        #[cfg(unix)]
         if let Some(notice) = early.notice {
             reporter.warning("udp.parent.notice", format_args!("{notice:?}"));
         }
@@ -113,16 +99,8 @@ fn execute() -> Result<u8, Cause> {
                     result?;
                     return Ok(0);
                 }
-                let user = configured_user(prepared.main().config, b"communicator-udp")?
-                    .map(|name| resolve_user(&name))
-                    .transpose()?;
-                if let std::task::Poll::Ready(result) =
-                    std::future::poll_fn(|cx| std::task::Poll::Ready(control.poll(cx))).await
-                {
-                    result?;
-                    return Ok(0);
-                }
-                let _privileges = apply_privileges(user.as_ref(), GroupsProfile::WithInitgroups)?;
+                // Finish identity setup after binds, before workers/private state.
+                identity::apply(prepared.main().config)?;
                 let live =
                     gnunet_client_host::LiveConfiguration::new(prepared.main().config.duplicate()?);
                 let actual: Arc<dyn gnunet_service_runtime::clock::RuntimeClock> =

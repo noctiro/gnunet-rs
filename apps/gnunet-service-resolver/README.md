@@ -1,37 +1,90 @@
-# Official Resolver SERVICE
+# GNUnet Resolver service
 
-`gnunet-service-resolver -c /path/to/official.conf` runs the bounded
-Resolver core, native IDNA backend and UDP DNS stub over official request4/
-response5. Standard shared SERVICE options include `-h/--help`, `-v/--version`,
-`-c/--config`, `-L/--loglevel`, `-l/--logfile` and `-d/--daemonize`.
+`gnunet-service-resolver` composes the bounded Resolver core, native IDNA backend
+and UDP DNS stub over official request4/response5. It uses shared SERVICE options:
+`-h/--help`, `-v/--version`, `-c/--config`, `-L/--log`, `-l/--logfile` and
+`-d/--daemonize`. Protocol state and machine-input acquisition belong to
+[the Resolver adapter](../../adapters/resolver-std/README.md).
 
-The fresh process first adopts original activation/parent-control descriptors. Explicit daemon separation runs before runtime, account lookup, listener path
-guards or machine-file reads. The parent drops only its inherited copies and
-waits for the child status; EOF/failure is not readiness. The selected
-logfile is retained and child PID metadata is refreshed after fork.
+## Configuration and invocation
 
-The standard main loads `[resolver]` settings, prepares original activation/new
-TCP listeners, applies configured `USERNAME` through shared native privileges,
-and creates new Unix listeners under that identity. It then reads literal
-`/etc/hosts` and `/etc/resolv.conf` once (16 MiB maximum each), constructs the
-Host and installs the same SharedClock used by logging/testing skew before
-loading machine data or enabling lookups. No key file, C resolver process or
-system NSS/DNS request fallback is introduced. Account/group lookup used by
-startup or Unix credential policy is a separate explicit native boundary.
+```sh
+gnunet-service-resolver -c /path/to/official.conf
+```
 
-`UNIX_MATCH_UID`/`UNIX_MATCH_GID` default to false when absent; the official
-resolver.conf sets both to NO. Actual accepted Unix connections use kernel peer
-credentials and shared UID-first/GID-or-group policy. The same flags select the
-permissions of new Unix sockets and newly created parents: UID 0700/0700,
-otherwise GID 0770/0750, otherwise 0777/0755. Existing parents and inherited paths
-are not chmodded. TCP IP ACLs remain in force. The library embedding path never changes whole-process identity: a configured
-account must already match the current real/effective IDs.
+Windows uses the same command with native paths, for example
+`gnunet-service-resolver.exe -c C:\GNUnet\gnunet.conf`. The standard entry loads
+`[resolver]` settings and constructs actual configured local/TCP listeners. It
+installs the same `SharedClock` used by logging and testing skew before machine
+data or lookups become active. No key file, C resolver process or system DNS/NSS
+lookup fallback is introduced.
 
-`READY resolver` and the once-only daemon ready byte follow Host/core/
-stub/IDNA/policy/machine-data/listener construction. They do not assert an
-upstream DNS reply or a complete GNUnet node. SIGINT/SIGTERM, matching parent
-control, selected-log failure and original drive/clock errors all stop admission
-and close original client streams/UDP owners/listeners. Default shutdown is
-Immediate, matching official `GNUNET_SERVICE_OPTION_NONE`. The original runtime
-error and independent cleanup/logging error remain observable; only newly owned
-Unix paths are removed. `STOPPED` is written after cleanup.
+## Unix process startup
+
+The fresh process first captures original activation/parent-control descriptors.
+Explicit daemon separation precedes runtime, account lookup, listener path guards
+and machine-file reads. The parent drops its inherited copies and waits for the
+child status; EOF/failure is not readiness. The selected logfile remains owned
+and child PID metadata refreshes after fork.
+
+Startup preserves activation sockets, prepares new TCP listeners, applies
+configured `USERNAME` through native account transitions, then creates new local
+listeners under that identity. Machine input reads literal `/etc/hosts` and
+`/etc/resolv.conf` once, with a 16 MiB limit per file. Account/group lookup for
+startup or local credential policy is a separate native boundary.
+
+## Windows process startup
+
+Startup captures the private parent-pipe location once and validates configured
+`USERNAME` against the actual primary-token SID before binding. It does not
+impersonate a thread or switch the process account. Machine input uses the system
+Windows hosts file and native adapter DNS endpoints, preserving port, scope and
+configured attempt order. Input failures remain observable diagnostics.
+
+The normal entry supports foreground operation, configured AF_UNIX/TCP listeners,
+private parent control and native console events. Standalone `-d/--daemonize`
+re-executes the same image with its original argv/environment/cwd as a detached
+child. A private launcher role prevents recursive re-exec. The parent waits for
+actual original-child readiness. Failed startup attempts explicit retirement/drain
+of its original child and retains independent cleanup failure. stdin/stdout are NUL;
+file/pipe stderr is retained by original handle and character stderr becomes NUL.
+
+An already supervised `-d` service detaches its console and standard routes in
+place before runtime/handler installation. Its original process identity and
+parent control remain unchanged. Native activation imports the original listener
+set before registration and retains accept queues without rebinding. Standalone
+re-exec forwards inherited listeners to its own original child; creator path
+leases remain with their creator. See the [native transfer contract](../../adapters/native-std/SOCKET-ACTIVATION.md).
+Native qualification and remaining integration are tracked in [implementation status](../../IMPLEMENTATION_STATUS.md).
+
+## Endpoint access
+
+`UNIX_MATCH_UID`/`UNIX_MATCH_GID` default to false when absent; official
+resolver.conf sets both to NO. On Unix, accepted local connections use kernel
+peer credentials and UID-first/GID-or-group policy. New socket/parent permissions
+are respectively 0700/0700 for UID, 0770/0750 for GID and 0777/0755 otherwise.
+Existing parents and inherited paths are not chmodded.
+
+Windows creates endpoint ACLs for the selected owner/group/everyone policy and
+retires original opened nodes. Filesystem permissions do not supply POSIX peer
+credentials: requested UID/GID authentication remains fail-closed. TCP IP ACLs
+remain active on every platform. Library embedding requires the configured
+identity to match the current process; it never changes whole-process identity.
+
+## Readiness, shutdown and errors
+
+`READY resolver` and startup status publication follow actual Host/core/stub/IDNA,
+policy, machine-data and listener construction. The shared startup path awaits
+native asynchronous publication when needed. A Windows write submission confirms
+Tokio/Mio acceptance; the parent confirms startup only after reading the actual
+`.` from its qualified original-child connection. See
+[bootstrap ownership](../../adapters/service-startup/README.md#windows-parent-bootstrap).
+
+SIGINT/SIGTERM on Unix, native Windows console events, matching parent control,
+selected-log failure and original drive/clock errors stop admission and close
+original client streams, UDP owners and listeners. Parent-control EOF does not
+request shutdown. Default shutdown is Immediate, matching official
+`GNUNET_SERVICE_OPTION_NONE`. Original runtime errors and independent cleanup,
+logging or startup-status errors remain observable. Only newly owned local nodes
+are removed; failed explicit cleanup retains its owner for retry. `STOPPED`
+follows cleanup. Console shutdown can still impose native OS termination limits.

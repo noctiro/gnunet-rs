@@ -3,6 +3,8 @@
 `gnunet-scalarproduct` is a no_std core behind the explicit `alloc` feature. It implements Edwards25519 Alice blinding, Bob aggregation, unblinding and
 incremental bounded discrete logarithms using the existing Dalek/crypto crates. It contains no FFI, socket, entropy fallback, task, persistence or native worker.
 
+## Public interface
+
 Use an explicit HashOrder matching the peer C ABI. The official hash comparator
 compares native u32 words from the end; raw-byte ordering is different. Vector
 admission rejects duplicate keys even if one value is zero, retains the all-zero
@@ -18,6 +20,8 @@ locally-created native resources before its terminal Unsent/Lost receipt. On
 failure/cancel the host stops old I/O, retires any admitted action and drains
 cleanup; effect=None alone never means stopped. The host retains original
 native causes and original hard/cancellation bounds independently.
+
+## Limits
 
 Default outgoing chunk size is 128 pairs, within CADET capacity (1005
 pairs). The fixed C Alice capacity macro divides by one point although the
@@ -73,18 +77,10 @@ aggregate. A pending final ReceiveDone accepts only its exact original actual
 Written/Lost/Unsent receipt; Processed/Retired cannot fake a final ACK. A retired
 input never causes a later old-source ACK. Source causes remain independent of
 the mathematical result. Missing inputs, incomplete aggregates, unknown
-last writes, failed SETI and cancellation keep their ordinary failure behavior. This is a pure API forward: native outer-tail/physical-retirement integration is
-separate, and the new source cases remain unexecuted.
+last writes, failed SETI and cancellation keep their ordinary failure behavior.
+The [native host](../../adapters/scalarproduct-std/README.md) owns outer-tail
+validation and physical retirement.
 
-The final-input local-work forward and its new source cases also passed selected
-macOS/GNU Linux compilation and thumbv6m allocated compilation.
-
-The empty-intersection forward above changes only the real-DONE zero branch,
-its existing role/cancel source case and documentation. It provides no new native, cryptographic, mixed-peer or performance credit.
-
-The nonempty identity-column forward removes only the final Bob aggregate
-refusal. It adds no new wire message, zero shortcut, algorithm fallback or
-resource policy. Source cases use the same full two-party multipart computation
-path for a lone identity G column, a lone identity H column and two identity
-columns with an exact zero product. Source preparation/compilation and actual
-crypto/native interoperability remain separately qualified.
+Identity G or H columns and an exact zero product use the full multipart
+computation. They do not select a new wire message, zero shortcut or fallback
+algorithm.

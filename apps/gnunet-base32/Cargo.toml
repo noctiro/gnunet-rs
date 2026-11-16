@@ -9,12 +9,15 @@ license.workspace = true
 name = "gnunet-base32"
 path = "src/main.rs"
 
-[target.'cfg(unix)'.dependencies]
+[dependencies]
 gnunet-gnsrecord.workspace = true
-gnunet-program-host.workspace = true
+gnunet-program-host = { workspace = true, features = ["binary-io"] }
+gnunet-native.workspace = true
 gnunet-config.workspace = true
 gnunet-service-runtime.workspace = true
 tokio = { workspace = true, features = ["rt", "net", "signal", "time"] }
+
+[target.'cfg(unix)'.dependencies]
 nix = { workspace = true, features = ["fs"] }
 
 [lints]

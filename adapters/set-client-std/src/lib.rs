@@ -6,6 +6,7 @@ mod events;
 mod factory;
 mod listener;
 mod prepared;
+mod result;
 mod session;
 mod set;
 mod types;
@@ -21,6 +22,7 @@ pub use listener::{
     Decision, Incoming, ListenProgress, Listener, ListenerLoss, RejectFailure, RejectId,
 };
 pub use prepared::{CopyTicket, Prepared};
+pub use result::ResultValue;
 pub use session::TransportLoss;
 pub use set::{CommitFailure, IterCancelDisposition, Set};
 pub use types::{

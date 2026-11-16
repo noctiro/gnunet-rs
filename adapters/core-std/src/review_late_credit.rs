@@ -24,7 +24,7 @@ async fn review_actual_late_send_ok_keeps_other_peer_and_original_mq()
         ServiceOptions::default(),
         Arc::new(ManualClock::new(0)),
     )?;
-    let (connection, mut stream) = pair()?;
+    let (connection, mut stream) = pair().await?;
     host.attach_transport(connection)?;
     let mut bytes = [0; 40];
     tr::Response::Connected(tr::PeerId(aid.0)).encode(&mut bytes)?;

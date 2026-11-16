@@ -5,6 +5,7 @@ use std::{
     error::Error,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     path::PathBuf,
+    time::Duration,
 };
 type Cause = Box<dyn Error>;
 const SECTION: &[u8] = b"communicator-udp";
@@ -78,6 +79,18 @@ impl Settings {
             )?)
         };
         let mut transmit = Policy::default();
+        if config.get(RUST, b"ACK_TIMEOUT").is_some() {
+            let timeout = config.get_time(RUST, b"ACK_TIMEOUT")?;
+            if timeout == 0
+                || timeout == u64::MAX
+                || tokio::time::Instant::now()
+                    .checked_add(Duration::from_micros(timeout))
+                    .is_none()
+            {
+                return Err("ACK_TIMEOUT must be finite, positive and representable".into());
+            }
+            transmit.acknowledgement_timeout_us = timeout;
+        }
         if config.get(SECTION, b"REKEY_INTERVAL").is_some() {
             transmit.rekey_after_us = config.get_time(SECTION, b"REKEY_INTERVAL")?;
         }
@@ -136,6 +149,57 @@ impl Settings {
 #[cfg(test)]
 mod profile_tests {
     use super::*;
+    fn configuration() -> Result<Configuration, Cause> {
+        let mut config = Configuration::default();
+        let directory = std::env::temp_dir().join("gnunet-udp-settings");
+        let key = directory.join("peer.key");
+        let state = directory.join("state");
+        config.set_value(SECTION, b"BINDTO", Some(b"127.0.0.1:0"))?;
+        config.set_value(
+            b"peer",
+            b"PRIVATE_KEY",
+            Some(
+                key.to_str()
+                    .ok_or("temporary key path is not UTF-8")?
+                    .as_bytes(),
+            ),
+        )?;
+        config.set_value(
+            RUST,
+            b"STATE_DIRECTORY",
+            Some(
+                state
+                    .to_str()
+                    .ok_or("temporary state path is not UTF-8")?
+                    .as_bytes(),
+            ),
+        )?;
+        Ok(config)
+    }
+    #[test]
+    fn acknowledgement_timeout_is_explicit_finite_local_policy() -> Result<(), Cause> {
+        let mut config = configuration()?;
+        config.set_value(RUST, b"ACK_TIMEOUT", Some(b"2 s"))?;
+        let parsed = Settings::parse(&config, false)?;
+        if parsed.transmit.acknowledgement_timeout_us != 2_000_000 {
+            return Err("configured ACK timeout did not reach the sender policy".into());
+        }
+        for invalid in [b"0 s".as_slice(), b"forever"] {
+            config.set_value(RUST, b"ACK_TIMEOUT", Some(invalid))?;
+            if Settings::parse(&config, false).is_ok() {
+                return Err("non-finite ACK timeout was admitted".into());
+            }
+        }
+        config.set_value(RUST, b"ACK_TIMEOUT", None)?;
+        if Settings::parse(&config, false)?
+            .transmit
+            .acknowledgement_timeout_us
+            != Policy::default().acknowledgement_timeout_us
+        {
+            return Err("default ACK timeout changed".into());
+        }
+        Ok(())
+    }
     #[test]
     #[expect(
         clippy::panic_in_result_fn,
@@ -143,18 +207,7 @@ mod profile_tests {
     )]
     fn node_identity_profile_reaches_udp_client_settings_and_conflicts_fail_before_io()
     -> Result<(), Cause> {
-        let mut config = Configuration::default();
-        config.set_value(SECTION, b"BINDTO", Some(b"127.0.0.1:0"))?;
-        config.set_value(
-            b"PEER",
-            b"PRIVATE_KEY",
-            Some(b"/private/tmp/udp-profile-key"),
-        )?;
-        config.set_value(
-            RUST,
-            b"STATE_DIRECTORY",
-            Some(b"/private/tmp/udp-profile-state"),
-        )?;
+        let mut config = configuration()?;
         config.set_value(SECTION, b"REKEY_MAX_BYTES", Some(b"999"))?;
         assert_eq!(
             Settings::parse(&config, false)?.identity_profile,

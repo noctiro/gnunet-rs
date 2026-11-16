@@ -7,6 +7,8 @@ intermediate995 edges and terminal992/994 results with exact original
 RID checks. Whole request write precedes response acceptance. A local write is
 not service processing or authorization; raw found/status values stay raw.
 
+## Public interface
+
 Initial unexposed connection attempts retain the original source backoff. Once
 attached, source loss/cancel/deadline physically retires the MQ and every buffer
 before exposing its original cause and receipt. No exposed request or
@@ -18,8 +20,6 @@ the caller. Private outbound and input frames are zeroizing on every path.
 
 GNS/namestore service composition, normal service/CLI and C
 interoperability remain separate work; no whole ABD/goal credit is claimed.
-
-Author non-execution remains unchanged; this is no runtime acceptance.
 
 After attachment the same original RX/TX directions are driven fairly,
 including while the request is partially written or native TX is Pending. Independent read EOF/errors are observed without waiting for the write deadline. Expected result/intermediate acceptance still requires the original whole

@@ -6,6 +6,8 @@ on-demand indexed content and PILS LOC signatures. DATASTORE, PILS and
 the CADET, CORE and DHT backends use explicit official IPC endpoints and the same
 caller-driven Resolver and canonical clock.
 
+## Configuration
+
 Node-wide `[PILS] PROFILE` selects the LOC signer's HELLO/PILS verification
 once during startup. The default is `reference029` (`reference-0.29.1` is an
 alias); `deterministic` selects the official conditional address-derived mode. Explicit `lsd0014-text` selects the separate published textual interpretation,
@@ -48,14 +50,15 @@ restart the primary or mint another route identity. Waiting uses no query timer
 or source/native job, and cancellation/stop removes the exact old intent. Blocked
 inputs rotate until progress; admitted/Ended/Refused children never rearm
 this path. Normal reports separate retained `initial_deferred` intents from
-`initial_activations` and native `completions`. Generated dummy traffic is not added, and full network anonymity and whole-node
-interoperability remain unqualified. Official
+`initial_activations` and native `completions`. This cover policy adds no generated dummy traffic. Official
 `[fs] DISABLE_ANON_TRANSFER=YES` disables GAP unless an explicit conflicting
 `[fs-rust] GAP=YES` is supplied, which remains an error. Explicit GAP=NO is also
 supported. Non-anonymous UBLOCK local misses use a separate actual `[dht]`
 client, with original key/type9, replication5, DEMULTIPLEX_EVERYWHERE, empty
 ordinary XQUERY and known hashes. This path does not lower a positive anonymity
 request to zero. Verified multiple replies retain their original route.
+
+## Cancellation and recovery
 
 Cancellation retains the terminal result of an admitted read and stops
 later unsubmitted lookups. Permanent DATASTORE closure withdraws serving and
@@ -101,24 +104,28 @@ PORT = 0
 UNIXPATH = /private/tmp/example-fs/core.sock
 ```
 
-The process uses the existing shared SERVICE `c/d/h/L/l/v` parser and standard
-configuration loader, including the selected log level/file. Original inherited
-listeners and parent control are captured once before option/config/runtime
-resources. `-d` performs the fresh-process detach before NSS lookup,
-runtime, listener path guards, index recovery, providers or workers. The parent
-releases its captured descriptors and waits only on its original child-status
-pipe; EOF/failure never means ready and it does not wait for the live daemon to
-exit. The child's selected logfile remains its original owned file and its Logger
-refreshes the child PID. Foreground mode follows the same service path.
+## Native startup
 
-TCP/activation listeners are prepared and retained before applying
-`[fs] USERNAME`; new Unix endpoints are finished by that target identity with
-the same `[fs] UNIX_MATCH_UID/GID` policy used by kernel credential admission. Existing path ownership/permissions are not rewritten. Index recovery and the
-single index worker remain under the configured account. `[fs-rust]
-DIRECTORY` selects the Rust index; otherwise it defaults to
-`${GNUNET_DATA_HOME}/fs/index-rust`. Unresolved paths fail explicitly. The old
-private `--storage` parser is removed; no migration/compatibility startup path is
-kept.
+The process uses the existing shared SERVICE `c/d/h/L/l/v` parser and standard
+configuration loader, including the selected log level/file. Unix and Windows
+share the protocol composition, original operations and worker settlement.
+
+Unix captures inherited descriptors before options or runtime resources. `-d`
+detaches before NSS, runtime, index recovery, providers or workers. The parent
+waits on its original child-status pipe; EOF and failure never mean ready.
+TCP/activation setup precedes `[fs] USERNAME`; new Unix endpoints and the index
+belong to that account. Windows captures native inherited resources before other
+owners, verifies USERNAME against its primary token before listener/index access,
+and implements `-d` through native detached re-exec and original-child readiness.
+
+Listener access follows `[fs] UNIX_MATCH_UID/GID` and the shared native credential
+and ACL policy. Existing path ownership and permissions are not rewritten.
+`[fs-rust] DIRECTORY` selects the private Rust index; the default is
+`${GNUNET_DATA_HOME}/fs/index-rust`. Unresolved paths fail explicitly. File data,
+logical commits and directory naming availability follow the
+[index storage contract](../../adapters/fs-std/API.md).
+
+## Clocks and diagnostics
 
 One SharedClock authority, including configured testing skew, reaches
 Reporter and the same Resolver/FS/DATASTORE/PILS/CORE/CADET owners. The standard
@@ -133,7 +140,7 @@ Socket, Resolver, provider and retirement diagnostics use that selected
 Reporter with constant-severity sites. A permanent Reporter failure wakes the
 same owner and fences the next active I/O class; cleanup can still poll original
 source/index/provider/native debts. No new Resolver work runs after its own or
-the logging source's permanent failure. SIGINT/SIGTERM and original parent
+the logging source's permanent failure. Native termination events and original parent
 control enter the existing shutdown path. Inbound admissions stop first while
 existing type6 reads retain the same index worker; their original terminal or
 explicit unknown/forced-close facts are preserved. Only then does the same
@@ -153,6 +160,8 @@ selected Logger is not bypassed by a second unconditional stderr diagnostic. REA
 diagnostics. No FS packet, crypto, flow, DATASTORE, index/worker, routing or
 anonymity algorithm changed in this entry refactor.
 
+## Resource settings
+
 Internal `[fs-rust]` bounds include `MAX_CLIENTS=64`, `MAX_QUERIES=128`,
 `SEEN_HASHES_PER_QUERY=256`, `INDEX_QUEUE=16` and `IO_SLICE_BYTES=65535`. `DATASTORE_TIMEOUT=10 s`, `RESCAN_INTERVAL=10 s`, `CADET_TIMEOUT=30 s` and
 `DHT_QUERY_TIMEOUT=30 s` must be finite and nonzero. `DIRECT_CADET` defaults to YES;
@@ -163,6 +172,8 @@ its channel/route capacity is
 official `MAX_CADET_CLIENTS` (default128, zero disables serving); the source record
 bound is at most 4096. The default inbound block bound is the smaller of the
 local block limit and 64332 bytes. Limits and idle timeout must be nonzero.
+
+## GAP routing
 
 `GAP` defaults to YES unless the official anonymous-transfer disable flag is set. Its defaults are 64 neighbors, `MAX_QUERIES` routes, twice
 as many return paths, 61456 block bytes, 4 retained input packets, 64 source rows
@@ -205,16 +216,18 @@ admission caps expiry at one year and uses explicit cache policy anonymity1 and
 replication0; these are not inferred original peer metadata. Actual selected
 local DATA anonymity remains unchanged when pushed through the cover gate.
 
+## Readiness
+
 `READY fs DIRECTORY route-backend=... serve-backend=disabled|cadet` confirms local
 construction and listener readiness. Route values include `dht`, optional
 `direct-cadet` and optional `gap-core-fs-cover-budget`. Dependency availability and peer receipt are observed
-separately; `LISTENING fs cadet source=...` records the port write. SIGINT, SIGTERM or the corresponding parent-control signal closes
+separately; `LISTENING fs cadet source=...` records the port write. Native termination events or the corresponding parent-control signal close
 the original sockets, settles admitted dependency/index work and joins the
 index worker before the final STOPPED report. Transport loss retains uncertainty;
 neither full writes nor local deadlines produce remote acknowledgments.
 
-Official Unix/TCP/inherited listener options, ACL, tolerant mode and Unix UID/GID
-checks use the shared service runtime. The service owns its Rust index format;
+Official local/TCP/inherited listener options, ACL, tolerant mode and native peer
+identity checks use the shared service runtime. The service owns its Rust index format;
 there is no legacy migration, C ABI/FFI or production C process wrapper.
 
 The normal composition includes non-anonymous DHT lookup and enabled

@@ -9,14 +9,16 @@ use std::{
     task::{Context, Poll},
 };
 use tokio::io::{AsyncRead, ReadBuf};
+use zeroize::{Zeroize, Zeroizing};
+const IO_QUANTUM: usize = 32 * 1024;
 struct Out {
-    bytes: Vec<u8>,
+    bytes: Zeroizing<Vec<u8>>,
     position: usize,
     tag: Option<u32>,
 }
 pub(crate) struct Link {
     connection: Option<Connection>,
-    input: Vec<u8>,
+    input: Zeroizing<Vec<u8>>,
     filled: usize,
     need: usize,
     ready: bool,
@@ -47,7 +49,7 @@ impl Link {
             .map_err(|_| Error::Capacity)?;
         Ok(Self {
             connection: Some(connection),
-            input,
+            input: Zeroizing::new(input),
             filled: 0,
             need: 4,
             ready: false,
@@ -131,7 +133,7 @@ impl Link {
             .map_err(|_| Error::Capacity)?;
         owned.extend_from_slice(bytes);
         self.tx.push_back(Out {
-            bytes: owned,
+            bytes: Zeroizing::new(owned),
             position: 0,
             tag,
         });
@@ -142,7 +144,7 @@ impl Link {
         self.ready.then_some(&self.input[..self.need])
     }
     pub(crate) fn release(&mut self) {
-        self.input[..self.filled].fill(0);
+        self.input[..self.filled].zeroize();
         self.filled = 0;
         self.need = 4;
         self.ready = false;
@@ -158,7 +160,11 @@ impl Link {
             Poll::Ready(Ok(())) => {}
             other => return other,
         }
-        match connection.try_write(&front.bytes[front.position..]) {
+        let end = front
+            .bytes
+            .len()
+            .min(front.position.saturating_add(IO_QUANTUM));
+        match connection.try_write(&front.bytes[front.position..end]) {
             Ok(0) => Poll::Ready(Err(io::ErrorKind::WriteZero.into())),
             Ok(n) => {
                 front.position += n;
@@ -187,7 +193,8 @@ impl Link {
         let Some(connection) = self.connection.as_mut() else {
             return Poll::Pending;
         };
-        let mut buf = ReadBuf::new(&mut self.input[self.filled..self.need]);
+        let end = self.need.min(self.filled.saturating_add(IO_QUANTUM));
+        let mut buf = ReadBuf::new(&mut self.input[self.filled..end]);
         match Pin::new(connection).poll_read(cx, &mut buf) {
             Poll::Pending => Poll::Pending,
             Poll::Ready(Err(error)) => {

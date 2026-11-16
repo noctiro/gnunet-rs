@@ -12,7 +12,7 @@ use gnunet_exit::engine::{Engine, Service};
 use gnunet_exit_host::runtime::{Driver, Event, OsEntropy, Progress};
 use gnunet_program_host::{program::Prepared, reporting::Reporter, shared_clock::SharedClock};
 use gnunet_resolver_broker::{Context as ResolverContext, Driver as ResolverDriver, Reply};
-use gnunet_service_startup::{ControlReceiver, ParentControl};
+use gnunet_service_startup::{ControlReceiver, StopSignals};
 use gnunet_tun_host::{Action, Ipv6End, Ipv6Progress, Ipv6State, Ipv6Watch, Ipv6WatchOptions};
 use std::{
     cell::Cell,
@@ -23,15 +23,10 @@ use std::{
     sync::Arc,
     task::{Context, Poll},
 };
-use tokio::{
-    signal::unix::{Signal, SignalKind, signal},
-    time::Instant,
-};
+use tokio::time::Instant;
 pub(super) type Exit<'cfg, 'id, 'slots> = Driver<'cfg, 'id, 'slots, OsEntropy>;
 pub(super) struct Stop {
-    interrupt: Signal,
-    terminate: Signal,
-    parent: Option<ControlReceiver>,
+    signals: StopSignals,
     requested: bool,
     external: Rc<Cell<bool>>,
     pub reports: Reporter,
@@ -41,18 +36,14 @@ pub(super) struct Stop {
 }
 impl Stop {
     fn new(
-        parent: Option<ParentControl>,
+        parent: Option<ControlReceiver>,
         external: Rc<Cell<bool>>,
         reports: Reporter,
         cleanup: Cleanup,
         grace: std::time::Duration,
     ) -> Result<Self, Failure> {
         Ok(Self {
-            interrupt: signal(SignalKind::interrupt())?,
-            terminate: signal(SignalKind::terminate())?,
-            parent: parent
-                .map(|p| p.register().map_err(|e| e.error))
-                .transpose()?,
+            signals: StopSignals::new(parent)?,
             requested: false,
             external,
             reports,
@@ -101,36 +92,65 @@ impl Stop {
         if self.requested {
             return Poll::Ready(Ok(()));
         }
-        if let Some(control) = &mut self.parent {
-            match control.poll_signal(cx) {
-                Poll::Ready(Ok(Some(n)))
-                    if i32::from(n) == SignalKind::interrupt().as_raw_value()
-                        || i32::from(n) == SignalKind::terminate().as_raw_value() =>
-                {
-                    self.request()?;
-                    return Poll::Ready(Ok(()));
+        match self.signals.poll_stop(cx) {
+            Poll::Ready(Ok(())) => {
+                self.request()?;
+                Poll::Ready(Ok(()))
+            }
+            Poll::Ready(Err(error)) => Poll::Ready(Err(error.into())),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+    async fn notify_ready(
+        &mut self,
+        notification: impl Future<Output = Result<(), Failure>>,
+        until: Instant,
+    ) -> Result<(), Failure> {
+        let mut notification = std::pin::pin!(notification);
+        let mut alarm = std::pin::pin!(tokio::time::sleep_until(until));
+        poll_fn(|cx| {
+            if alarm.as_mut().poll(cx).is_ready() {
+                return Poll::Ready(Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "EXIT original startup readiness deadline",
+                )
+                .into()));
+            }
+            match self.poll(cx) {
+                Poll::Ready(Ok(())) => {
+                    return Poll::Ready(Err(io::Error::new(
+                        io::ErrorKind::Interrupted,
+                        "EXIT stopped before readiness acknowledgement",
+                    )
+                    .into()));
                 }
-                Poll::Ready(Ok(Some(_))) => cx.waker().wake_by_ref(),
-                Poll::Ready(Ok(None)) => self.parent = None,
-                Poll::Ready(Err(e)) => return Poll::Ready(Err(e.into())),
+                Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
                 Poll::Pending => {}
             }
-        }
-        if self.interrupt.poll_recv(cx).is_ready() || self.terminate.poll_recv(cx).is_ready() {
-            self.request()?;
-            return Poll::Ready(Ok(()));
-        }
-        Poll::Pending
+            notification.as_mut().poll(cx)
+        })
+        .await
     }
 }
 pub(super) fn observe(event: Event<'_>, reports: &Reporter, cleanup: &Cleanup) {
     match event {
-        Event::TunLost(loss) => {
-            reports.warning(
-                "exit.packet.lost",
-                format_args!("EXIT actual original packet source loss: {loss:?}"),
-            );
-            cleanup.retain(Stage::Tun, Box::new(crate::lifecycle::TunLoss(loss)));
+        Event::TunLost(mut loss) => {
+            loss.release_wintun_recovery();
+            if matches!(loss.cause, gnunet_tun_host::LossCause::Closed)
+                && loss.close_error.is_none()
+            {
+                reports.debug(
+                    "exit.packet.closed",
+                    format_args!("EXIT original packet source closed: {loss:?}"),
+                );
+                cleanup.packet_close(loss);
+            } else {
+                reports.warning(
+                    "exit.packet.lost",
+                    format_args!("EXIT actual original packet source loss: {loss:?}"),
+                );
+                cleanup.retain(Stage::Tun, Box::new(crate::lifecycle::TunLoss(loss)));
+            }
         }
         Event::CadetLost { report, cause } => reports.warning(
             "exit.cadet.lost",
@@ -226,6 +246,8 @@ struct Owners<'cfg, 'id, 'slots> {
     dns_advertisement: Option<dns_advertisement::Owner<'cfg>>,
     binding_count: usize,
     requires_tun: bool,
+    #[cfg(windows)]
+    recovery: network::recovery::Controller,
     resolver: Resolver,
     watch: Option<Ipv6Watch>,
     routes: Vec<Action>,
@@ -263,6 +285,8 @@ impl Owners<'_, '_, '_> {
         }
     }
     fn shutdown(&mut self) {
+        #[cfg(windows)]
+        self.recovery.close();
         if self.done {
             return;
         }
@@ -294,13 +318,16 @@ impl Owners<'_, '_, '_> {
             native: closed.report,
             quiescent: closed.quiescent,
             regex,
-            unremoved_routes: self.routes.len(),
+            unremoved_routes: std::mem::take(&mut self.routes),
+            #[cfg(windows)]
+            recovery: self.recovery.take_report(),
         });
         self.done = true;
     }
 }
 impl Drop for Owners<'_, '_, '_> {
     fn drop(&mut self) {
+        self.exit.defer_interface_cleanup();
         self.shutdown();
         self.resolver.close();
     }
@@ -313,44 +340,94 @@ pub(super) async fn scheduled(
     reports: Reporter,
     cleanup: Cleanup,
 ) -> Result<(), Failure> {
-    let live = gnunet_client_host::LiveConfiguration::new(prepared.main().config.duplicate()?);
-    let (mut context, resolver) = gnunet_resolver_broker::broker::<128, 256>(
-        live.clone(),
-        settings.resolver,
-        gnunet_resolver_broker::native_profile()?,
-        Arc::new(clock.clone()),
-    )?;
-    let task_context = context.clone();
-    let stop = Rc::new(Cell::new(false));
-    gnunet_program_host::foreground::run(
-        prepared,
-        &mut context,
-        clock,
-        stop.clone(),
-        run(Inputs {
-            settings,
-            inherited,
-            live,
-            context: task_context,
-            resolver,
-            reports,
-            cleanup,
-            external: stop,
-        }),
-    )
-    .await
+    #[cfg(unix)]
+    let parent = inherited
+        .parent
+        .map(|parent| parent.register().map_err(|error| error.error))
+        .transpose()?;
+    #[cfg(windows)]
+    let (parent, ready) = match inherited
+        .parent
+        .map(|parent| parent.register())
+        .transpose()?
+    {
+        Some(parent) => (Some(parent.control), Some(parent.ready)),
+        None => (None, None),
+    };
+    #[cfg(windows)]
+    let (mut readiness, notification) = crate::readiness::prepare(ready);
+    #[cfg(unix)]
+    let notification = async { Ok::<(), Failure>(()) };
+    let result = async {
+        let live = gnunet_client_host::LiveConfiguration::new(prepared.main().config.duplicate()?);
+        let (mut context, resolver) = gnunet_resolver_broker::broker::<128, 256>(
+            live.clone(),
+            settings.resolver,
+            gnunet_resolver_broker::native_profile()?,
+            Arc::new(clock.clone()),
+        )?;
+        let task_context = context.clone();
+        let stop = Rc::new(Cell::new(false));
+        gnunet_program_host::foreground::run(
+            prepared,
+            &mut context,
+            clock,
+            stop.clone(),
+            run(
+                Inputs {
+                    settings,
+                    #[cfg(unix)]
+                    tun: inherited.tun,
+                    parent,
+                    live,
+                    context: task_context,
+                    resolver,
+                    reports: reports.clone(),
+                    cleanup: cleanup.clone(),
+                    external: stop,
+                },
+                notification,
+            ),
+        )
+        .await
+    }
+    .await;
+    #[cfg(windows)]
+    if result.is_err() {
+        match tokio::time::timeout(std::time::Duration::from_secs(5), readiness.failure()).await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => cleanup.retain(Stage::Readiness, error),
+            Err(_) => cleanup.retain(
+                Stage::Readiness,
+                Box::new(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "EXIT failure notification deadline",
+                )),
+            ),
+        }
+    }
+    result
 }
+
 async fn resolve(
     settings: &Settings,
     context: &ResolverContext<128, 256>,
     resolver: &mut ResolverDriver<128, 256>,
     stop: &mut Stop,
+    startup: Instant,
 ) -> Result<Vec<Service>, Failure> {
     let reports = stop.reports.clone();
     let mut result = Vec::new();
     result.try_reserve_exact(settings.redirects.len())?;
     for redirect in &settings.redirects {
         stop.check_now().await?;
+        if Instant::now() >= startup {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "EXIT startup deadline before service lookup",
+            )
+            .into());
+        }
         let literal = match redirect.host.as_str() {
             "localhost4" => Some(IpAddr::V4(
                 settings
@@ -374,7 +451,7 @@ async fn resolve(
                 gnunet_resolver_broker::Family::Any,
                 gnunet_types::Duration(u64::try_from(settings.lookup.as_micros())?),
             )?;
-            let until = network::target(settings.lookup)?;
+            let until = network::target(settings.lookup)?.min(startup);
             let mut alarm = std::pin::pin!(tokio::time::sleep_until(until));
             loop {
                 enum Callback {
@@ -475,6 +552,14 @@ enum Turn {
     Step(Progress),
     RenewWatch,
 }
+#[cfg(windows)]
+fn retire_missing(
+    exit: &mut Exit<'_, '_, '_>,
+    recovery: &mut network::recovery::Controller,
+    reports: &Reporter,
+) -> Result<bool, Failure> {
+    Ok(exit.retire_missing_wintun(&mut |event| recovery.observe(event, reports))?)
+}
 async fn turn(
     owners: &mut Owners<'_, '_, '_>,
     stop: &mut Stop,
@@ -483,7 +568,12 @@ async fn turn(
 ) -> Result<Turn, Failure> {
     let reports = owners.reports.clone();
     let cleanup = owners.cleanup.clone();
+    #[cfg(windows)]
+    let recovery = &mut owners.recovery;
+    #[cfg(windows)]
+    let routes = &mut owners.routes;
     let exit = &mut owners.exit;
+
     let binding_count = owners.binding_count;
     let requires_tun = owners.requires_tun;
     let mut resolving = std::pin::pin!(
@@ -497,14 +587,21 @@ async fn turn(
     let dns_advertisement = &mut owners.dns_advertisement;
     poll_fn(|cx| {
         reports.register(cx);
-        let guarded =
-            exit.poll_native_guard(cx, &mut |event| observe(event, &reports, &cleanup))?;
+        let guarded = exit.poll_native_guard(cx, &mut |event| {
+            #[cfg(windows)]
+            if interruptible {
+                recovery.observe(event, &reports);
+                return;
+            }
+            observe(event, &reports, &cleanup);
+        })?;
         if let Some(target) = until
             && Instant::now() >= target
         {
             return Poll::Ready(Ok(Turn::Step(Progress::WaitDeadline)));
         }
-        if requires_tun && !exit.tun_source_current() {
+        #[cfg(not(windows))]
+        if interruptible && requires_tun && !exit.tun_source_current() {
             return Poll::Ready(Err("original EXIT packet source retired".into()));
         }
         if interruptible {
@@ -514,15 +611,31 @@ async fn turn(
                 Poll::Pending => {}
             }
         }
+        #[cfg(windows)]
+        if interruptible {
+            recovery.retire_watch(watch, &reports)?;
+        }
         let mut progressed = guarded;
         if let Some(watch) = watch {
             match watch.poll(cx) {
                 Poll::Ready(Ipv6Progress::Observed(sample)) => {
                     if sample.state != Ipv6State::Ready {
-                        return Poll::Ready(Err(format!(
-                            "configured IPv6 source is no longer ready: {sample:?}"
-                        )
-                        .into()));
+                        #[cfg(windows)]
+                        let retired = interruptible && retire_missing(exit, recovery, &reports)?;
+                        #[cfg(unix)]
+                        let retired = false;
+                        if !retired {
+                            return Poll::Ready(Err(format!(
+                                "configured IPv6 source is no longer ready: {sample:?}"
+                            )
+                            .into()));
+                        }
+                        reports.warning(
+                            "exit.ipv6.physical-loss",
+                            format_args!(
+                                "EXIT original IPv6 sample before physical recovery: {sample:?}"
+                            ),
+                        );
                     }
                     progressed = true;
                 }
@@ -531,9 +644,33 @@ async fn turn(
                         return Poll::Ready(Err(e.into()));
                     }
                     if matches!(done.reason, Ipv6End::Deadline) {
+                        #[cfg(windows)]
+                        if interruptible && retire_missing(exit, recovery, &reports)? {
+                            progressed = true;
+                        } else {
+                            return Poll::Ready(Ok(Turn::RenewWatch));
+                        }
+                        #[cfg(unix)]
                         return Poll::Ready(Ok(Turn::RenewWatch));
+                    } else {
+                        #[cfg(windows)]
+                        let retired = interruptible && retire_missing(exit, recovery, &reports)?;
+                        #[cfg(unix)]
+                        let retired = false;
+                        if !retired {
+                            return Poll::Ready(Err(format!(
+                                "IPv6 observer source lost: {done:?}"
+                            )
+                            .into()));
+                        }
+                        reports.warning(
+                            "exit.ipv6.physical-loss",
+                            format_args!(
+                                "EXIT original IPv6 observer before physical recovery: {done:?}"
+                            ),
+                        );
+                        progressed = true;
                     }
-                    return Poll::Ready(Err(format!("IPv6 observer source lost: {done:?}").into()));
                 }
                 Poll::Ready(Ipv6Progress::Finished) => {
                     return Poll::Ready(Err(
@@ -562,8 +699,15 @@ async fn turn(
         // A cancelled drive wait retains all original Driver cursors. Drop
         // this bounded polling future before checking the resulting source state.
         let exit_step = {
-            let mut driving =
-                std::pin::pin!(exit.drive(until, |event| observe(event, &reports, &cleanup)));
+            let mut observe_event = |event| {
+                #[cfg(windows)]
+                if interruptible {
+                    recovery.observe(event, &reports);
+                    return;
+                }
+                observe(event, &reports, &cleanup);
+            };
+            let mut driving = std::pin::pin!(exit.drive(until, &mut observe_event));
             driving.as_mut().poll(cx)
         };
         let step = match exit_step {
@@ -576,6 +720,23 @@ async fn turn(
         };
         if interruptible && reports.failed() {
             return Poll::Ready(Ok(Turn::Stop));
+        }
+        #[cfg(windows)]
+        if interruptible {
+            match recovery.poll_restore(cx, stop, exit, watch, routes) {
+                Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
+                Poll::Ready(Ok(network::recovery::Admission::Stopped)) => {
+                    return Poll::Ready(Ok(Turn::Stop));
+                }
+                Poll::Ready(Ok(network::recovery::Admission::Restored)) => progressed = true,
+                Poll::Pending => {}
+            }
+            if requires_tun && !exit.tun_source_current() && !recovery.active() {
+                return Poll::Ready(Err(
+                    "original EXIT packet source retired without recovery ownership".into(),
+                ));
+            }
+            recovery.healthy(exit.report(), exit.tun_source_current());
         }
         let ports_ready = bindings_written(exit, binding_count)?;
         if interruptible && ports_ready && (!requires_tun || exit.tun_source_current()) {
@@ -599,10 +760,7 @@ async fn turn(
         if interruptible && let Some(owner) = dns_advertisement.as_mut() {
             // Re-read the actual DNS port after this turn's CADET input/loss.
             // No new ad IO follows a known canceled/retired source.
-            owner.readiness(
-                dns_port_written(exit, binding_count)?
-                    && (!requires_tun || exit.tun_source_current()),
-            )?;
+            owner.readiness(dns_port_written(exit, binding_count)?)?;
             match owner.poll(cx) {
                 Poll::Ready(Ok(activity)) => progressed |= activity,
                 Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
@@ -621,7 +779,9 @@ async fn turn(
 }
 struct Inputs {
     settings: Settings,
-    inherited: Inherited,
+    #[cfg(unix)]
+    tun: Option<std::os::fd::OwnedFd>,
+    parent: Option<ControlReceiver>,
     live: gnunet_client_host::LiveConfiguration,
     context: ResolverContext<128, 256>,
     resolver: ResolverDriver<128, 256>,
@@ -629,10 +789,15 @@ struct Inputs {
     cleanup: Cleanup,
     external: Rc<Cell<bool>>,
 }
-async fn run(input: Inputs) -> Result<(), Failure> {
+async fn run(
+    input: Inputs,
+    notification: impl Future<Output = Result<(), Failure>>,
+) -> Result<(), Failure> {
     let Inputs {
         settings,
-        inherited,
+        #[cfg(unix)]
+        tun,
+        parent,
         live,
         context,
         resolver,
@@ -647,14 +812,23 @@ async fn run(input: Inputs) -> Result<(), Failure> {
         closed: false,
     };
     let mut stop = Stop::new(
-        inherited.parent,
+        parent,
         external,
         reports.clone(),
         cleanup.clone(),
         settings.shutdown,
     )?;
+    let mut notification = Some(notification);
     stop.check()?;
-    let services = resolve(&settings, &context, resolver.driver_mut()?, &mut stop).await?;
+    let startup = network::target(settings.startup)?;
+    let services = resolve(
+        &settings,
+        &context,
+        resolver.driver_mut()?,
+        &mut stop,
+        startup,
+    )
+    .await?;
     let bindings = settings.bindings(&services)?;
     let engine = Engine::new(settings.config(&services), settings.core)?;
     let source = gnunet_client_host::EndpointSource::live(
@@ -692,7 +866,6 @@ async fn run(input: Inputs) -> Result<(), Failure> {
     stop.check()?;
     let mut routes = Vec::new();
     routes.try_reserve_exact(settings.routes.len())?;
-    let startup = network::target(settings.startup)?;
     let mut dns_pils = gnunet_pils::client::Instance::new();
     let mut dns_dht = gnunet_dht_client_host::Instance::new();
     let dns_advertisement = if settings.dns.is_some() {
@@ -711,8 +884,14 @@ async fn run(input: Inputs) -> Result<(), Failure> {
     } else {
         None
     };
-    let (tun, tun_description) =
-        network::open(&settings, inherited.tun, &mut stop, startup).await?;
+    let (tun, tun_description) = network::open(
+        &settings,
+        #[cfg(unix)]
+        tun,
+        &mut stop,
+        startup,
+    )
+    .await?;
     let exit = match Exit::try_new(
         gnunet_exit_host::runtime::Parts {
             engine,
@@ -738,6 +917,7 @@ async fn run(input: Inputs) -> Result<(), Failure> {
                         Box::new(crate::lifecycle::TunLoss(loss)),
                     );
                 }
+                #[cfg(unix)]
                 if let Some(report) = source.reap_helper().await {
                     cleanup.helper(report);
                 }
@@ -745,12 +925,16 @@ async fn run(input: Inputs) -> Result<(), Failure> {
             return Err(Box::new(rejected.error));
         }
     };
+    #[cfg(windows)]
+    let recovery = network::recovery::Controller::new(&settings, cleanup.clone())?;
     let mut owners = Owners {
         exit,
         announcements,
         dns_advertisement,
         binding_count: bindings.len(),
         requires_tun: settings.ipv4.is_some() || settings.ipv6.is_some(),
+        #[cfg(windows)]
+        recovery,
         resolver,
         watch: None,
         routes,
@@ -760,10 +944,13 @@ async fn run(input: Inputs) -> Result<(), Failure> {
     };
     let outcome = async {
         owners.watch = network::configure(
-            &mut owners.exit, &settings, &mut stop, &mut owners.routes,
+            &mut owners.exit, &settings, &mut stop, &mut owners.routes, startup,
         ).await?;
         let mut ready = false;
         loop {
+            if !ready && Instant::now() >= startup {
+                return Err(io::Error::new(io::ErrorKind::TimedOut, "EXIT original startup deadline before readiness").into());
+            }
             let ports_ready = bindings_written(&owners.exit, bindings.len())?;
             let sources_ready = ports_ready
                 && (!owners.requires_tun || owners.exit.tun_source_current());
@@ -779,12 +966,13 @@ async fn run(input: Inputs) -> Result<(), Failure> {
             // dependencies. Its separate report says only actual local PUT facts.
             if !ready && sources_ready && owners.announcements.submitted() {
                 stop.check()?;
+                let current_tun = owners.exit.tun_info().map(|info| format!("{}#{}", info.name, info.index)).unwrap_or_else(|| tun_description.clone());
                 let mut output = io::stdout().lock();
                 writeln!(
                     output,
                     "READY exit wire=0.29.1 cadet_ports_written={} tun={} ipv4_native_observed={} ipv6_dad={} explicit_routes_kernel_ack={} dns={} regex_local=({}) dns_advertisement_local={:?} advertisement_ack=none remote_reachability=unasserted",
                     bindings.len(),
-                    tun_description,
+                    current_tun,
                     settings.ipv4.is_some(),
                     if settings.ipv6.is_some() { "observed-ready" } else { "disabled" },
                     owners.routes.len(),
@@ -793,6 +981,8 @@ async fn run(input: Inputs) -> Result<(), Failure> {
                     owners.dns_advertisement.as_ref().map(|owner| owner.report()),
                 )?;
                 output.flush()?;
+                drop(output);
+                stop.notify_ready(notification.take().ok_or("EXIT original readiness notification already consumed")?, startup).await?;
                 ready = true;
             }
             match turn(
@@ -860,6 +1050,7 @@ async fn run(input: Inputs) -> Result<(), Failure> {
         );
     }
     owners.shutdown();
+    #[cfg(unix)]
     if let Some(report) = owners.exit.reap_helper().await {
         cleanup.helper(report);
     }

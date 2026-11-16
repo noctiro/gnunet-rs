@@ -8,6 +8,8 @@ all declared ARM/util library hashes, generated compile configuration and
 compile database before and after each fresh comparison. It never rebuilds or
 changes a normal C library. Output must be disjoint from all inputs.
 
+## Reference behavior
+
 | Official public API | Rust entry points / original authority |
 |---|---|
 | GNUNET_ARM_connect | ClientHost::connect, initial logical MQ + TEST, physical retries held in same epoch |

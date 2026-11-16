@@ -45,7 +45,14 @@ impl fmt::Display for Error {
         }
     }
 }
-impl std::error::Error for Error {}
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Protocol(error) => Some(error),
+            Self::Io(error) => Some(error),
+        }
+    }
+}
 /// Explicit native per-MQ bounds. One original immutable callback frame per MQ.
 #[derive(Clone, Copy, Debug)]
 pub struct Limits {
@@ -119,12 +126,12 @@ pub enum Event<'id> {
         /// Original observed local stage, not remote receipt.
         state: core::OutputPhase,
     },
-    /// Original helper output after its actual pipe owners retired.
-    HelperOutputLost {
-        /// Original helper-bound output.
+    /// Original packet output when its source admission closes.
+    PacketOutputLost {
+        /// Original packet-source output.
         effect: Effect<'id>,
-        /// Actual original pipe byte prefix.
-        written: usize,
+        /// Original helper prefix, queued device packet or admitted injection.
+        exposure: crate::PacketExposure,
         /// Immutable original total frame length.
         total: usize,
     },
@@ -180,7 +187,7 @@ struct App<'id> {
     callback_until: Option<Instant>,
     turn: usize,
 }
-/// One actual shared SERVICE owner. Callbacks and helper/query ports are separate.
+/// Shared SERVICE owner with separate callback, packet and resolver ports.
 pub struct Server<'id> {
     core: Engine<'id>,
     apps: Vec<Option<App<'id>>>,
@@ -659,7 +666,7 @@ impl<'id> Server<'id> {
         Poll::Pending
     }
     /// Immediate no-clock cleanup of every original actual local MQ. Does not stop
-    /// helper/resolver owners; Gateway closes those independently.
+    /// packet/resolver owners; Gateway closes those independently.
     pub fn close_all(&mut self, observe: &mut impl FnMut(Event<'id>)) -> Option<Error> {
         self.stopped = true;
         for a in self.apps.iter_mut().flatten() {

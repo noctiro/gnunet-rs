@@ -21,7 +21,23 @@ libc.workspace = true
 gnunet-native.workspace = true
 
 [dev-dependencies]
+socket2.workspace = true
 tokio = { workspace = true, features = ["rt", "net", "time"] }
 
 [lints]
 workspace = true
+
+[[test]]
+name = "windows_bootstrap"
+path = "tests/windows_bootstrap.rs"
+harness = false
+
+[[test]]
+name = "windows_daemon"
+path = "tests/windows_daemon.rs"
+harness = false
+
+[[test]]
+name = "windows_activation"
+path = "tests/windows_activation.rs"
+harness = false

@@ -7,7 +7,7 @@
 //! Datagram callbacks remain live, and retries continue, until cancel or stop.
 #![forbid(unsafe_code)]
 
-use gnunet_dnsstub::{Action, DnsStub as Core};
+use gnunet_dnsstub::{Action, HeapDnsStub as Core};
 pub use gnunet_dnsstub::{
     Admission, DropReason, Family, RequestId, ServerId, SocketId, Stopped, UnverifiedDatagram,
 };
@@ -36,16 +36,33 @@ pub enum HostError {
     Core(Error),
     /// System entropy was unavailable before admission mutated the owner.
     Entropy(getrandom::Error),
+    /// Native socket preparation failed before query admission.
+    Preparation(io::Error),
 }
 impl fmt::Display for HostError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Core(e) => write!(f, "DNSSTUB owner: {e}"),
             Self::Entropy(e) => write!(f, "DNSSTUB system entropy: {e}"),
+            Self::Preparation(error) => write!(f, "DNSSTUB socket preparation: {error}"),
         }
     }
 }
-impl std::error::Error for HostError {}
+impl std::error::Error for HostError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Core(error) => Some(error),
+            Self::Entropy(error) => Some(error),
+            Self::Preparation(error) => Some(error),
+        }
+    }
+}
+impl From<io::Error> for HostError {
+    fn from(error: io::Error) -> Self {
+        Self::Preparation(error)
+    }
+}
+
 impl From<Error> for HostError {
     fn from(e: Error) -> Self {
         Self::Core(e)
@@ -114,6 +131,14 @@ pub enum Event<'a> {
         /// Exact local rejection reason.
         reason: Discard,
     },
+    /// One receive failed independently of the cached socket's lifetime. This
+    /// identifies no sender or outcome for an earlier send; retries remain live.
+    ReceiveRejected {
+        /// Original socket generation, still retained.
+        socket: SocketId,
+        /// Actual isolated native receive error, without packet bytes.
+        error: io::Error,
+    },
     /// A receive syscall failed and only its socket generation was closed.
     ReceiveFailed {
         /// Invalidated cached socket generation.
@@ -125,7 +150,49 @@ pub enum Event<'a> {
 struct Cached {
     id: SocketId,
     local: SocketAddr,
-    socket: UdpSocket,
+    socket: std::sync::Arc<UdpSocket>,
+}
+struct ReservedSocket {
+    id: SocketId,
+    local: SocketAddr,
+    _socket: std::sync::Arc<UdpSocket>,
+}
+/// Original bound DNSSTUB ports retained independently of logical request state.
+/// Keep this lease until every capture filter exempting those ports is closed.
+/// Dropping or stopping the stub alone does not release these socket objects.
+pub struct SocketReservations {
+    sockets: Vec<ReservedSocket>,
+}
+impl std::fmt::Debug for SocketReservations {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DnsSocketReservations")
+            .field("sockets", &self.sockets.len())
+            .finish()
+    }
+}
+impl SocketReservations {
+    /// Verify the lease still names this stub's original open cache objects.
+    pub fn belongs_to<const R: usize, const N: usize, const S: usize>(
+        &self,
+        stub: &DnsStub<R, N, S>,
+    ) -> bool {
+        !stub.core.is_stopped()
+            && self.sockets.len() == stub.core.slot_count()
+            && self.sockets.iter().all(|reserved| {
+                stub.caches
+                    .get(reserved.id.slot() as usize)
+                    .and_then(|slot| slot[family_index(reserved.id.family())].as_ref())
+                    .is_some_and(|cached| {
+                        cached.id == reserved.id
+                            && stub.core.owns_socket(cached.id)
+                            && std::sync::Arc::ptr_eq(&cached.socket, &reserved._socket)
+                    })
+            })
+    }
+    /// Immutable original cache tokens and numeric wildcard/port bindings.
+    pub fn endpoints(&self) -> impl ExactSizeIterator<Item = (SocketId, SocketAddr)> + '_ {
+        self.sockets.iter().map(|socket| (socket.id, socket.local))
+    }
 }
 type Caches<const R: usize> = [[Option<Cached>; 2]; R];
 #[derive(Default)]
@@ -190,7 +257,7 @@ fn stop<const R: usize, const N: usize, const S: usize>(
     stopped
 }
 /// Restricted synchronous callback operations. Mutations take effect before the
-/// next packet/effect is polled. Stop immediately drops every actual socket.
+/// next packet/effect is polled. Stop releases this stub's socket references.
 /// Resolve returns its evicted failure token explicitly, even within callbacks.
 pub struct CallbackContext<'a, const R: usize, const N: usize, const S: usize> {
     core: &'a mut Core<R, N, S>,
@@ -226,7 +293,7 @@ impl<const R: usize, const N: usize, const S: usize> CallbackContext<'_, R, N, S
     pub fn resolve_cancel(&mut self, request: RequestId) -> Result<(), Error> {
         self.core.resolve_cancel(request)
     }
-    /// Invalidate all callbacks and immediately close every actual cached socket.
+    /// Invalidate all callbacks and release cached sockets; capture leases may retain them.
     pub fn stop(&mut self) -> Stopped {
         stop(self.core, self.caches, self.timer)
     }
@@ -253,6 +320,7 @@ pub struct DnsStub<const R: usize, const N: usize, const S: usize> {
     timer: RetryTimer,
     read_cursor: usize,
     action_first: bool,
+    reserved: Option<Family>,
 }
 impl<const R: usize, const N: usize, const S: usize> DnsStub<R, N, S> {
     /// Construct outside or inside Tokio, without opening sockets. Responses are
@@ -263,7 +331,7 @@ impl<const R: usize, const N: usize, const S: usize> DnsStub<R, N, S> {
             return Err(Error::InvalidInput);
         }
         Ok(Self {
-            core: Core::start(num_sockets)?,
+            core: gnunet_dnsstub::DnsStub::<R, N, S>::start_heap(num_sockets)?,
             caches: std::array::from_fn(|_| [None, None]),
             buffer: vec![0; max_response + 1],
             max_response,
@@ -271,6 +339,7 @@ impl<const R: usize, const N: usize, const S: usize> DnsStub<R, N, S> {
             timer: RetryTimer::default(),
             read_cursor: 0,
             action_first: true,
+            reserved: None,
         })
     }
     /// Add an explicit numeric IP at port53. No hostname lookup is performed.
@@ -329,6 +398,11 @@ impl<const R: usize, const N: usize, const S: usize> DnsStub<R, N, S> {
     pub fn next_wakeup(&self) -> Option<MonoInstant> {
         self.core.next_wakeup()
     }
+    /// Configured slots available for requests and per-family socket caches.
+    #[must_use]
+    pub const fn slot_count(&self) -> usize {
+        self.core.slot_count()
+    }
     /// Number of actual sockets retained, including canceled request slots.
     #[must_use]
     pub fn cached_socket_count(&self) -> usize {
@@ -341,12 +415,66 @@ impl<const R: usize, const N: usize, const S: usize> DnsStub<R, N, S> {
             .as_ref()
             .map(|c| (c.id, c.local))
     }
+    /// Bind every configured slot for one family, then freeze the socket set.
+    /// Use before capture-filter installation and before admitting queries. No
+    /// packet is sent. Binding failure stops this stub and closes partial preparation;
+    /// preflight refusal leaves existing requests unchanged.
+    /// The returned lease retains the original bound sockets through stub stop.
+    pub fn reserve_sockets(&mut self, family: Family) -> Result<SocketReservations, HostError> {
+        if self.core.is_stopped() {
+            return Err(Error::Closed.into());
+        }
+        if self.reserved.is_some() || self.cached_socket_count() != 0 {
+            return Err(Error::Conflict.into());
+        }
+        let mut sockets = Vec::new();
+        sockets
+            .try_reserve_exact(self.core.slot_count())
+            .map_err(io::Error::other)?;
+        let first = self.core.prepare_socket(0, family)?;
+        let prepared = (|| -> Result<(), HostError> {
+            for slot in 0..self.core.slot_count() {
+                let id = if slot == 0 {
+                    first
+                } else {
+                    self.core.prepare_socket(slot, family)?
+                };
+                let cached = match Self::bind(id) {
+                    Ok(cached) => cached,
+                    Err(error) => {
+                        self.core.socket_opened(id, false)?;
+                        return Err(error.into());
+                    }
+                };
+                self.core.socket_opened(id, true)?;
+                sockets.push(ReservedSocket {
+                    id,
+                    local: cached.local,
+                    _socket: std::sync::Arc::clone(&cached.socket),
+                });
+                self.caches[slot][family_index(family)] = Some(cached);
+            }
+            Ok(())
+        })();
+        if let Err(error) = prepared {
+            self.stop();
+            return Err(error);
+        }
+        self.reserved = Some(family);
+        Ok(SocketReservations { sockets })
+    }
     fn bind(socket: SocketId) -> io::Result<Cached> {
         let (domain, address) = match socket.family() {
             Family::V4 => (Domain::IPV4, SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0))),
             Family::V6 => (Domain::IPV6, SocketAddr::from((Ipv6Addr::UNSPECIFIED, 0))),
         };
         let raw = Socket::new(domain, Type::DGRAM, Some(Protocol::UDP))?;
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsSocket;
+            gnunet_native::network::set_exclusive_address_use(raw.as_socket())?;
+            gnunet_native::network::suppress_udp_connection_resets(raw.as_socket())?;
+        }
         if socket.family() == Family::V6 {
             raw.set_only_v6(true)?;
         }
@@ -358,7 +486,7 @@ impl<const R: usize, const N: usize, const S: usize> DnsStub<R, N, S> {
         Ok(Cached {
             id: socket,
             local,
-            socket: socket_io,
+            socket: std::sync::Arc::new(socket_io),
         })
     }
     fn context(&mut self) -> CallbackContext<'_, R, N, S> {
@@ -376,7 +504,13 @@ impl<const R: usize, const N: usize, const S: usize> DnsStub<R, N, S> {
     ) -> Result<Flow, HostError> {
         let event = match action {
             Action::OpenSocket { socket } => {
-                let cached = Self::bind(socket);
+                let cached = if self.reserved.is_some() {
+                    Err(io::Error::other(
+                        "reserved DNSSTUB sockets cannot be replaced or extended",
+                    ))
+                } else {
+                    Self::bind(socket)
+                };
                 self.core.socket_opened(socket, cached.is_ok())?;
                 let result = match cached {
                     Ok(cached) => {
@@ -406,7 +540,8 @@ impl<const R: usize, const N: usize, const S: usize> DnsStub<R, N, S> {
                 }
                 // Exactly one real syscall, bypassing Tokio's initial readiness
                 // cache. All send errors keep the request/socket and its retry.
-                let result = SockRef::from(&cached.socket).send_to(bytes, &destination.into());
+                let result =
+                    SockRef::from(cached.socket.as_ref()).send_to(bytes, &destination.into());
                 self.core.sent(attempt)?;
                 Event::Sent {
                     request,
@@ -424,10 +559,25 @@ impl<const R: usize, const N: usize, const S: usize> DnsStub<R, N, S> {
         error: io::Error,
         callback: &mut impl FnMut(Event<'_>, &mut CallbackContext<'_, R, N, S>) -> Flow,
     ) -> Result<Flow, HostError> {
+        if gnunet_native::network::isolated_datagram_receive_error(&error) {
+            if self
+                .core
+                .readable_socket_at(socket.slot() as usize, socket.family())
+                != Some(socket)
+            {
+                return Err(Error::StaleGeneration.into());
+            }
+            return Ok(callback(
+                Event::ReceiveRejected { socket, error },
+                &mut self.context(),
+            ));
+        }
         // Validate the original core generation before dropping any real owner.
         // A stale read result cannot close its replacement cache generation.
         self.core.socket_failed(socket)?;
-        self.caches[socket.slot() as usize][family_index(socket.family())] = None;
+        if self.reserved.is_none() {
+            self.caches[socket.slot() as usize][family_index(socket.family())] = None;
+        }
         Ok(callback(
             Event::ReceiveFailed { socket, error },
             &mut self.context(),
@@ -647,6 +797,24 @@ mod tests {
                 }
                 let old6 = h.cached_socket(0, Family::V6).ok_or("no v6 cache")?;
                 let old4 = h.cached_socket(0, Family::V4).ok_or("no v4 cache")?;
+                let mut isolated = 0;
+                h.receive_failed(
+                    old6.0,
+                    io::Error::from(io::ErrorKind::ConnectionRefused),
+                    &mut |event, ctx| {
+                        if let Event::ReceiveRejected { socket, error } = event {
+                            assert_eq!(socket, old6.0);
+                            assert_eq!(error.kind(), io::ErrorKind::ConnectionRefused);
+                            isolated += 1;
+                        }
+                        assert_eq!(ctx.cached_socket_count(), 2);
+                        Flow::Return
+                    },
+                )?;
+                assert_eq!(isolated, 1);
+                assert_eq!(h.cached_socket(0, Family::V6), Some(old6));
+                assert_eq!(h.cached_socket(0, Family::V4), Some(old4));
+                assert!(h.owns_request(request));
                 let mut failed = 0;
                 // Inject only the receive syscall error seam, never pretend an OS
                 // receive actually returned this error. Both caches above are real.

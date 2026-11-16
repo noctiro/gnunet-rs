@@ -1,5 +1,5 @@
 //! Public SDK feature entrypoint only; no socket/remote processing credit.
-#![cfg(all(feature = "official-pils-client", unix))]
+#![cfg(all(feature = "official-pils-client", any(unix, windows)))]
 use gnunet::{
     client_host::resolution::{AddressLookup, ResolutionContext, ResolutionTimer},
     clients::pils::{

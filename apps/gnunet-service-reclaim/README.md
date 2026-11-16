@@ -1,31 +1,33 @@
 # Standard RECLAIM SERVICE
 
-`gnunet-service-reclaim` consumes the shared official SERVICE `-c/-d/-h/-L/-l/-v`
-options and selected Logger. It accepts no positional arguments or private key
-path. Initial inherited listener/parent-control descriptors are adopted once
-before logger/config/runtime/other FD ownership. Optional explicit daemon split
-occurs before runtime, account lookup, listeners, OS providers or native clients. The parent releases its original activation/control owners and waits on the real
-child status pipe; EOF/failure is not ready. Only the child refreshes the Logger
-PID, without reopening selected files or replacing captured descriptors.
+`gnunet-service-reclaim` implements official RECLAIM IPC using the
+[shared native SERVICE driver](../../adapters/program-std/README.md#service-startup).
+It accepts `-c/-d/-h/-L/-l/-v` options and no positional arguments or private-key path.
 
-Configuration and `[reclaim] USERNAME` selection precede two-phase listener
-preparation. Existing activation descriptors and new TCP sockets are retained
-before identity switching; new Unix endpoints are created under the actual
-configured account afterwards. The same configured UNIX_MATCH_UID/GID flags
-(absent=false, as generic SERVICE) control new socket/parent filesystem modes and
-kernel credential admission. Existing parents/inodes/inherited endpoints
-are not chowned. Standard TCP ACL and TOLERANT behavior remain shared SERVICE
-policies; deployments must select appropriate access to key-bearing official IPC. The pinned `OPTION_NONE` selects immediate shutdown. No fork/identity
-mutation is hidden in a general asynchronous embedding.
+## Configuration and startup
+
+```sh
+gnunet-service-reclaim -c gnunet.conf
+```
+
+The Unix and Windows entries capture inherited listeners and parent control
+before other native owners. Unix applies `[reclaim] USERNAME` before completing
+local endpoints; Windows verifies the configured process token and imports native
+activation. `UNIX_MATCH_UID/GID` default to false; explicit checks are unsupported
+on Windows. Native endpoint ACLs and standard TCP ACL/TOLERANT policies govern
+access to key-bearing IPC. The pinned `OPTION_NONE` selects immediate shutdown.
 
 The listener, Server, explicit OS provider and configured native clients
-are constructed before ChildReady. READY retains the accurate
+are constructed before readiness notification. READY retains the accurate
 `namestore=client-not-yet-attached gns=client-not-yet-attached` description. Actual native attachment is a later original Connected/Source event; it is not
 invented or made a new startup prerequisite. One original SharedClock Arc and
-one caller-driven Resolver are shared with all providers and STATISTICS. No new
-GNS resolver, key file/import, DHT, worker or store is implemented here. Zones
+one caller-driven Resolver are shared with all providers and STATISTICS. The native CSPRNG is requested only by an admitted identifier operation, retaining
+its platform error and never falling back to a different source. Zones
 arrive only through existing ACL-controlled official IPC and retain original
-zeroizing ownership. Existing JWT presentation semantics remain unverified.
+zeroizing ownership. JWT presentation retains the
+[provider authentication contract](../../adapters/reclaim-std/README.md#real-provider-path).
+
+## Resource and provider policy
 
 `[reclaim-rust]` keeps existing bounded resource/job/iterator/provider policies. New local diagnostic policies STATISTICS_TIMEOUT and STATISTICS_SHUTDOWN_GRACE
 both default 5s, positive finite native targets. Resource/phase limits add no wire

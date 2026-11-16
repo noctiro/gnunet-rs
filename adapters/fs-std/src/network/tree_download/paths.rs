@@ -7,9 +7,7 @@ use gnunet_fs::{
 };
 use std::{
     collections::BTreeSet,
-    ffi::OsStr,
     io,
-    os::unix::ffi::OsStrExt,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -59,13 +57,13 @@ impl Paths {
             name
         };
         validate_name(name)?;
-        let path = base.join(OsStr::from_bytes(name));
-        if path.as_os_str().as_bytes().len() > 4096 {
+        let path = base.join(crate::output::from_protocol_name(name)?);
+        if path.as_os_str().as_encoded_bytes().len() > 4096 {
             return Err(Error::Limit);
         }
         let charged = self
             .path_bytes
-            .checked_add(path.as_os_str().as_bytes().len())
+            .checked_add(path.as_os_str().as_encoded_bytes().len())
             .ok_or(Error::Limit)?;
         if charged > options.max_path_bytes {
             return Err(Error::Limit);

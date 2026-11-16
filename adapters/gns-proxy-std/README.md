@@ -8,6 +8,8 @@ GNS A/AAAA, LEHO and matching TCP+port BOX/TLSA records select the upstream. Raw
 must allocate an address before it can enter the plan. UDP VPN records do not
 represent a TCP CONNECT target and are omitted explicitly.
 
+## Public interface
+
 SOCKS greeting/request reads preserve following HTTP/ClientHello bytes. Bound
 listener addresses come from sockets; one failed bind remains observable
 while another family works. Port443 and matched TLSA service records select TLS. The browser hostname remains the original SOCKS authority. LEHO supplies the
@@ -54,5 +56,6 @@ retirement are distinct observations. No Drop or timeout is renamed remote
 success. Runtime Closed is its local listener/session scope; the foreground must
 still disconnect/drop the same original Resolver Driver.
 
-The standard PROGRAM caller and CA preparation command are integrated in
-`apps/gnunet-gns-proxy` and `apps/gnunet-gns-proxy-setup-ca`. Complete GNUnet functionality and measured performance remain open.
+The [proxy command](../../apps/gnunet-gns-proxy/README.md) and
+[CA preparation command](../../apps/gnunet-gns-proxy-setup-ca/README.md) compose
+this host with native startup and configuration.

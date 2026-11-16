@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
-[target.'cfg(unix)'.dependencies]
+[dependencies]
 gnunet-conversation-host.workspace = true
 gnunet-client-host.workspace = true
 gnunet-cadet-host.workspace = true

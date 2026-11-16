@@ -9,7 +9,6 @@ use std::{
     ffi::{OsStr, OsString},
     future::{Future, poll_fn},
     io::{self, Write},
-    os::unix::ffi::OsStrExt,
     path::PathBuf,
     pin::Pin,
     task::Poll,
@@ -47,11 +46,10 @@ fn parse(args: &[OsString]) -> Result<Command<'_>> {
         _ => return Err("expected regex search|announce; see regex --help".into()),
     };
     let socket = PathBuf::from(args.get(1).ok_or("missing explicit REGEX UNIXPATH")?);
-    let expression = args
-        .get(2)
-        .ok_or("missing literal search string or announcement expression")?
-        .as_os_str()
-        .as_bytes();
+    let expression = crate::argument::wire_bytes(
+        args.get(2)
+            .ok_or("missing literal search string or announcement expression")?,
+    )?;
     let (
         mut timeout_ms,
         mut send,

@@ -1,9 +1,12 @@
 //! Serialized blocking index operations. Original jobs survive canceled waits.
+mod queue;
 use super::Error;
 use crate::index::Index;
 use gnunet_service_runtime::framing::OwnedFrame;
 use gnunet_types::Error as ProtocolError;
 use gnunet_wire::official::fs::Response;
+pub(super) use queue::Pending;
+use queue::{Queue, Refusal};
 use std::{
     future::Future,
     pin::Pin,
@@ -14,7 +17,7 @@ use std::{
     task::{Context, Poll},
     thread,
 };
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::oneshot;
 pub(super) enum Task {
     CollectGarbage,
     Register {
@@ -45,41 +48,11 @@ struct Job {
     task: Task,
     result: oneshot::Sender<Result<Output, Arc<Error>>>,
 }
-type Permit = Pin<
-    Box<dyn Future<Output = Result<mpsc::OwnedPermit<Job>, mpsc::error::SendError<()>>> + Send>,
->;
-pub(super) struct Pending {
-    permit: Option<Permit>,
-    job: Option<Job>,
-    result: oneshot::Receiver<Result<Output, Arc<Error>>>,
-}
-impl Pending {
-    pub fn poll(&mut self, cx: &mut Context<'_>) -> Poll<Result<Output, Arc<Error>>> {
-        if let Some(permit) = &mut self.permit {
-            let permit = match permit.as_mut().poll(cx) {
-                Poll::Pending => return Poll::Pending,
-                Poll::Ready(Err(_)) => return Poll::Ready(Err(Arc::new(Error::WorkerGone))),
-                Poll::Ready(Ok(permit)) => permit,
-            };
-            self.permit = None;
-            let Some(job) = self.job.take() else {
-                return Poll::Ready(Err(Arc::new(Error::Protocol(ProtocolError::Stale))));
-            };
-            drop(permit.send(job));
-        }
-        Pin::new(&mut self.result)
-            .poll(cx)
-            .map(|r| r.unwrap_or_else(|_| Err(Arc::new(Error::WorkerGone))))
-    }
-}
-struct ResolverShared {
-    sender: mpsc::Sender<Job>,
-}
 /// Weak submission port into the one existing index owner's bounded queue.
 /// Cloning this port never opens an Index/WAL or keeps a shut-down worker alive.
 #[derive(Clone)]
 pub struct IndexResolver {
-    shared: Weak<ResolverShared>,
+    shared: Weak<Queue>,
 }
 /// One actually admitted readonly resolution, retained across canceled waits.
 /// It holds no queue sender or admission permit. Dropping the wait leaves the
@@ -98,16 +71,13 @@ impl IndexResolver {
             .ok_or_else(|| Arc::new(Error::WorkerGone))?;
         let (result, receiver) = oneshot::channel();
         shared
-            .sender
             .try_send(Job {
                 task: Task::Resolve { query, record },
                 result,
             })
             .map_err(|error| match error {
-                mpsc::error::TrySendError::Full(_) => {
-                    Arc::new(Error::Protocol(ProtocolError::Capacity))
-                }
-                mpsc::error::TrySendError::Closed(_) => Arc::new(Error::WorkerGone),
+                Refusal::Full => Arc::new(Error::Protocol(ProtocolError::Capacity)),
+                Refusal::Closed => Arc::new(Error::WorkerGone),
             })?;
         Ok(Resolution {
             result: Some(receiver),
@@ -135,8 +105,7 @@ impl Resolution {
     }
 }
 pub(super) struct Worker {
-    resolver: Option<Arc<ResolverShared>>,
-    sender: Option<mpsc::Sender<Job>>,
+    queue: Option<Arc<Queue>>,
     thread: Option<thread::JoinHandle<()>>,
     exited: oneshot::Receiver<()>,
     exit_observed: bool,
@@ -163,10 +132,7 @@ impl Worker {
         if capacity == 0 || capacity > tokio::sync::Semaphore::MAX_PERMITS {
             return Err(Arc::new(Error::Protocol(ProtocolError::InvalidInput)));
         }
-        let (sender, mut receiver) = mpsc::channel::<Job>(capacity);
-        let resolver = Arc::new(ResolverShared {
-            sender: sender.clone(),
-        });
+        let (queue, mut receiver) = Queue::new(capacity);
         let (exited, exit) = oneshot::channel();
         let cancelled = Arc::new(AtomicBool::new(false));
         let stop = cancelled.clone();
@@ -248,8 +214,7 @@ impl Worker {
             })
             .map_err(|e| Arc::new(Error::Io(e)))?;
         Ok(Self {
-            resolver: Some(resolver),
-            sender: Some(sender),
+            queue: Some(queue),
             thread: Some(thread),
             exited: exit,
             exit_observed: false,
@@ -260,7 +225,7 @@ impl Worker {
     }
     pub fn resolver(&self) -> Result<IndexResolver, Arc<Error>> {
         let shared = self
-            .resolver
+            .queue
             .as_ref()
             .ok_or_else(|| Arc::new(Error::WorkerGone))?;
         Ok(IndexResolver {
@@ -268,22 +233,15 @@ impl Worker {
         })
     }
     pub fn submit(&self, task: Task) -> Result<Pending, Arc<Error>> {
-        let sender = self
-            .sender
+        let queue = self
+            .queue
             .as_ref()
-            .ok_or_else(|| Arc::new(Error::WorkerGone))?
-            .clone();
-        let (result, receiver) = oneshot::channel();
-        Ok(Pending {
-            permit: Some(Box::pin(sender.reserve_owned())),
-            job: Some(Job { task, result }),
-            result: receiver,
-        })
+            .ok_or_else(|| Arc::new(Error::WorkerGone))?;
+        Ok(Pending::new(queue, task))
     }
     pub async fn join(&mut self) -> Result<(), Arc<Error>> {
         // Weak external ports cannot admit more work after shutdown starts.
-        self.resolver = None;
-        self.sender = None;
+        self.close_admission();
         std::future::poll_fn(|cx| {
             if self.joined {
                 return Poll::Ready(Ok(()));
@@ -319,11 +277,16 @@ impl Worker {
     pub fn quiesced(&self) -> bool {
         self.joined
     }
+    fn close_admission(&mut self) {
+        if let Some(queue) = self.queue.take() {
+            queue.close();
+        }
+    }
 }
 impl Drop for Worker {
     fn drop(&mut self) {
         self.cancelled.store(true, Ordering::Release);
-        self.sender = None;
+        self.close_admission();
     }
 }
 
@@ -341,7 +304,12 @@ mod tests {
                 .duration_since(std::time::UNIX_EPOCH)?
                 .as_nanos()
         ));
-        std::fs::create_dir(&directory)?;
+        gnunet_native::filesystem::Directory::open(&std::env::temp_dir())?
+            .create_private_directory(
+                directory
+                    .file_name()
+                    .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidInput))?,
+            )?;
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
@@ -350,6 +318,7 @@ mod tests {
             let mut worker = Worker::start(index, 2)?;
             let resolver = worker.resolver()?;
             let mut resolution = resolver.resolve([0; 64], [0; 72])?;
+            let mut unissued = worker.submit(Task::Next(None))?;
             // Keep both public handles alive without polling the admitted read.
             // Neither may hold a sender which prevents the original thread EOF.
             tokio::time::timeout(std::time::Duration::from_secs(2), worker.join()).await??;
@@ -359,6 +328,10 @@ mod tests {
             match resolver.resolve([0; 64], [0; 72]) {
                 Err(error) if matches!(error.as_ref(), Error::WorkerGone) => {}
                 _ => return Err("weak resolver admitted work after worker shutdown".into()),
+            }
+            let refused = std::future::poll_fn(|cx| unissued.poll(cx)).await;
+            if !matches!(refused, Err(error) if matches!(error.as_ref(), Error::WorkerGone)) {
+                return Err("unissued local task survived original queue shutdown".into());
             }
             let original = std::future::poll_fn(|cx| resolution.poll(cx)).await;
             if !matches!(original, Err(error) if matches!(error.as_ref(), Error::Index(_))) {

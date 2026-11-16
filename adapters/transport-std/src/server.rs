@@ -1268,10 +1268,10 @@ mod framing_resource_tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let engine = Engine::new(PeerId([0x21; 32]), gnunet_transport::Limits::default())?;
         let mut server = Server::new(engine, 2, 65535)?;
-        let (a, mut pa) = tokio::net::UnixStream::pair()?;
-        let (b, mut pb) = tokio::net::UnixStream::pair()?;
-        let first = server.admit(Connection::from_unix(a))?;
-        let second = server.admit(Connection::from_unix(b))?;
+        let (a, mut pa) = crate::test_support::pair().await?;
+        let (b, mut pb) = crate::test_support::pair().await?;
+        let first = server.admit(a)?;
+        let second = server.admit(b)?;
         server.pending_frame = Some((
             second.clone(),
             OwnedFrame::new(vec![0, 8, 0, 99, 0x71, 0x71, 0x71, 0x71]),
@@ -1352,8 +1352,8 @@ mod framing_resource_tests {
             1,
             65535,
         )?;
-        let (native, mut remote) = tokio::net::UnixStream::pair()?;
-        let id = server.admit(Connection::from_unix(native))?;
+        let (native, mut remote) = crate::test_support::pair().await?;
+        let id = server.admit(native)?;
         let mut register = [0; 16];
         register[..2].copy_from_slice(&16u16.to_be_bytes());
         register[2..4].copy_from_slice(&1211u16.to_be_bytes());
@@ -1511,8 +1511,8 @@ mod framing_resource_tests {
             65535,
             native,
         )?;
-        let (connection, mut application) = tokio::net::UnixStream::pair()?;
-        let application_id = server.admit(Connection::from_unix(connection))?;
+        let (connection, mut application) = crate::test_support::pair().await?;
+        let application_id = server.admit(connection)?;
         let application_lease = server.clients[0].lease;
         // Drive the actual empty Unix MQ beyond the configured partial-input
         // interval. Neither an INIT nor fabricated role declaration is sent.
@@ -1550,8 +1550,8 @@ mod framing_resource_tests {
         assert_eq!(server.clients[0].lease, application_lease);
         assert!(server.clients[0].input.is_none());
 
-        let (connection, mut partial) = tokio::net::UnixStream::pair()?;
-        let partial_id = server.admit(Connection::from_unix(connection))?;
+        let (connection, mut partial) = crate::test_support::pair().await?;
+        let partial_id = server.admit(connection)?;
         let partial_lease = server.clients[1].lease;
         partial.write_all(&preference[..1]).await?;
         server

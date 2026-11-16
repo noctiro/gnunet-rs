@@ -1,75 +1,60 @@
 # gnunet-namecache
 
-The installed PROGRAM inspects or deletes the configured NAMECACHE entry for a
-public zone and name. It uses the existing official NAMECACHE client and wire.
+Inspect or delete one encrypted NAMECACHE block by public zone and name. The
+command verifies the lookup signature and query, binds the block to the selected
+zone/name, decrypts it and displays applicable records. Linux, macOS, FreeBSD and
+Windows use the same client and interpretation flow.
 
+## Usage and configuration
+
+```sh
+gnunet-namecache -c gnunet.conf -z PUBLIC_ZONE -n example
+gnunet-namecache -c gnunet.conf -z PUBLIC_ZONE -n example --delete
 ```
-gnunet-namecache -c CONFIG -z PUBLIC_ZONE -n NAME
-gnunet-namecache -c CONFIG -z PUBLIC_ZONE -n NAME -d
-```
 
-`-z/--zone` accepts the 58-character public PKEY/EDKEY identifier (the typed bare
-zTLD). `-n/--name` is normalized by the existing NFC label utility before the
-official query derivation. It must be nonempty UTF-8 without NUL and at most
-1024 input bytes. `-d/--delete` submits the BLOCK_DELETE. The signed raw
-result is printed: 1 removed, 0 absent, any other code is an error. A whole local
-write alone never means that deletion succeeded. An absent lookup prints the
-miss; it does not issue a DHT request or populate the cache.
+`-z/--zone` accepts a PKEY or EDKEY public zTLD, `-n/--name` selects the name and
+`-d/--delete` requests deletion instead of lookup. Standard PROGRAM configuration,
+help, version and `-L/-l` options apply. The normal NAMECACHE CLIENT selection
+supports configured TCP or native AF_UNIX; `--namecache-socket PATH` selects an
+explicit local endpoint.
 
-Lookup ciphertext first passes the existing client's exact original-query,
-carried-key signature and inner/outer expiration checks. Before display, the
-existing pure block utility binds its signature key to the public zone
-and normalized name, verifies that signature, decrypts and checks padded record
-framing and current block expiration. Its existing applicable-record iterator
-filters relative/expired records and suppresses inactive shadow fallbacks. Output includes the block's absolute microsecond expiry and each applicable
-record's type number, type name when registered, absolute expiry and flag bits. The shared active record text codec supplies typed value formatting. Unsupported/corrupt value formats are identified as such with numeric type and
-raw hex; they are not claimed to have a successful typed interpretation. This
-does not turn arbitrary ciphertext into records or claim record values are
-independently truthful beyond their signed zone/name provenance.
+`--timeout-ms` defaults to 30,000 and accepts 1–3,600,000. `--record-profile`
+accepts `native`, `little` or `big` for host-order Messenger record values; it does
+not infer a remote producer's byte order or alter signed data. Positional
+arguments are rejected.
 
-Standard PROGRAM configuration/help/version/log-level/log-file options use the
-shared implementation. The selected Logger is shared through Reporter. One
-LiveConfiguration, original broker/Resolver, SharedClock and runtime are used. `--namecache-socket PATH` selects an explicit Unix endpoint; otherwise normal
-configured NAMECACHE CLIENT selection, including TCP through the same Resolver,
-applies. `--record-profile native|little|big` selects the original producer's
-host-order layout for the Messenger record formats which contain native fields;
-the default is the current target's native NAME_MAX255 profile. It does not
-guess a remote block producer from its connection or rewrite the signed bytes.
+## Results and resource limits
 
-`--timeout-ms` defaults to 30000 and accepts 1 through 3600000. The original
-logical target and independently captured native hard bound are retained across
-polling and endpoint retry. The single operation has one immutable official RID
-and private Rust token. Source attachment, queue admission, whole local write,
-service completion and local cancellation remain separate report facts. There is no mutation replay after loss or uncertain exposure. Native guards run
-before Resolver/canonical waits. SIGINT/SIGTERM, scheduler/clock/Resolver failure
-or selected-log failure stops admission, cancels the original callback and
-physically closes that exact MQ. The cancellation and remaining local
-completion preserve Unsent/Partial/Written exposure; closing is no remote revoke.
+Lookup distinguishes absence, verified records and malformed/expired/invalid
+blocks. Unsupported record values retain their numeric type and raw bytes.
+Delete preserves the service's signed result code; negative results fail.
+A source loss never causes automatic mutation replay.
 
-On a callback the MQ is physically closed before interpretation/output. On all normal error paths it closes before completion-record drain and Resolver
-disconnect. The shared foreground helper retains the original future even if
-PROGRAM's scheduler exits, sets its same stop latch and polls its cleanup. The post-close local completion drain has one fixed five-second native bound;
-it cannot create a new request or reuse an old RID. Operation/result, independent
-cancel/drain/Resolver/stdout/log errors and successful cleanup reports remain
-owned together. The final Resolver driver is dropped after disconnect,
-including on a refusal. No worker, detached task or private key provider exists.
+One operation, RID and response are retained. Record interpretation uses
+zeroizing buffers, at most 2,048 records, a 262,140-byte formatted value and an
+8 MiB total output bound. Plaintext and opaque blocks are excluded from logs.
+Output is bounded synchronous stdio; its native writes/flushes can block.
+Partial output and flush errors fail explicitly.
 
-Plaintext, formatting buffers and staging are caller-owned zeroizing storage. The command permits one operation and one request frame, the official complete
-frame bound, at most 2048 decoded records, 262140 bytes for a single formatted
-value and 8 MiB total stdout. Output is ordinary synchronous bounded stdio;
-blocking OS writes/flushes cannot be forcibly interrupted by a network deadline. Partial output or a flush error is retained as an output failure, never reported
-as a complete display. Unknown/expired/malformed blocks are rejected by the
-existing verification/open boundary. No key-file read/import, local private-key
-fallback, service spawning, DNS/GNS resolution, protocol/plugin ABI or migration
-format is introduced.
+## Ownership and cancellation
 
-The public reference is GNUnet v0.29.1 commit
-`346358e26d4dcc2dc4f51bef5d52dca29c7d8165`,
-`src/cli/namecache/{meson.build,gnunet-namecache.c}`. Its installed `-z/-n/-d`
-operations and true lookup/delete continuations are implemented here; bounded
-resources, explicit field metadata and failure exit on local/decrypt/output
-errors are Rust caller policy. The C tool's tendency to keep a successful exit
-status for some missing/decryption diagnostics is not used as a success proof.
+[Shared client startup](../../adapters/service-startup/README.md#client-program-startup)
+rejects inherited listeners and retains original parent control. Native stop,
+PROGRAM stop, logger failure, clock failure and Resolver failure end admission
+and close the original MQ. Native and logical operation deadlines remain fixed.
+Local cancellation retains Unsent/Partial/Written exposure and does not revoke
+remote effects.
 
-No Cargo/compiler/model,
-program/help, crypto/key/entropy, socket/native, storage/worker or C path ran. Runtime interoperability and platform behavior are not asserted by this receipt.
+After a callback, the client connection closes before interpretation/output.
+Error paths close before a separately bounded local completion drain and
+Resolver disconnect. The PROGRAM foreground retains the original task through
+scheduler failure so it can complete cleanup. Operation, cancellation, drain,
+Resolver, output and logging errors remain distinguishable.
+
+## Source layout
+
+`main.rs` handles PROGRAM preparation and native startup. `foreground.rs` owns
+one client/Resolver operation and cancellation; `settings.rs` validates command
+options; `display.rs` owns bounded record interpretation and output.
+`tests/normal_process.rs` drives the built command over literal IPC with public
+zone/ciphertext vectors.

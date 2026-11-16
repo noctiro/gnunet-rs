@@ -9,6 +9,8 @@ and an explicit caller-selected Inflater. KSK entries refuse; CHK, LOC and SKS
 remain representable. `MIME_ITEM` is a canonical root MIME item; the parser does
 not mistake a MIME claim for content authentication or require that claim.
 
+## Parsing
+
 `Parser` retains only one record in a caller-owned carry arena and lends each
 event from that arena and caller decompression scratch. Whole-buffer and arbitrary
 contiguous split input use the same state machine. Even whole-buffer input is
@@ -59,6 +61,8 @@ children and filesystem output still need their owning operation to settle.
 The two readers share reusable block/record buffers and bounded frontier slots;
 they need neither a whole-file copy nor full source re-encoding.
 
+## Traversal
+
 `walk::Walk` schedules recursive file/directory jobs over caller-owned task slots
 and namespace identifier storage. The host obtains work with `begin`, reads it
 through FileReader/SourceParser, admits VerifiedEntry children and returns
@@ -71,6 +75,8 @@ parent reads reuse retained entry ranges, and late attempts cannot finish a new
 generation. Cancellation drains admitted originals before quiescence and never
 becomes successful traversal. Empty-ready polling is constant time; task history
 and shared-content lookup remain bounded by the caller's entry capacity.
+
+## Encoding
 
 Construction first materializes a metadata Plan into caller storage, or
 strictly validates supplied bytes with the inflater, producing sealed
@@ -95,6 +101,8 @@ changing any output; trailing bytes remain intact. Layout workspace may change
 on plan refusal. Output extent bounds final bytes; max_trials bounds entry layout
 attempts, not the earlier metadata compression work selected by its own planner.
 
+## Inline content
+
 Type174 FULL_DATA items are raw InlineHints, without a global65536 parser cap.
 All raw candidates and present-empty data remain visible; the caller can explicitly
 apply C's first logical item projection. `verify_inline` requires resolved contextual
@@ -111,6 +119,8 @@ no-extra-entry-block producer heuristic using baseline/augmented metadata
 lengths. It is separate from the parser, explicit hint insertion and publication
 owner's `<65536` read policy. Compression is provided by the alloc-gated pure Rust
 compressor; core and default inflation do not allocate.
+
+## Checks
 
 Rust tests cover records up to two blocks plus one byte, real80KiB hints,
 compressed/raw root-entry products, arbitrary contiguous splits, refusal/retry,

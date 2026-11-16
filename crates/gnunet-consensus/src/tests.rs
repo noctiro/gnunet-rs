@@ -1007,3 +1007,9 @@ mod gradecast_tests;
 
 #[path = "session/failure_tests.rs"]
 mod failure_tests;
+
+#[path = "session/window_tests.rs"]
+mod window_tests;
+
+#[path = "session/results_tests.rs"]
+mod results_tests;

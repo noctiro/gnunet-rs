@@ -12,7 +12,7 @@ use std::{
     pin::Pin,
     task::{Context, Poll},
 };
-use tokio::io::{AsyncRead, ReadBuf};
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use zeroize::{Zeroize, Zeroizing};
 
 /// Frozen original bytes. Every drop path wipes their owned storage.
@@ -178,7 +178,14 @@ struct FrameRx {
     ready: bool,
     ended: bool,
 }
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum WritePhase {
+    Open,
+    Closing,
+    Closed,
+}
 struct FrameTx<Origin> {
+    phase: WritePhase,
     output: VecDeque<Out<Origin>>,
     remaining: usize,
     retained: usize,
@@ -216,6 +223,7 @@ impl<Origin: Copy> Framed<Origin> {
                 ended: false,
             },
             tx: FrameTx {
+                phase: WritePhase::Open,
                 output: VecDeque::new(),
                 remaining: 0,
                 retained: 0,
@@ -293,7 +301,10 @@ impl<Origin: Copy> Framed<Origin> {
     /// Explicit logical wire capacity. This is not an exact RSS bound.
     #[must_use]
     pub fn capacity(&self, bytes: usize, class: Class) -> bool {
-        if self.connection.is_none() || !(4..=self.limits.frame_bytes).contains(&bytes) {
+        if self.connection.is_none()
+            || self.tx.phase != WritePhase::Open
+            || !(4..=self.limits.frame_bytes).contains(&bytes)
+        {
             return false;
         }
         let (frames, limit) = match class {
@@ -308,6 +319,9 @@ impl<Origin: Copy> Framed<Origin> {
     /// Preflight queue metadata without admitting bytes or consuming an origin.
     /// Preallocate the final immutable body too before irreversible domain work.
     pub fn reserve(&mut self, bytes: usize, class: Class) -> Result<(), Error> {
+        if self.connection.is_none() || self.tx.phase != WritePhase::Open {
+            return Err(Error::Closed);
+        }
         if self.connection.is_none() {
             return Err(Error::Closed);
         }
@@ -526,9 +540,36 @@ impl<Origin: Copy> Framed<Origin> {
             Err(e) => Poll::Ready(Err(e)),
         }
     }
+    /// Finish this original stream's write half after every admitted frame has
+    /// drained. A nonempty queue returns WouldBlock without starting shutdown.
+    /// Once started, new TX admission stays closed across canceled waits and
+    /// repeated polls. Native errors require retiring this owner; they preserve
+    /// their original cause and never authorize a replacement or replay.
+    /// Success is local write-side shutdown, not peer delivery or read EOF. The
+    /// original connection and its independent receive half remain owned here.
+    pub fn poll_shutdown(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        let Some(connection) = self.connection.as_mut() else {
+            return Poll::Ready(Err(io::ErrorKind::NotConnected.into()));
+        };
+        if !self.tx.output.is_empty() {
+            return Poll::Ready(Err(io::ErrorKind::WouldBlock.into()));
+        }
+        if self.tx.phase == WritePhase::Closed {
+            return Poll::Ready(Ok(()));
+        }
+        self.tx.phase = WritePhase::Closing;
+        match Pin::new(connection).poll_shutdown(cx) {
+            Poll::Ready(Ok(())) => {
+                self.tx.phase = WritePhase::Closed;
+                Poll::Ready(Ok(()))
+            }
+            other => other,
+        }
+    }
     /// Close this physical MQ before discarding partial originals and secrets.
     /// No reconnect, operation completion, replay or application callback occurs.
     pub fn retire(&mut self) {
+        self.tx.phase = WritePhase::Closed;
         drop(self.connection.take());
         self.tx.output.clear();
         self.tx.remaining = 0;

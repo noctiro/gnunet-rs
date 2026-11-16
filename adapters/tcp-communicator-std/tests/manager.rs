@@ -9,6 +9,8 @@
 )]
 #[path = "support/history.rs"]
 mod history;
+#[path = "support/stream.rs"]
+mod stream;
 use core::num::NonZeroUsize;
 use gnunet_crypto::{EddsaPrivateKey, Entropy};
 use gnunet_service_runtime::connection::Connection;
@@ -35,7 +37,7 @@ use std::{
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::{TcpListener, TcpStream, UnixStream},
+    net::{TcpListener, TcpStream},
 };
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 struct Random(u64);
@@ -93,11 +95,11 @@ impl Storage {
 fn time() -> Time {
     Time { now: 1, signed: 1 }
 }
-fn services() -> io::Result<([Connection; 2], UnixStream, UnixStream)> {
-    let (ps, ps_server) = UnixStream::pair()?;
-    let (tr, tr_server) = UnixStream::pair()?;
+async fn services() -> io::Result<([Connection; 2], TcpStream, TcpStream)> {
+    let (ps, ps_server) = stream::pair().await?;
+    let (tr, tr_server) = stream::pair().await?;
     Ok((
-        [Connection::from_unix(ps), Connection::from_unix(tr)],
+        [Connection::from_tcp(ps), Connection::from_tcp(tr)],
         ps_server,
         tr_server,
     ))
@@ -120,7 +122,7 @@ fn manager(
         },
     )
 }
-async fn frame(stream: &mut UnixStream) -> io::Result<Vec<u8>> {
+async fn frame(stream: &mut TcpStream) -> io::Result<Vec<u8>> {
     let mut h = [0; 4];
     stream.read_exact(&mut h).await?;
     let n = u16::from_be_bytes([h[0], h[1]]) as usize;
@@ -158,7 +160,7 @@ async fn fragmented_create_is_owned_once_and_epoch_and_process_tokens_cannot_ack
 -> Result<()> {
     let key = EddsaPrivateKey::from_seed([7; 32]);
     let mut rng = Random(4);
-    let (s, _ps, mut tr) = services()?;
+    let (s, _ps, mut tr) = services().await?;
     let mut a = manager(s, 2)?;
     let bytes = create(&key);
     tr.write_all(&bytes[..2]).await?;
@@ -174,7 +176,7 @@ async fn fragmented_create_is_owned_once_and_epoch_and_process_tokens_cannot_ack
     let old = request.id;
     assert_eq!(request.wire_id, [1, 2, 3, 4]);
     assert_eq!(request.address, b"tcp");
-    let (s, _ps2, mut tr2) = services()?;
+    let (s, _ps2, mut tr2) = services().await?;
     let mut b = manager(s, 2)?;
     tr2.write_all(&bytes).await?;
     command(&mut b, &mut rng).await?;
@@ -195,8 +197,8 @@ async fn fragmented_create_is_owned_once_and_epoch_and_process_tokens_cannot_ack
         }
     })
     .await?;
-    let (new_tr, mut new_server) = UnixStream::pair()?;
-    a.attach_transport(Connection::from_unix(new_tr))
+    let (new_tr, mut new_server) = stream::pair().await?;
+    a.attach_transport(Connection::from_tcp(new_tr))
         .map_err(|r| r.reason)?;
     new_server.write_all(&bytes).await?;
     command(&mut a, &mut rng).await?;
@@ -276,7 +278,7 @@ async fn two_retained_real_connects_survive_canceled_wait_then_retire_without_id
         Storage::new(),
     ];
     let mut slots = storage.iter_mut();
-    let (s, ps, mut tr) = services()?;
+    let (s, ps, mut tr) = services().await?;
     let mut m = Communicator::new(
         s,
         Capacity {
@@ -361,9 +363,9 @@ async fn two_retained_real_connects_survive_canceled_wait_then_retire_without_id
         .next()
         .ok_or(Error::Capacity)?
         .core(&key, &exchange, false, &mut rng)?;
-    let (carrier, _remote) = UnixStream::pair()?;
+    let (carrier, _remote) = stream::pair().await?;
     let next = m
-        .admit(core, Connection::from_unix(carrier), b"tcp-127.0.0.1:2", 1)
+        .admit(core, Connection::from_tcp(carrier), b"tcp-127.0.0.1:2", 1)
         .map_err(|r| r.reason)?;
     assert_ne!(old, next);
     assert!(matches!(m.lost(&old), Err(Error::Stale)));
@@ -371,7 +373,7 @@ async fn two_retained_real_connects_survive_canceled_wait_then_retire_without_id
     while m.core(&next)?.phase() != Phase::Closed {
         let _activity = m.step(time(), &mut rng).await?;
     }
-    let (s, _ps2, _tr2) = services()?;
+    let (s, _ps2, _tr2) = services().await?;
     let mut other = Communicator::new(
         s,
         Capacity {
@@ -389,9 +391,9 @@ async fn two_retained_real_connects_survive_canceled_wait_then_retire_without_id
         .next()
         .ok_or(Error::Capacity)?
         .core(&key, &exchange, false, &mut rng)?;
-    let (carrier, _remote) = UnixStream::pair()?;
+    let (carrier, _remote) = stream::pair().await?;
     let foreign = other
-        .admit(core, Connection::from_unix(carrier), b"tcp-127.0.0.1:3", 1)
+        .admit(core, Connection::from_tcp(carrier), b"tcp-127.0.0.1:3", 1)
         .map_err(|r| r.reason)?;
     assert!(matches!(m.core(&foreign), Err(Error::Stale)));
     assert!(matches!(other.core(&old), Err(Error::Stale)));
@@ -440,7 +442,7 @@ async fn same_peer_scan_store_barrier_survives_closed_owner_and_never_regresses_
     let mut rng = Random(104);
     let mut storage = [Storage::new(), Storage::new()];
     let mut slots = storage.iter_mut();
-    let (s, mut ps, _tr) = services()?;
+    let (s, mut ps, _tr) = services().await?;
     let mut m = Communicator::new(
         s,
         Capacity {
@@ -461,7 +463,7 @@ async fn same_peer_scan_store_barrier_survives_closed_owner_and_never_regresses_
             .next()
             .ok_or(Error::Capacity)?
             .core(&bob, &ex, false, &mut rng)?;
-        let (native, mut remote) = UnixStream::pair()?;
+        let (native, mut remote) = stream::pair().await?;
         let special = elligator::Secret::generate(
             &mut rng,
             NonZeroUsize::new(256).ok_or(Error::InvalidInput)?,
@@ -470,7 +472,7 @@ async fn same_peer_scan_store_barrier_survives_closed_owner_and_never_regresses_
             initial::prepare(&alice, bob.public_key(), &special, 1, stamp, &[4; 32])?;
         remote.write_all(&bytes).await?;
         ids.push(
-            m.admit(core, Connection::from_unix(native), b"tcp-127.0.0.1:12", 1)
+            m.admit(core, Connection::from_tcp(native), b"tcp-127.0.0.1:12", 1)
                 .map_err(|r| r.reason)?,
         );
         remotes.push(remote);
@@ -549,7 +551,7 @@ async fn same_peer_scan_store_barrier_survives_closed_owner_and_never_regresses_
     Ok(())
 }
 
-/// Actual Unix MQs plus an explicit delayed-backend commit model. This is a
+/// Actual loopback MQs plus an explicit delayed-backend commit model. This is a
 /// Rust ownership/recovery regression, not normal-C interoperability evidence.
 #[tokio::test(flavor = "current_thread")]
 async fn late_remote_commit_cannot_lower_local_replay_floor_after_mq_replacement() -> Result<()> {
@@ -562,9 +564,9 @@ async fn late_remote_commit_cannot_lower_local_replay_floor_after_mq_replacement
     let mut rng = Random(804);
     let mut storage = [Storage::new(), Storage::new(), Storage::new()];
     let mut slots = storage.iter_mut();
-    let (s, mut old_ps, _tr) = services()?;
-    let (new_connection, mut new_ps) = UnixStream::pair()?;
-    let mut new_connection = Some(Connection::from_unix(new_connection));
+    let (s, mut old_ps, _tr) = services().await?;
+    let (new_connection, mut new_ps) = stream::pair().await?;
+    let mut new_connection = Some(Connection::from_tcp(new_connection));
     let mut m = Communicator::new(
         s,
         Capacity {
@@ -585,7 +587,7 @@ async fn late_remote_commit_cannot_lower_local_replay_floor_after_mq_replacement
             .next()
             .ok_or(Error::Capacity)?
             .core(&bob, &ex, false, &mut rng)?;
-        let (native, mut remote) = UnixStream::pair()?;
+        let (native, mut remote) = stream::pair().await?;
         let special = elligator::Secret::generate(
             &mut rng,
             NonZeroUsize::new(256).ok_or(Error::InvalidInput)?,
@@ -593,7 +595,7 @@ async fn late_remote_commit_cannot_lower_local_replay_floor_after_mq_replacement
         let (bytes, _) = initial::prepare(&alice, bob.public_key(), &special, 1, stamp, &[4; 32])?;
         remote.write_all(&bytes).await?;
         ids.push(
-            m.admit(core, Connection::from_unix(native), b"tcp-127.0.0.1:12", 1)
+            m.admit(core, Connection::from_tcp(native), b"tcp-127.0.0.1:12", 1)
                 .map_err(|r| r.reason)?,
         );
         remotes.push(remote);
@@ -732,13 +734,13 @@ async fn late_remote_commit_cannot_lower_local_replay_floor_after_mq_replacement
         .next()
         .ok_or(Error::Capacity)?
         .core(&bob, &ex, false, &mut rng)?;
-    let (native, mut remote) = UnixStream::pair()?;
+    let (native, mut remote) = stream::pair().await?;
     let special =
         elligator::Secret::generate(&mut rng, NonZeroUsize::new(256).ok_or(Error::InvalidInput)?)?;
     let (bytes, _) = initial::prepare(&alice, bob.public_key(), &special, 1, 1500, &[5; 32])?;
     remote.write_all(&bytes).await?;
     let id = m
-        .admit(core, Connection::from_unix(native), b"tcp-127.0.0.1:12", 1)
+        .admit(core, Connection::from_tcp(native), b"tcp-127.0.0.1:12", 1)
         .map_err(|r| r.reason)?;
     tokio::time::timeout(Duration::from_secs(1), async {
         tokio::try_join!(
@@ -767,11 +769,11 @@ async fn late_remote_commit_cannot_lower_local_replay_floor_after_mq_replacement
 /// Persistent fixture framing: canceling one bounded manager wait must not lose
 /// partially read service headers or consume a different peer's completion.
 struct LocalMq {
-    stream: UnixStream,
+    stream: TcpStream,
     pending: Vec<u8>,
 }
 impl LocalMq {
-    fn new(stream: UnixStream) -> Self {
+    fn new(stream: TcpStream) -> Self {
         Self {
             stream,
             pending: Vec::new(),
@@ -879,7 +881,7 @@ fn payload(size: usize) -> Result<Vec<u8>> {
     Ok(message)
 }
 
-/// This executes Rust session crypto over owned Unix carriers and the shared
+/// This executes Rust session crypto over owned loopback carriers and the shared
 /// official IPC envelopes. It neither executes a C peer nor changes wire MTUs.
 #[tokio::test(flavor = "current_thread")]
 async fn oversized_receive_is_local_and_preserves_other_peers_original_callback() -> Result<()> {
@@ -901,7 +903,7 @@ async fn receive_limit_scenario() -> Result<()> {
     let exchange = EcdheSecret::from_eddsa_seed([2; 32]);
     let mut rng = Random(903);
     let mut storage = [Storage::new(), Storage::new()];
-    let (connections, ps, tr) = services()?;
+    let (connections, ps, tr) = services().await?;
     let mut manager = Communicator::new(
         connections,
         Capacity {
@@ -927,7 +929,7 @@ async fn receive_limit_scenario() -> Result<()> {
     let mut directions = Vec::new();
     for (storage, peer) in storage.iter_mut().zip(&peers) {
         let core = storage.core(&bob, &exchange, false, &mut rng)?;
-        let (native, mut remote) = UnixStream::pair()?;
+        let (native, mut remote) = stream::pair().await?;
         let special = elligator::Secret::generate(
             &mut rng,
             NonZeroUsize::new(256).ok_or(Error::InvalidInput)?,
@@ -937,7 +939,7 @@ async fn receive_limit_scenario() -> Result<()> {
         remote.write_all(&initial).await?;
         ids.push(
             manager
-                .admit(core, Connection::from_unix(native), b"tcp-127.0.0.1:12", 1)
+                .admit(core, Connection::from_tcp(native), b"tcp-127.0.0.1:12", 1)
                 .map_err(|rejected| rejected.reason)?,
         );
         remotes.push(remote);
@@ -1096,7 +1098,7 @@ async fn actual_address_fifo_and_claimed_create_result_survive_capacity_and_shut
 {
     let key = EddsaPrivateKey::from_seed([7; 32]);
     let mut rng = Random(4);
-    let (s, _ps, mut tr) = services()?;
+    let (s, _ps, mut tr) = services().await?;
     let mut m = manager(s, 1)?;
     tr.write_all(&create(&key)).await?;
     command(&mut m, &mut rng).await?;

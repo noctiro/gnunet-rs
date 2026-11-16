@@ -5,33 +5,18 @@
 //! a symlink. No key bytes, seed fingerprint or derived secret is printable.
 use crate::FileIdentity;
 use gnunet_crypto::{gns::EdkeySecret, hash512};
-use nix::{
-    errno::Errno,
-    fcntl::{OFlag, open, openat},
-    sys::stat::Mode,
-    unistd::geteuid,
+use gnunet_native::{
+    DirectorySync,
+    filesystem::{Directory, FileInfo, FileReader, private_data_file_info},
 };
 use std::{
     ffi::{OsStr, OsString},
     fmt,
-    fs::{File, Metadata},
-    io::{self, Read, Write},
-    os::unix::{
-        ffi::OsStrExt,
-        fs::{FileExt, MetadataExt},
-    },
+    fs::File,
+    io::{self, Write},
     path::{Component, Path, PathBuf},
 };
 use zeroize::Zeroizing;
-
-const DIRECTORY: OFlag = OFlag::O_RDONLY
-    .union(OFlag::O_DIRECTORY)
-    .union(OFlag::O_NOFOLLOW)
-    .union(OFlag::O_CLOEXEC);
-const REGULAR: OFlag = OFlag::O_RDONLY
-    .union(OFlag::O_NOFOLLOW)
-    .union(OFlag::O_NONBLOCK)
-    .union(OFlag::O_CLOEXEC);
 
 /// Actual native phase reached by this invocation, independently of its error.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -58,8 +43,8 @@ pub enum Cause {
     Io(io::Error),
     /// The selected path has no safe ordinary final component.
     Path,
-    /// The actual seed is nonregular, foreign-owned or lacks private permissions.
-    Private,
+    /// Native private-data qualification failed; the original query error is retained.
+    Private(io::Error),
     /// The actual seed length is not exactly 32 bytes.
     Length,
     /// The original file, complete seed, parent or selected name changed.
@@ -70,9 +55,7 @@ impl fmt::Display for Cause {
         match self {
             Self::Io(error) => error.fmt(f),
             Self::Path => f.write_str("namespace key requires an ordinary final filename"),
-            Self::Private => f.write_str(
-                "namespace key must be a private regular file owned by the effective user",
-            ),
+            Self::Private(error) => write!(f, "namespace key private-file qualification: {error}"),
             Self::Length => f.write_str("namespace key must contain exactly 32 raw seed bytes"),
             Self::Changed => {
                 f.write_str("original namespace seed or selected native authority changed")
@@ -83,7 +66,7 @@ impl fmt::Display for Cause {
 impl std::error::Error for Cause {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::Io(error) => Some(error),
+            Self::Io(error) | Self::Private(error) => Some(error),
             _ => None,
         }
     }
@@ -93,24 +76,19 @@ impl From<io::Error> for Cause {
         Self::Io(error)
     }
 }
-impl From<Errno> for Cause {
-    fn from(error: Errno) -> Self {
-        Self::Io(error.into())
-    }
-}
 /// Original failure and actual creation/barrier facts. A failed create can leave
 /// its own seed name present: no failure path unlinks, replaces or retries it.
 #[derive(Debug)]
 pub struct Error {
     /// Actual completed phase of this operation.
     pub stage: Stage,
-    /// Whether this invocation's own O_EXCL creation returned success.
+    /// Whether this invocation's exclusive native creation returned success.
     pub created: bool,
     /// Whether the original seed descriptor sync actually succeeded.
     pub file_synced: bool,
-    /// Whether the original selected parent sync actually succeeded.
-    pub parent_synced: bool,
-    /// Actual opened seed inode, if its metadata was available.
+    /// Actual selected-parent naming barrier, separate from file synchronization.
+    pub directory_sync: Option<DirectorySync>,
+    /// Complete original seed identity, if its metadata was available.
     pub identity: Option<FileIdentity>,
     /// Independent original cause; naming uncertainty is not rewritten as absence.
     pub cause: Cause,
@@ -129,7 +107,7 @@ struct Attempt {
     stage: Stage,
     created: bool,
     file_synced: bool,
-    parent_synced: bool,
+    directory_sync: Option<DirectorySync>,
     identity: Option<FileIdentity>,
 }
 impl Attempt {
@@ -138,7 +116,7 @@ impl Attempt {
             stage: Stage::Unopened,
             created: false,
             file_synced: false,
-            parent_synced: false,
+            directory_sync: None,
             identity: None,
         }
     }
@@ -147,114 +125,75 @@ impl Attempt {
             stage: self.stage,
             created: self.created,
             file_synced: self.file_synced,
-            parent_synced: self.parent_synced,
+            directory_sync: self.directory_sync,
             identity: self.identity,
             cause,
         }
     }
 }
-#[derive(Clone, Copy, Eq, PartialEq)]
-struct Stamp {
-    identity: FileIdentity,
-    bytes: u64,
-    uid: u32,
-    mode: u32,
-    modified: i64,
-    modified_nanos: i64,
-    changed: i64,
-    changed_nanos: i64,
-}
-impl Stamp {
-    fn read(metadata: Metadata) -> Result<Self, Cause> {
-        let mode = metadata.mode();
-        if !metadata.is_file()
-            || metadata.uid() != geteuid().as_raw()
-            || mode & 0o7177 != 0
-            || mode & 0o400 == 0
-        {
-            return Err(Cause::Private);
-        }
-        Ok(Self {
-            identity: FileIdentity {
-                device: metadata.dev(),
-                inode: metadata.ino(),
-            },
-            bytes: metadata.len(),
-            uid: metadata.uid(),
-            mode,
-            modified: metadata.mtime(),
-            modified_nanos: metadata.mtime_nsec(),
-            changed: metadata.ctime(),
-            changed_nanos: metadata.ctime_nsec(),
-        })
-    }
-    fn file(file: &File) -> Result<Self, Cause> {
-        Self::read(file.metadata()?)
-    }
+fn stamp(file: &File) -> Result<FileInfo, Cause> {
+    private_data_file_info(file).map_err(Cause::Private)
 }
 /// An original raw32 seed and its selected native authority. It deliberately
 /// implements neither Debug nor Clone. Secret owners and temporary seed/fingerprint
 /// storage erase their memory on drop; no secret enters an ordinary task WAL.
 pub struct KeyFile {
-    parent: File,
+    parent: Directory,
     parent_path: PathBuf,
     parent_id: FileIdentity,
     name: OsString,
     file: File,
-    stamp: Stamp,
+    stamp: FileInfo,
+    reader: FileReader,
+    directory_sync: Option<DirectorySync>,
     fingerprint: Zeroizing<[u8; 64]>,
     secret: EdkeySecret,
 }
 impl KeyFile {
-    /// Generate a new random raw32 seed using exclusive 0600 creation. Success
-    /// includes original file and parent syncs plus final name/parent checks.
+    /// Generate a new random raw32 seed using exclusive private creation. Success
+    /// includes file synchronization, the actual parent barrier and final authority checks.
     /// A failed operation leaves any possibly created key intact for inspection.
     pub fn create(path: impl AsRef<Path>) -> Result<Self, Error> {
         let mut attempt = Attempt::new();
         let result = (|| -> Result<Self, Cause> {
             let (parent_path, name) = selected(path.as_ref())?;
-            let parent = File::from(open(&parent_path, DIRECTORY, Mode::empty())?);
-            let parent_id = FileIdentity::of(&parent)?;
+            let parent = Directory::open(&parent_path)?;
+            let parent_id = FileIdentity::of(parent.as_file())?;
             let mut bytes = Zeroizing::new([0; 32]);
-            File::open("/dev/urandom")?.read_exact(&mut bytes[..])?;
-            let mut file = File::from(openat(
-                &parent,
-                name.as_os_str(),
-                OFlag::O_RDWR
-                    | OFlag::O_CREAT
-                    | OFlag::O_EXCL
-                    | OFlag::O_NOFOLLOW
-                    | OFlag::O_NONBLOCK
-                    | OFlag::O_CLOEXEC,
-                Mode::S_IRUSR | Mode::S_IWUSR,
-            )?);
+            gnunet_native::entropy::fill(&mut bytes[..])?;
+            let mut file = parent.create_private_file(&name)?;
             attempt.created = true;
             attempt.stage = Stage::Created;
             attempt.identity = Some(FileIdentity::of(&file)?);
-            let _private = Stamp::file(&file)?;
+            let _private = stamp(&file)?;
             file.write_all(&bytes[..])?;
             attempt.stage = Stage::SeedWritten;
             file.sync_all()?;
             attempt.file_synced = true;
             attempt.stage = Stage::FileSynced;
-            let stamp = Stamp::file(&file)?;
+            let stamp = stamp(&file)?;
             if stamp.bytes != 32 {
                 return Err(Cause::Length);
             }
-            let owner = Self {
+            let mut owner = Self {
                 parent,
                 parent_path,
                 parent_id,
                 name,
+                reader: FileReader::from_file(&file)?,
+                directory_sync: None,
                 file,
                 stamp,
                 fingerprint: Zeroizing::new(hash512(bytes.as_ref())),
                 secret: EdkeySecret::from_seed(*bytes),
             };
             owner.authority()?;
-            owner.parent.sync_all()?;
-            attempt.parent_synced = true;
-            attempt.stage = Stage::ParentSynced;
+            let synchronization = owner.parent.sync()?;
+            attempt.directory_sync = Some(synchronization);
+            owner.directory_sync = Some(synchronization);
+            if synchronization == DirectorySync::Synchronized {
+                attempt.stage = Stage::ParentSynced;
+            }
             owner.authority()?;
             // Re-read the original descriptor too: exact successful writes alone
             // do not exclude an intervening external seed modification.
@@ -270,13 +209,20 @@ impl KeyFile {
         let mut attempt = Attempt::new();
         let result = (|| -> Result<Self, Cause> {
             let (parent_path, name) = selected(path.as_ref())?;
-            let parent = File::from(open(&parent_path, DIRECTORY, Mode::empty())?);
-            let parent_id = FileIdentity::of(&parent)?;
-            let file = File::from(openat(&parent, name.as_os_str(), REGULAR, Mode::empty())?);
+            let parent = Directory::open(&parent_path)?;
+            let parent_id = FileIdentity::of(parent.as_file())?;
+            let file = parent.open_file(&name).map_err(|error| {
+                if error.kind() == io::ErrorKind::InvalidInput {
+                    Cause::Private(error)
+                } else {
+                    Cause::Io(error)
+                }
+            })?;
             attempt.stage = Stage::Opened;
             attempt.identity = Some(FileIdentity::of(&file)?);
-            let stamp = Stamp::file(&file)?;
-            let bytes = read_seed(&file)?;
+            let stamp = stamp(&file)?;
+            let reader = FileReader::from_file(&file)?;
+            let bytes = read_seed(&file, &reader)?;
             attempt.stage = Stage::SeedRead;
             let owner = Self {
                 parent,
@@ -285,6 +231,8 @@ impl KeyFile {
                 name,
                 file,
                 stamp,
+                reader,
+                directory_sync: None,
                 fingerprint: Zeroizing::new(hash512(bytes.as_ref())),
                 secret: EdkeySecret::from_seed(*bytes),
             };
@@ -292,6 +240,11 @@ impl KeyFile {
             Ok(owner)
         })();
         result.map_err(|cause| attempt.fail(cause))
+    }
+    /// Actual selected-parent naming barrier for this creation, or None on reopen.
+    #[must_use]
+    pub fn directory_sync(&self) -> Option<DirectorySync> {
+        self.directory_sync
     }
     /// Standard Ed25519 public namespace identity, with no path/key disclosure.
     #[must_use]
@@ -319,7 +272,7 @@ impl KeyFile {
         result.map_err(|cause| attempt.fail(cause))
     }
     fn check_seed(&self) -> Result<(), Cause> {
-        let seed = read_seed(&self.file)?;
+        let seed = read_seed(&self.file, &self.reader)?;
         let fingerprint = Zeroizing::new(hash512(seed.as_ref()));
         // Fixed-size accumulation avoids content-dependent early comparison.
         let mismatch = self
@@ -333,32 +286,26 @@ impl KeyFile {
         Ok(())
     }
     fn authority(&self) -> Result<(), Cause> {
-        if FileIdentity::of(&self.parent)? != self.parent_id
-            || Stamp::file(&self.file)? != self.stamp
+        if FileIdentity::of(self.parent.as_file())? != self.parent_id
+            || stamp(&self.file)? != self.stamp
         {
             return Err(Cause::Changed);
         }
-        let selected_parent = File::from(open(&self.parent_path, DIRECTORY, Mode::empty())?);
-        if FileIdentity::of(&selected_parent)? != self.parent_id {
+        let selected_parent = Directory::open(&self.parent_path)?;
+        if FileIdentity::of(selected_parent.as_file())? != self.parent_id {
             return Err(Cause::Changed);
         }
-        let selected_file = File::from(openat(
-            &self.parent,
-            self.name.as_os_str(),
-            REGULAR,
-            Mode::empty(),
-        )?);
-        if Stamp::file(&selected_file)? != self.stamp {
+        let selected_file = self.parent.open_file(&self.name)?;
+        if stamp(&selected_file)? != self.stamp {
             return Err(Cause::Changed);
         }
         Ok(())
     }
 }
 fn selected(path: &Path) -> Result<(PathBuf, OsString), Cause> {
-    let raw_name = path
-        .as_os_str()
-        .as_bytes()
-        .rsplit(|byte| *byte == b'/')
+    let encoded = gnunet_native::os_bytes::encode(path.as_os_str());
+    let raw_name = encoded
+        .rsplit(|byte| *byte == b'/' || cfg!(windows) && *byte == b'\\')
         .next()
         .ok_or(Cause::Path)?;
     if raw_name.is_empty() || matches!(raw_name, b"." | b"..") {
@@ -384,23 +331,21 @@ fn selected(path: &Path) -> Result<(PathBuf, OsString), Cause> {
     };
     Ok((parent, name.to_owned()))
 }
-fn read_seed(file: &File) -> Result<Zeroizing<[u8; 32]>, Cause> {
-    if Stamp::file(file)?.bytes != 32 {
+fn read_seed(file: &File, reader: &FileReader) -> Result<Zeroizing<[u8; 32]>, Cause> {
+    if stamp(file)?.bytes != 32 {
         return Err(Cause::Length);
     }
     let mut bytes = Zeroizing::new([0; 32]);
-    let mut offset = 0;
-    while offset < 32 {
-        match file.read_at(&mut bytes[offset..], offset as u64) {
-            Ok(0) => return Err(Cause::Length),
-            Ok(n) => offset += n,
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
-            Err(error) => return Err(error.into()),
+    reader.read_exact_at(&mut bytes[..], 0).map_err(|error| {
+        if error.kind() == io::ErrorKind::UnexpectedEof {
+            Cause::Length
+        } else {
+            Cause::Io(error)
         }
-    }
+    })?;
     let mut extra = Zeroizing::new([0; 1]);
     loop {
-        match file.read_at(&mut extra[..], 32) {
+        match reader.read_at(&mut extra[..], 32) {
             Ok(0) => return Ok(bytes),
             Ok(_) => return Err(Cause::Length),
             Err(error) if error.kind() == io::ErrorKind::Interrupted => {}

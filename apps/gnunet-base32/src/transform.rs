@@ -1,15 +1,11 @@
 use crate::{Cause, Problem, descriptors::Descriptor, spool::Spool};
 use gnunet_gnsrecord::{decode_base32, encode_base32};
-use std::{
-    fmt,
-    future::poll_fn,
-    io,
-    task::{Context, Poll},
-};
-use tokio::signal::unix::{Signal, SignalKind, signal};
-const INPUT: usize = 4096;
+use std::{fmt, future::poll_fn, io, task::Poll};
+mod signals;
+use signals::Signals;
+pub(crate) const INPUT: usize = 4096;
 const RETAINED: usize = INPUT + 8;
-const OUTPUT: usize = RETAINED * 8 / 5 + 8;
+pub(crate) const OUTPUT: usize = RETAINED * 8 / 5 + 8;
 #[derive(Debug, Default)]
 struct Facts {
     input_bytes: u64,
@@ -25,8 +21,7 @@ struct Facts {
 #[derive(Debug)]
 struct Failure {
     original: Option<Problem>,
-    input_restore: Option<io::Error>,
-    output_restore: Option<io::Error>,
+    stdio: crate::descriptors::Closed,
     spool_cleanup: Option<io::Error>,
     retained_spool_directory: Option<std::path::PathBuf>,
     facts: Facts,
@@ -35,10 +30,9 @@ impl fmt::Display for Failure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "original={:?}; input restore={:?}; output restore={:?}; spool cleanup={:?}; retained directory={:?}; actual facts={:?}",
+            "original={:?}; stdio={:?}; spool cleanup={:?}; retained directory={:?}; actual facts={:?}",
             self.original,
-            self.input_restore,
-            self.output_restore,
+            self.stdio,
             self.spool_cleanup,
             self.retained_spool_directory,
             self.facts
@@ -51,47 +45,7 @@ impl std::error::Error for Failure {
             .as_ref()
             .map(|p| p as _)
             .or_else(|| self.spool_cleanup.as_ref().map(|p| p as _))
-            .or_else(|| self.output_restore.as_ref().map(|p| p as _))
-            .or_else(|| self.input_restore.as_ref().map(|p| p as _))
-    }
-}
-#[derive(Debug)]
-struct Cancelled(i32);
-impl fmt::Display for Cancelled {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "original conversion cancelled by signal {}", self.0)
-    }
-}
-impl std::error::Error for Cancelled {}
-struct Signals {
-    interrupt: Signal,
-    terminate: Signal,
-}
-impl Signals {
-    fn new() -> io::Result<Self> {
-        Ok(Self {
-            interrupt: signal(SignalKind::interrupt())?,
-            terminate: signal(SignalKind::terminate())?,
-        })
-    }
-    fn check(&mut self, cx: &mut Context<'_>, facts: &mut Facts) -> Result<(), Problem> {
-        for (port, number) in [
-            (&mut self.interrupt, SignalKind::interrupt().as_raw_value()),
-            (&mut self.terminate, SignalKind::terminate().as_raw_value()),
-        ] {
-            match port.poll_recv(cx) {
-                Poll::Ready(Some(())) => {
-                    facts.cancelled = Some(number);
-                    return Err(Problem::new(
-                        u8::try_from(128 + number).unwrap_or(1),
-                        Cancelled(number),
-                    ));
-                }
-                Poll::Ready(None) => return Err(Problem::message(1, "original signal port ended")),
-                Poll::Pending => {}
-            }
-        }
-        Ok(())
+            .or_else(|| (!self.stdio.successful()).then_some(&self.stdio as _))
     }
 }
 fn count(counter: &mut u64, n: usize) -> Result<(), Problem> {
@@ -321,18 +275,12 @@ pub(super) async fn run(decode: bool) -> Result<(), Problem> {
     } else {
         None
     };
-    let output_restore = output.close();
-    let input_restore = input.close();
-    if original.is_some()
-        || spool_cleanup.is_some()
-        || output_restore.is_some()
-        || input_restore.is_some()
-    {
+    let stdio = crate::descriptors::close(input, output).await;
+    if original.is_some() || spool_cleanup.is_some() || !stdio.successful() {
         let code = original.as_ref().map_or(6, |e| e.code);
         let cause: Cause = Box::new(Failure {
             original,
-            input_restore,
-            output_restore,
+            stdio,
             spool_cleanup,
             retained_spool_directory,
             facts,

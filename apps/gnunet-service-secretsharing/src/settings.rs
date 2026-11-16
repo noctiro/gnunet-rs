@@ -94,7 +94,7 @@ impl Settings {
             c.get(mode.section(), key)
                 .map(|_| c.get_yesno(mode.section(), key))
                 .transpose()
-                .map(|v| v.unwrap_or(true))
+                .map(|v| v.unwrap_or(cfg!(unix)))
         };
         Ok(Self {
             native,

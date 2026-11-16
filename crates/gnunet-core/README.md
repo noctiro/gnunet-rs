@@ -46,7 +46,5 @@ state, retained old associations, resource refusal, clock rollback, heartbeat
 loss and abandoned-exchange identity. `cake-observer` is a test-only executable
 that exposes this owner to unchanged official C CORE/application processes.
 
-The crate is a peer engine. A complete Rust CORE daemon, application IPC/client
-registry, monitoring/service composition, PILS lifecycle integration, and an
-independent full Rust TRANSPORT/node still require implementation and acceptance. Rust-to-Rust tests or isolated CAKE/C CORE observations do not certify those
-missing service layers or full GNUnet interoperability.
+The [native CORE host](../../adapters/core-std/README.md) owns application IPC,
+monitoring, PILS integration and service composition around this peer engine.

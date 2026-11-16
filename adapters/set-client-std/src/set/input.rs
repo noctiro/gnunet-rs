@@ -1,6 +1,6 @@
 //! Original write/result/iteration/cookie consumption, without inferred ACKs.
 use super::*;
-use crate::{ElementOwned, Epoch, Status};
+use crate::{ElementOwned, Epoch, ResultValue, Status};
 use gnunet_wire::official::set::ClientResponse;
 impl Set {
     pub(super) fn written(
@@ -135,7 +135,7 @@ impl Set {
                     return Err(Fault::Malformed.into());
                 }
                 let status = Status::from_raw(status)?;
-                let element = ElementOwned::copy(element)?;
+                let value = ResultValue::decode(row.mode, status, element)?;
                 let row = &mut self.operations[at];
                 row.current_size = Some(current_size);
                 row.half_done |= status == Status::HalfDone;
@@ -149,8 +149,7 @@ impl Set {
                     operation,
                     epoch,
                     current_size,
-                    status,
-                    element,
+                    value,
                     terminal,
                 })
             }

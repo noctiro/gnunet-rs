@@ -1,4 +1,4 @@
-//! Actual owned Unix carrier/MQ boundary fixtures, not normal TCP/C peer proof.
+//! Actual owned loopback carrier/MQ boundary fixtures, not normal TCP/C peer proof.
 #![expect(
     clippy::panic_in_result_fn,
     reason = "Cancellation and native EOF tests assert exact resource observations"
@@ -9,6 +9,8 @@
 )]
 #[path = "support/history.rs"]
 mod history;
+#[path = "support/stream.rs"]
+mod stream;
 use core::{
     cell::{Cell, RefCell},
     num::NonZeroUsize,
@@ -34,10 +36,7 @@ use std::{
     task::{Context, Poll, Waker},
     time::Duration,
 };
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::UnixStream,
-};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 struct Random(u64);
 impl Entropy for Random {
     fn fill(&mut self, out: &mut [u8]) -> Result<(), Error> {
@@ -66,14 +65,14 @@ fn cap() -> Capacity {
 #[tokio::test(flavor = "current_thread")]
 async fn cancel_pils_wait_retains_two_header_bytes_and_original_stream()
 -> Result<(), Box<dyn std::error::Error>> {
-    let (client, mut peer) = UnixStream::pair()?;
+    let (client, mut peer) = stream::pair().await?;
     let mut data = vec![0; 176];
     data[..2].copy_from_slice(&176u16.to_be_bytes());
     data[2..4].copy_from_slice(&1831u16.to_be_bytes());
     data[68..72].copy_from_slice(&104u32.to_be_bytes());
     peer.write_all(&data[..2]).await?;
     client.readable().await?;
-    let mut feed = PilsFeed::new(Connection::from_unix(client))?;
+    let mut feed = PilsFeed::new(Connection::from_tcp(client))?;
     {
         let mut waiting = Box::pin(feed.wait());
         let mut cx = Context::from_waker(Waker::noop());
@@ -157,13 +156,13 @@ async fn logical_revision_rebases_native_wait_and_closes_original_carrier_at_dea
         time(100),
         &mut r,
     )?;
-    let (carrier, mut remote) = UnixStream::pair()?;
-    let (ps, _ps_server) = UnixStream::pair()?;
-    let (tr, _tr_server) = UnixStream::pair()?;
+    let (carrier, mut remote) = stream::pair().await?;
+    let (ps, _ps_server) = stream::pair().await?;
+    let (tr, _tr_server) = stream::pair().await?;
     let mut d = Driver::new(
         core,
-        Connection::from_unix(carrier),
-        [Connection::from_unix(ps), Connection::from_unix(tr)],
+        Connection::from_tcp(carrier),
+        [Connection::from_tcp(ps), Connection::from_tcp(tr)],
         cap(),
         b"tcp-127.0.0.1:80",
         1,
@@ -238,13 +237,13 @@ async fn cancel_virtual_query_before_reconnect_does_not_send_a_ghost_start()
         time(0),
         &mut r,
     )?;
-    let (carrier, mut remote) = UnixStream::pair()?;
-    let (ps, mut ps_server) = UnixStream::pair()?;
-    let (tr, _tr_server) = UnixStream::pair()?;
+    let (carrier, mut remote) = stream::pair().await?;
+    let (ps, mut ps_server) = stream::pair().await?;
+    let (tr, _tr_server) = stream::pair().await?;
     let mut d = Driver::new(
         core,
-        Connection::from_unix(carrier),
-        [Connection::from_unix(ps), Connection::from_unix(tr)],
+        Connection::from_tcp(carrier),
+        [Connection::from_tcp(ps), Connection::from_tcp(tr)],
         cap(),
         b"tcp-127.0.0.1:80",
         1,
@@ -272,8 +271,8 @@ async fn cancel_virtual_query_before_reconnect_does_not_send_a_ghost_start()
     })
     .await??;
     assert!(d.is_quiescent());
-    let (replacement, server) = UnixStream::pair()?;
-    d.attach_peerstore(Connection::from_unix(replacement))
+    let (replacement, server) = stream::pair().await?;
+    d.attach_peerstore(Connection::from_tcp(replacement))
         .map_err(|r| r.reason)?;
     assert!(
         tokio::time::timeout(Duration::from_millis(2), d.step(time(3), &mut r))
@@ -310,13 +309,13 @@ async fn continuously_ready_peerstore_cannot_starve_original_native_deadline_clo
         time(0),
         &mut random,
     )?;
-    let (carrier, mut remote) = UnixStream::pair()?;
-    let (ps, mut ps_server) = UnixStream::pair()?;
-    let (tr, _tr_server) = UnixStream::pair()?;
+    let (carrier, mut remote) = stream::pair().await?;
+    let (ps, mut ps_server) = stream::pair().await?;
+    let (tr, _tr_server) = stream::pair().await?;
     let mut driver = Driver::new(
         core,
-        Connection::from_unix(carrier),
-        [Connection::from_unix(ps), Connection::from_unix(tr)],
+        Connection::from_tcp(carrier),
+        [Connection::from_tcp(ps), Connection::from_tcp(tr)],
         cap(),
         b"tcp-127.0.0.1:80",
         1,

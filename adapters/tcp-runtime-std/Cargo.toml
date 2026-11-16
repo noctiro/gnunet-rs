@@ -19,10 +19,10 @@ gnunet-service-runtime.workspace = true
 gnunet-crypto.workspace = true
 gnunet-types.workspace = true
 socket2.workspace = true
-libc.workspace = true
 getrandom.workspace = true
 tokio = { workspace = true, features = ["net", "rt", "io-util", "time"] }
 [dev-dependencies]
+gnunet-pils-host = { workspace = true, features = ["service"] }
 tokio = { workspace = true, features = ["macros", "time"] }
 [lints]
 workspace = true

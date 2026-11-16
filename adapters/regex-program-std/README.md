@@ -15,25 +15,25 @@ published textual interpretation and grants no official C compatibility claim. U
 tries another mode after failure. Existing identity-generation and original
 signing-job retirement contracts continue to apply.
 
-The process entry is `unsafe fn run<F: Factory>()`; the ordinary binary selects
-`NativeFactory`. Its documented contract
-requires the first initialization in a fresh single-threaded exec. It first
-adopts the original activation/parent-control descriptors, then selects official
-SERVICE `-c/-d/-h/-L/-l/-v` options and the Logger. Optional daemon detach
-uses the admitted shared explicit fork/setsid/status-pipe implementation, before
-runtime/tasks, account lookup, new listeners or a constructed Factory provider. The original parent releases activation/control ownership and waits on the real
-child status pipe. EOF/failure is not readiness. The child refreshes the Logger's
-PID without reopening the selected log file.
+## Native startup
 
-New TCP listeners are prepared before applying configured `[regex] USERNAME`. New Unix endpoints are finished under that target account. The same
-`UNIX_MATCH_UID` / `UNIX_MATCH_GID` booleans control new filesystem paths and the
-server's original kernel credential checks; absent values are false. Existing
-parents/inherited endpoints are not changed. The official REGEX service's
-`OPTION_NONE` maps to immediate physical IPC shutdown. Shared service parsing
-continues to provide TCP ACL and TOLERANT configuration.
+The process entry is `unsafe fn run<F: Factory>()`; the installed binary selects
+`NativeFactory`. It delegates to the shared
+[native SERVICE driver](../program-std/README.md#service-startup), preserving
+pre-diagnostic failures and real process exit status. Capture is once-only at
+fresh executable startup. Factory storage/provider creation follows identity,
+runtime and listener setup.
 
-Only after runtime/account/listeners and the shared Resolver exist does
-`Factory::storage` allocate caller-owned storage and `Factory::create` construct
+Unix uses privilege changes and fork detachment. Windows verifies the configured
+process token, imports activation, and uses managed console detachment or
+qualified standalone re-exec. The same original stop source and selected Reporter
+span readiness and shutdown. Taking a diagnostic error never clears its failure
+latch. Missing Unix credential flags remain false; explicit UID/GID checks are
+unsupported on Windows, independently of native endpoint ACLs.
+
+## Factory and protocol ownership
+
+`Factory::storage` allocates caller-owned storage and `Factory::create` constructs
 the provider. `Context` supplies the original live configuration,
 configured DHT endpoint, shared resolution context, exact clock Arc and first
 startup native deadline. GAT provider lifetimes permit borrowing stable external
@@ -46,7 +46,7 @@ PILS identity, its same canonical clock sample and `Factory::ready` for the
 original owned provider all succeed. This is initial local service readiness;
 it is not a DHT PUT acknowledgement or remote availability guarantee. No source
 or retained-job token is replaced during a wait. Missing PILS/DHT readiness keeps
-startup pending until an signal/control stop or its original fixed hard.
+startup pending until a signal/control stop or its original fixed deadline.
 
 The main current-thread loop polls native guards, Driver, statistics and
 Resolver fairly, retaining their owners across pending/canceled wait
@@ -69,6 +69,8 @@ unknown relative mutation is not replayed. A fatal Driver/Resolver failure uses
 its explicit clock-free statistics abort. Local whole writes, DestroyReport and
 remote processing are separate facts. An unconfirmed/Discarded destroy result
 alone is not a reason to replay counters or fail successful business operations.
+
+## Configuration
 
 The configuration below adds finite Rust resource policies to the standard
 `[regex]` listener section. All times are standard GNUnet relative-time values,
@@ -106,7 +108,3 @@ retirement, preventing another provider release after a later pure failure. Actu
 bounded Driver acknowledgment slot retains a successful Core mutation and its
 original operation until exact Provider consumption succeeds; it retries no Core
 mutation and does not wait for another canonical sample.
-
-Historical interface-only compiler receipts keep their original scopes. Actual
-native SERVICE/key/crypto/network/worker and official interoperability acceptance
-remain unverified for the new production binding and ordinary binary.

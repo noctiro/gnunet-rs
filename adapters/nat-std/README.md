@@ -1,10 +1,23 @@
-# GNUnet NAT native host and services (N3)
+# GNUnet NAT native host and services
 
 The service path combines pure NAT protocols/state with native network ports.
 
-## production path
+## Features
+
+The explicit `providers` feature includes the complete service, interface discovery,
+IGD HTTP/HTTPS, SOAP/XML and raw-helper supervision. `program` adds the normal
+PROGRAM entries and always enables these providers. The SDK's `official-nat`
+feature also selects the full provider composition.
+
+Default features are empty. `deadline`, `interfaces`, `resolve` and `stun`
+are available to client/test adapters. This primitive profile avoids coupling
+NAT clients to an HTTP/TLS provider and does not supply a reduced service backend.
+
+## Service and provider interfaces
 
 `server::Server` accepts shared SERVICE streams, checks Unix/TCP ACLs, decodes the exact explicit host ABI, registers original `state::Source`, and dispatches REGISTER/STUN/ADD_GLOBAL/REVERSAL. It queues only official address/reversal notifications. Each immutable TX tag stays on its original MQ, with retained partial cursors, FIFO, original per-frame output bound, first-byte input bound and finite transient sessions. Unknown malformed sources close only that physical MQ. No RID, general ACK, wire CANCEL/UNREGISTER or fabricated operation completion exists. Local whole writes are reported distinctly from provider/remote observations.
+
+[`helpers::Supervisor`](../nat-helper-std/README.md#caller-driven-supervision) owns native child launch, framing and original wait/retirement without an HTTP dependency. Its shared Bounds keep process-clock and native targets unchanged.
 
 `manager::Manager` owns source configuration, original provider/job generations, complete interface snapshots, shared-Resolver DNS, explicit HOLE_EXTERNAL literal/DNS/AUTO behavior, bound-UDP STUN observations, IGD discovery/Add/Query/Delete/ExternalIP, mapping leases and original child helpers. New periodic work/retry creates a fresh local job/provider generation; an old result is never reattached. Every request has original absolute and native bounds, and cleanup gets its own explicitly new finite deadline once, including queue residence. Logical clock rollback never refreshes a native hard target. Provider expiry/invalidation precedes native address writes; obsolete zero-written adds are discarded, while a partial obsolete original closes its MQ. Shared metadata exhaustion during critical freshness maintenance fails closed instead of emitting a known-expired address.
 
@@ -26,9 +39,32 @@ The public `gnunet-nat-server` listener decodes the16-byte official NAT_TEST. It
 
 Three foreground apps are included: gnunet-service-nat, gnunet-service-nat-auto and gnunet-nat-server. They perform once-only inherited-descriptor capture, shared PROGRAM preparation/clock, official service-user privilege policy, one shared Resolver broker, SERVICE bind/credentials/activation, signal/parent stop, finite source drain, child/router cleanup and independent final error reporting. PROGRAM's GNUNET_OK=1 is distinguished from process exit0. READY means local listener/owner setup, never NAT connectivity. STOPPED includes pending/unresolved cleanup; unresolved ownership does not become a clean shutdown.
 
+## Native process composition
+
+With feature `program`, `foreground::main(Mode)` is the unsafe fresh-executable
+entry shared by NAT, NAT-AUTO and the NAT test server. It captures original
+activation and parent control before other native owners. Unix applies the
+configured process identity; Windows verifies its token and imports activation.
+Settings, selected Reporter, one clock and one caller-driven Resolver remain
+shared with the original business loop. This PROGRAM entry has no SERVICE
+fork/detach option.
+
+Readiness proves local listener and owner construction. Parent notification has
+a fixed native deadline and observes the same stop source and logging failure
+latch. Cancellation keeps an admitted status; it never creates a replacement
+READY. Foreground diagnostics use the selected Logger. PROGRAM cancellation retains actual
+Resolver disconnect errors and pending cleanup reports independently of its
+scheduler/task error.
+
+All explicit exits abort original sources before final reporting.
+`Server::poll_retirement` then polls original child waits without a canonical
+clock, new network operation or renewed deadline. A helper's unknown retirement
+increments unresolved cleanup even after its bounded slot is released. Neither
+an empty helper table nor a requested kill proves successful reaping.
+
 ## Ports and bounds
 
-Default discovery/network code remains N2: bounded getifaddrs, original Gate, shared Resolver, application-bound UDP STUN sender (application retains RX ownership), dedicated monitor socket, bounded SSDP and shared mature HTTP/HTTPS1 (length/chunked/EOF) transport, mature quick-xml exact0.42 borrowed UTF8 NsReader with namespace/depth/event/attribute/body limits, no DTD/custom entities/external entities, end-name checks. IGD WANIPConnection/WANPPPConnection1/2 support includes external-IP/add/delete/query; HTTP and HTTPS IGD descriptor/URLBase/control targets use the independent gnunet-http-host owner with verified TLS, shared Resolver and unchanged original logical/native Bounds. SOAP POST does not follow redirects or automatically replay after any exposure; genuine HTTP500 bodies still enter the bounded SOAP fault parser. Default public roots verify hostname/SystemTime validity; callers can supply explicit trust roots through http::exchange_with_tls without disabling checks. No miniupnpc/upnpc/external-ip C utility is called. Native helpers remain platform capability gates, not implicit permission/route/system changes.
+Discovery uses bounded native interface snapshots on Unix and Windows, original Gate, shared Resolver, application-bound UDP STUN sender (application retains RX ownership), dedicated monitor socket, bounded SSDP and shared mature HTTP/HTTPS1 (length/chunked/EOF) transport, mature quick-xml exact0.42 borrowed UTF8 NsReader with namespace/depth/event/attribute/body limits, no DTD/custom entities/external entities, end-name checks. IGD WANIPConnection/WANPPPConnection1/2 support includes external-IP/add/delete/query; HTTP and HTTPS IGD descriptor/URLBase/control targets use the independent gnunet-http-host owner with verified TLS, shared Resolver and unchanged original logical/native Bounds. SOAP POST does not follow redirects or automatically replay after any exposure; genuine HTTP500 bodies still enter the bounded SOAP fault parser. Default public roots verify hostname/SystemTime validity; callers can supply explicit trust roots through http::exchange_with_tls without disabling checks. No miniupnpc/upnpc/external-ip C utility is called. Native helpers remain platform capability gates, not implicit permission/route/system changes.
 
 The default original selection admits at most eight descriptor locations and 32 supported service entries per description/32 distinct canonical service-control pairs in total. Description and SOAP bodies remain individually capped at 65536 bytes, URLs at 2048 bytes and service URNs at 256 bytes, with the existing XML event/depth/attribute/namespace limits. There are at most eight description reads, 32 status reads and 32 external-address reads. The error allocation is reserved before IO for at most devices+services entries: each description fails at most once, and a service can fail status or, only after successful status, external-address reading once. Invalid control URLs reject the whole description; malformed service entries are not silently repaired. Explicit-location selection is available without SSDP and still uses the same HTTP/SOAP and original bounds.
 
@@ -36,11 +72,7 @@ Official NAT keys control IP scan, UPNP, local/v6 filtering, STUN servers/freshn
 
 ## Limitations
 
-The independent native Registration/AutoQuery client is integrated as gnunet-nat-client-host and the optional clients::nat SDK edge. The separate gnunet-nat-test-host supplies the high-level caller (original challenge listener/NAT registration/test-server calls/cancel/result), and the end-user gnunet-nat / gnunet-nat-auto commands use it. The public util NAT burst/socket API is supplied separately by gnunet-nat-burst-host. Linux, Darwin and modern FreeBSD raw-helper source paths and HTTP/HTTPS IGD control are present. Other helper targets and provider/platform interoperability remain separate coverage boundaries; these source paths do not prove successful traversal.
-
-The native SDK, host build without the optional program
-feature and architecture guards passed. Actual NAT/provider/helper and official
-interoperability remain unqualified.
+The independent native Registration/AutoQuery client is integrated as gnunet-nat-client-host and the optional clients::nat SDK edge. The separate gnunet-nat-test-host supplies the high-level caller (original challenge listener/NAT registration/test-server calls/cancel/result), and the end-user gnunet-nat / gnunet-nat-auto commands use it. The public util NAT burst/socket API is supplied separately by gnunet-nat-burst-host. Linux, Darwin and modern FreeBSD raw-helper source paths and HTTP/HTTPS IGD control are present. The Windows helper backend uses the same ICMP packets and an original-reader byte-pipe lifetime; raw permissions and provider/platform interoperability remain separate coverage boundaries; these source paths do not prove successful traversal.
 
 The cleanup queue is fallibly reserved at Manager construction. Original source
 retirement revokes core authority first and queues cleanup without a temporary
@@ -49,5 +81,3 @@ futures retain their own Mapping rather than duplicating it in job tags. Dedicat
 inline storage, and configurable nat-rust MAX_STUN_DATAGRAMS (default1024). Capacity exhaustion is an explicit local error and never a NAT classification. Clock failure while retiring a failed provider aborts the original owner and
 preserves the original job error separately. Unknown mapping deletion remains
 unknown, including after expiry or failed cleanup admission.
-
-Its generic transport has no NAT/HOSTLIST business dependency, no hidden pool/task/default DNS, and binds original request/exposure tokens. No STUN, helper, existing mapping policy, queue deadline or cleanup namespace was replaced.

@@ -1,5 +1,6 @@
 //! Offline metadata preview over one owned, joined extraction worker. There is
 //! no repository, publication plan, content encoder or service endpoint here.
+use super::stop::StopEvents;
 use gnunet::fs::metadata as md;
 use gnunet::fs_host::{
     Control,
@@ -11,7 +12,6 @@ use std::{
     fmt,
     future::{Future, poll_fn},
     io::{self, Write},
-    os::unix::ffi::OsStrExt,
     path::PathBuf,
     sync::{
         Arc,
@@ -20,7 +20,6 @@ use std::{
     task::{Context, Poll},
     time::{Duration, Instant},
 };
-use tokio::signal::unix::{Signal, SignalKind, signal};
 
 struct Arguments {
     source: PathBuf,
@@ -50,7 +49,7 @@ fn arguments(args: &[impl AsRef<OsStr>]) -> Result<Arguments, Box<dyn Error>> {
             at += 1;
             timeout = Some(args.get(at).ok_or("--timeout requires seconds")?.as_ref());
         } else {
-            if !literal && raw.as_bytes().starts_with(b"-") {
+            if !literal && raw.as_encoded_bytes().starts_with(b"-") {
                 return Err("unknown extraction option (use -- for a literal path)".into());
             }
             if source.replace(PathBuf::from(raw)).is_some() {
@@ -68,8 +67,7 @@ fn arguments(args: &[impl AsRef<OsStr>]) -> Result<Arguments, Box<dyn Error>> {
 
 struct Gate {
     stop: Arc<AtomicBool>,
-    interrupt: Signal,
-    terminate: Signal,
+    signals: StopEvents,
     alarm: std::pin::Pin<Box<tokio::time::Sleep>>,
     hard: Instant,
     expired: bool,
@@ -80,8 +78,7 @@ impl Gate {
     fn new(hard: Instant) -> io::Result<Self> {
         Ok(Self {
             stop: Arc::new(AtomicBool::new(false)),
-            interrupt: signal(SignalKind::interrupt())?,
-            terminate: signal(SignalKind::terminate())?,
+            signals: StopEvents::new()?,
             alarm: Box::pin(tokio::time::sleep_until(hard.into())),
             hard,
             expired: false,
@@ -94,21 +91,10 @@ impl Gate {
             self.expired = true;
             self.stop.store(true, Ordering::Release);
         }
-        if !self.stop.load(Ordering::Acquire) {
-            for signal in [&mut self.interrupt, &mut self.terminate] {
-                if let Poll::Ready(value) = signal.poll_recv(cx) {
-                    self.stop.store(true, Ordering::Release);
-                    if value.is_some() {
-                        self.cancelled = true;
-                    } else {
-                        self.signal_error = Some(io::Error::new(
-                            io::ErrorKind::UnexpectedEof,
-                            "extraction signal source closed",
-                        ));
-                    }
-                    break;
-                }
-            }
+        if !self.stop.load(Ordering::Acquire) && self.signals.poll(cx) {
+            self.stop.store(true, Ordering::Release);
+            self.signal_error = self.signals.take_failure();
+            self.cancelled = self.signal_error.is_none();
         }
     }
 }
@@ -193,8 +179,11 @@ fn row(out: &mut impl Write, ordinal: u64, object: &ExtractedObject) -> io::Resu
     )?;
     serde_json::to_writer(&mut *out, &object.relative.to_str()).map_err(io::Error::other)?;
     out.write_all(b",\"relative_bytes\":")?;
-    serde_json::to_writer(&mut *out, object.relative.as_os_str().as_bytes())
-        .map_err(io::Error::other)?;
+    serde_json::to_writer(
+        &mut *out,
+        &crate::argument::native_bytes(object.relative.as_os_str()),
+    )
+    .map_err(io::Error::other)?;
     out.write_all(b",\"metadata\":[")?;
     for (index, item) in metadata.items().enumerate() {
         if index != 0 {
@@ -243,11 +232,15 @@ fn terminal(out: &mut impl Write, failure: &Failure) -> io::Result<()> {
     out.flush()
 }
 
-pub(super) fn run(args: &[impl AsRef<OsStr>], out: &mut impl Write) -> Result<(), Box<dyn Error>> {
+pub(super) fn run(
+    args: &[impl AsRef<OsStr>],
+    out: &mut super::Output<'_, impl Write>,
+) -> Result<(), Box<dyn Error>> {
     let args = arguments(args)?;
     let hard = Instant::now()
         .checked_add(Duration::from_micros(args.interval))
         .ok_or("extraction deadline is too large")?;
+    out.deadline(hard);
     let metadata = args.metadata.select()?;
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -362,6 +355,7 @@ pub(super) fn run(args: &[impl AsRef<OsStr>], out: &mut impl Write) -> Result<()
             failure.cancelled = gate.cancelled;
             failure.signal = gate.signal_error;
             let complete = failure.complete();
+            out.cleanup()?;
             failure.terminal_output = terminal(out, &failure).err();
             if complete && failure.terminal_output.is_none() {
                 Ok(())

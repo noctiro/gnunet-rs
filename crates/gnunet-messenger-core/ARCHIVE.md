@@ -153,8 +153,7 @@ message, epoch, history-image or policy capacities gives an explicit failure.
 The filesystem parent must exist. Native network grace is finite, while actual
 filesystem sync/join may block in the OS. Live instance domains use an
 explicit caller-owned borrow without an atomic or allocation requirement.
-None of this is a complete-node or official mixed-node runtime
-acceptance claim. Live transport replay, provider jobs, current crypto keys and
+Live transport replay, provider jobs, current crypto keys and
 application plaintext are intentionally re-established by their owners,
 not restored as successful outstanding work from an old process.
 
@@ -174,11 +173,11 @@ reset, file deletion or replacement history is performed. The
 original store error and file remain for the owner to report. Official GNUnet
 wire formats, signatures and encrypted record formats are unchanged.
 
-## Transient discourse projection and cleanup (source-only forward)
+## Transient discourse projection and cleanup
 
-The SERVICE owner already batches mutation events into one original
-snapshot worker and flushes after network retirement. This forward changes that
-image's content, not the worker/commit/receipt/clock or scheduling algorithm.
+The SERVICE owner batches mutation events into one original snapshot worker and
+flushes after network retirement. Transient projection controls the image's
+content under the same commit and scheduling contracts.
 In the fixed C implementation, both TALK and SUBSCRIPTION are discourse records;
 they occupy the in-memory discourse map rather than durable message storage.
 The subsequent official HEAD excludes their hash-to-epoch metadata from durable

@@ -1,15 +1,15 @@
 //! Bounded standard-library PEERSTORE WAL, exclusive actual writer fence and
 //! durable original UID namespace. Any uncertain write latches the owner closed;
 //! reopen replays complete checksummed transactions and retires only a torn tail.
+mod files;
+use files::Files;
 use gnunet_peerstore::{Envelope, Filter, Record, Request, Row, Storage};
 use gnunet_types::Error;
 use sha2::{Digest, Sha512};
 use std::{
-    fs::{self, File, OpenOptions},
     io::{self, Read, Seek, SeekFrom, Write},
     ops::Range,
-    os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
-    path::{Path, PathBuf},
+    path::Path,
 };
 const HEADER: usize = 80;
 const ENTRY: usize = 16;
@@ -46,12 +46,17 @@ pub struct Failure {
     pub classification: Error,
     /// Original OS failure when present.
     pub io: Option<io::Error>,
+    /// Independent failure removing only the captured staging entry.
+    pub cleanup: Option<io::Error>,
 }
 impl std::fmt::Display for Failure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "PEERSTORE {}: {}", self.stage, self.classification)?;
         if let Some(e) = &self.io {
             write!(f, ": {e}")?
+        }
+        if let Some(error) = &self.cleanup {
+            write!(f, "; independent staging cleanup: {error}")?;
         }
         Ok(())
     }
@@ -66,6 +71,7 @@ fn native(stage: &'static str, error: io::Error) -> Failure {
         stage,
         classification: Error::Storage,
         io: Some(error),
+        cleanup: None,
     }
 }
 fn protocol(stage: &'static str, error: Error) -> Failure {
@@ -73,16 +79,8 @@ fn protocol(stage: &'static str, error: Error) -> Failure {
         stage,
         classification: error,
         io: None,
+        cleanup: None,
     }
-}
-#[derive(Clone, Copy, Eq, PartialEq)]
-struct Inode(u64, u64);
-fn inode(file: &File) -> io::Result<Inode> {
-    let m = file.metadata()?;
-    if !m.is_file() && !m.is_dir() {
-        return Err(io::Error::other("non-regular storage authority"));
-    }
-    Ok(Inode(m.dev(), m.ino()))
 }
 struct Stored {
     sequence: u64,
@@ -140,14 +138,7 @@ impl Stored {
 /// One actual fenced WAL owner. It performs explicit synchronous disk effects;
 /// a caller may place it behind its own bounded worker, never a hidden thread.
 pub struct Wal {
-    directory: PathBuf,
-    path: PathBuf,
-    dir: File,
-    dir_id: Inode,
-    lock: File,
-    lock_id: Inode,
-    file: File,
-    file_id: Inode,
+    files: Files,
     rows: Vec<Stored>,
     last: u64,
     live_bytes: usize,
@@ -156,6 +147,17 @@ pub struct Wal {
     poisoned: bool,
     failure: Option<Failure>,
     recovered_tail: u64,
+}
+fn write(file: &mut std::fs::File, bytes: &[u8]) -> io::Result<()> {
+    let mut offset = 0;
+    while offset < bytes.len() {
+        let count = file.write(&bytes[offset..])?;
+        if count == 0 {
+            return Err(io::ErrorKind::WriteZero.into());
+        }
+        offset += count;
+    }
+    Ok(())
 }
 fn header(last: u64) -> [u8; HEADER] {
     let mut b = [0; HEADER];
@@ -182,16 +184,6 @@ fn checksum(prefix: &[u8], body: &[u8]) -> [u8; 64] {
     h.update(body);
     h.finalize().into()
 }
-fn data(path: &Path) -> io::Result<File> {
-    OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(path)
-}
 impl Wal {
     /// Open/recover this independent Rust format. Unknown/future/corrupt complete
     /// artifacts are rejected and preserved. Complete valid WAL tails are replayed
@@ -215,70 +207,26 @@ impl Wal {
         if minimum > limits.wal_bytes {
             return Err(protocol("wal-capacity", Error::InvalidInput));
         }
-        fs::create_dir_all(directory.as_ref()).map_err(|e| native("mkdir", e))?;
-        if fs::symlink_metadata(directory.as_ref())
-            .map_err(|e| native("directory", e))?
-            .file_type()
-            .is_symlink()
-        {
-            return Err(protocol("directory-symlink", Error::InvalidInput));
-        }
-        fs::set_permissions(directory.as_ref(), fs::Permissions::from_mode(0o700))
-            .map_err(|e| native("directory-mode", e))?;
-        let directory =
-            fs::canonicalize(directory.as_ref()).map_err(|e| native("canonical-directory", e))?;
-        let dir = OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
-            .open(&directory)
-            .map_err(|e| native("directory-open", e))?;
-        let dir_id = inode(&dir).map_err(|e| native("directory-id", e))?;
-        let lock = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(directory.join(".peerstore-rust.lock"))
-            .map_err(|e| native("lock-open", e))?;
-        lock.try_lock().map_err(|e| match e {
-            fs::TryLockError::Error(e) => native("writer-lock", e),
-            e @ fs::TryLockError::WouldBlock => Failure {
-                stage: "writer-lock",
-                classification: Error::Conflict,
-                io: Some(e.into()),
-            },
-        })?;
-        let lock_id = inode(&lock).map_err(|e| native("lock-id", e))?;
-        let path = directory.join("records.wal");
-        let mut file = data(&path).map_err(|e| native("wal-open", e))?;
-        let file_id = inode(&file).map_err(|e| native("wal-id", e))?;
-        if file_id == lock_id {
-            return Err(protocol("wal-lock-alias", Error::Conflict));
-        }
-        let length = file.metadata().map_err(|e| native("wal-size", e))?.len();
+        let mut files = Files::open(directory.as_ref())?;
+        let length = files
+            .file
+            .metadata()
+            .map_err(|e| native("wal-size", e))?
+            .len();
         if length > limits.wal_bytes {
             return Err(protocol("wal-bound", Error::Capacity));
         }
         if length == 0 {
-            file.write_all(&header(0))
-                .and_then(|()| file.sync_all())
-                .and_then(|()| dir.sync_all())
+            write(&mut files.file, &header(0))
+                .and_then(|()| files.file.sync_all())
+                .and_then(|()| files.sync_directory())
                 .map_err(|e| native("initialize-sync", e))?;
         }
         let mut rows = Vec::new();
         rows.try_reserve_exact(limits.records)
             .map_err(|_| protocol("row-allocation", Error::Capacity))?;
         let mut wal = Self {
-            directory,
-            path,
-            dir,
-            dir_id,
-            lock,
-            lock_id,
-            file,
-            file_id,
+            files,
             rows,
             last: 0,
             live_bytes: 0,
@@ -293,24 +241,12 @@ impl Wal {
         Ok(wal)
     }
     fn verify(&self) -> io::Result<()> {
-        let lock_path = self.directory.join(".peerstore-rust.lock");
-        for (path, held, expected, is_dir) in [
-            (&self.directory, &self.dir, self.dir_id, true),
-            (&lock_path, &self.lock, self.lock_id, false),
-            (&self.path, &self.file, self.file_id, false),
-        ] {
-            let m = fs::symlink_metadata(path)?;
-            if m.file_type().is_symlink()
-                || m.is_dir() != is_dir
-                || Inode(m.dev(), m.ino()) != expected
-                || inode(held)? != expected
-            {
-                return Err(io::Error::other(
-                    "original physical storage authority changed",
-                ));
-            }
-        }
-        Ok(())
+        self.files.verify()
+    }
+    /// Actual directory-barrier availability observed at open/checkpoint. A
+    /// completed file sync does not manufacture an unavailable naming barrier.
+    pub fn directory_sync(&self) -> gnunet_native::DirectorySync {
+        self.files.directory_sync
     }
     fn ready(&self) -> Result<(), Error> {
         if self.poisoned {
@@ -326,6 +262,7 @@ impl Wal {
                 stage,
                 classification: Error::OutcomeUnknown,
                 io: Some(error),
+                cleanup: None,
             })
         }
         Error::OutcomeUnknown
@@ -353,16 +290,19 @@ impl Wal {
         Ok(())
     }
     fn replay(&mut self) -> Result<(), Failure> {
-        self.file
+        self.files
+            .file
             .seek(SeekFrom::Start(0))
             .map_err(|e| native("replay-seek", e))?;
         let size = self
+            .files
             .file
             .metadata()
             .map_err(|e| native("replay-size", e))?
             .len();
         let mut h = [0; HEADER];
-        self.file
+        self.files
+            .file
             .read_exact(&mut h)
             .map_err(|e| native("replay-header", e))?;
         if &h[..8] != MAGIC || checksum(&h[..16], &[]) != h[16..] {
@@ -382,7 +322,8 @@ impl Wal {
                 break;
             }
             let mut prefix = [0; ENTRY];
-            self.file
+            self.files
+                .file
                 .read_exact(&mut prefix)
                 .map_err(|e| native("replay-entry", e))?;
             let len = u32::from_be_bytes(
@@ -407,11 +348,13 @@ impl Wal {
             body.try_reserve_exact(len)
                 .map_err(|_| protocol("replay-allocation", Error::Capacity))?;
             body.resize(len, 0);
-            self.file
+            self.files
+                .file
                 .read_exact(&mut body)
                 .map_err(|e| native("replay-body", e))?;
             let mut sum = [0; 64];
-            self.file
+            self.files
+                .file
                 .read_exact(&mut sum)
                 .map_err(|e| native("replay-digest", e))?;
             if checksum(&prefix, &body) != sum {
@@ -456,14 +399,16 @@ impl Wal {
             offset += total;
         }
         if offset < size {
-            self.file
+            self.files
+                .file
                 .set_len(offset)
-                .and_then(|()| self.file.sync_all())
+                .and_then(|()| self.files.file.sync_all())
                 .map_err(|e| native("torn-tail-retire", e))?;
             self.recovered_tail = size - offset;
         }
         self.bytes = offset;
-        self.file
+        self.files
+            .file
             .seek(SeekFrom::End(0))
             .map_err(|e| native("replay-end", e))?;
         self.verify().map_err(|e| native("replay-authority", e))?;
@@ -473,57 +418,46 @@ impl Wal {
         self.ready()?;
         let mut nonce = [0; 16];
         getrandom::fill(&mut nonce).map_err(|_| Error::Entropy)?;
-        let path = self.directory.join(format!(
-            ".peerstore-tmp-{:032x}",
-            u128::from_be_bytes(nonce)
-        ));
-        let mut tmp = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(&path)
-            .map_err(|e| self.fail("checkpoint-open", e))?;
-        let expected = inode(&tmp).map_err(|e| self.fail("checkpoint-id", e))?;
+        let (name, mut tmp) = self
+            .files
+            .staging(nonce)
+            .map_err(|error| self.fail("checkpoint-open", error))?;
         let outcome = (|| -> io::Result<u64> {
-            tmp.write_all(&header(self.last))?;
+            write(&mut tmp, &header(self.last))?;
             let mut bytes = HEADER as u64;
             for r in &self.rows {
                 let e = entry(3, r.sequence, r.frame.len()).map_err(io::Error::other)?;
-                tmp.write_all(&e)?;
-                tmp.write_all(&r.frame)?;
-                tmp.write_all(&checksum(&e, &r.frame))?;
+                write(&mut tmp, &e)?;
+                write(&mut tmp, &r.frame)?;
+                write(&mut tmp, &checksum(&e, &r.frame))?;
                 bytes += (ENTRY + DIGEST + r.frame.len()) as u64;
             }
             tmp.sync_all()?;
             self.verify()?;
-            fs::rename(&path, &self.path)?;
-            self.dir.sync_all()?;
+            self.files.publish(&name, &tmp)?;
             Ok(bytes)
         })();
         match outcome {
             Ok(bytes) => {
-                self.file = OpenOptions::new()
-                    .read(true)
-                    .write(true)
-                    .custom_flags(libc::O_NOFOLLOW)
-                    .open(&self.path)
-                    .map_err(|e| self.fail("checkpoint-reopen", e))?;
-                self.file_id = expected;
+                self.files
+                    .install(tmp)
+                    .map_err(|error| self.fail("checkpoint-install", error))?;
                 self.bytes = bytes;
                 self.verify()
                     .map_err(|e| self.fail("checkpoint-authority", e))?;
-                self.file
+                self.files
+                    .file
                     .seek(SeekFrom::End(0))
                     .map_err(|e| self.fail("checkpoint-seek", e))?;
                 Ok(())
             }
             Err(e) => {
-                if fs::symlink_metadata(&path).is_ok_and(|m| Inode(m.dev(), m.ino()) == expected) {
-                    let _cleanup = fs::remove_file(&path);
+                let cleanup = self.files.discard(&name, &tmp).err();
+                let failure = self.fail("checkpoint-publish", e);
+                if let Some(original) = &mut self.failure {
+                    original.cleanup = cleanup;
                 }
-                Err(self.fail("checkpoint-publish", e))
+                Err(failure)
             }
         }
     }
@@ -532,6 +466,7 @@ impl Wal {
         self.verify()
             .map_err(|e| self.fail("append-authority", e))?;
         if self
+            .files
             .file
             .metadata()
             .map_err(|e| self.fail("append-size", e))?
@@ -561,11 +496,10 @@ impl Wal {
             return Err(Error::Capacity);
         }
         let sum = checksum(&prefix, body);
-        self.file
-            .write_all(&prefix)
-            .and_then(|()| self.file.write_all(body))
-            .and_then(|()| self.file.write_all(&sum))
-            .and_then(|()| self.file.sync_all())
+        write(&mut self.files.file, &prefix)
+            .and_then(|()| write(&mut self.files.file, body))
+            .and_then(|()| write(&mut self.files.file, &sum))
+            .and_then(|()| self.files.file.sync_all())
             .map_err(|e| self.fail("append-sync", e))?;
         self.verify()
             .map_err(|e| self.fail("append-post-authority", e))?;

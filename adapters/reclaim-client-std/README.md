@@ -5,6 +5,8 @@ using `gnunet-reclaim`
 `9059e4313c5134a08a37ab341c9a0a180cd80094cc2f58abbe2135b2f35588ec`. It uses existing shared CLIENT `EndpointSource/Channel`, RuntimeClock and
 Framed/OwnedFrame; it creates no Resolver, runtime, background task or service. Both Unix and TCP endpoint sources use the same connection driver.
 
+## Public interface
+
 `Client::new(&Instance, EndpointSource, Limits)` reserves bounded metadata and
 subscribes to that source's clock. It opens no socket until driven. Public
 operations: `store_attribute`, `store_credential`, `delete_attribute`,
@@ -71,6 +73,8 @@ old frames/requests are never replayed. Default reconnect=false requires explici
 `reconnect()`; optional replacement also creates a fresh Epoch and keeps
 old completions tagged with their original Epoch. `recover_ports` explicitly
 recovers failed shared ports; no implicit healthy-source claim is made. `close()`/Drop stops native ownership without sampling a clock.
+
+## Limits
 
 Limits bound live rows including undelivered replies, total logical held/admitted
 outbound bytes, complete frame size, syscall quantum, list objects, partial-input

@@ -1,11 +1,12 @@
-# Native locale / regex boundary
+# Native process contracts
+
+## POSIX locale and regular expressions
 
 This implementation profile is an ordinary initialized Darwin process libc, or
 GNU libc on a Linux `target_env="gnu"` target. Apple's loader-only VARIANT_DYLD,
 other libc implementations and other native ABI profiles are not covered by the
-source argument below. The current runtime evidence is Darwin arm64 macOS27.0.1
-build26A434. A public libc source snapshot is not claimed to be the installed OS
-binary; native process/profile observations and source inspection are separate.
+source argument below. A public libc source snapshot identifies the source profile; it does not identify
+the installed OS binary.
 
 `native-contracts/sources.json` retains exact primary repository revision, Git
 blob SHA1, byte size and SHA256. Retention checks recompute the full Git blob
@@ -73,8 +74,104 @@ error instead of pretending that a failed ownership installation succeeded.
 Out-of-range scanf inputs are never executed: a defined strtof_l range preflight
 rejects them, with no scanf/source equivalence claim. All tested ordinary lexical
 failures are defined and use correctly typed initialized outputs. The independent
-normal-C actor calls the unchanged GNUnet public API. A previous owned observer
-mistakenly passed stack input to the ownership-transferring dollar helper; that
-SIGABRT is retained as a failed fixture, receives no credit, and is not repeated.
-The corrected actor transfers GNUNET_strdup ownership, records all compiler bytes
-and treats its own const/prototype/lifetime diagnostics as fatal before execution.
+normal-C actor calls the unchanged GNUnet public API with the required argument
+ownership. Fixture failures cannot establish interoperability.
+
+## Configuration locale binding
+
+`CaseContext` is explicit caller-owned mutable selection. Immutable snapshots do
+not automatically track external setlocale/uselocale calls; the separately acquired
+CurrentThread capability reads that calling thread at each synchronous source read
+point under its documented foreign-mutator/lifetime contract. Configurations/duplicates/secret
+children sharing that context observe later selection replacements without
+rewriting names, values or order. Retained `CaseSnapshot` views keep independent
+native ownership alive after replacement/context Drop. PROGRAM's native installer
+owns/publishes one such context. Embedders can bind an existing context before
+config creation/duplication to model one C caller's effective locale.
+
+Section/key lookup, directive names, PATHS exclusions and choices use the
+selected byte comparison context. Whitespace uses unsigned-byte classification;
+empty spans and embedded NULs are handled before bounded native string calls.
+Numeric accessors retain their explicit range checks and numeric-locale rules.
+
+## Windows regular expressions
+
+Windows uses a safe Rust BRE parser and boolean instruction machine, including
+groups, references 1..9, intervals, brackets and POSIX character classes. Unescaped
+`+?()|{}` are literals. Extensions include escaped alternation/plus/question,
+word boundaries, `\w` and `\s`. Empty branches/groups are accepted. Input uses
+the lossless local string codec; supplementary scalars remain whole and isolated
+UTF-16 units remain exact literals. C-string prefixes end at NUL.
+
+The native adapter retains CRT character properties and selects system ICU
+collation from the captured NLS locale identity. C collation stays ordinal.
+Named cultures use one owned ICU profile for full/primary ordering and actual
+contraction membership; arbitrary Unicode sequences are not collating elements.
+Ranges and equivalence classes use the inventory's maximum scalar width, even
+when their named endpoints are single characters. Negative brackets preserve
+excluded-element checks and consume the complete permitted collating element.
+Native failures never become negative matches.
+
+Named collation requires Windows inbox ICU: the combined `icu.dll` on 1903+
+or the split layout and a scoped COM reference on earlier supported systems. Language/script and alternate-sort identities are checked after native
+resolution; unsupported mappings fail explicitly. ICU/CLDR data is a declared
+provider choice and need not match NLS or a different libc's locale tables.
+
+No captures escape this API, so matching explores valid capture histories without
+selecting returned leftmost-longest captures. For example, `^\(a*\)a*\1$` matches
+`a`; the observed Darwin native profile rejects that fixture. The portable native comparison
+tests cover the shared nonempty grammar and do not prove identical behavior for
+every libc capture or locale profile.
+
+Bounds are 16384 pattern symbols, 65536 input symbols/instructions/retained or
+pending states, 64 nested groups and 4000000 work units per compilation/search. Variable-width spans and native
+comparison extents consume that work budget. A first-scalar inventory index
+limits candidate scans to relevant contraction widths.
+Named collating sequences are limited to 64 symbols. Allocation, native and budget
+failures propagate through the existing fallible policy API. Invalid syntax
+retains the source's preceding-rule-prefix behavior. Windows native runtime
+qualification remains in [implementation status](../../IMPLEMENTATION_STATUS.md).
+
+## Absolute calendar input
+
+POSIX retains the source's ordered strptime formats, partial-field reuse and
+mktime normalization. Windows uses the native adapter's retained LC_TIME parser,
+wide ISO/ctime/OLE input and named NLS pictures for supplemental cultures.
+Checked Gregorian arithmetic supports expanded ISO years across the complete
+GNUnet microsecond domain. Local conversion keeps the UCRT fast path and uses
+Windows year-specific rules or explicit Microsoft TZ outside its range. Windows
+ISO month/year inputs use the first day instead of normalizing an initially zero
+day. Native calendar providers retain their own era/range constraints.
+Both program backends preserve the C-string prefix before NUL, return saturating
+microseconds and report invalid options through the existing public error API.
+Neither backend changes locale or TZ while parsing. Windows runtime qualification remains
+open in [implementation status](../../IMPLEMENTATION_STATUS.md).
+
+## Process stderr
+
+`ProcessStderr` is an explicitly unsafe acquired, non-Send/non-Sync capability.
+It coordinates only callers of this API. The process must exclude foreign
+standard-stream users, mutation and spawning during installation, and flush
+buffered writers beforehand. Dropping the claim leaves the installed stream live.
+
+Unix lifts private descriptors above 2 before `dup2`; no caller-owned file can
+later close installed fd2. Windows delegates to the native adapter's separate
+Win32/UCRT owners, restores temporary standard-table changes and returns typed
+partial-installation failures through the original `io::Error` chain. See the
+[native ownership contract](../native-std/API.md#process-standard-streams).
+
+## Windows localization
+
+Enabled NLS requires a trusted GNU libintl DLL at a fully qualified path. The
+native loader owns its reference and preserves load/export errors. The selected
+ABI includes `libintl_setlocale`, GNU LC_MESSAGES1729 and
+`libintl_wbindtextdomain`: catalog directories are bound as absolute UTF-16 paths
+without a narrow-codepage conversion. The UCRT-only ABI has no gettext message
+category and is refused before loading. An unavailable export or failed binding
+is an enabled-NLS error. The explicit disabled-NLS profile remains separate.
+
+Translation/context clones retain their documented library and locale authority.
+The native loader test exercises Windows system exports; it does not establish
+GNU gettext catalog selection. Qualification remains in the
+[central status](../../IMPLEMENTATION_STATUS.md#pending-qualification).
+See [GNU directory binding](https://www.gnu.org/software/gettext/manual/gettext.html).

@@ -2,15 +2,23 @@
 
 `gnunet-service-datastore -c official.conf` runs the independent standard
 SERVICE. Shared `-d`, `-h`, `-L`, `-l` and `-v` options select daemonization,
-help, logging and version behavior. Configured activation/TCP setup precedes
-USERNAME switching; new Unix listeners and the durable store belong to the
-selected account. The same selected clock drives logging and the server.
+help, logging and version behavior. The same selected clock drives logging and
+the server on Unix and Windows.
+
+## Startup and shutdown
+
+Unix prepares activation/TCP before switching USERNAME; new listeners and the
+store belong to that account. Windows verifies the configured account against
+the primary token before binding or opening storage, and uses native inherited
+resources and detached re-exec for `-d`.
 
 `READY` and the separate daemon-parent byte follow backend recovery, actual
-listeners and worker construction. SIGINT/SIGTERM, parent control or the first
+listeners and worker construction. Native termination events, parent control or the first
 logging error take the ordinary immediate shutdown path. Original operations,
 requested DROP and the storage-thread join settle before return. Operation,
 worker, stdout and selected-log errors remain independent failure facts.
+
+## Configuration
 
 The storage directory is an internal Rust backend choice; no old layout or CLI
 migration is required. Configure it explicitly or use the normal data home:
@@ -32,11 +40,14 @@ MAX_RECORDS, MAX_WAL_BYTES, CHECKPOINT_BYTES, MAX_TRANSACTION_OPS, GARBAGE_ENTRI
 MAX_VALUE_BYTES, eviction/client/reservation/worker/IO budgets and finite
 MAINTENANCE_INTERVAL retain their backend/service meanings.
 
+## Access and persistence
+
 New Unix socket/parent permissions follow the configured credential policy:
 owner 0700/0700, group 0770/0750, or local 0777/0755. Existing parents and inherited
 socket permissions remain unchanged. Filesystem creation permissions and actual
 kernel UID/GID checks are independent; the server applies both. Database parent
-directories remain private.
+directories remain private. Windows applies the corresponding native local
+listener ACL and peer identity policy.
 
-The changed service/runtime/backend sources pass macOS/Linux strict compilation. Official-C and whole-node qualification remain
-separate, unproved work.
+The backend synchronizes file data and exposes directory naming availability
+separately; see the [storage contract](../../adapters/datastore-std/README.md#storage-and-recovery).

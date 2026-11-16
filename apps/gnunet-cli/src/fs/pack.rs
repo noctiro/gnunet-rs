@@ -7,7 +7,7 @@ use gnunet::{
     fs_codec::{Compressor, Inflate},
     fs_host::{Buffers, Control, Limits, Repository},
 };
-use std::{error::Error, ffi::OsStr, os::unix::ffi::OsStrExt, path::Path};
+use std::{error::Error, ffi::OsStr, path::Path};
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 const MAX_FILES: usize = 4096;
@@ -31,10 +31,8 @@ fn bytes(length: usize) -> Result<Vec<u8>> {
     Ok(buffer)
 }
 fn basename(path: &Path) -> Result<&[u8]> {
-    let name = path
-        .file_name()
-        .ok_or("FS pack input needs a file name")?
-        .as_bytes();
+    let name =
+        crate::argument::wire_bytes(path.file_name().ok_or("FS pack input needs a file name")?)?;
     if name.is_empty() || name.len() > MAX_NAME_BYTES || name.contains(&0) {
         return Err("FS pack file name is empty, too long or contains NUL".into());
     }
@@ -234,8 +232,7 @@ mod tests {
     use super::*;
     use std::{
         ffi::OsString,
-        fs::{self, DirBuilder},
-        os::unix::{ffi::OsStringExt, fs::DirBuilderExt},
+        fs,
         path::PathBuf,
         time::{SystemTime, UNIX_EPOCH},
     };
@@ -257,16 +254,16 @@ mod tests {
     fn packs_native_filename_bytes_and_empty_files() -> Result<()> {
         let nonce = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
         let path = std::env::temp_dir().join(format!("gnunet-pack-{}-{nonce}", std::process::id()));
-        DirBuilder::new().mode(0o700).create(&path)?;
+        crate::fs::create_private_directory(&path)?;
         let temporary = Temporary(path);
-        // APFS rejects invalid UTF-8 at file creation. Keep exact native bytes
-        // on that platform too; Linux exercises opaque non-UTF8 filenames.
-        let name = if cfg!(target_os = "macos") {
+        // Windows protocol names require Unicode; APFS also refuses invalid
+        // UTF-8 at file creation. Other Unix targets exercise opaque bytes.
+        let name = if cfg!(any(target_os = "macos", windows)) {
             b"name-\xc3\xa9".to_vec()
         } else {
             vec![0xff, b'a', 0xfe]
         };
-        let input = temporary.0.join(OsString::from_vec(name.clone()));
+        let input = temporary.0.join(&*gnunet_native::os_bytes::decode(&name)?);
         let empty = temporary.0.join("empty");
         let data: Vec<_> = (0..70_000).map(|n| (n % 251) as u8).collect();
         fs::write(&input, &data)?;

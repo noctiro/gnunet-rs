@@ -2,19 +2,42 @@
 
 ## Repository and output
 
-`gnunet-fs-host` connects the official content/directory core to Unix files. `BlockSource` and `BlockSink` separate retrieval/storage from encoding and
+`gnunet-fs-host` connects the official content/directory core to native storage. `BlockSource` and `BlockSink` separate retrieval/storage from encoding and
 authentication. `Repository` stores raw ciphertext+tag blocks by query hash,
 anchors directory descriptors, refuses object symlinks and commits immutable
-objects without replacement. Create its root under an existing parent directory. File and directory sync failures retain their uncertain outcome.
+objects without replacement. Create its root under an existing parent directory.
+The shared repository uses descriptor-relative Unix or original-object Windows
+operations. `Insert::{Created,Existing}` carries `Retention`; filesystem inserts
+report file synchronization independently of `DirectorySync`. Windows directory
+barriers report `Unavailable`. `CleanupAfterCommit` retains the successful
+retention and the independent cleanup error. Failed publication or later
+identity/barrier checks preserve an uncertain outcome.
+Callers serialize stored-object mutation and administrative shard replacement or
+removal. Ordinary concurrent immutable insertions use exclusive temporaries and
+no-replace publication; the selected root may be renamed without redirecting it.
 
 Reuse `Buffers` across imports and reads. Block/frontier buffers are bounded by
 protocol geometry; record/decompression storage grows only when parsing needs it. `publish_directory` reads the prepared layout directly into block-sized buffers,
 using logarithmic record lookup rather than allocating the entire directory. `visit_directory` lends authenticated parent entries to a recursive owner. Controlled operations sample cancellation between blocks.
 
-`OutputDir` holds an existing output directory by descriptor. It rejects unsafe
+`OutputDir` holds an existing output directory by its original Unix or Windows
+handle. It rejects unsafe
 relative names and symlink parents, creates private same-directory temporaries,
 authenticates the entire file and syncs it before a no-clobber link. Existing
 files stay intact. A known final commit and a cleanup failure remain distinct.
+`ReadFile::directory_sync` records actual file synchronization and final-name
+verification while preserving an unavailable directory barrier separately.
+`CommitStage::FileSynchronized` carries that observation for artifact and error
+reports. Windows rejects DOS device names, alternate streams and trailing
+periods/spaces under its [native naming contract](https://learn.microsoft.com/windows/win32/fileio/naming-a-file).
+Native temporary names have eight decimal digits to avoid case
+folding and generated DOS short-name aliases; an equal final name is skipped.
+
+`FileIdentity` retains complete platform-tagged fields, including Windows'
+128-bit file ID. These observations do not authorize cleanup without the held
+original or task-owner proof. Local task event version 3 and catalog format
+`FSJCAT02` store complete identities and file/directory synchronization separately;
+superseded formats are refused. GNUnet content, URI and IPC formats are unchanged.
 
 The SDK feature is `official-fs`. The local CLI exposes `fs import`, `fs cat`,
 `fs export`, `fs ls` and `fs pack`; these operate on the explicitly selected
@@ -41,7 +64,28 @@ do not assert durable datastore publication.
 root-bound file tree and writes through AsyncWrite. It can read/populate a
 verified local block cache. One source-clock deadline covers blocks, reconnects,
 writer backpressure and flush. Queries reuse a dedicated MQ with a caller-selected
-rotation bound; delayed replies are routed by their ciphertext query. `OutputDir::download_file` uses the same fd-anchored commit/cleanup path as local
+rotation bound; delayed replies are routed by their ciphertext query. Caller
+control remains observable during pending source reads, destination writes and
+flushes. Continue retains the original future and its partial cursor. Cancel
+stops further polling and can leave an accepted prefix or unfinished flush;
+reported progress counts only complete chunk deliveries.
+
+Finite transfers also capture one native allowance from the initial remaining
+duration before clock registration. A stalled source clock cannot strand a
+pending connection, destination write or flush. Block progress and reconnects
+retain that allowance. `DownloadOptions::native_deadline` and
+`PublishOptions::native_deadline` let enclosing operations pass the same stop
+target to child transfers; they can only shorten the child's derived allowance.
+Directory download and full/indexed tree publication capture one target before
+traversal and pass it through files, generated directories and namespace queries.
+Durable runs capture it before WAL setup and keep it through revalidation and
+new output. Process-local targets are omitted from manifests; an explicit resumed
+run admits a new target from its caller's deadline. Explicit range/unindex native
+bounds also only tighten the allowance. FOREVER remains unlimited when no outer
+native bound was selected. Synchronous
+filesystem and callback work cannot be forcibly preempted, and known native
+receipts remain distinct from timeout or cancellation intent.
+`OutputDir::download_file` uses the same fd-anchored commit/cleanup path as local
 reads. Dropping a whole transfer closes its MQ and removes the private temporary.
 
 `Buffers::download_range_to` retrieves only the selected data leaves and their
@@ -104,6 +148,30 @@ fairly with search progress. It uses no hidden task, output/cache or replacement
 Resolver. Buffers are allocated lazily and reused. Stop cancels and drains the
 original probes and search MQs, preserving each native result and independent
 cleanup error. This local scheduling policy does not add FS wire flags.
+
+## Private task storage
+
+`durable::store::Store` owns bounded, checksummed records and one physical
+exclusive writer lock. Creation and reopen qualify private directories and
+single-link lock/WAL files, using complete native identities. Each mutation
+revalidates the original objects and selected directory entries. A registered
+directory identity is checked before lock acquisition or recovery. Native entropy
+supplies task IDs; no network format or path encoding is inferred from those IDs.
+
+Recovery checks complete record framing and checksums, repairs only a qualified
+incomplete tail and refuses complete corruption. Ambiguous appends fence the
+original writer. Positional reads preserve its append cursor. These algorithms
+are shared on Unix and Windows; native locks, ACLs and file access remain below
+the storage layer. Windows lock files are not data channels while locked.
+
+WAL synchronization and naming durability are separate observations.
+`Store::directory_sync` retains the combined root/parent barrier: synchronized
+only when both barriers actually succeeded, otherwise `Unavailable`. Windows
+still synchronizes actual file contents and reports unavailable directory
+barriers. Local path serialization preserves native spellings; peer filenames
+require valid UTF-8 on Windows before output path validation.
+Download, search and probe tasks expose the same observation through
+`storage_directory_sync`, independently of output publication receipts.
 
 ## Task catalog and probe history
 
@@ -178,11 +246,15 @@ uncertain writes survive failure; weighted PUTs are never automatically retried.
 
 `namespace::key::KeyFile` creates and opens ordinary raw32 Ed25519 namespace
 seeds. Exclusive creation uses private permissions, original parent/file
-identities and file/parent sync barriers. Typed failures retain whether
-the name was created or synced; failures never delete or replace keys. Loaded
+identities and file synchronization. `directory_sync` separately reports the
+actual parent naming barrier; Windows reports `Unavailable`, and reopen grants
+no new barrier receipt. Typed failures retain creation, file synchronization,
+naming observations and original native errors; failures never delete or replace keys. Loaded
 signers and temporary seed/fingerprint storage zeroize on drop. Before managed
 publication, complete seed re-read and native name/permission/stamp checks
-revalidate the original selected authority. Key bytes never enter the graph WAL
+revalidate the original selected authority. Files must be private and single-link;
+Unix seeds also require owner-readable, nonexecutable data permissions.
+Key bytes never enter the graph WAL
 or diagnostic formatting.
 
 `namespace::graph::Graph` durably binds one private locked WAL to the public
@@ -273,14 +345,24 @@ KSK URI grammar has no faithful serialization; the start event then has a null
 query URI. All paths use the original Session, bounds, result and cleanup owners. Deadline or result quota stops caller observation and closes the original queries; a
 quiet search never becomes a not-found or whole-network completion claim. Native
 I/O progress is counted without flooding result output. This CLI is immediate;
-persistent searches use the explicit task API below. Availability probes remain
-required work.
+persistent searches use the explicit task API below.
+
+A finite Session captures one native allowance before source-clock registration.
+Initial queries, namespace updates and reconnects share that target; a stalled
+source clock cannot renew it. Preparing a Session requires no Tokio runtime;
+its native timer is installed on first poll. Historical replay and completed
+detached probes preserve the greatest actual UTC observation independently of
+that live target. Expiry closes every original query MQ while keeping accepted
+results and completed probe observations available. Already detached probes keep
+their own lifetime; expiry prevents admission of new tickets.
 
 `search::Session::drive_staged` prepares a genuinely authenticated advertisement
 without changing aggregate results or the update graph. `observation` borrows its
 original native ciphertext, query binding, expiry and observation time;
-`accept_staged` uses the existing aggregation path. Ordinary `drive` is a thin
-stage/accept composition. One bounded decoded artifact can be retained separately
+`accept_staged` checks the same original lifetime before aggregation or update
+query creation, including after a caller's journal write. A deadline retains the
+durable raw record for explicit replay without accepting a late live result.
+Ordinary `drive` is a thin stage/accept composition. One bounded decoded artifact can be retained separately
 from accepted result storage. Resource refusal keeps the original native frame
 for explicit retry, rather than asking the service to send it again.
 
@@ -352,9 +434,17 @@ callback receives source-bound entries without buffering the directory payload.
 
 ## Directory trees
 
-`input_tree::InputDir` anchors a selected source descriptor. Its
-recursive publisher opens children through no-follow, nonblocking native calls,
-refuses symlinks/special files, and publishes files and directories in postorder. Directory MIME and raw basename metadata reference only acknowledged CHKs. One frame allocation is reused across dedicated per-object DATASTORE clients;
+`input_tree::InputDir` anchors a selected source handle on Unix and Windows.
+`open_child` accepts one native component and checks its original identity
+before and after opening; symlinks, name surrogates and special files refuse.
+`open_regular` selects the parent once and applies the same child contract.
+Bounded snapshots preserve native names and complete platform identities.
+Windows protocol metadata requires Unicode names; local WTF-8 is never emitted
+as network text. Publication event format 5 and automatic-sharing format
+`FSASHR03` bind the revised local source fingerprints; superseded formats refuse.
+
+The recursive publisher opens children through no-follow native calls,
+refuses symlinks/special files, and publishes files and directories in postorder. Directory MIME and protocol basename metadata reference only acknowledged CHKs. One frame allocation is reused across dedicated per-object DATASTORE clients;
 the live DFS stack retains bounded names/metadata/record arenas, never payloads. Whole-tree byte, depth and entry budgets apply before admitting work. Completed
 object events let a caller explicitly journal receipts. Failures retain the exact
 current ACK prefix, prior complete objects and original cause without rollback.
@@ -397,7 +487,7 @@ names on APFS), yielding its I/O error without lossy renaming.
 
 `durable::Task` adds explicit persisted directory and regular-file downloads under `service`. The immutable manifest retains the original CHK/LOC, native output name and
 resource policy. Each run requires the selected parent descriptor, endpoint,
-cache and a fresh finite source-clock deadline. Opening/status starts no runtime. The private local download WAL is v2, bounded, checksummed and exclusively locked;
+cache and a fresh finite source-clock deadline. Opening/status starts no runtime. Local download events use version 3 in the bounded, checksummed, exclusively locked TaskStore WAL;
 an uncertain append fences that writer. It does not change GNUnet wire formats. There is no v1 compatibility or migration path.
 
 `Task::create` explicitly selects a directory root. `Task::create_file` takes
@@ -534,8 +624,18 @@ registration history without sending accepted registrations again. A fully or
 partially written registration without a reply stays Unknown. Explicit retry
 is available only for an recorded IndexFailed. An original retained
 NativeIndexResult can reconcile its own WAL failure without another registration. Independent registration cleanup trouble keeps its acceptance. No automatic
-Unindex rollback is performed. This private version-checked task WAL uses schema v3;
+Unindex rollback is performed. This private version-checked task WAL uses schema v5;
 original runtime deadlines and native capabilities are never serialized.
+
+Indexed sources retain `PathBuf` names and complete native file identities,
+lengths and modification/change fences. The private codec retains both 128-bit
+time observations without assuming a portable epoch. Complete source hashing and
+FileReader verification remain required; matching metadata grants no content proof.
+Windows protocol filenames must be Unicode, while local path serialization uses
+the native lossless codec.
+Native identities remain private storage fields. `INDEX_START` retains the
+[official zero device/inode fallback](https://docs.gnunet.org/doxygen/db/d14/structIndexStartMessage.html),
+which requires the service to check the complete content hash.
 
 ```text
 fs publish-task-file <new-taskdir> <source-file>
@@ -558,10 +658,11 @@ fs publish-task-retry-index-refused <taskdir>
 The per-run quota counts new accepted replies, excluding history. Zero
 pauses before payload verification. FS registration ACKs have their own historical,
 recorded and this-run counters and never consume the PUT quota. Indexed runs need
-an explicit FS port as well as DATASTORE; callers supply a common monotonic
-deadline domain. Tracked namespace runs require their original graph port. Task
-discovery/catalogs and autonomous scheduling remain required work. This local
-persistence format introduces no GNUnet wire fields.
+an explicit FS port as well as DATASTORE; callers supply a common source-clock
+deadline domain. One native allowance spans verification, every index
+registration and all PUTs in the same run. Tracked namespace runs require their
+original graph port. Task discovery and scheduling have separate catalog/job
+owners. This local persistence format introduces no GNUnet wire fields.
 
 Enable `server` (SDK `official-fs-server`) for the independent Rust FS service. Construct `gnunet_fs::service::Service` over caller client/query/seen buffers, then
 move it into `server::Server` with explicit DATASTORE, LOC signer, index and peer
@@ -579,15 +680,20 @@ without disabling other clients. Unknown index mutation or worker failure is
 retained even when the original requesting client has already gone.
 
 `index::Index` validates registrations through a whole-file streaming hash
-or the official native filesystem-ID/inode fast path. It persists bounded raw
-path metadata in its own Rust WAL-backed directory, retaining the existing path
+or the official Unix filesystem-ID/inode fast path. Windows uses the full hash
+path without truncating its native file identity. It persists bounded
+filename metadata in its own Rust WAL-backed directory, retaining the existing path
 for duplicate file IDs. On-demand type6 records contain the exact file hash and
 NBO offset; resolution reads one source block through its original file
 descriptor and re-encodes/checks its ciphertext query. It does not buffer a whole
 file or invent on-demand IBLOCKs. Index registration, listing and removal run on
 one bounded worker. Lists retain one entry at a time while excluding mutations;
 periodic orphan cleanup is also bounded. Shutdown settles original index jobs
-and joins the worker before reporting quiescence.
+and joins the worker before reporting quiescence. `Index::directory_sync` exposes
+the underlying store's naming observation independently of file-data and logical
+commit. IPC names retain Unix native bytes or Windows Unicode UTF-8; local WTF-8
+is never substituted for protocol filenames. The stored filename representation
+lends both native paths and IPC bytes without keeping a duplicate path buffer.
 
 Malformed descriptors and proven missing/changed source blocks trigger precise
 DATASTORE REMOVE of the original key/value. Missing index registrations and
@@ -620,10 +726,8 @@ the direct provider. Newly matched replies recheck their original logical/native
 bounds before admission. Positives genuinely retained before expiry can wait for
 the consumer beyond that bound and survive another route's retirement of their
 shared MQ. That source retirement ends the other old routes without a
-retained positive; it does not establish remote absence or acknowledgement. Focused private Unix fixtures cover a partial-query prefix, cancellation,
-hard-bound retirement/EOF and fresh-query recovery, plus retained-positive and
-unattached-intent boundaries. They are local owner regression checks, not C or
-peer interoperability acceptance. The [foreground process](../../apps/gnunet-service-fs/README.md) enables this
+retained positive; it does not establish remote absence or acknowledgement.
+The [foreground process](../../apps/gnunet-service-fs/README.md) enables this
 backend by default. Explicit `[fs-rust] DIRECT_CADET=NO` disables only direct
 CADET retrieval; local serving, index, signing and DHT lookup remain separate.
 
@@ -639,8 +743,7 @@ the original source job, closes CADET and then joins the local index worker. Ret
 observation, then stops unsubmitted UID continuation. A permanently closed
 DATASTORE owner reports its original cause, withdraws serving and triggers
 controlled foreground shutdown; record and source-file failures remain local. The foreground enables this separately by default; explicit
-`[fs-rust] SERVE_CADET=NO` or official `[fs] MAX_CADET_CLIENTS=0` disables it. The incoming capacity is bounded by both official and Rust resource caps. Discovery, complete anonymous routing and whole-node CADET interoperability
-remain incomplete.
+`[fs-rust] SERVE_CADET=NO` or official `[fs] MAX_CADET_CLIENTS=0` disables it. The incoming capacity is bounded by both official and Rust resource caps. Discovery and routing use the separately configured backends.
 
 `server::gap::Router` uses a native CORE client for official137/138/139
 and a caller-storage GAP book. It supports D/I/UBLOCK/ANY queries, bounded
@@ -805,6 +908,8 @@ selected keyword task, with independent cleanup/output failure preserved. Enable
 extraction with no representable keyword task is refused; `-D` explicitly selects
 content-only publication instead. The one-shot result states the number
 of metadata objects and keyword tasks, not network-wide search reachability.
+`auto_prepare::Prepared::directory_sync` reports the actual group-directory
+barrier separately from synchronized metadata files and each task's own WAL.
 
 `--state NEWDIR` selects a new private task group; the default is a new private
 OS temporary directory. This directory is retained, including on success, and
@@ -812,19 +917,19 @@ its exact path is reported. Original `content` and `keyword-N` Task subdirectori
 can be inspected/resumed through the existing publication-task commands. Never
 retry an unresolved intent as a fresh publication to evade its Unknown fence.
 
-### standard metadata provider
+### Standard metadata provider
 
 `extraction::MetadataSettings` is a pure owned configuration snapshot, cheaply cloned across the existing file worker. `new(disabled, FS.EXTRACTORS, absolute_library)` performs no native load. Missing EXTRACTORS/library keeps the existing bounded builtin MIME/HTML/ID3v1 profile. A selected native library uses the standard optional libextractor leaf; explicit non-`-` EXTRACTORS without that library fails instead of silently publishing builtin-only metadata. Library/config bytes remain exact and bounded. Policy remains Copy and contains no native handle.
 
-The selection has two explicit queries. `automatic_keywords_enabled` is false only for CLI-D disablement. `format_extraction_enabled` is false for both CLI-D and configured `-`. Configured `-` keeps the safe filename/date metadata and automatic KSK route: fixed C serializes its non-NULL empty metadata as a valid 12-byte v2 header, so the scanner's positive-metadata-tail branch inserts safe180. The scanner does not insert it unconditionally for every helper message. CLI-D additionally clears ordinary publication keyword intent. No old getter alias is retained for this new API.
+The selection has two explicit queries. `automatic_keywords_enabled` is false only for CLI-D disablement. `format_extraction_enabled` is false for both CLI-D and configured `-`. Configured `-` keeps the safe filename/date metadata and automatic KSK route: fixed C serializes its non-NULL empty metadata as a valid 12-byte v2 header, so the scanner's positive-metadata-tail branch inserts safe180. The scanner does not insert it unconditionally for every helper message. CLI-D additionally clears ordinary publication keyword intent.
 
-`publication::auto_prepare::prepare_with_metadata`, `extraction::file_keywords_with_metadata` and `Owner::open_with_metadata` reuse the shared extraction kernel and original preparation/coordinator algorithm. The older source APIs select Builtin through these same bodies. The Provider is created and explicitly closed on the worker, not moved between threads. Each native regular-file extraction uses the same original read-only descriptor in the existing Stamp/metadata/CHK chain; no original mutable filename is reopened and no whole-file Rust RAM copy is made. Actual inode/extent/time guards and CHK verification remain required. Native descriptor namespace and extension-hint limitations are retained; the original OFD cursor is restored by the leaf, with a restoration errno remaining a preparation failure.
+`publication::auto_prepare::prepare_with_metadata`, `extraction::file_keywords_with_metadata` and `Owner::open_with_metadata` reuse the shared extraction kernel and original preparation/coordinator algorithm. Convenience entry points select the builtin profile through the same kernel. The Provider is created and explicitly closed on the worker, not moved between threads. Each native regular-file extraction uses the same original read-only descriptor in the existing Stamp/metadata/CHK chain; no original mutable filename is reopened and no whole-file Rust RAM copy is made. Actual inode/extent/time guards and CHK verification remain required. Native descriptor namespace and extension-hint limitations are retained; the original OFD cursor is restored by the leaf, with a restoration errno remaining a preparation failure.
 
 The provider's source-byte bound is intersected with the file/tree content bound before scanning. Record, callback, name/value and returned Rust output caps are intersected with the operation's official metadata policy. A native-output reservation is charged to the same group/task Budget before each extraction and released after the original metadata attempt; there is no separate implicit 4MiB-per-object allowance. Pure configured endpoint/config capacity is included. Configured `-` and CLI-D allocate no unused format-probe buffer. Third-party plugin internal allocations, decompression, threads/processes and nonreturning C calls are not forcibly bounded or prevented by this leaf/host reservation; original guards are checked at the public boundaries and callbacks without renewing targets.
 
 Real callback type, format, data, plugin and MIME are preserved in official metadata. Provider FILENAME(type2) and provider-supplied original-filename(type180) are filtered; the host regenerates type180 from its verified safe basename. No FD pseudopath or absolute local pathname is relabelled as the filename. Base metadata filenames are handled by the same safe projection. Bounded native observations are recorded on `MetadataArtifact::provider`; EmptyUnknown is normal lack of callbacks, not provider acceptance, successful validation, CHK authentication or KSK completion. Content-only and all original terms/normalization/group quotas and network receipts remain separate.
 
-All ordinary errors, including original stop/native causes and independent provider-close failures, remain typed. Only a pure nested original cancellation with no independent restoration/cleanup failure may settle the existing worker stop normally. Explicit provider cleanup runs after success or failure before returning Prepared; it does not turn a partial preparation or unknown network effect into success. Normal CLI/PROGRAM configuration uses this same owned selection and worker API. No library load, content parse, test/model, worker, crypto, storage or network execution was performed.
+All ordinary errors, including original stop/native causes and independent provider-close failures, remain typed. Only a pure nested original cancellation with no independent restoration/cleanup failure may settle the existing worker stop normally. Explicit provider cleanup runs after success or failure before returning Prepared; it does not turn a partial preparation or unknown network effect into success. Normal CLI/PROGRAM configuration uses this same owned selection and worker API.
 
 Explicit publisher annotations use `extraction::ManualMetadata`
 and `MetadataSettings::with_manual`. This bounded owned data crosses the same
@@ -847,15 +952,35 @@ capacities and Arc metadata are included in the preparation budget, and the
 additional final root wire is charged before persistent output. Combined
 metadata/item/group caps still apply and do not claim a hard process RSS cap. Preparation success is not network publication.
 
-The same bounded metadata Plan is also supplied by the four ordinary
-namespace/SKS re-publication frontdoors (direct, managed and prepared Task
-variants). They retain their existing signing key/update graph and actual
-write/commit/uncertainty boundaries. Together with four file/tree routes and two
-KSK routes, ten normal publication paths carry explicit annotations.
+Namespace/SKS publication uses the same bounded metadata plan for direct,
+managed and prepared tasks. Signing keys, update graphs and observed
+write/commit boundaries retain their existing contracts.
+
+Unindex task creation retains supplied runtime authority for that in-memory
+owner. Reopening restores configuration only. `authorize_metadata_from` and
+`authorize_native_metadata` explicitly reattach matching current authority before
+native reconstruction. Already recorded keyword selections can be reused without
+loading a provider. `jobs::Worker::set_native_metadata_authorization` supplies a
+runtime capability to future dispatches; catalogs never retain it. Active owners
+keep their original capability when future dispatch policy changes.
 
 ## Metadata-only inspection
 
 The standalone `extraction` feature exposes `extraction::{Policy, Limits, Error, MetadataSettings}` and `input_tree` without Tokio, CLIENT, DATASTORE or service-runtime production dependencies. The facade selects it with `official-fs-extraction`. Publication keeps its Task/WAL/PUT limits and wraps the shared metadata policy in `publication::auto_prepare::Policy.metadata`; it explicitly translates only the descriptor/metadata bounds consumed by extraction.
+
+Builtin extraction, original-handle reads, directory inspection and local
+selection snapshots share Unix/Windows code. `MetadataSettings::new` and
+`from_snapshot` produce configuration data. Native execution requires a matching
+`NativeMetadataAuthorization`, constructed through its unsafe code/ABI trust
+boundary and attached with `with_native_authorization`. Clones share that runtime
+capability; snapshots omit it. `with_authorization_from` reattaches current matching
+authority while preserving recorded settings. Different native path spellings or
+plugin options are refused; authority cannot be inferred from a task directory. The optional
+[GNU libextractor provider](../extractor-std/README.md) supplies separate native
+input lifetimes beneath that code. Windows admits a demand-paged view using
+`NativeMetadataLimits::mapped_input_bytes`; explicit borrowed buffers retain the
+separate `memory_input_bytes` limit. Local snapshot format `FSMETA02` preserves
+both limits and lossless native library paths; superseded snapshots refuse.
 
 `extraction::inspect_with_metadata` streams an `ExtractedObject`
 for each held file/directory descriptor through a caller sink. It shares the

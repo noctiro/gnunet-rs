@@ -10,6 +10,8 @@ compiled caller per participant:
 /ABS/consensus_client -c /ABS/node.conf -L ERROR ROLE PID0_52 PID1_52 PID2_52 PID3_52 SID_HEX128 START_US DEADLINE_US
 ```
 
+## Inputs and deadlines
+
 `ROLE` is exactly `0` through `3`. All callers receive the same four distinct
 current public identities in the same role order, the same complete
 64-byte SID as 128 hexadecimal characters (no `0x`), and the same original

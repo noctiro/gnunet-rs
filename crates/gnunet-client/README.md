@@ -5,6 +5,8 @@ GET sessions and connection-local WATCH ownership. The `statistics_handle`
 module adds the long-lived queued service handle corresponding to the eight
 public operations in GNUnet v0.29.1 `gnunet_statistics_service.h`.
 
+## Public interface
+
 The core is `no_std`, forbids unsafe code and performs no allocation or I/O. `StatisticsHandle<A, N, W, WW, T>` bounds action slots, owned name bytes, live
 logical watches, lifetime wire WIDs in one connection, and original GET lifetime
 reservations. The creating subsystem is owned; GET/WATCH selectors are copied. Only the host adapter resolves configuration, supplies time and drives sockets.
@@ -56,11 +58,19 @@ confirmation, connection loss and timeout cannot produce success. A processing
 confirmation does not establish disk durability. `tick` and every host
 I/O poll must use that same original deadline.
 
+`begin_confirmed_destroy(now, timeout)` explicitly requests the same official
+barrier on the current connection even with an empty transmit queue. It preserves
+older-epoch unconfirmed counts and never creates a replacement connection. This
+Rust shutdown policy shares the bounded drain state machine; it does not change
+the C-compatible queue condition of `begin_destroy`.
+
 The source C API has known discrepancies: WATCH persistence tests the wrong bit;
 watch cancellation holes can misroute freshly compacted reconnect WIDs; signed
 negation of INT64_MIN is undefined. The Rust owner preserves official
 frames and intended logical ownership without copying memory/identity bugs. The per-connection WID correction and premature/late confirmation rejection are
 explicitly documented behavioral safety differences, not a private protocol.
+
+## Checks and examples
 
 Tests cover callbacks/cancellation, stream tombstones, coalescing, wrapping,
 logical/wire watch IDs, reconnect capacity reservation, terminal capacity,

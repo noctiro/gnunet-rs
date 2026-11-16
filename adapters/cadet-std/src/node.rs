@@ -252,6 +252,12 @@ impl<
     pub const fn report(&self) -> Report {
         self.state.report
     }
+    /// Native CORE frame outcomes from this exact peer generation, without
+    /// treating local full writes or partial retirement as remote delivery.
+    #[must_use]
+    pub const fn connection_report(&self) -> connection::Report {
+        self.bridge.report()
+    }
     /// First/last authenticated DATA/ACK facts for each fixed slot's last
     /// original channel occupant, retained after its owner returns the slab.
     /// Read-only and allocation-free; this is not a complete packet history.
@@ -450,18 +456,25 @@ impl<
         Ok(())
     }
     fn now(&mut self, cx: &mut Context<'_>) -> Result<MonoInstant, ProtocolError> {
-        match self.listener.poll_changed(cx, self.revision) {
-            Poll::Ready(Err(e)) => return Err(e),
-            Poll::Ready(Ok(s)) => self.revision = s.revision,
-            Poll::Pending => {}
-        }
-        let sample = self.timebase.sample()?;
-        if sample.monotonic < self.last_now {
+        let now = if self.state.closing {
+            // Peer admission has stopped. Source drivers retain their physical
+            // fencing obligations while original effects settle on this epoch.
+            self.timebase.elapsed()?
+        } else {
+            match self.listener.poll_changed(cx, self.revision) {
+                Poll::Ready(Err(e)) => return Err(e),
+                Poll::Ready(Ok(s)) => self.revision = s.revision,
+                Poll::Pending => {}
+            }
+            let sample = self.timebase.sample()?;
+            self.revision = sample.revision;
+            sample.monotonic
+        };
+        if now < self.last_now {
             return Err(ProtocolError::TimeUncertain);
         }
-        self.revision = sample.revision;
-        self.last_now = sample.monotonic;
-        Ok(sample.monotonic)
+        self.last_now = now;
+        Ok(now)
     }
     /// Capture an actual bounded Node directory without IO or state mutation.
     /// Empty output is legitimate only after this actual capture succeeds.

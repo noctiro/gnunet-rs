@@ -2,7 +2,7 @@
 //! provider or worker is constructed by configuration parsing.
 use gnunet::fs_host::extraction::{ManualMetadata, MetadataSettings};
 use gnunet_config::Configuration;
-use std::{error::Error, ffi::OsStr, os::unix::ffi::OsStrExt, path::PathBuf, sync::Arc};
+use std::{error::Error, ffi::OsStr, path::PathBuf, sync::Arc};
 
 #[derive(Default)]
 pub(crate) struct Arguments {
@@ -23,7 +23,7 @@ impl Arguments {
         manual: bool,
     ) -> Result<bool, Box<dyn Error>> {
         let name = args.get(*at).ok_or("missing metadata option")?.as_ref();
-        match name.as_bytes() {
+        match name.as_encoded_bytes() {
             b"-D" | b"--disable-extractor" => {
                 self.disabled = true;
                 *at += 1;
@@ -45,15 +45,15 @@ impl Arguments {
         }
     }
     pub fn option(&mut self, name: &OsStr, value: &OsStr) -> Result<(), Box<dyn Error>> {
-        let bytes = value.as_bytes();
-        if matches!(name.as_bytes(), b"-m" | b"--meta") {
-            self.manual.push(bytes)?;
+        let bytes = value.as_encoded_bytes();
+        if matches!(name.as_encoded_bytes(), b"-m" | b"--meta") {
+            self.manual.push(crate::argument::wire_bytes(value)?)?;
             return Ok(());
         }
         if bytes.len() > 4096 || bytes.contains(&0) {
             return Err("metadata option exceeds4096 bytes or contains NUL".into());
         }
-        match name.as_bytes() {
+        match name.as_encoded_bytes() {
             b"-c" | b"--config" => {
                 if self.config.is_some() || bytes.is_empty() {
                     return Err("--config requires one nonempty filename".into());
@@ -67,6 +67,7 @@ impl Arguments {
                 self.library = Some(PathBuf::from(value));
             }
             b"--extractors" => {
+                let bytes = crate::argument::wire_bytes(value)?;
                 if self.extractors.is_some() {
                     return Err("--extractors may be specified only once".into());
                 }
@@ -105,6 +106,27 @@ impl Arguments {
                 None => None,
             }
         };
-        Ok(MetadataSettings::new(self.disabled, configured, library)?.with_manual(self.manual))
+        let settings =
+            MetadataSettings::new(self.disabled, configured, library)?.with_manual(self.manual);
+        authorize_selected(settings)
     }
+}
+
+/// The application treats its explicit metadata-library/plugin configuration as
+/// a trusted native-code selection. Restored task bytes do not enter this path.
+#[expect(
+    unsafe_code,
+    reason = "The application explicitly admits the user's selected GNU libextractor dependency/plugins; library APIs require this unforgeable execution capability"
+)]
+fn authorize_selected(settings: MetadataSettings) -> Result<MetadataSettings, Box<dyn Error>> {
+    let Some(configuration) = settings.native_configuration() else {
+        return Ok(settings);
+    };
+    // SAFETY: this application defines the explicit user/config-file native
+    // extension choice as trusted code with the standard GNU ABI and plugin
+    // lifetimes. The assertion includes selected dependencies and loader state.
+    let authorization = unsafe {
+        gnunet::fs_host::extraction::NativeMetadataAuthorization::new(configuration.clone())
+    };
+    Ok(settings.with_native_authorization(&authorization)?)
 }

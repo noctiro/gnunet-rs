@@ -2,6 +2,21 @@
 
 Communicator owns one process-level PEERSTORE and TRANSPORT IPC pair and one communicator registration. Its bounded peer table gives each physical session an independently owned socket or retained connect future, engine, ciphertext cursors, send queue and receive credits. Queue, PEERSTORE request and incoming-flow IDs are allocated across the process. Local session generations and service epochs are routing metadata and add no protocol bytes.
 
+## Native ownership
+
+The host's connection/session/service owners are shared across Linux, macOS,
+FreeBSD and Windows. Local service streams and peer carriers retain their
+original source identities. The domain IPC link keeps its bounded offline
+completion FIFO across explicit service attachment; it owns no reconnect loop.
+Each read/write step offers at most 32 KiB to the original socket. Retained RX
+and TX allocations are erased on release, retirement or Drop.
+
+Normal PROGRAM startup, paired replay storage and native process epochs are
+owned by [the TCP runtime](../tcp-runtime-std/); remaining work is tracked in
+[implementation status](../../IMPLEMENTATION_STATUS.md).
+
+## Session and service contracts
+
 Use Communicator::new, admit or admit_connecting, then drive with the original combined process Clock + ReplayHistory port and entropy. Session objects are boxed owners of caller-provided independent backing pools; there are no self-references, leaks, unsafe lifetime extensions or hidden runtimes. The caller supplies the process PILS identity, canonical sockets, listeners, configuration, reconnect attempts and persistent signature monotime. Logical deadline time can regress and is separate from signature monotime.
 
 CREATE requests are retained in a bounded owned queue. Their CreateId capabilities bind the original process, service epoch and request serial. created requires this capability and reports connect-attempt admission, not successful authentication. Shutdown refuses queued and later CREATE requests and finishes existing peers. Service loss retires the old callback epoch; reconnect registers once and reannounces surviving queue identities. A failed or canceled wait never fabricates an application ACK.
@@ -41,7 +56,7 @@ binary for normal process operation. This host crate does not depend on runtime
 or provide a fake durable history implementation to keep those old observers
 buildable.
 
-Tests retain TCP/Unix I/O, cancellation and clock cases and exercise process/epoch capabilities, simultaneous connect futures, generation retirement and the same-peer scan/store barrier after the original session has physically closed. Actual C multi-peer observations remain separately scoped to communicator/TRANSPORT integration; they do not establish CORE or an independent Rust TRANSPORT service.
+Tests retain native loopback stream I/O, cancellation and clock cases and exercise process/epoch capabilities, simultaneous connect futures, generation retirement and the same-peer scan/store barrier after the original session has physically closed. Actual C multi-peer observations remain separately scoped to communicator/TRANSPORT integration; they do not establish CORE or an independent Rust TRANSPORT service.
 
 The normal runtime consumes that source-recovery API instead of closing its
 whole Pool on a shared TRANSPORT I/O loss. `transport_online`, `transport_epoch`

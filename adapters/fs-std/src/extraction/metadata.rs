@@ -1,8 +1,11 @@
 //! Owned extraction selection crosses the existing worker boundary; native
 //! handles are created, used and explicitly closed only inside that worker.
 use super::{Context, Error, ManualMetadata, Policy};
+pub use gnunet_extractor_host::{
+    Authorization as NativeMetadataAuthorization, Configuration as NativeMetadataConfiguration,
+};
 use gnunet_extractor_host::{Provider, Selection};
-use std::{os::unix::ffi::OsStrExt, path::PathBuf, sync::Arc};
+use std::{path::PathBuf, sync::Arc};
 
 /// Optional provider's explicit resource policy; not an FS protocol constant.
 pub use gnunet_extractor_host::Limits as NativeMetadataLimits;
@@ -15,17 +18,17 @@ enum SelectionData {
     Native(Arc<NativeConfig>),
 }
 struct NativeConfig {
-    library: PathBuf,
-    extractors: Option<Vec<u8>>,
+    provider: NativeMetadataConfiguration,
     limits: NativeMetadataLimits,
 }
-/// One owned, cheaply cloned metadata configuration snapshot. Contains no
-/// provider, file, clock, task or native handle and is safe to send to the
-/// original worker. Its Debug output does not disclose plugin option contents.
+/// Owned extraction configuration with optional runtime-only execution authority.
+/// Clones share configuration/capability payloads. Native handles stay on the
+/// worker; Debug does not disclose plugin options.
 #[derive(Clone)]
 pub struct MetadataSettings {
     selection: SelectionData,
     manual: Option<Arc<ManualMetadata>>,
+    authorization: Option<NativeMetadataAuthorization>,
 }
 impl std::fmt::Debug for MetadataSettings {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -47,6 +50,7 @@ impl MetadataSettings {
         Self {
             selection,
             manual: None,
+            authorization: None,
         }
     }
     /// Adopt bounded explicit user annotations. This never loads a provider or
@@ -67,6 +71,7 @@ impl MetadataSettings {
     /// Validate/copy exact selected FS.EXTRACTORS bytes without loading code.
     /// Explicit disablement wins; absent config/library selects builtins.
     /// Any explicit non-`-` config without a native library is a real refusal.
+    /// Native selections remain unapproved until a matching capability is attached.
     pub fn new(
         disabled: bool,
         configured: Option<&[u8]>,
@@ -105,25 +110,60 @@ impl MetadataSettings {
             };
         };
         limits.validate().map_err(Error::MetadataSettings)?;
-        if !library.is_absolute()
-            || library.as_os_str().as_bytes().len() > limits.config_bytes
-            || library.as_os_str().as_bytes().contains(&0)
-            || configured.is_some_and(|b| b.len() > limits.config_bytes || b.contains(&0))
-        {
-            return Err(Error::MetadataSettings(
-                gnunet_extractor_host::NativeError::Invalid(
-                    "absolute bounded metadata provider path/config",
-                ),
-            ));
-        }
-        let extractors = configured.map(super::copy).transpose()?;
+        let provider = NativeMetadataConfiguration::new(
+            library,
+            Selection::from_fs(false, configured),
+            limits.config_bytes,
+        )
+        .map_err(Error::MetadataSettings)?;
         Ok(Self::selected(SelectionData::Native(Arc::new(
-            NativeConfig {
-                library,
-                extractors,
-                limits,
-            },
+            NativeConfig { provider, limits },
         ))))
+    }
+    /// Pure native configuration, if selected. Inspecting or cloning this value
+    /// grants no authority to execute the library or any plugin.
+    #[must_use]
+    pub fn native_configuration(&self) -> Option<&NativeMetadataConfiguration> {
+        match &self.selection {
+            SelectionData::Native(c) => Some(&c.provider),
+            _ => None,
+        }
+    }
+    /// Whether an in-memory matching native execution capability is attached.
+    /// Snapshots never retain this fact or recreate the capability.
+    #[must_use]
+    pub fn is_native_authorized(&self) -> bool {
+        self.authorization.is_some()
+    }
+    /// Attach an explicit matching execution capability. The capability shares
+    /// this settings allocation; no native code is loaded here.
+    pub fn with_native_authorization(
+        mut self,
+        authorization: &NativeMetadataAuthorization,
+    ) -> Result<Self, Error> {
+        let configuration = self.native_configuration().ok_or_else(|| {
+            Error::MetadataSettings(gnunet_extractor_host::NativeError::AuthorizationMismatch)
+        })?;
+        self.authorization = Some(
+            authorization
+                .for_configuration(configuration)
+                .map_err(Error::MetadataSettings)?,
+        );
+        Ok(self)
+    }
+    /// Reattach current runtime authority to restored data. An already held
+    /// capability stays valid when no current authority is supplied. Absent
+    /// current authority leaves restored data unapproved;
+    /// actual native execution then fails before any loader call. Mismatching
+    /// current authority is refused rather than broadening its selection.
+    pub fn with_authorization_from(self, current: &Self) -> Result<Self, Error> {
+        if self.native_configuration().is_none() {
+            return Ok(self);
+        }
+        match &current.authorization {
+            Some(authority) => self.with_native_authorization(authority),
+            None => Ok(self),
+        }
     }
     /// Freeze the exact automatic extraction selection and native limits for a
     /// private durable owner. No provider/configuration file is opened here.
@@ -135,6 +175,7 @@ impl MetadataSettings {
     /// Restore the same bounded automatic selection without re-reading live
     /// configuration or loading a provider. This is private task data, not a
     /// GNUnet message, provider-identity certificate or extraction receipt.
+    /// Runtime execution authority is always absent after restoration.
     pub fn from_snapshot(bytes: &[u8]) -> Result<Self, Error> {
         snapshot::decode(bytes)
     }
@@ -161,8 +202,7 @@ impl MetadataSettings {
         let native = if let SelectionData::Native(c) = &self.selection {
             std::mem::size_of::<NativeConfig>()
                 .checked_add(2 * std::mem::size_of::<usize>())
-                .and_then(|n| n.checked_add(c.library.capacity()))
-                .and_then(|n| n.checked_add(c.extractors.as_ref().map_or(0, Vec::capacity)))
+                .and_then(|n| n.checked_add(c.provider.retained_bytes().ok()?))
                 .ok_or(Error::Limit)?
         } else {
             0
@@ -188,6 +228,9 @@ impl MetadataSettings {
         let SelectionData::Native(c) = &self.selection else {
             return Ok(None);
         };
+        let authorization = self.authorization.as_ref().ok_or_else(|| {
+            Error::MetadataSettings(gnunet_extractor_host::NativeError::AuthorizationRequired)
+        })?;
         let mut limits = c.limits;
         limits.source_bytes = limits.source_bytes.min(content_file_bytes);
         limits.memory_input_bytes = limits
@@ -212,14 +255,9 @@ impl MetadataSettings {
             return Err(Error::Limit);
         }
         context.check()?;
-        let provider = Provider::open(
-            &c.library,
-            Selection::from_fs(false, c.extractors.as_deref()),
-            limits,
-            || context.check(),
-        )
-        .map_err(Error::from)?;
-        Ok(provider)
+        let provider =
+            Provider::open(authorization, limits, || context.check()).map_err(Error::from)?;
+        Ok(Some(provider))
     }
 }
 

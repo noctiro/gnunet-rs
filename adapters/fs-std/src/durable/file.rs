@@ -16,7 +16,7 @@ use crate::{
 };
 use gnunet_client_host::EndpointSource;
 use gnunet_types::{AbsoluteTime, Error as ProtocolError};
-use std::{ffi::OsString, ops::Range, sync::Mutex, time::Duration};
+use std::{ffi::OsString, ops::Range, sync::Mutex};
 use tokio::time::Instant;
 
 /// Original file lookup policy and optional absolute selection.
@@ -72,13 +72,7 @@ impl Settlement<'_> {
             if let Some(temp) = &known.temporary {
                 if known.committed.is_some() {
                     if !known.cleanup {
-                        clean(
-                            self.state,
-                            self.staging,
-                            binding.id,
-                            temp,
-                            CommitStage::Durable,
-                        )?;
+                        clean(self.state, self.staging, binding.id, temp, known.stage)?;
                     }
                 } else {
                     match self.output.inspect_file(&binding.path)? {
@@ -124,6 +118,11 @@ impl Settlement<'_> {
                             if let Err(cause) = lock(self.state)?.append(Event::FileCommitted {
                                 id: binding.id,
                                 identity,
+                                directory_sync: verified.read.directory_sync.ok_or(
+                                    Cause::State(
+                                        "native revalidation lacks its directory observation",
+                                    ),
+                                )?,
                             }) {
                                 return Err(Cause::RangeCommitted(Box::new(RangeCommitFailure {
                                     identity,
@@ -136,7 +135,7 @@ impl Settlement<'_> {
                                 self.staging,
                                 binding.id,
                                 temp,
-                                CommitStage::Durable,
+                                super::native_stage(verified.read.directory_sync)?,
                             ) {
                                 return Err(Cause::RangeCommitted(Box::new(RangeCommitFailure {
                                     identity,
@@ -209,7 +208,10 @@ impl FileProgress {
             pending_delivery: None,
             selection_verified: verified,
             finish_started: read.destination == crate::network::range::Destination::SinkCompleted,
-            output: CommitStage::Durable,
+            output: read
+                .directory_sync
+                .map(CommitStage::FileSynchronized)
+                .unwrap_or(CommitStage::NotLinked),
             destination: Some(read.destination),
         }
     }
@@ -250,7 +252,7 @@ pub(super) struct Run<'a> {
     pub staging: &'a mut OutputDir,
     pub manifest: &'a Manifest,
     pub source: EndpointSource,
-    pub started: Instant,
+    pub native_deadline: Instant,
     pub deadline: AbsoluteTime,
 }
 fn remember_read(state: &Mutex<Session>, read: &ReadRange) -> Result<(), Cause> {
@@ -349,6 +351,7 @@ fn record(
             final_parent,
             identity,
             receipt,
+            directory_sync,
         } => {
             check(temporary)?;
             let RootMode::File { selection } = &session.state.manifest.mode else {
@@ -368,6 +371,7 @@ fn record(
             session.append(Event::FileCommitted {
                 id: binding.id,
                 identity,
+                directory_sync,
             })
         }
         OutputObservation::Cleanup {
@@ -409,19 +413,7 @@ impl Run<'_> {
                 return Err(Cause::State("file runner requires file root"));
             };
             let clock = self.source.clock();
-            let now = clock.sample().map_err(Error::from)?.now;
-            if self.deadline.is_never() || now >= self.deadline {
-                return Err(Cause::Operation(ProtocolError::Deadline.into()));
-            }
-            let remaining = self
-                .deadline
-                .as_micros()
-                .checked_sub(now.as_micros())
-                .ok_or_else(|| Error::from(ProtocolError::Deadline))?;
-            let hard = self
-                .started
-                .checked_add(Duration::from_micros(remaining))
-                .ok_or_else(|| Error::from(ProtocolError::Overflow))?;
+            let hard = self.native_deadline;
             checkpoint(clock.as_ref(), self.deadline, hard)?;
             let (known, parent, stage) = {
                 let session = lock(self.state)?;
@@ -471,7 +463,7 @@ impl Run<'_> {
             let mut recovered = None;
             if let Some(identity) = known.committed {
                 if let Some(temp) = known.temporary.as_ref().filter(|_| !known.cleanup) {
-                    clean(state, self.staging, binding.id, temp, CommitStage::Durable)?;
+                    clean(state, self.staging, binding.id, temp, known.stage)?;
                 }
                 let verified = self
                     .output
@@ -516,6 +508,9 @@ impl Run<'_> {
                         if let Err(cause) = lock(state)?.append(Event::FileCommitted {
                             id: binding.id,
                             identity,
+                            directory_sync: verified.read.directory_sync.ok_or(Cause::State(
+                                "native revalidation lacks its directory observation",
+                            ))?,
                         }) {
                             return Err(Cause::RangeCommitted(Box::new(RangeCommitFailure {
                                 identity,
@@ -523,9 +518,13 @@ impl Run<'_> {
                                 cause: Box::new(cause),
                             })));
                         }
-                        if let Err(cause) =
-                            clean(state, self.staging, binding.id, temp, CommitStage::Durable)
-                        {
+                        if let Err(cause) = clean(
+                            state,
+                            self.staging,
+                            binding.id,
+                            temp,
+                            super::native_stage(verified.read.directory_sync)?,
+                        ) {
                             return Err(Cause::RangeCommitted(Box::new(RangeCommitFailure {
                                 identity,
                                 receipt: verified.read,

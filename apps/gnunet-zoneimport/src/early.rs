@@ -1,37 +1,28 @@
-//! Single early transfer; no listener or duplicate stdin ownership is invented.
+//! Original inheritance and stdin captured before any logger or other file owner.
 use crate::Cause;
-use gnunet_service_startup::{ControlNotice, InheritedMode, InheritedResources, ParentControl};
-use std::io::{self, Stdin};
+use gnunet_service_startup::ParentControl;
+use std::{fs::File, io};
 pub(super) struct Early {
-    pub stdin: Stdin,
+    pub stdin: io::Result<File>,
     pub parent: Option<ParentControl>,
-    pub notice: Option<ControlNotice>,
+    #[cfg(unix)]
+    pub notice: Option<gnunet_service_startup::ControlNotice>,
 }
 #[expect(
     unsafe_code,
-    reason = "First inherited descriptor transfer in a fresh single-threaded process before any logger, runtime, stdin reader or other descriptor owner"
+    reason = "Once-only native inheritance capture is the fresh executable's first resource operation"
 )]
 pub(super) fn capture() -> Result<Early, Cause> {
-    // SAFETY: the executable calls this before every other process-resource
-    // operation. No prior capture, competing owner, thread or environment edit.
-    let captured = unsafe {
-        gnunet_service_startup::capture_from_environment(InheritedMode::CloseAfterConfiguredBind)?
-    };
-    match captured.inherited {
-        InheritedResources::CloseAfterBind(hold) => {
-            let offered = !hold.is_empty();
-            let report = hold.abort();
-            if offered {
-                return Err(format!("zoneimport has no listening endpoint; inherited descriptors retired: {report:?}").into());
-            }
-        }
-        InheritedResources::Listeners(_) => {
-            return Err("unexpected zoneimport activation mode".into());
-        }
-    }
+    // SAFETY: fresh single-threaded executable before logger, files or runtime;
+    // no competing inheritance capture or route/environment mutation exists.
+    let captured = unsafe { gnunet_service_startup::ClientStartup::capture()? };
+    // A failed capture is retained and never retried after fd/handle allocation.
+    // Help/version need not require a readable standard input route.
+    let stdin = gnunet_native::stdio::stdin_file();
     Ok(Early {
-        stdin: io::stdin(),
-        parent: captured.parent_control,
-        notice: captured.control_notice,
+        stdin,
+        parent: captured.parent,
+        #[cfg(unix)]
+        notice: captured.notice,
     })
 }

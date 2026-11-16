@@ -5,10 +5,10 @@
 //! processing-barrier confirmation is never treated as a durable commit.
 #![forbid(unsafe_code)]
 
+mod commit;
 mod error;
 mod store;
 
+pub use commit::{CommitBackend, DirectorySync, NativeCommit};
 pub use error::{Cause, CommitOutcome, Stage, StoreError};
-pub use store::{
-    CommitBackend, Limits, LoadReport, LoadSource, NativeCommit, SaveOutcome, SaveReport, Store,
-};
+pub use store::{Limits, LoadReport, LoadSource, SaveOutcome, SaveReport, Store};

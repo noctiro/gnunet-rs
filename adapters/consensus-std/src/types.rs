@@ -221,7 +221,9 @@ impl Error {
             Self::Protocol(e) => *e,
             Self::Set(set::Error::Protocol(e)) => *e,
             Self::Set(set::Error::Deadline(_)) => Fault::Deadline,
-            Self::Set(set::Error::UnexpectedStatus(_)) => Fault::Malformed,
+            Self::Set(set::Error::UnexpectedStatus(_) | set::Error::UnexpectedResult { .. }) => {
+                Fault::Malformed
+            }
             Self::Native(gnunet_client_host::ConnectError::Protocol(e)) => *e,
             _ => Fault::Io,
         }

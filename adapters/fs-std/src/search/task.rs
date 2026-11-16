@@ -328,6 +328,12 @@ impl Task {
     pub fn task_id(&self) -> &[u8; 32] {
         self.store.task_id()
     }
+    /// Actual WAL root/parent naming barrier, separate from file synchronization.
+    /// This neither performs I/O nor refreshes authority.
+    #[must_use]
+    pub fn storage_directory_sync(&self) -> Option<crate::DirectorySync> {
+        self.store.directory_sync()
+    }
     /// Inspect known historical facts only.
     #[must_use]
     pub fn status(&self) -> Status {

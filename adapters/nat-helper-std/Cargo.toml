@@ -4,13 +4,21 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+[features]
+default = []
+supervisor = ["gnunet-nat/alloc", "dep:gnunet-service-runtime", "dep:tokio"]
 [dependencies]
+gnunet-service-runtime = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true, features = ["rt", "time", "process", "io-util"] }
 gnunet-nat.workspace = true
 gnunet-types.workspace = true
 [target.'cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))'.dependencies]
 gnunet-native.workspace = true
 socket2.workspace = true
 nix = { workspace = true, features = ["poll", "process"] }
+[target.'cfg(windows)'.dependencies]
+gnunet-native.workspace = true
+socket2 = { workspace = true, features = ["all"] }
 [target.'cfg(target_os = "macos")'.dependencies]
 gnunet-wire.workspace = true
 [lints]

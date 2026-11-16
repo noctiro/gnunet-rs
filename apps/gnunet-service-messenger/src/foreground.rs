@@ -1,7 +1,6 @@
 //! Original MESSENGER, Resolver and statistics owners under standard SERVICE.
 use crate::{
     Failure,
-    control::Signals,
     lifecycle::{Cleanup, Failures, Owner},
     settings::Settings,
     statistics::Forwarder,
@@ -18,7 +17,7 @@ use gnunet_service_runtime::{
     clock::RuntimeClock,
     service::{Listener, ShutdownMode},
 };
-use gnunet_service_startup::{ParentControl, daemon::ChildReady};
+use gnunet_service_startup::StopSignals;
 use std::{
     future::{Future, poll_fn},
     io::{self, Write},
@@ -50,7 +49,7 @@ fn observe(reports: &Reporter, event: Event) {
             client.value()
         )),
         Event::Identity => {
-            reports.debug("messenger.event", format_args!("messenger actual PILS public identity ready"))
+            reports.debug("messenger.event", format_args!("messenger verified PILS public identity observed"))
         }
         Event::Queued { sequence, peer } => reports.debug("messenger.event", format_args!(
             "messenger output={sequence} peer={peer} immutable queued, no remote delivery proof"
@@ -89,6 +88,9 @@ fn observe(reports: &Reporter, event: Event) {
         )),
         Event::SignDraftRetired { operation, reason } => reports.debug("messenger.event", format_args!(
             "messenger original unadmitted draft={operation:?} retired={reason}"
+        )),
+        Event::SignRetired { operation, reason } => reports.debug("messenger.event", format_args!(
+            "messenger original PILS operation={operation} and Core binding locally retired reason={reason}; no signature result applied"
         )),
         Event::DependencyLost { pils } => reports.debug("messenger.event", format_args!(
             "messenger original dependency lost pils={pils}"
@@ -139,10 +141,10 @@ pub(super) struct Inputs<'a> {
     pub config: &'a Configuration,
     pub settings: Settings,
     pub bound: &'a BoundListeners,
-    pub parent: Option<ParentControl>,
+    pub signals: StopSignals,
     pub clock: SharedClock,
     pub reports: Reporter,
-    pub child: &'a mut ChildReady,
+    pub notification: gnunet_program_host::service::native::Readiness<'a>,
     pub cleanup: Cleanup,
 }
 enum Turn {
@@ -155,7 +157,7 @@ enum Turn {
 }
 async fn turn(
     owners: &mut Owners<'_, '_, '_, '_>,
-    signals: &mut Signals,
+    signals: &mut StopSignals,
     listeners: &[Listener<'_>],
     until: Option<Instant>,
     first: usize,
@@ -178,7 +180,7 @@ async fn turn(
         if until.is_some_and(|u| Instant::now() >= u) {
             return Poll::Ready(Ok(Turn::Deadline));
         }
-        if let Poll::Ready(signal) = signals.poll(cx) {
+        if let Poll::Ready(signal) = signals.poll_stop(cx) {
             return Poll::Ready(signal.map(|()| Turn::Signal).map_err(Into::into));
         }
         for offset in 0..3 {
@@ -220,10 +222,10 @@ pub(super) async fn run(input: Inputs<'_>) -> Result<(), Failure> {
         config,
         settings,
         bound,
-        parent,
+        signals,
         clock,
         reports,
-        child,
+        notification,
         cleanup,
     } = input;
     let runtime_clock: Arc<dyn RuntimeClock> = Arc::new(clock);
@@ -244,7 +246,6 @@ pub(super) async fn run(input: Inputs<'_>) -> Result<(), Failure> {
     // No history worker exists during these fallible original owner constructors.
     let initialized = (|| -> Result<_, Failure> {
         context.connect(config.duplicate()?)?;
-        let signals = Signals::new(parent)?;
         let cadet_source =
             EndpointSource::live(live.clone(), b"cadet", context.resolution_context());
         let pils_source = EndpointSource::live(live.clone(), b"pils", context.resolution_context());
@@ -297,6 +298,7 @@ pub(super) async fn run(input: Inputs<'_>) -> Result<(), Failure> {
     let mut pending_history = None;
     // Transfer this one original caller borrow into recovered Core ownership.
     let mut history_domain = Some(&mut history_instance);
+    let mut notification = Some(notification);
     let outcome: Result<(), Failure> = async {
         if reports.failed() {
             return Ok(());
@@ -327,6 +329,16 @@ pub(super) async fn run(input: Inputs<'_>) -> Result<(), Failure> {
             if !ready && stop_at.is_none() && owners.server.local_peer().is_some()
                 && owners.server.transport_ready() && owners.server.history_ready()
             {
+                let stopping = poll_fn(|cx| {
+                    reports.register(cx);
+                    Poll::Ready(match signals.poll_stop(cx) {
+                        Poll::Ready(result) => result.map(|()| true),
+                        Poll::Pending => Ok(false),
+                    })
+                }).await?;
+                if stopping || reports.failed() {
+                    break Ok(());
+                }
                 {
                     let mut out = io::stdout().lock();
                     writeln!(out,
@@ -345,7 +357,8 @@ pub(super) async fn run(input: Inputs<'_>) -> Result<(), Failure> {
                 if reports.failed() {
                     break Ok(());
                 }
-                child.ready()?;
+                notification.take().ok_or("MESSENGER original readiness already consumed")?
+                    .signal(&mut signals, &reports).await?;
                 ready = true;
             }
             let until = stop_at.or(if ready { None } else { Some(startup) });

@@ -8,59 +8,21 @@ use gnunet_fs::{
 };
 use std::{
     collections::HashMap,
-    ffi::OsStr,
     fs::File,
     io::{self, Read, Seek, SeekFrom},
     mem::size_of,
-    os::unix::{ffi::OsStrExt, fs::MetadataExt},
-    path::Path,
+    path::{Path, PathBuf},
 };
 
-/// Exact native identity/change observations. Atime is excluded because our own
-/// actual source reads can update it. This is not an atomic filesystem snapshot.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct SourceStamp {
-    /// Original native device.
-    pub device: u64,
-    /// Original native inode.
-    pub inode: u64,
-    /// Complete original plaintext length.
-    pub bytes: u64,
-    /// Native modification seconds.
-    pub modified: i64,
-    /// Native modification nanoseconds.
-    pub modified_nanos: i64,
-    /// Native change seconds.
-    pub changed: i64,
-    /// Native change nanoseconds.
-    pub changed_nanos: i64,
-}
-impl SourceStamp {
-    fn capture(metadata: &std::fs::Metadata) -> Result<Self, Error> {
-        if !metadata.is_file() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "indexed source must be a regular file",
-            )
-            .into());
-        }
-        Ok(Self {
-            device: metadata.dev(),
-            inode: metadata.ino(),
-            bytes: metadata.len(),
-            modified: metadata.mtime(),
-            modified_nanos: metadata.mtime_nsec(),
-            changed: metadata.ctime(),
-            changed_nanos: metadata.ctime_nsec(),
-        })
-    }
-}
+/// Complete native identity, length and change fences, excluding access time.
+/// These observations are not an atomic snapshot or source authority.
+pub type SourceStamp = gnunet_native::filesystem::FileInfo;
 /// Original indexed source binding. The plaintext remains in this actual file;
 /// a task's immutable type6 objects cannot replace a missing/changed source.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Source {
-    /// Canonical absolute native filename, preserving raw Unix bytes.
-    pub path: Vec<u8>,
+    /// Canonical absolute native filename, preserving native code units.
+    pub path: PathBuf,
     /// Complete actual source SHA-512, carried in every type6 descriptor.
     pub file_id: [u8; 64],
     /// Original file identity and change observations.
@@ -68,23 +30,17 @@ pub struct Source {
 }
 impl Source {
     fn validate_path(&self) -> Result<(), Error> {
-        let raw = &self.path;
-        if raw.len() > 4096
-            || raw.first() != Some(&b'/')
-            || raw.contains(&0)
-            || raw.len() < 2
-            || raw[1..]
-                .split(|b| *b == b'/')
-                .any(|p| p.is_empty() || matches!(p, b"." | b".."))
-        {
+        if self.path.as_os_str().len() > 4096 || !crate::input::absolute_normalized(&self.path) {
             return Err(Error::Binding);
         }
+        crate::input::protocol_filename(&self.path)?;
         Ok(())
     }
     /// Validate only structural source bounds; no source availability is implied.
     pub fn validate(&self, limits: Limits) -> Result<(), Error> {
         self.validate_path()?;
-        if self.path.len() > limits.max_plan_bytes || self.stamp.bytes > limits.file.max_file_bytes
+        if self.path.as_os_str().len() > limits.max_plan_bytes
+            || self.stamp.bytes > limits.file.max_file_bytes
         {
             return Err(Error::Limit);
         }
@@ -93,7 +49,7 @@ impl Source {
     /// Borrow the exact native path without lossy decoding.
     #[must_use]
     pub fn path(&self) -> &Path {
-        Path::new(OsStr::from_bytes(&self.path))
+        &self.path
     }
 }
 /// One active source descriptor. A runner holds only the current indexed file,
@@ -110,7 +66,7 @@ impl SourceGuard {
     /// refuses missing sources; source metadata alone cannot prove authenticity.
     pub fn open(source: &Source) -> Result<Self, Error> {
         source.validate_path()?;
-        let file = crate::open_input(source.path())?;
+        let file = crate::input::open_exact(source.path())?;
         let result = Self {
             file,
             source: source.clone(),
@@ -121,8 +77,8 @@ impl SourceGuard {
     /// Check both held FD and original canonical path. A matching stamp is a
     /// change observation, not a replacement for the complete content check.
     pub fn stable(&self) -> Result<(), Error> {
-        let held = SourceStamp::capture(&self.file.metadata()?)?;
-        let named = SourceStamp::capture(&std::fs::symlink_metadata(self.source.path())?)?;
+        let held = crate::input::file_info(&self.file)?;
+        let named = crate::input::named_info(self.source.path())?;
         if held != self.source.stamp || named != self.source.stamp {
             return Err(crate::Error::SourceChanged.into());
         }
@@ -277,10 +233,10 @@ pub fn prepare(
     limits: Limits,
     mut control: impl FnMut(Progress) -> Control,
 ) -> Result<Prepared, Error> {
-    let stamp = SourceStamp::capture(&input.metadata()?)?;
+    let stamp = crate::input::file_info(input)?;
     let (count, _) = budget(stamp.bytes, limits)?;
     let path = std::fs::canonicalize(filename)?;
-    let raw = path.as_os_str().as_bytes();
+    let raw = gnunet_native::os_bytes::encode(path.as_os_str());
     if raw.len() > 4096
         || raw
             .len()
@@ -294,17 +250,17 @@ pub fn prepare(
     {
         return Err(Error::Limit);
     }
-    if SourceStamp::capture(&std::fs::symlink_metadata(&path)?)? != stamp {
+    if crate::input::named_info(&path)? != stamp {
         return Err(crate::Error::SourceChanged.into());
     }
     let file_id = hash_file(input, stamp.bytes, &mut buffers.plain, &mut control)?;
     let source = Source {
-        path: super::owned(raw)?,
+        path: crate::input::owned_path(&path)?,
         file_id,
         stamp,
     };
     source.validate(limits)?;
-    if SourceStamp::capture(&input.metadata()?)? != stamp {
+    if crate::input::file_info(input)? != stamp {
         return Err(crate::Error::SourceChanged.into());
     }
     input.rewind()?;
@@ -327,8 +283,8 @@ pub fn prepare(
         &mut control,
     )?;
     if reading.hash.finish() != file_id
-        || SourceStamp::capture(&reading.file.metadata()?)? != stamp
-        || SourceStamp::capture(&std::fs::symlink_metadata(&path)?)? != stamp
+        || crate::input::file_info(reading.file)? != stamp
+        || crate::input::named_info(&path)? != stamp
     {
         return Err(crate::Error::SourceChanged.into());
     }

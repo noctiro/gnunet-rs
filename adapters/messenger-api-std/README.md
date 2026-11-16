@@ -1,12 +1,22 @@
-# Native high-level Messenger client (M5)
+# Messenger client host
 
 `gnunet-messenger-host` owns the caller-driven `Api<E,N>`, admitted Messenger native CLIENT, bounded Messenger Core, opaque signing identities, crypto/entropy, and explicit optional native NAMESTORE/GNS ports. It creates no service, socket actor, Resolver, private file loader or C FFI. Polling starts native work; dropped wait futures retain the same original ownership.
 
-Implemented paths:
+## Public interface
+
+Crypto scheduling observes actual Core transitions into `AwaitingEpoch` and
+actual key/epoch changes. `pending_decryption` enumerates only retained,
+authenticated ciphertext needing plaintext. Each observation arms finite
+round-robin work; an idle established room does not rescan unrelated deferred
+graph nodes or rely on another message to wake an earlier ciphertext.
 
 - Actual CREATE whole-write readiness, OPEN/ENTRY/SYNC/GET and asynchronous notifications; original Source/Binding/native Epoch/Operation/queue/exposure mappings. The native partial-write head follows native admission order, independently of cross-room draft order.
 - Current JOIN/ID initialization with generated/retained HPKE keys, typed public send, official automatic SECRET wrapping when a epoch key exists, explicit SECRET, recipient PRIVATE plus separately encrypted sender TRANSCRIPT, names, subscriptions/renewal, deletion, cached messages and resumable authorized history. Public send uses the official public client YES-only kind gate; protocol control has its dedicated operations. Private rooms wait for a key rather than silently falling back to plaintext.
-- Signed LEAVE whole-write then CLOSE under one original lifetime, CLOSE notification/room-lease retirement/reopen, retained history and other live rooms. Explicit settled-job DESTROY preserves its local whole-write control report before physical close. Neither implies a service ACK.
+- Signed LEAVE whole-write then CLOSE under one original lifetime, with matching
+  CLOSE notification, room-lease retirement and reopen. That notification
+  consumes the exact CLOSE/LEAVE jobs without fabricating a LEAVE echo or remote
+  delivery acknowledgement. History and other live rooms remain available.
+  Settled-job DESTROY retains its actual local whole-write report before close.
 - One handle identity per shared MQ. `change_identity` draws replacement HPKE keys, emits old-session-signed KEY in every active room, and commits the selected owner only after matching session transitions. Stale drafts and histories keep original public attribution. Explicit secret-owner retirement is bounded and refuses active dependencies.
 - Automatic full-room epoch distribution over ANNOUNCEMENT/APPEAL/ACCESS, genuine provider/signature/HMAC/HPKE/AEAD operations; explicit epoch entropy, announcement, appeal, access, revolution and GROUP proposal operations. State changes still require input/provider checks. The active official AUTHORIZATION wire omits MAC16: no zero MAC or Verified result is invented.
 - Optional NAMESTORE epoch lookup, encrypted HPKE/epoch storage, whole-zone finite monitor, original native operation/epoch/RID/zone comparison and fixed room/source/public snapshot. Explicit caller RecordSecret64 is independent of IDENTITY private hashes. Flags0 records restore historical Revoked capability directly; they grant no future send or old membership. Native result codes and record metadata remain available as actual `RecordProgress`, never fsync/publication receipts. Initial/rotated own recipient keys are genuinely sealed and submitted after the member transition. Epoch stores are explicitly callable; a watch applies records for the room/source snapshot captured at watch admission.
@@ -33,10 +43,6 @@ command continues an established membership task through eligible losses while
 observing the same unique input owner for EOF/Stop.
 
 boundaries: this is a high-level CLIENT candidate, not the distinct native Messenger SERVICE/CADET relay/foreground/REST layer. There is no private storage/fsync implementation or automatic new identity/key-file provisioning. The native daemon IPC profile remains explicit and independent from the local signed-body producer, recipient short-body/padding encoders and raw identifier creator. `Api::new_profiled` takes bounded `Profiles`; `LayoutNeeded` retains the exact original notification/source/deadline until `provide_layout` supplies its grammar. See [LAYOUTS.md](LAYOUTS.md). None of these declarations replaces original source/hash/signature/AEAD checks. The official missing AUTH MAC remains a interoperability limitation.
-
-One pure scheduling model source exercises plaintext integer FIFO ordering and native hard registration despite canonical-clock churn; it constructs no key, Core, native endpoint, Resolver, store or crypto object. This child ran no Cargo/compiler/model/native/C/crypto/key generation/derive/sign/hash operation, file key loader, socket/device/route/network or store. The handoff source hashes identify public code files and explicitly listed public reference C/H only.
-
-The high-level client public scheduling model passed without crypto/key/native/store activity. Those checks applied to the earlier integrated high-level client. Persistence/recovery is supplied by the distinct SERVICE owned-history layer; its prior receipts retain their original scope. Official mixed-node runtime interoperability remains unqualified.
 
 KEEP_ALIVE discourse intent is retained independently of old native SENDs. The generic `send`/`send_bounded(Body::Subscription)` path and the subscription
 helpers share one bounded ledger, using the existing rooms × subscriptions limit

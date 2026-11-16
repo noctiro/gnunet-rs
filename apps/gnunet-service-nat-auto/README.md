@@ -1,3 +1,26 @@
 # gnunet-service-nat-auto
 
-Rust foreground for official Auto protocol; shared PROGRAM/activation/credentials/Resolver/clock. No private GNUnet messages or success ACKs. See gnunet-nat-host N3 README for original provider/mapping/helper/cleanup boundaries. Requires separately built Rust helpers for ICMP traversal on supported OS; service does not change helper ownership/capabilities/permissions automatically. READY establishes local listener ownership only. STOPPED reports remaining/uncertain cleanup, not remote connectivity.
+Native Rust foreground for the official automatic configuration proposal protocol. The shared
+[native host](../../adapters/nat-std/) owns providers, mappings, helpers, Resolver
+and clock; the [process composition](../../adapters/nat-std/README.md#native-process-composition)
+owns PROGRAM options, activation, selected logging and shutdown.
+
+## Configuration and use
+
+```sh
+gnunet-service-nat-auto -c gnunet.conf
+```
+
+The Unix and Windows entries capture inherited listeners and original parent
+control once. Unix applies configured privileges; Windows verifies the process
+token. The corresponding service section selects listeners, ACLs and USERNAME;
+`[nat]` selects discovery and traversal providers, and `[nat-rust]` sets finite
+resource and timeout policy. Explicit Unix UID/GID checks require Unix.
+
+## Readiness and cleanup
+
+READY establishes local listener ownership. Provider notifications, mappings and
+remote connectivity require their own observations. ICMP traversal requires
+separately built helpers supported by the platform; the process does not install
+them or change their privileges. Shutdown drains original helper waits under
+their existing bounds and reports unresolved mapping or process cleanup.

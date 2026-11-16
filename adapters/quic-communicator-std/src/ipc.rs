@@ -1,4 +1,5 @@
 //! Actual original standard communicator MQ; no backend or peer proof is hidden.
+mod gate;
 use crate::types::TransportLoss;
 use gnunet_client_host::{
     EndpointSource,
@@ -9,6 +10,7 @@ use gnunet_types::Error as Protocol;
 use gnunet_wire::official::communicator::{Request, Response};
 use std::{
     collections::VecDeque,
+    sync::Arc,
     task::{Context, Poll},
 };
 use tokio::time::Instant;
@@ -75,6 +77,7 @@ pub(crate) enum Step {
 }
 pub(crate) struct Ipc {
     channel: Channel<Write>,
+    gate: Arc<gate::Gate>,
     outputs: VecDeque<Output>,
     next: u64,
     frames: usize,
@@ -106,7 +109,9 @@ impl Ipc {
         outputs
             .try_reserve_exact(frames)
             .map_err(|_| Protocol::Capacity)?;
-        let channel = Channel::new(
+        let gate = Arc::new(gate::Gate::new(hard, source.clock()));
+        let connect = gate.clone();
+        let channel = Channel::new_guarded(
             source,
             Limits {
                 frame_bytes: 65535,
@@ -115,9 +120,11 @@ impl Ipc {
                 accounting: Accounting::Retained,
                 io_slice_bytes: slice,
             },
+            Arc::new(move || connect.check().map_err(std::io::Error::other)),
         )?;
         Ok(Self {
             channel,
+            gate,
             outputs,
             next: 0,
             frames,
@@ -133,6 +140,13 @@ impl Ipc {
             announcement_fence: 0,
             whole_write: 0,
         })
+    }
+    pub(crate) fn set_recovery_bound(
+        &mut self,
+        bound: Option<(Instant, u64)>,
+    ) -> Result<(), Failure> {
+        self.gate.set(bound)?;
+        Ok(())
     }
     pub(crate) fn room(&self, frames: usize, bytes: usize) -> bool {
         self.attached
@@ -155,7 +169,7 @@ impl Ipc {
         role: Role,
         hard: Instant,
     ) -> Result<(), Failure> {
-        let hard = hard.min(self.hard).min(
+        let hard = hard.min(self.gate.hard()?).min(
             Instant::now()
                 .checked_add(self.operation)
                 .ok_or(Protocol::Overflow)?,
@@ -255,6 +269,7 @@ impl Ipc {
             Poll::Ready(Err(e)) => return Err(e.into()),
             Poll::Ready(Ok(())) => {}
         }
+        self.gate.check()?;
         if !self.attached {
             return match self.channel.poll_connect(cx) {
                 Poll::Pending => Ok(Step::Pending),

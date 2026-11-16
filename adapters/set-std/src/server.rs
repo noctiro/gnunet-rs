@@ -914,6 +914,6 @@ fn cleanup_error(failure: &mut Option<Error>, pressure: &mut Option<Error>, erro
 #[cfg(test)]
 mod tests;
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 #[path = "server/retirement_tests.rs"]
 mod retirement_tests;

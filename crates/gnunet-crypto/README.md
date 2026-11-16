@@ -6,6 +6,8 @@ signatures, AES256CTR and tag-first NaCl XSalsa20Poly1305. It is `no_std`, uses 
 entropy only from the caller, and contains no unsafe Rust. Secrets cannot be
 cloned, debug formatted or serialized through this API.
 
+## Public interface
+
 The signature behavior is pinned to GNUnet v0.29.1, commit
 `346358e26d4dcc2dc4f51bef5d52dca29c7d8165`,
 `src/lib/util/crypto_ecc.c`. `GNUNET_CRYPTO_eddsa_key_get_public` derives the public
@@ -26,6 +28,8 @@ interpreted big endian before scalar reduction. Secret owners and RFC6979 K/V
 are erased on drop. The low-level derivation APIs require NFC-normalized labels;
 [`gnunet-gnscrypto`](../gnunet-gnscrypto/UPSTREAM.md) supplies allocation-free
 Unicode 18 NFC, complete record blocks, publication preparation and expiry policy. Its oracle checks both supported key types against normal C libraries. CORE and communicator handshake state machines remain separate protocol work.
+
+## Checks and examples
 
 Run `cargo test -p gnunet-crypto` for RFC 8032, SHA, HKDF, independent signature
 vectors, exact-size/purpose/tamper checks and entropy-failure erasure. To

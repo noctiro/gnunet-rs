@@ -21,7 +21,10 @@ impl<'a> Client<'a> {
         }
         Ok(())
     }
-    fn dispatch(&mut self, epoch: Epoch<'a>) -> Result<Progress<'a>, Error> {
+    fn dispatch(&mut self, cx: &mut Context<'_>, epoch: Epoch<'a>) -> Result<Progress<'a>, Error> {
+        if let Some(progress) = self.poll_native_guard(cx) {
+            return progress;
+        }
         let input = self
             .channel
             .framing()
@@ -73,6 +76,9 @@ impl<'a> Client<'a> {
         cx: &mut Context<'_>,
         epoch: Epoch<'a>,
     ) -> Poll<Result<Progress<'a>, Error>> {
+        if let Some(progress) = self.poll_native_guard(cx) {
+            return Poll::Ready(progress);
+        }
         let progress = match self
             .channel
             .framing_mut()
@@ -115,6 +121,9 @@ impl<'a> Client<'a> {
         cx: &mut Context<'_>,
         epoch: Epoch<'a>,
     ) -> Poll<Result<Progress<'a>, Error>> {
+        if let Some(progress) = self.poll_native_guard(cx) {
+            return Poll::Ready(progress);
+        }
         match self
             .channel
             .framing_mut()
@@ -127,7 +136,10 @@ impl<'a> Client<'a> {
             Poll::Ready(Ok(ReadStep::Progress { bytes, complete })) => {
                 self.read_first = false;
                 if complete {
-                    Poll::Ready(self.dispatch(epoch))
+                    if let Some(progress) = self.poll_native_guard(cx) {
+                        return Poll::Ready(progress);
+                    }
+                    Poll::Ready(self.dispatch(cx, epoch))
                 } else {
                     Poll::Ready(Ok(Progress::Activity {
                         epoch,
@@ -143,18 +155,95 @@ impl<'a> Client<'a> {
             let Some(state) = &self.slots[index] else {
                 continue;
             };
-            if let Some(hard) = state.hard {
-                if now >= hard {
+            if let Some(retirement) = state.retirement {
+                if now >= retirement.expires {
                     return self.retire(LossCause::Deadline, true).map(Some);
                 }
-            } else if now >= state.expires {
-                self.cancel_index(index, Reason::Deadline, now)?;
-                if let Some(event) = self.next_event() {
-                    return Ok(Some(event));
+            } else if now >= state.bounds.expires {
+                self.cancel_index(index, Reason::Deadline, Instant::now())?;
+                if self.slots[index]
+                    .as_ref()
+                    .and_then(|state| state.retirement)
+                    .is_some_and(|bound| now >= bound.expires)
+                {
+                    return self.retire(LossCause::Deadline, true).map(Some);
                 }
             }
         }
+        self.retire_idle_connect();
         Ok(None)
+    }
+    fn expire_native(&mut self, now: Instant) -> Result<Option<Progress<'a>>, Error> {
+        for index in 0..self.slots.len() {
+            let Some(state) = &self.slots[index] else {
+                continue;
+            };
+            if let Some(retirement) = state.retirement {
+                if now >= retirement.hard {
+                    return self.retire(LossCause::Deadline, true).map(Some);
+                }
+            } else if now >= state.bounds.hard {
+                self.cancel_index(index, Reason::Deadline, now)?;
+                if self.slots[index]
+                    .as_ref()
+                    .and_then(|state| state.retirement)
+                    .is_some_and(|bound| now >= bound.hard)
+                {
+                    return self.retire(LossCause::Deadline, true).map(Some);
+                }
+            }
+        }
+        self.retire_idle_connect();
+        Ok(None)
+    }
+    /// Check and arm original native response/retirement targets before a
+    /// containing owner's clock wait. Cancellation and this guard sample no
+    /// canonical clock or advance socket cursors. Returned losses have already
+    /// detached the original MQ; local completions confer no remote receipt.
+    pub fn poll_native_guard(
+        &mut self,
+        cx: &mut Context<'_>,
+    ) -> Option<Result<Progress<'a>, Error>> {
+        if self.closed {
+            return None;
+        }
+        loop {
+            let progress = match self.expire_native(Instant::now()) {
+                Ok(progress) => progress,
+                Err(Error::Protocol(error)) => {
+                    return Some(self.retire(LossCause::Resource(error), true));
+                }
+                Err(error) => return Some(self.refuse_ports(error)),
+            };
+            if let Some(progress) = progress {
+                return Some(Ok(progress));
+            }
+            if let Some(target) = self.next_native_deadline() {
+                let alarm = self
+                    .native_alarm
+                    .get_or_insert_with(|| Box::pin(tokio::time::sleep_until(target)));
+                alarm.as_mut().reset(target);
+                if alarm.as_mut().poll(cx).is_ready() {
+                    if Instant::now() >= target {
+                        continue;
+                    }
+                    cx.waker().wake_by_ref();
+                }
+            } else {
+                self.native_alarm = None;
+            }
+            return if matches!(
+                self.events.front(),
+                Some(Progress::Completed {
+                    outcome: Outcome::Local { .. },
+                    ..
+                })
+            ) {
+                self.next_event().map(Ok)
+            } else {
+                None
+            };
+        }
     }
     fn poll_alarm(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), ProtocolError>> {
         let Some(target) = self.next_deadline() else {
@@ -189,6 +278,9 @@ impl<'a> Client<'a> {
         cx: &mut Context<'_>,
         deadline: Option<Instant>,
     ) -> Poll<Result<Progress<'a>, Error>> {
+        if let Some(progress) = self.poll_native_guard(cx) {
+            return Poll::Ready(progress);
+        }
         if let Some(event) = self.next_event() {
             return Poll::Ready(Ok(event));
         }
@@ -203,6 +295,12 @@ impl<'a> Client<'a> {
         }
         if deadline.is_some_and(|until| Instant::now() >= until) {
             return Poll::Ready(Ok(Progress::WaitDeadline));
+        }
+        if self.channel.framing().is_none() && self.slots.iter().all(Option::is_none) {
+            return self
+                .channel
+                .poll_wait(cx, deadline)
+                .map_ok(|()| Progress::WaitDeadline);
         }
         match self.channel.poll_clock(cx) {
             // The caller's fixed native observation target remains live even
@@ -220,8 +318,14 @@ impl<'a> Client<'a> {
             Ok(now) => now,
             Err(error) => return Poll::Ready(self.refuse_clock(error)),
         };
+        if let Some(progress) = self.poll_native_guard(cx) {
+            return Poll::Ready(progress);
+        }
         if let Some(progress) = self.expire(now)? {
             return Poll::Ready(Ok(progress));
+        }
+        if let Some(progress) = self.poll_native_guard(cx) {
+            return Poll::Ready(progress);
         }
         match self.poll_alarm(cx) {
             Poll::Ready(Err(error)) => return Poll::Ready(self.refuse_clock(error)),
@@ -232,6 +336,9 @@ impl<'a> Client<'a> {
             Poll::Pending => {}
         }
         if self.channel.framing().is_none() {
+            if let Some(progress) = self.poll_native_guard(cx) {
+                return Poll::Ready(progress);
+            }
             return match self.channel.poll_connect(cx) {
                 Poll::Pending => self
                     .channel
@@ -257,7 +364,7 @@ impl<'a> Client<'a> {
             .framing()
             .is_some_and(|frame| frame.frame().is_some())
         {
-            return Poll::Ready(self.dispatch(epoch));
+            return Poll::Ready(self.dispatch(cx, epoch));
         }
         if let Err(error) = self.prepare() {
             return Poll::Ready(match error {

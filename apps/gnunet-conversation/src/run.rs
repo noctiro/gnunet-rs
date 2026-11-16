@@ -84,8 +84,11 @@ impl Facts {
     }
     pub(super) fn media(&mut self, r: media::Report) {
         self.media_sessions = self.media_sessions.saturating_add(1);
-        self.cleanup_failed |=
-            r.original.is_some() || !r.cleanup.is_empty() || r.cleanup_overflow || r.undrained != 0;
+        self.cleanup_failed |= r.original.is_some()
+            || !r.cleanup.is_empty()
+            || r.cleanup_overflow
+            || r.undrained != 0
+            || r.playback_pending;
         if self.media_first.is_none() {
             self.media_first = Some(r);
         } else {
@@ -117,29 +120,13 @@ impl std::error::Error for Failed {
             .or_else(|| self.cleanup.first().map(|e| e.as_ref()))
     }
 }
-struct Signals {
-    interrupt: tokio::signal::unix::Signal,
-    terminate: tokio::signal::unix::Signal,
-}
+struct Signals(gnunet_service_runtime::signals::Termination);
 impl Signals {
     fn new() -> io::Result<Self> {
-        use tokio::signal::unix::{SignalKind, signal};
-        Ok(Self {
-            interrupt: signal(SignalKind::interrupt())?,
-            terminate: signal(SignalKind::terminate())?,
-        })
+        gnunet_service_runtime::signals::Termination::new().map(Self)
     }
     fn poll(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        for signal in [&mut self.interrupt, &mut self.terminate] {
-            match signal.poll_recv(cx) {
-                Poll::Ready(Some(())) => return Poll::Ready(Ok(())),
-                Poll::Ready(None) => {
-                    return Poll::Ready(Err(io::Error::other("Conversation signal source ended")));
-                }
-                Poll::Pending => {}
-            }
-        }
-        Poll::Pending
+        self.0.poll_stop(cx)
     }
 }
 struct Resolver {
@@ -428,6 +415,7 @@ async fn run(input: Inputs) -> Result<(), Failure> {
     let hard = Instant::now()
         .checked_add(settings.shutdown)
         .ok_or(gnunet_types::Error::Overflow)?;
+    state.begin_cleanup(hard);
     let mut alarm = Box::pin(tokio::time::sleep_until(hard.into()));
     let cleanup = poll_fn(|cx| {
         if state.cleanup_done() {

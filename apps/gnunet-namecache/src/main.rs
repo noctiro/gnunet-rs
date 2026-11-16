@@ -1,16 +1,13 @@
 //! Official NAMECACHE public-zone/name lookup and deletion PROGRAM.
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
 use std::{
     error::Error,
     io::{self, Write},
     process::ExitCode,
 };
 type Cause = Box<dyn Error>;
-#[cfg(unix)]
 mod display;
-#[cfg(unix)]
 mod foreground;
-#[cfg(unix)]
 mod settings;
 
 fn main() -> ExitCode {
@@ -22,11 +19,6 @@ fn main() -> ExitCode {
         }
     }
 }
-#[cfg(not(unix))]
-fn run() -> Result<(), Cause> {
-    Err("NAMECACHE native PROGRAM requires Unix".into())
-}
-#[cfg(unix)]
 fn run() -> Result<(), Cause> {
     use gnunet_program_host::{
         getopt::Options,
@@ -37,6 +29,12 @@ fn run() -> Result<(), Cause> {
         shared_clock::SharedClock,
     };
     use std::sync::Arc;
+    #[expect(
+        unsafe_code,
+        reason = "First fresh-process action before configuration, logging, native resources or threads"
+    )]
+    // SAFETY: sole inheritance capture before competing native owners exist.
+    let inherited = unsafe { gnunet_service_startup::ClientStartup::capture() }?;
     let zone = Target::new(None);
     let name = Target::new(None);
     let delete = Target::new(0);
@@ -78,7 +76,7 @@ fn run() -> Result<(), Cause> {
         0,
         b"namecache-socket",
         b"PATH",
-        b"explicit NAMECACHE Unix endpoint; otherwise use configured CLIENT selection",
+        b"explicit NAMECACHE local endpoint; otherwise use configured CLIENT selection",
         socket.clone(),
     ));
     options.add(helpers::string(
@@ -94,12 +92,24 @@ fn run() -> Result<(), Cause> {
         Default::default(),
     )?;
     let mut logger = Logger::new(b"gnunet-namecache", std::process::id(), false)?;
-    let prepared = program::prepare(config, Invocation {
+    let invocation = Invocation {
         binary_name: b"gnunet-namecache",
-        help: Some(b"Inspect or delete the configured NAMECACHE's exact public zone/name entry. -z PKEY -n NAME derives the official query, validates the returned block's zone/name signature, decrypts it and displays applicable records. -d sends actual BLOCK_DELETE and preserves its signed result code. No DHT lookup, private-key files, daemon or new protocol. Text and total output are bounded; unsupported record values retain their numeric type and raw bytes."),
+        help: Some(b"Inspect or delete an exact public zone/name cache entry. -z PKEY -n NAME verifies and decrypts cached records; -d removes the entry and reports its service result."),
         select_default_filename: true,
         defaults: Defaults::Native,
-    }, options, std::env::args_os(), &program::Environment::capture(), &mut NlsDisabled, &mut logger, &clock, &mut io::stdout().lock(), &mut io::stderr().lock())?;
+    };
+    let prepared = program::prepare(
+        config,
+        invocation,
+        options,
+        std::env::args_os(),
+        &program::Environment::capture(),
+        &mut NlsDisabled,
+        &mut logger,
+        &clock,
+        &mut io::stdout().lock(),
+        &mut io::stderr().lock(),
+    )?;
     let prepared = match prepared {
         Preparation::Ready(prepared) => *prepared,
         Preparation::Stopped(stopped) => {
@@ -128,6 +138,13 @@ fn run() -> Result<(), Cause> {
         profile.get()?,
     )?;
     let reporter = Reporter::new(logger, clock.clone());
+    #[cfg(unix)]
+    if let Some(notice) = inherited.notice {
+        reporter.warning(
+            "namecache.parent",
+            format_args!("parent control declaration: {notice:?}"),
+        );
+    }
     let result: Result<(), Cause> = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -138,6 +155,7 @@ fn run() -> Result<(), Cause> {
                 clock,
                 settings,
                 reporter.clone(),
+                inherited.parent,
             ))
         });
     if let Err(error) = &result {

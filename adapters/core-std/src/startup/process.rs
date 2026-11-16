@@ -1,5 +1,5 @@
 //! Explicit new-process listener and identity stages, separate from async embedding.
-use super::{ForegroundPolicy, ForegroundResources, Limits, Report, run_foreground};
+use super::{ForegroundPolicy, ForegroundResources, Limits, PreparedService, Report};
 use gnunet_config::Configuration;
 use gnunet_service_runtime::{
     Activation, BoundListeners, ListenerPreparation,
@@ -84,7 +84,23 @@ impl<'config> ProcessPreparation<'config> {
         })
     }
 }
-impl PreparedProcess<'_> {
+impl<'config> PreparedProcess<'config> {
+    /// Finish deferred local binding under the applied account, retaining the
+    /// validated policy and original listener owners for shared foreground work.
+    pub async fn finish(self) -> Result<PreparedService<'config>, Box<dyn Error>> {
+        let bound = self
+            .listeners
+            .finish_with_access(self.policy.unix_access.into())
+            .await?;
+        Ok(PreparedService {
+            resources: ForegroundResources {
+                config: self.config,
+                bound,
+                policy: self.policy,
+            },
+        })
+    }
+
     /// Original successful native sequence report, including any actual fallback.
     /// It is a local process identity observation, not a saved-id/capability claim.
     #[must_use]
@@ -117,12 +133,16 @@ impl PreparedProcess<'_> {
         observe: impl FnMut(SocketEvent),
         clock: Arc<dyn RuntimeClock>,
     ) -> Result<Report, Box<dyn Error>> {
-        let bound = self.listeners.finish().await?;
-        let resources = ForegroundResources {
-            config: self.config,
-            bound,
-            policy: self.policy,
-        };
-        run_foreground(resources, limits, ready, shutdown, observe, clock).await
+        self.finish()
+            .await?
+            .foreground_with_readiness(
+                limits,
+                ready,
+                shutdown,
+                observe,
+                clock,
+                std::future::ready(Ok(())),
+            )
+            .await
     }
 }

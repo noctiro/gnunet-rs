@@ -108,7 +108,7 @@ impl BlockSink for Store {
             encoded.block().key().query,
             (kind, encoded.block().bytes().to_vec()),
         );
-        Ok(Insert::Created)
+        Ok(Insert::Created(gnunet_fs_host::Retention::Volatile))
     }
 }
 struct Tree {

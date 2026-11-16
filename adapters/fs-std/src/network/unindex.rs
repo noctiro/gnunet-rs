@@ -18,7 +18,6 @@ use std::{
     fs::File,
     future::Future,
     io::{self, Read, Seek},
-    os::unix::fs::MetadataExt,
     path::Path,
     sync::Arc,
     task::Poll,
@@ -265,39 +264,13 @@ impl std::error::Error for Failure {
     }
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct Stamp {
-    dev: u64,
-    ino: u64,
-    bytes: u64,
-    mtime: i64,
-    mn: i64,
-    ctime: i64,
-    cn: i64,
-}
+struct Stamp(gnunet_native::filesystem::FileInfo);
 impl Stamp {
     fn of(file: &File) -> Result<Self, Error> {
-        Self::metadata(&file.metadata()?)
-    }
-    fn metadata(m: &std::fs::Metadata) -> Result<Self, Error> {
-        if !m.is_file() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "unindex requires a regular original file",
-            )
-            .into());
-        }
-        Ok(Self {
-            dev: m.dev(),
-            ino: m.ino(),
-            bytes: m.len(),
-            mtime: m.mtime(),
-            mn: m.mtime_nsec(),
-            ctime: m.ctime(),
-            cn: m.ctime_nsec(),
-        })
+        Ok(Self(crate::input::file_info(file)?))
     }
     fn stable(self, file: &File, path: &Path) -> Result<(), Error> {
-        if Self::of(file)? != self || Self::metadata(&std::fs::metadata(path)?)? != self {
+        if Self::of(file)? != self || crate::input::named_info(path)? != self.0 {
             return Err(crate::Error::SourceChanged.into());
         }
         Ok(())
@@ -671,8 +644,11 @@ impl Buffers {
                 ));
                 return Ok(());
             }
-            let mut time =
-                TimeLimit::bounded(store.clock(), options.deadline, options.native_deadline)?;
+            let mut time = TimeLimit::new(
+                store.clock(),
+                options.deadline,
+                Some(options.native_deadline),
+            )?;
             gate(&mut time, report.observation, &mut control).await?;
             let original = Stamp::of(input)?;
             original.stable(input, filename)?;
@@ -680,17 +656,17 @@ impl Buffers {
                 Content {
                     key: [0; 64],
                     query: [0; 64],
-                    size: original.bytes,
+                    size: original.0.bytes,
                 },
                 options.limits,
             )
             .map_err(Error::from)?;
             input.rewind().map_err(Error::from)?;
             let mut hash = Hash512State::new();
-            while report.observation.hashed_bytes < original.bytes {
+            while report.observation.hashed_bytes < original.0.bytes {
                 gate(&mut time, report.observation, &mut control).await?;
                 original.stable(input, filename)?;
-                let count = (original.bytes - report.observation.hashed_bytes)
+                let count = (original.0.bytes - report.observation.hashed_bytes)
                     .min(self.plain.len() as u64) as usize;
                 let read = match input.read(&mut self.plain[..count]) {
                     Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
@@ -717,7 +693,7 @@ impl Buffers {
             let file_id = hash.finish();
             report.file_id = Some(file_id);
             recorder
-                .source(file_id, original.bytes)
+                .source(file_id, original.0.bytes)
                 .map_err(Error::from)?;
             let retained_keywords = recorder.retained_keywords().map_err(Error::from)?;
             let mut keywords = if let Some(words) = retained_keywords {
@@ -761,7 +737,7 @@ impl Buffers {
             input.rewind().map_err(Error::from)?;
             let mut second = Hash512State::new();
             let mut encoder =
-                FileEncoder::new(original.bytes, &mut self.keys).map_err(Error::from)?;
+                FileEncoder::new(original.0.bytes, &mut self.keys).map_err(Error::from)?;
             while let Some(node) = encoder.next() {
                 gate(&mut time, report.observation, &mut control).await?;
                 original.stable(input, filename)?;

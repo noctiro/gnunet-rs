@@ -63,7 +63,7 @@ impl BlockSink for Store {
                 node.block().bytes().to_vec(),
             ),
         );
-        Ok(Insert::Created)
+        Ok(Insert::Created(gnunet_fs_host::Retention::Volatile))
     }
 }
 fn expected(data: &[u8]) -> Result<(Content, Blocks), gnunet_fs_host::Error> {

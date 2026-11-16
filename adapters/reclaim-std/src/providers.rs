@@ -9,35 +9,51 @@ use std::{
     io::{self, Read},
 };
 use zeroize::Zeroizing;
-/// Explicit OS entropy owner plus linked Rust identity/credential functions.
-/// Opening it happens only when the foreground caller requests it, after UID
-/// setup. It opens /dev/urandom only; no identity/private key file is consulted.
+/// Explicit native entropy owner plus linked Rust identity/credential functions.
+/// Entropy is requested only for an admitted identifier operation. Construction
+/// starts no work and consults no identity or private-key file.
 pub struct SystemProviders {
-    random: File,
+    random: Entropy,
     failure: Option<SystemFailure>,
+}
+enum Entropy {
+    Native,
+    Device(File),
+}
+impl Entropy {
+    fn fill(&mut self, output: &mut [u8]) -> Result<(), SystemFailure> {
+        match self {
+            Self::Native => getrandom::fill(output).map_err(SystemFailure::NativeEntropy),
+            Self::Device(file) => file.read_exact(output).map_err(SystemFailure::Entropy),
+        }
+    }
 }
 /// Actual local provider cause, without credential/key data.
 #[derive(Debug)]
 pub enum SystemFailure {
-    /// Actual kernel entropy read error.
+    /// Actual native kernel CSPRNG failure, without substituting another source.
+    NativeEntropy(getrandom::Error),
+    /// Actual read error from the explicitly supplied entropy device.
     Entropy(io::Error),
     /// Actual pinned helper format/availability failure, preserving raw kind/stage.
     Credential(gnunet_reclaim_credentials::Failure),
 }
 impl SystemProviders {
-    /// Open the actual kernel CSPRNG source. No service/worker/thread is started.
-    pub fn open() -> io::Result<Self> {
-        Ok(Self {
-            random: File::open("/dev/urandom")?,
+    /// Select the native kernel CSPRNG. No entropy request, service or worker
+    /// starts here; each operation retains its actual platform failure.
+    #[must_use]
+    pub fn native() -> Self {
+        Self {
+            random: Entropy::Native,
             failure: None,
-        })
+        }
     }
     /// Adopt an actual caller-owned OS entropy device for controlled platform
     /// provisioning. The caller is responsible for its CSPRNG provenance.
     #[must_use]
     pub fn from_random_device(random: File) -> Self {
         Self {
-            random,
+            random: Entropy::Device(random),
             failure: None,
         }
     }
@@ -67,10 +83,10 @@ impl SystemProviders {
             }
             Action::Identifier => {
                 let mut id = Zeroizing::new([0; 32]);
-                match self.random.read_exact(&mut *id) {
+                match self.random.fill(&mut *id) {
                     Ok(()) => Done::Id(id),
                     Err(error) => {
-                        self.failure = Some(SystemFailure::Entropy(error));
+                        self.failure = Some(error);
                         Done::Failed(Error::Entropy)
                     }
                 }

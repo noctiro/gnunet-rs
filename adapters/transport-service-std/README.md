@@ -4,19 +4,20 @@ This package provides a caller-driven independent official TRANSPORT service own
 
 The `Owner` constructor takes caller-owned branded instances, one coherent snapshot of the external endpoints, and the same RuntimeClock Arc. A source-matched PILS identity is required before Engine creation or local IPC admission. A deferred purpose35 job is copied once with the original request token and finite UTC/native targets; the original PILS SIGN reply is checked against its epoch and expected key before the original Engine effect can complete. There is no local private-key fallback.
 
-The standalone SERVICE uses the shared actual `c,d,h,L,l,v` option table and
-explicit fresh-process daemon split. It captures original activation/control
-owners before option/log selection; only the child loads configuration or creates
-runtime/account/listener/worker resources. Parent success requires the actual
-once-only ready byte, never EOF or a merely bound listener. Child process PID
-logging refresh keeps the originally selected lifted file descriptor.
+## Native service composition
 
-TCP/inherited preparation remains before configured USERNAME/initgroups; deferred
-new Unix binding remains under the selected account. No existing inode is chowned
-or inherited socket reopened. `foreground::service(Configuration, ..., Reports)`
-uses the same internal run/session/DV driver as the original
-`foreground::scheduled(Prepared, ...)` embedding entry; it never manufactures a
-PROGRAM preparation. Neither async path changes process identity or detaches.
+The standalone SERVICE uses shared options and separate native entries. Unix
+captures descriptor/control ownership and performs fresh-process detachment
+before runtime or private work; TCP/activation preparation precedes configured
+identity selection, and new local paths finish afterwards. Windows captures
+native activation/bootstrap, verifies the configured SID and registers the
+original qualified parent and native stop subscriptions.
+
+`foreground::Listening` carries completed listeners, registered `StopSignals`
+and an optional original `Readiness` future before any reservation worker starts.
+`foreground::service` uses the same session/DV driver as the PROGRAM embedding;
+neither async path changes process identity or invents a PROGRAM preparation.
+Entropy requests use the shared native OS provider on every platform.
 
 The explicit process-owned `Reports` callback carries ready and diagnostic
 facts, without a global logger or native queue. All original foreground, session,
@@ -25,8 +26,11 @@ Logger policy/output. A first callback IO failure wakes ordinary shutdown; its
 error is returned after original jobs and workers really settle, independently of
 other failures. The ready callback occurs only once when Owner is actually
 admissible after original PILS authority and persistence, not when a listener is
-created or a publication is queued. Embedding's default reports stderr diagnostics
-and grants no invented external ready writer.
+created or a publication is queued. The optional asynchronous notification is polled only after that real readiness,
+with one fixed ten-second native deadline. It retains the original outbox across
+waiting polls; failure latches the process and cannot start a new session retry.
+Shutdown with an unsettled notification fails rather than claiming acknowledgement.
+Embedding's default diagnostics create no external ready owner.
 
 The listener still supports configured Unix/TCP endpoints, inherited activation,
 ACL, Unix credentials, accept diagnostics and EMFILE suspension. TOLERANT still ignores only unknown official handler types. SOFT stops new
@@ -36,9 +40,9 @@ queued/partial/FC retirement and Provider/reservation worker joins retain
 their original owners. An admitted filesystem operation is not cancelled by socket
 grace. No communicator process, private aggregator or key fallback is started.
 
-## persistence and publication
+## Persistence and publication
 
-`generation::Reservations` retains the admitted T1 contract: an explicitly new or matching Rust-marked private namespace stores only the eight-byte public monotime highwater. A stamp is returned only from a matching durable worker commit. New-store initialization commits an initial image before readiness; marked roots missing their canonical state fail closed. This is independent of PILS keys and any C key/store paths.
+`generation::Reservations` retains the admitted T1 contract: an explicitly new or matching Rust-marked private namespace stores only the eight-byte public monotime highwater. A stamp is returned only from a matching original worker commit receipt; native naming-barrier observations remain separate. New-store initialization commits an initial image before readiness; marked roots missing their canonical state fail closed. This is independent of PILS keys and any C key/store paths.
 
 `ValidatedStore` holds one original authenticated foreign-address effect behind Server's asynchronous persistence barrier. Pending means the same STORE/source/deadlines are retained. Only matching STORE_RESULT1 releases the barrier. A loss or partial/unknown write is not replayed under a new MQ. Every independent native guard and worker completion remains driven while later domain effects are paused.
 
@@ -78,4 +82,7 @@ Public stamp retirement retains the original PILS observation/address lease/work
 
 A native-source factory holds configured/inherited listeners, one Resolver, one clock anchor, the reservation worker and the same statistics owner outside its session loop. Each unusable session physically closes and returns all original metadata before its branded instances drop. Only then are fresh instances allocated; future requests can use them. Healthy PID changes use the in-place path and do not reconnect PILS. Native retry retains at most32 old consecutive errors, uses finite100ms..25.6s native delays and stops after that restart budget; stable original sessions reset the budget. Signals work during backoff, and SOFT shutdown remains finite for sockets. Standard diagnostics and disk fsync/join retain their explicit synchronous OS blocking boundary.
 
-FLOW sender-monotime requires an exact original Engine demand and an exclusive numeric interval whose upper bound was committed by the shared reservation worker. Without a usable interval, FLOW enqueue and sequence advancement defer. Exhausted or passed intervals cannot revive on clock rollback. The existing eight-byte highwater format remains; FLOW, DV and own-address consumers receive nonoverlapping values through one worker and typed completions. Original fixed targets survive queue wait, and late retired ranges burn rather than authorize a new Engine. DV range scopes include a private allocation per Engine so A-to-B-to-A identity changes cannot reuse old grants. SENDER_MONOTIME_HORIZON defaults to five minutes, with a checked one-minute to one-day numeric span; unused tails are discarded. Actual native durability/crash paths and interoperability remain unexecuted. The standard foreground consumes the DV scheduler/relay and burst ports. Broader own-publication time-policy refinement remains separate work. Live exact-nonce history and persisted sender floors keep their existing scopes; this stage adds no cross-restart exact-nonce guarantee.
+FLOW sender-monotime requires an exact original Engine demand and an exclusive numeric interval whose upper bound was committed by the shared reservation worker. Without a usable interval, FLOW enqueue and sequence advancement defer. Exhausted or passed intervals cannot revive on clock rollback. The existing eight-byte highwater format remains; FLOW, DV and own-address consumers receive nonoverlapping values through one worker and typed completions. Original fixed targets survive queue wait, and late retired ranges burn rather than authorize a new Engine. DV range scopes include a private allocation per Engine so A-to-B-to-A identity changes cannot reuse old grants. SENDER_MONOTIME_HORIZON defaults to five minutes, with a checked one-minute to one-day numeric span; unused tails are discarded. The standard foreground consumes the DV scheduler/relay and burst ports. Broader own-publication time-policy refinement remains separate work. Live exact-nonce history and persisted sender floors keep their existing scopes; this stage adds no cross-restart exact-nonce guarantee.
+
+External interoperability and platform qualification follow the central
+[compatibility contract](../../spec/gnunet/compatibility.md).

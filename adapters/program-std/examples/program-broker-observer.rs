@@ -8,7 +8,7 @@ mod actual {
         shared_clock::SharedClock,
     };
     use gnunet_resolver_broker::{
-        Driver, Family, FamilyProfile, Limits, LiveConfiguration, Progress, Query, Reply,
+        Driver, Family, Limits, LiveConfiguration, Progress, Query, Reply,
     };
     use std::{
         cell::RefCell,
@@ -105,7 +105,7 @@ mod actual {
                 io_chunk_bytes: 1,
                 ..Default::default()
             },
-            FamilyProfile::new(libc::AF_INET, libc::AF_INET6)?,
+            gnunet_resolver_broker::native_profile()?,
             Arc::new(clock.clone()),
         )
         .map_err(Failure::Broker)?;

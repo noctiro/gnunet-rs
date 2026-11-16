@@ -108,3 +108,14 @@ and publish it only after success.
 
 See [UPSTREAM.md](UPSTREAM.md) for source quirks and reference commands, and
 [testing](../../tests/README.md) for native and official C comparison groups.
+
+## Caller-owned output namespaces
+
+`Configuration::write_serialized_in` publishes bytes from this owner's serializer
+relative to an original native directory and exact child name. The caller owns
+administrative namespace exclusion and supplies its original target/deadline
+fence. This entry performs no filename expansion, parent creation or symlink
+resolution. Native private permissions apply to new output. Its receipt retains
+the published object and separate directory-barrier capability; failure records
+publication uncertainty, writer close and original temporary cleanup. The ordinary
+path-oriented command writer retains its existing public behavior.

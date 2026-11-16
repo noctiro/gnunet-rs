@@ -7,7 +7,7 @@ it returns a borrowed full JWT payload with the original credential ID and type;
 the caller's existing bounded Pool can make the one final owned copy. No source,
 operation, TTL, durability, signature validity or successful ticket is invented.
 
-Pinned build facts:
+## Reference plugin selection
 
 - `src/plugin/reclaim/meson.build` builds BASIC STRING and JWT. It does not build
   the present PABC C source or supply libpabc/helper parameters/user contexts.
@@ -30,7 +30,7 @@ Pinned build facts:
   and a user's private context for proof generation. This pin does not build it.
   No fake JSON/PABC schema, proof or validation implementation is substituted.
 
-Callable functions/types:
+## Credential interfaces
 
 - `attribute_from_string`, `credential_from_string`, type-checked
   `attribute_value_string`/`credential_value_string`, public source type-name
@@ -75,6 +75,8 @@ Callable functions/types:
   return Unsupported. Failure preserves family, exact u32 type, stage and cause;
   no credential/JWT/claim content is embedded in errors or Debug.
 
+## Attribute integration
+
 Feature `attributes` reuses the existing `gnunet-identity/alloc` PURE text/table
 feature boundary, without any identity SERVICE/runtime dependency. The added
 `gnunet_identity::normalize_name_into(input,out,lowered,nfd,ordering)` itself
@@ -91,19 +93,14 @@ materialize sensitive credential values: the shared gnunet-json foundation uses 
 grammar. The credential Workspace is a thin domain wrapper; REST can use the
 same parser without depending on credential semantics. No new registry/network dependency or production C FFI is introduced.
 
+## Parsing constraints
+
 Intentional refusal differences from weak C code: strict valid base64url rather
 than permissive/asserting malformed decoder behavior; complete JSON object/EOF;
 no unescaped control or lone surrogate; duplicate-key Conflict; explicit capacity
 failure; checked negative/overflow expiration rather than C signed/unsigned
 wrap/undefined behavior. These are error contracts, not a reduced valid JSON
 value-type subset. JWT header/signature are intentionally NOT made mandatory.
-
-One aggregate
-public_mock model source covers conversion, parse-only unsigned mock JWT,
-issuer/expiration/address/structured claims, optional exact Unicode names,
-full-payload original-ID presentation, raw PABC/unknown failure, malformed input,
-capacity refusal and workspace erasure. There
-was no key/crypto/store/native/model operation or private-file read/hash.
 
 The active C JWT loader uses JSON_DECODE_ANY without JSON_ALLOW_NUL, so escaped
 \u0000 is refused for both value and object-key strings in this profile. This is
@@ -114,9 +111,9 @@ Normal rounding-to-nearest binary64/Jansson default
 precision is the compatibility profile; process-global altered C rounding modes
 are not imitated by this pure Rust API.
 
-Remaining: an explicitly supplied
-issuer/signature/audience/time trust policy (the active official JWT plugin
-provides none); optional PABC cryptography/provider if later required; ticket
-business/provider glue, persistence/source authority and production service;
-C/native interoperability qualification. This is not all RECLAIM or a
-verified-credential system.
+## Trust policy
+
+Parsing extracts claims; it does not verify the issuer, signature, audience or
+validity period. Callers supply that trust policy. The selected official JWT
+plugin provides no such verification. Native ticket and service composition
+belongs to the [RECLAIM host](../../adapters/reclaim-std/README.md).

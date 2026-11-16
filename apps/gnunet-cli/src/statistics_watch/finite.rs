@@ -1,10 +1,10 @@
 //! Finite GET/SET on the shared configured native owner, one held row at a time.
 use super::{
     Failure,
-    control::Signals,
     driver::{self, Bound, Errors, Failed, Inputs, Report, ResolverOwner},
     output::Output,
 };
+use crate::foreground::Signals;
 use gnunet_client::statistics_handle::{
     DestroyOutcome, DestroyReport, GetFlow, GetId, SetterAdmission,
 };
@@ -177,7 +177,7 @@ pub(super) async fn command(inputs: Inputs, action: Action) -> Result<Report, Fa
                     // Admit exactly once, then retain this same owner's original
                     // queued envelope/barrier. No is_idle wait may erase the C API's
                     // non-transmitted-length condition for destroy(true).
-                    current.destroy(true)?;
+                    current.destroy_with_timeout(true, driver::CLEANUP)?;
                     destroy_started = true;
                 }
             }

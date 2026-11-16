@@ -1,61 +1,83 @@
 # gnunet-cadet
 
-This standard PROGRAM exposes the existing CADET client as a binary pipe
-and echo tool. Its Cargo package is `gnunet-cadet-command` and the binary is
-`gnunet-cadet`, keeping the existing pure package name independent.
+Exposes the existing CADET client as a binary stream and echo tool on Linux,
+macOS, FreeBSD and Windows. Its package is `gnunet-cadet-command` and its binary
+is `gnunet-cadet`.
 
-- `gnunet-cadet PEER [PORT]` opens an outbound channel; PORT defaults to `default`.
-- `gnunet-cadet -o PORT` listens for one incoming channel and withdraws the port
-  after selecting it. Additional incoming channels are actually destroyed.
-- `-e` selects a periodic echo client or, with `-o`, an echo listener.
+## Invocation and protocol
 
-PEER is the official52-character GNUnet identity. The exact non-NUL port-name
-bytes (up to4096, including a legal empty name) are hashed using the existing
-GNUnet SHA-512 primitive, without a terminator/private domain. Each data
-message has the official four-byte header and `CADET_CLI` type1059. Incoming
-strings may contain multiple complete such messages; their payloads remain in
-order. No new handshake or private frame is introduced. Existing inspection
-commands remain available through `gnunet-cli cadet peers|tunnels|paths`.
+```sh
+gnunet-cadet -c gnunet.conf PEER PORT
+gnunet-cadet -c gnunet.conf --open-port PORT
+gnunet-cadet -c gnunet.conf --echo PEER PORT
+```
 
-Standard PROGRAM `-c/-L/-l/-h/-v`, testing clock selection and selected
-Logger/Reporter are reused. The configured `cadet` CLIENT and the process Resolver
-share the same live configuration and RuntimeClock Arc. Source loss
-permanently closes this allocation: old channels, partial frames, credit or
-uncertain payloads are never replayed into a replacement epoch.
+`PEER [PORT]` opens an outbound channel; PORT defaults to `default`. `-o PORT`
+listens for one channel and withdraws the port after selecting it. Additional
+incoming channels are destroyed. `-e` selects periodic echo or an echo listener.
+Standard PROGRAM options select configuration, logging, help and version.
+Management commands remain in `gnunet-cli cadet peers|tunnels|paths`.
 
-One caller-owned stdin handle, stdout handle, channel, port and received frame
-loan remain inside the retained original PROGRAM future. There is no reader
-thread, detached task, fd ownership duplication or shared-OFD flag change. Stdin
-uses readiness and at most60000 bytes per chunk. Stdout uses unbuffered
-writes of at most512 bytes, preserving its original partial cursor; readiness is
-not treated as a completed write. Inactive/backpressured polls use bounded wake
-cadence. These synchronous OS syscalls, including regular-file/device IO, cannot
-be forcibly interrupted by an async timer; the program does not claim otherwise.
+PEER is the official 52-character identity. Non-NUL port-name bytes, up to 4096
+including an empty name, use the existing GNUnet SHA-512 primitive without a
+terminator or private domain. Data retains the official four-byte header and
+`CADET_CLI` type 1059. Multiple complete inner messages retain their order.
+Peer and port selection grant no independent authentication proof.
 
-A received original outer Delivery is acknowledged exactly once, after all its
-stdout payload writes (or original echo sends) finish locally. Mere frame
-ownership/drop is not receive_done. Every outbound admission retains its original
-Transmit until the matching Written event. Credit means local service send
-credit; neither enqueueing nor whole IPC write proves peer receipt/application
-processing. Binary payloads only reach stdout or the original echo path. Logger,
-Debug and reports contain lengths, tokens, epochs and exposure metadata.
+## Ownership and flow control
 
-`[cadet-cli] CHUNK_BYTES` is1..60000 (default60000), `IO_BYTES` is1..65535
-(default8192, with stdout additionally capped512), `OPERATION_SECONDS` is1..3600
-(default30), and `CLEANUP_SECONDS` is1..60 (default5). Initial connection, each
-original submitted/held send, first-positive partial frame, received processing
-loan and echo intent have fixed native/logical targets. Retrying local admission
-or waiting for credit does not renew them. Idle listening/pipe sessions have no
-invented overall expiry. Echo probes are serialized with the public one-second
-spacing; their measured RTT is diagnostic, not an authentication receipt.
+The [scope](src/run/scheduling.rs) captures initial operation bounds and native
+stop subscriptions before constructing the process Resolver. Fresh client
+startup handles inherited resources before other native owners. One retained
+PROGRAM future owns the original channel, port, TX, RX loan and stdio owners.
+The CADET client and Resolver share one LiveConfiguration and RuntimeClock.
+Source loss closes this allocation; no uncertain payload moves to a new epoch.
 
-EOF, Ctrl-C and parent stop use one original native cleanup grace. New stdin and
-probe work stop, while existing frames/output/receive_done and ordered port/channel
-destruction may finish on the same source. Then the client closes before
-Resolver disconnect/Drop. Fatal source, clock, logger or IO failure physically
-closes the same owner and retains exposure/held-byte facts. No timeout is
-reported as a whole write or remote destruction. Native, stdin, stdout, Resolver,
-close and selected Logger failures remain independent in the owned final error,
-including a Logger-only failure. Product construction failures also retire the
-same process Resolver. No private key file or service algorithm is part of this
-app.
+A received outer Delivery is acknowledged once, after its actual stdout writes
+or echo sends finish locally. Dropping a frame never calls receive_done.
+Outbound admissions retain their original Transmit until matching Written.
+Service send credit and whole IPC writes remain separate from remote
+application-delivery proof. Payload content reaches only stdout or echo;
+diagnostics contain bounded lengths, tokens, epochs and exposure metadata.
+
+## Native I/O and retirement
+
+[Stdio](src/stdio.rs) lazily captures each original binary route only when its
+role needs it. Each route has one bounded worker and at most one native call.
+Stdin readiness avoids an idle pipe read; stdout writes at most 512 bytes.
+Canceled waits retain their original work, and temporary non-writing errors
+back off without changing the cursor or deadline. Shared file flags, console
+modes and process standard routes remain unchanged.
+
+EOF and native/parent stop halt new stdin and probe work. Existing output,
+receive completion and ordered channel/port teardown share one original native
+cleanup deadline. The client closes before [stdio retirement](src/stdio/retirement.rs);
+actual late output counts update the original RX metadata without issuing an ACK
+on a closed client. Late input is counted as unsubmitted and never sent.
+
+On Windows, retirement can request cancellation of the original outstanding read
+on its retained worker thread. A request proves no completion. Only the actual
+native canceled result and close receipt establish read retirement; the report
+keeps cancellation separate from byte counts. Writes are never canceled or
+replayed. A driver that cannot finish before the bound leaves its original
+worker and receipts in the failure. Native close is not a thread-join or
+remote-delivery receipt. The original Resolver is then disconnected independently.
+
+## Resource settings
+
+Configure service endpoints through ordinary `[cadet]` and `[resolver]` settings.
+These `[cadet-cli]` limits are local policy:
+
+| Key | Default | Range |
+| --- | ---: | --- |
+| CHUNK_BYTES | 60000 | 1–60000 |
+| IO_BYTES | 8192 | 1–65535; stdout additionally caps each write at 512 |
+| OPERATION_SECONDS | 30 | 1–3600 |
+| CLEANUP_SECONDS | 5 | 1–60 |
+
+Connection setup, submitted or held sends, partial frames, received processing
+loans and echo intents have fixed native/logical bounds. Admission retries and
+credit waits never renew them. Idle sessions have no invented overall expiry.
+Echo probes use one-second spacing; RTT is diagnostic. Native, stdin, stdout,
+Resolver, cleanup and Logger errors retain independent causes and known prefixes.
+See [open work](../../IMPLEMENTATION_STATUS.md) for remaining qualification.

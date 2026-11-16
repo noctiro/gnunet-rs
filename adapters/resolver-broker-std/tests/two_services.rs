@@ -23,38 +23,16 @@ use std::{
     future::{Future, poll_fn},
     io,
     net::Ipv4Addr,
-    path::PathBuf,
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
+    sync::Arc,
     task::Poll,
     time::Duration,
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::{TcpListener, UnixListener, UnixStream},
+    net::TcpListener,
     time::{Instant, timeout},
 };
 type Result<T = ()> = std::result::Result<T, Box<dyn Error + Send + Sync>>;
-static NEXT: AtomicU64 = AtomicU64::new(0);
-struct Directory(PathBuf);
-impl Directory {
-    fn new() -> io::Result<Self> {
-        let p = std::env::temp_dir().join(format!(
-            "shared-two-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::create_dir(&p)?;
-        Ok(Self(p))
-    }
-}
-impl Drop for Directory {
-    fn drop(&mut self) {
-        drop(std::fs::remove_dir_all(&self.0));
-    }
-}
 async fn frame(stream: &mut (impl tokio::io::AsyncRead + Unpin)) -> io::Result<Vec<u8>> {
     let mut h = [0; 4];
     stream.read_exact(&mut h).await?;
@@ -94,14 +72,13 @@ fn arm_and_statistics_share_fifo_and_keep_dns_subscription_after_arm_test_succes
         .enable_all()
         .build()?
         .block_on(async {
-            let dir = Directory::new()?;
-            let path = dir.0.join("resolver");
-            let resolver = UnixListener::bind(&path)?;
+            let resolver = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+            let resolver_port = resolver.local_addr()?.port();
             let arm_listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
             let stats_listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
             let arm_port = arm_listener.local_addr()?.port();
             let stats_port = stats_listener.local_addr()?.port();
-            let (command, mut peer_command) = UnixStream::pair()?;
+            let (command, peer_command) = tokio::sync::oneshot::channel();
             let dns_peer = tokio::spawn(async move {
                 let (mut s, _) = resolver.accept().await?;
                 let bytes = frame(&mut s).await?;
@@ -114,7 +91,7 @@ fn arm_and_statistics_share_fifo_and_keep_dns_subscription_after_arm_test_succes
                     }
                 ));
                 s.write_all(&reply(first.id(), false)?).await?;
-                assert_eq!(peer_command.read_u8().await?, 1);
+                peer_command.await.map_err(io::Error::other)?;
                 assert!(
                     timeout(Duration::from_millis(20), s.read_u8())
                         .await
@@ -171,11 +148,8 @@ fn arm_and_statistics_share_fifo_and_keep_dns_subscription_after_arm_test_succes
                 Ok::<_, io::Error>(())
             });
             let mut cfg = Configuration::default();
-            cfg.set_value(
-                b"resolver",
-                b"UNIXPATH",
-                Some(path.as_os_str().as_encoded_bytes()),
-            )?;
+            cfg.set_value(b"resolver", b"HOSTNAME", Some(b"127.0.0.1"))?;
+            cfg.set_number(b"resolver", b"PORT", u64::from(resolver_port))?;
             cfg.set_value(b"arm", b"HOSTNAME", Some(b"arm-owned"))?;
             cfg.set_value(b"arm", b"PORT", Some(arm_port.to_string().as_bytes()))?;
             cfg.set_value(b"statistics", b"HOSTNAME", Some(b"stats-owned"))?;
@@ -193,6 +167,7 @@ fn arm_and_statistics_share_fifo_and_keep_dns_subscription_after_arm_test_succes
             let mut registry = ChildRegistry::new(4)?;
             let launcher = LocalLauncher::new(
                 cfg.duplicate()?,
+                #[cfg(unix)]
                 std::env::current_exe()?,
                 LaunchLimits::default(),
                 &mut registry,
@@ -230,7 +205,7 @@ fn arm_and_statistics_share_fifo_and_keep_dns_subscription_after_arm_test_succes
             let mut get_done = false;
             let mut issued = None;
             let mut get_id = None;
-            let mut signalled = false;
+            let mut command = Some(command);
             while !(listed && get_done) {
                 if arm.currently_up() && issued.is_none() {
                     issued = Some(arm.request_service_list()?);
@@ -285,16 +260,17 @@ fn arm_and_statistics_share_fifo_and_keep_dns_subscription_after_arm_test_succes
                                     .map_err(io::Error::other),
                             );
                         }
-                        if !signalled && ctx.pending_requests().map_err(io::Error::other)? == 2 {
-                            match command.try_write(&[1]) {
-                                Ok(1) => {
-                                    signalled = true;
-                                    return Poll::Ready(Ok(()));
-                                }
-                                Ok(_) => return Poll::Ready(Err(io::ErrorKind::WriteZero.into())),
-                                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
-                                Err(e) => return Poll::Ready(Err(e)),
-                            }
+                        if command.is_some()
+                            && ctx.pending_requests().map_err(io::Error::other)? == 2
+                            && let Some(command) = command.take()
+                        {
+                            command.send(()).map_err(|()| {
+                                io::Error::new(
+                                    io::ErrorKind::BrokenPipe,
+                                    "fixture notification receiver ended",
+                                )
+                            })?;
+                            return Poll::Ready(Ok(()));
                         }
                         if let Poll::Ready(result) = resolving.as_mut().poll(cx) {
                             return Poll::Ready(
@@ -310,7 +286,7 @@ fn arm_and_statistics_share_fifo_and_keep_dns_subscription_after_arm_test_succes
                 )
                 .await??;
             }
-            assert!(signalled);
+            assert!(command.is_none());
             statistics.destroy(false)?;
             arm.disconnect(|_, _| {})?;
             drop(statistics);

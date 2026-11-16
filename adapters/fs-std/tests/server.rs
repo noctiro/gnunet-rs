@@ -1,6 +1,6 @@
 //! Actual native FS sockets/index worker with explicitly controlled dependencies.
 //! These peers are Rust test fixtures, never unchanged-C or P2P acceptance.
-#![cfg(all(unix, feature = "server"))]
+#![cfg(all(any(unix, windows), feature = "server"))]
 #![expect(
     clippy::panic_in_result_fn,
     reason = "Fallible native service tests assert original owner retirement, actual output bytes and durable index state"
@@ -14,8 +14,9 @@ use gnunet_fs_host::{
         ports::{self, Lookup, LookupProgress, NoSigner, StorePort},
     },
 };
+use gnunet_service_runtime::local::Stream;
 use gnunet_service_runtime::{
-    Activation, BoundListeners,
+    BoundListeners, LocalListenerAccess,
     clock::SystemClock,
     framing::OwnedFrame,
     service::{Listener, ServiceOptions},
@@ -31,7 +32,6 @@ use std::{
     fs,
     future::{Future, poll_fn},
     io,
-    os::unix::ffi::OsStrExt,
     path::PathBuf,
     pin::pin,
     rc::Rc,
@@ -44,7 +44,6 @@ use std::{
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::UnixStream,
     time::{Instant, timeout},
 };
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
@@ -56,11 +55,12 @@ impl Directory {
     fn new() -> io::Result<Self> {
         static NEXT: AtomicU64 = AtomicU64::new(1);
         let path = std::env::temp_dir().join(format!(
-            "gnunet-fs-serving-{}-{}",
+            "gfss-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
-        fs::create_dir(&path)?;
+        gnunet_native::filesystem::Directory::open(&std::env::temp_dir())?
+            .create_private_directory(path.file_name().ok_or(io::ErrorKind::InvalidInput)?)?;
         Ok(Self(path))
     }
     fn socket(&self) -> PathBuf {
@@ -74,7 +74,7 @@ impl Directory {
         config.set_value(
             b"fs",
             b"UNIXPATH",
-            Some(self.socket().as_os_str().as_bytes()),
+            Some(gnunet_native::os_bytes::encode(self.socket().as_os_str()).as_ref()),
         )?;
         config.set_number(b"fs", b"PORT", 0)?;
         Ok(config)
@@ -270,7 +270,7 @@ fn stored(
     .encode(&mut bytes)?;
     Ok(OwnedFrame::new(bytes))
 }
-async fn read_frame(socket: &mut UnixStream) -> io::Result<Vec<u8>> {
+async fn read_frame(socket: &mut Stream) -> io::Result<Vec<u8>> {
     let mut header = [0; 4];
     socket.read_exact(&mut header).await?;
     let n = usize::from(u16::from_be_bytes([header[0], header[1]]));
@@ -356,7 +356,8 @@ fn closed_client_late_datastore_reply_cannot_authorize_replacement_and_waits_ret
     let query = encoded.key().query;
     let block = encoded.bytes().to_vec();
     runtime()?.block_on(async {
-        let bound = BoundListeners::bind(&config, b"fs", Activation::default()).await?;
+        let bound =
+            BoundListeners::bind_configured(&config, b"fs", LocalListenerAccess::Owner).await?;
         let listeners = bound.listeners();
         let mut instance = pure::Instance::new();
         let mut clients = [pure::ClientSlot::default(); 1];
@@ -370,7 +371,7 @@ fn closed_client_late_datastore_reply_cannot_authorize_replacement_and_waits_ret
         )?;
         let control = Control::default();
         let mut server = make_server(protocol, &directory, control.clone())?;
-        let mut old = UnixStream::connect(directory.socket()).await?;
+        let mut old = Stream::connect(directory.socket()).await?;
         old.write_all(&frame(search(query))?).await?;
         while control.starts().len() != 1 {
             step(&mut server, &listeners).await?;
@@ -389,7 +390,7 @@ fn closed_client_late_datastore_reply_cannot_authorize_replacement_and_waits_ret
         while server.report().closed != 1 {
             step(&mut server, &listeners).await?;
         }
-        let mut replacement = UnixStream::connect(directory.socket()).await?;
+        let mut replacement = Stream::connect(directory.socket()).await?;
         replacement.write_all(&frame(search(query))?).await?;
         while server.report().searches != 2 {
             step(&mut server, &listeners).await?;
@@ -401,13 +402,13 @@ fn closed_client_late_datastore_reply_cannot_authorize_replacement_and_waits_ret
         }
         drain_ready(&mut server, &listeners).await?;
         let mut one = [0];
-        assert_eq!(
-            replacement
-                .try_read(&mut one)
-                .err()
-                .ok_or("late reply leaked to replacement")?
-                .kind(),
-            io::ErrorKind::WouldBlock
+        let unexpected = {
+            let mut reading = pin!(replacement.read(&mut one));
+            poll_fn(|cx| Poll::Ready(reading.as_mut().poll(cx))).await
+        };
+        assert!(
+            unexpected.is_pending(),
+            "late reply or premature stream termination: {unexpected:?}"
         );
         assert_eq!(server.report().local_results, 0);
         control.complete(stored(&query, &block, 1, 29, 22)?)?;
@@ -432,6 +433,73 @@ fn closed_client_late_datastore_reply_cannot_authorize_replacement_and_waits_ret
 }
 
 #[test]
+fn shutdown_before_index_thread_admission_keeps_index_unchanged() -> TestResult {
+    for remove in [false, true] {
+        let directory = Directory::new()?;
+        let config = directory.config()?;
+        let source = directory.0.join("source.bin");
+        let plaintext = b"original index admission boundary";
+        fs::write(&source, plaintext)?;
+        let file_id = gnunet_crypto::hash512(plaintext);
+        let filename = gnunet_native::os_bytes::encode(source.as_os_str());
+        if remove {
+            Index::open(directory.index(), IndexLimits::default())?
+                .register(file_id, &source, 0, 0)?;
+        }
+        runtime()?.block_on(async {
+            let bound =
+                BoundListeners::bind_configured(&config, b"fs", LocalListenerAccess::Owner).await?;
+            let listeners = bound.listeners();
+            let mut instance = pure::Instance::new();
+            let mut clients = [pure::ClientSlot::default(); 1];
+            let mut hashes = [[0; 64]; 4];
+            let mut queries = [pure::QuerySlot::new(&mut hashes)];
+            let protocol = pure::Service::new(
+                &mut instance,
+                &mut clients,
+                &mut queries,
+                pure::Limits::default(),
+            )?;
+            let mut server = make_server(protocol, &directory, Control::default())?;
+            let mut socket = Stream::connect(directory.socket()).await?;
+            let request = if remove {
+                Request::Unindex { file_id }
+            } else {
+                Request::IndexStart {
+                    device: 0,
+                    inode: 0,
+                    file_id,
+                    filename: &filename,
+                }
+            };
+            socket.write_all(&frame(request)?).await?;
+            while server.report().index_operations == 0 {
+                step(&mut server, &listeners).await?;
+            }
+            // This drive parsed the actual IPC frame, but has not polled its
+            // Pending owner: the original thread has admitted no mutation.
+            server.request_shutdown();
+            stopped(&mut server).await?;
+            let mut remaining = Vec::new();
+            socket.read_to_end(&mut remaining).await?;
+            assert!(
+                remaining.is_empty(),
+                "unissued mutation received a successful reply"
+            );
+            drop(server);
+            let mut index = Index::open(directory.index(), IndexLimits::default())?;
+            let entries = index
+                .entries()?
+                .map(|entry| entry.file_id)
+                .collect::<Vec<_>>();
+            assert_eq!(entries, if remove { vec![file_id] } else { Vec::new() });
+            Ok::<(), Box<dyn std::error::Error>>(())
+        })?;
+    }
+    Ok(())
+}
+
+#[test]
 fn actual_native_index_admin_and_type6_tail_resolve_survive_retained_worker_waits() -> TestResult {
     let directory = Directory::new()?;
     let config = directory.config()?;
@@ -446,17 +514,17 @@ fn actual_native_index_admin_and_type6_tail_resolve_survive_retained_worker_wait
     let query = encoded.key().query;
     let expected = encoded.bytes().to_vec();
     runtime()?.block_on(async {
-        let bound = BoundListeners::bind(&config, b"fs", Activation::default()).await?;let listeners = bound.listeners();
+        let bound = BoundListeners::bind_configured(&config, b"fs", LocalListenerAccess::Owner).await?;let listeners = bound.listeners();
         let mut instance = pure::Instance::new();let mut clients = [pure::ClientSlot::default();1];let mut hashes = [[0;64];4];let mut queries = [pure::QuerySlot::new(&mut hashes)];
         let protocol = pure::Service::new(&mut instance, &mut clients, &mut queries, pure::Limits::default())?;
         let control = Control::default();let mut server = make_server(protocol, &directory, control.clone())?;
-        let mut socket = UnixStream::connect(directory.socket()).await?;
-        let input = frame(Request::IndexStart { device: 0, inode: 0, file_id, filename: source.as_os_str().as_bytes() })?;
+        let mut socket = Stream::connect(directory.socket()).await?;
+        let input = frame(Request::IndexStart { device: 0, inode: 0, file_id, filename: source.to_str().ok_or("protocol filename")?.as_bytes() })?;
         let answer = with_server(&mut server, &listeners, async { socket.write_all(&input).await?;read_frame(&mut socket).await }).await?;
         assert!(matches!(Response::decode(&answer)?, Response::IndexStarted));
         let input = frame(Request::IndexList)?;
         let (entry, end) = with_server(&mut server, &listeners, async { socket.write_all(&input).await?;Ok((read_frame(&mut socket).await?,read_frame(&mut socket).await?)) }).await?;
-        assert!(matches!(Response::decode(&entry)?, Response::IndexEntry { file_id: id, filename } if id == file_id && filename == source.as_os_str().as_bytes()));
+        assert!(matches!(Response::decode(&entry)?, Response::IndexEntry { file_id: id, filename } if id == file_id && filename == source.to_str().ok_or("protocol filename")?.as_bytes()));
         assert!(matches!(Response::decode(&end)?, Response::IndexEnd));
         socket.write_all(&frame(search(query))?).await?;
         while control.starts().len() != 1 { step(&mut server, &listeners).await?; }
@@ -499,7 +567,7 @@ fn store_end() -> Result<OwnedFrame, ProtocolError> {
 async fn assert_pending_socket_silent(
     server: &mut Native<'_, '_, '_>,
     listeners: &[Listener<'_>],
-    socket: &mut UnixStream,
+    socket: &mut Stream,
 ) -> TestResult {
     let observation = with_server(server, listeners, async {
         Ok(timeout(Duration::from_millis(20), socket.read_u8()).await)
@@ -526,7 +594,8 @@ fn malformed_type6_cleanup_retains_exact_bytes_and_cannot_reply_to_replacement()
     let malformed = b"\0malformed type6\xff";
     assert_ne!(malformed.len(), 72);
     runtime()?.block_on(async {
-        let bound = BoundListeners::bind(&config, b"fs", Activation::default()).await?;
+        let bound =
+            BoundListeners::bind_configured(&config, b"fs", LocalListenerAccess::Owner).await?;
         let listeners = bound.listeners();
         let mut instance = pure::Instance::new();
         let mut clients = [pure::ClientSlot::default(); 1];
@@ -540,7 +609,7 @@ fn malformed_type6_cleanup_retains_exact_bytes_and_cannot_reply_to_replacement()
         )?;
         let control = Control::default();
         let mut server = make_server(protocol, &directory, control.clone())?;
-        let mut old = UnixStream::connect(directory.socket()).await?;
+        let mut old = Stream::connect(directory.socket()).await?;
         old.write_all(&frame(search(query))?).await?;
         while control.starts().len() != 1 {
             step(&mut server, &listeners).await?;
@@ -556,7 +625,7 @@ fn malformed_type6_cleanup_retains_exact_bytes_and_cannot_reply_to_replacement()
         while server.report().closed != 1 {
             step(&mut server, &listeners).await?;
         }
-        let mut replacement = UnixStream::connect(directory.socket()).await?;
+        let mut replacement = Stream::connect(directory.socket()).await?;
         replacement.write_all(&frame(search(query))?).await?;
         while server.report().searches != 2 {
             step(&mut server, &listeners).await?;
@@ -598,7 +667,8 @@ fn missing_index_keeps_record_and_unavailable_source_cleanup_retains_refusal_and
         .query;
     let record = OnDemand { file_id, offset: 0 }.encode();
     runtime()?.block_on(async {
-        let bound = BoundListeners::bind(&config, b"fs", Activation::default()).await?;
+        let bound =
+            BoundListeners::bind_configured(&config, b"fs", LocalListenerAccess::Owner).await?;
         let listeners = bound.listeners();
         let mut instance = pure::Instance::new();
         let mut clients = [pure::ClientSlot::default(); 1];
@@ -612,7 +682,7 @@ fn missing_index_keeps_record_and_unavailable_source_cleanup_retains_refusal_and
         )?;
         let control = Control::default();
         let mut server = make_server(protocol, &directory, control.clone())?;
-        let mut socket = UnixStream::connect(directory.socket()).await?;
+        let mut socket = Stream::connect(directory.socket()).await?;
         socket.write_all(&frame(search(query))?).await?;
         while control.starts().len() != 1 {
             step(&mut server, &listeners).await?;
@@ -633,7 +703,7 @@ fn missing_index_keeps_record_and_unavailable_source_cleanup_retains_refusal_and
             device: 0,
             inode: 0,
             file_id,
-            filename: source.as_os_str().as_bytes(),
+            filename: source.to_str().ok_or("protocol filename")?.as_bytes(),
         })?;
         let answer = with_server(&mut server, &listeners, async {
             socket.write_all(&input).await?;

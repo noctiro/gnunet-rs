@@ -3,18 +3,24 @@
 //! subprocess. Partial pairs are refused rather than overwriting an existing key.
 use super::{Failure, settings::Pair};
 use crate::{credentials::Tls, tls::Profile};
+use gnunet_native::{
+    DirectorySync,
+    filesystem::{Directory, FileIdentity, validate_private_file},
+};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
 use std::{
-    fs::{self, File, OpenOptions},
+    ffi::OsString,
+    fs::{self, File},
     io::{self, Read, Write},
-    os::unix::fs::{MetadataExt, OpenOptionsExt},
-    path::{Path, PathBuf},
+    path::Path,
     sync::Arc,
 };
 use zeroize::Zeroizing;
 const KEY_BYTES: usize = 64 * 1024;
 const CERT_BYTES: usize = 1024 * 1024;
 const CHAIN: usize = 16;
+#[cfg(test)]
+mod tests;
 fn invalid(text: &'static str) -> Failure {
     io::Error::new(io::ErrorKind::InvalidData, text).into()
 }
@@ -30,16 +36,17 @@ fn present(path: &Path) -> io::Result<bool> {
     }
 }
 fn read(path: &Path, limit: usize, private: bool) -> Result<Zeroizing<Vec<u8>>, Failure> {
-    let file = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
-        .open(path)?;
+    let directory = Directory::open(parent(path))?;
+    let name = path
+        .file_name()
+        .ok_or_else(|| invalid("credential path requires a file name"))?;
+    let file = directory.open_file(name)?;
     let metadata = file.metadata()?;
     if !metadata.is_file() || metadata.len() > u64::try_from(limit)? {
         return Err(invalid("credential exceeds its regular-file byte bound"));
     }
-    if private && metadata.mode() & 0o077 != 0 {
-        return Err(invalid("private TLS key must not grant group/other access"));
+    if private {
+        validate_private_file(&file)?;
     }
     let maximum = limit.checked_add(1).ok_or("credential size overflow")?;
     let mut body = Zeroizing::new(Vec::new());
@@ -98,40 +105,35 @@ fn load(profile: Profile, pair: &Pair) -> Result<Tls, Failure> {
     }
     install(profile, certificates, key)
 }
+// The original parent and file authorize cleanup; a replacement path does not.
 struct NewFile {
-    path: PathBuf,
+    directory: Directory,
+    name: OsString,
     file: File,
-    device: u64,
-    inode: u64,
     keep: bool,
 }
 impl NewFile {
+    fn validate_selection(&self, path: &Path) -> io::Result<()> {
+        let current = Directory::open(parent(path))?;
+        if FileIdentity::of(current.as_file())? != FileIdentity::of(self.directory.as_file())?
+            || !self.directory.same_file(&self.name, &self.file)?
+        {
+            return Err(io::Error::other("configured credential namespace changed"));
+        }
+        Ok(())
+    }
     fn create(path: &Path) -> Result<Self, Failure> {
-        let file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-            .open(path)?;
-        let m = match file.metadata() {
-            Ok(metadata) => metadata,
-            Err(original) => {
-                return Err(Box::new(CreationFailure {
-                    original: original.into(),
-                    cleanup: [
-                        Some(io::Error::other(
-                            "new empty credential inode could not be observed; path left untouched",
-                        )),
-                        None,
-                    ],
-                }));
-            }
-        };
+        let directory = Directory::open(parent(path))?;
+        directory.validate_namespace()?;
+        let name = path
+            .file_name()
+            .ok_or_else(|| invalid("credential path requires a file name"))?
+            .to_os_string();
+        let file = directory.create_private_file(&name)?;
         Ok(Self {
-            path: path.to_path_buf(),
+            directory,
+            name,
             file,
-            device: m.dev(),
-            inode: m.ino(),
             keep: false,
         })
     }
@@ -139,14 +141,9 @@ impl NewFile {
         if self.keep {
             return Ok(());
         }
-        match fs::symlink_metadata(&self.path) {
-            Ok(m) if m.dev() == self.device && m.ino() == self.inode => fs::remove_file(&self.path),
-            Ok(_) => Err(io::Error::other(
-                "created credential path changed; replacement left untouched",
-            )),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(e),
-        }
+        // Do not retry an uncertain original unlink from Drop.
+        self.keep = true;
+        self.directory.remove_file(&self.name, &self.file)
     }
 }
 impl Drop for NewFile {
@@ -180,7 +177,11 @@ fn parent(path: &Path) -> &Path {
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or(Path::new("."))
 }
-fn create(profile: Profile, pair: &Pair) -> Result<Tls, Failure> {
+pub(super) struct Prepared {
+    pub tls: Tls,
+    pub directory_sync: [Option<DirectorySync>; 2],
+}
+fn create(profile: Profile, pair: &Pair) -> Result<Prepared, Failure> {
     let key = Zeroizing::new(rcgen::KeyPair::generate_for(
         &rcgen::PKCS_ECDSA_P256_SHA256,
     )?);
@@ -211,33 +212,49 @@ fn create(profile: Profile, pair: &Pair) -> Result<Tls, Failure> {
             }));
         }
     };
-    let written = (|| -> Result<(), Failure> {
+    let written = (|| -> Result<[Option<DirectorySync>; 2], Failure> {
         key_file.file.write_all(&serialized)?;
         cert_file.file.write_all(certificate.der().as_ref())?;
         key_file.file.sync_all()?;
         cert_file.file.sync_all()?;
-        File::open(parent(&pair.key))?.sync_all()?;
-        if parent(&pair.key) != parent(&pair.certificate) {
-            File::open(parent(&pair.certificate))?.sync_all()?
-        }
-        Ok(())
+        let key = key_file.directory.sync()?;
+        let certificate = if parent(&pair.key) != parent(&pair.certificate) {
+            Some(cert_file.directory.sync()?)
+        } else {
+            None
+        };
+        key_file.validate_selection(&pair.key)?;
+        cert_file.validate_selection(&pair.certificate)?;
+        Ok([Some(key), certificate])
     })();
-    if let Err(original) = written {
-        return Err(Box::new(CreationFailure {
-            original,
-            cleanup: [key_file.remove().err(), cert_file.remove().err()],
-        }));
-    }
+    let directory_sync = match written {
+        Ok(receipts) => receipts,
+        Err(original) => {
+            return Err(Box::new(CreationFailure {
+                original,
+                cleanup: [key_file.remove().err(), cert_file.remove().err()],
+            }));
+        }
+    };
     key_file.keep = true;
     cert_file.keep = true;
-    Ok(tls)
+    Ok(Prepared {
+        tls,
+        directory_sync,
+    })
 }
-pub(super) fn prepare(profile: Profile, pair: Option<&Pair>) -> Result<Tls, Failure> {
+pub(super) fn prepare(profile: Profile, pair: Option<&Pair>) -> Result<Prepared, Failure> {
     let Some(pair) = pair else {
-        return Ok(Tls::fresh(profile, vec!["localhost".to_string()])?);
+        return Ok(Prepared {
+            tls: Tls::fresh(profile, vec!["localhost".to_string()])?,
+            directory_sync: [None, None],
+        });
     };
     match (present(&pair.key)?, present(&pair.certificate)?) {
-        (true, true) => load(profile, pair),
+        (true, true) => load(profile, pair).map(|tls| Prepared {
+            tls,
+            directory_sync: [None, None],
+        }),
         (false, false) => create(profile, pair),
         _ => Err(invalid(
             "partial configured TLS pair; existing credential left untouched",

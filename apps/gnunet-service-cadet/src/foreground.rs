@@ -1,20 +1,16 @@
 use crate::{
     control::Signals,
     identity::{self, Dependencies},
+    readiness::Ready,
     settings::{Settings, filled},
 };
 use gnunet_cadet::service as pure;
 use gnunet_cadet_host::server::{self, CloseCause, Event, Report, Server};
 use gnunet_client_host::EndpointSource;
-use gnunet_config::Configuration;
 use gnunet_pils::client::{Identity, Instance as PilsInstance};
-use gnunet_program_host::{policy::Level, reporting::Reporter};
+use gnunet_program_host::{policy::Level, reporting::Reporter, service::native::Context};
 use gnunet_resolver_broker::{LiveConfiguration, broker, native_profile};
-use gnunet_service_runtime::{
-    BoundListeners, accepted::SocketEvent, clock::RuntimeClock, service::Listener,
-};
-use gnunet_service_startup::ParentControl;
-use gnunet_service_startup::daemon::ChildReady;
+use gnunet_service_runtime::{accepted::SocketEvent, clock::RuntimeClock, service::Listener};
 use gnunet_types::Error as ProtocolError;
 use std::{
     error::Error,
@@ -159,66 +155,6 @@ impl<'id> Diagnostics<'id> {
         }
     }
 }
-/// Exactly one real local-Server/peer-Node readiness announcement. Constructed
-/// only in the post-fork service process; the child status writer is never cloned.
-pub(super) struct Ready<'a> {
-    child: &'a mut ChildReady,
-    reporter: Reporter,
-    sent: bool,
-}
-impl<'a> Ready<'a> {
-    pub(super) fn new(child: &'a mut ChildReady, reporter: Reporter) -> Self {
-        Self {
-            child,
-            reporter,
-            sent: false,
-        }
-    }
-    pub(super) fn announce(&mut self, peer: [u8; 32], payload: Option<usize>) -> io::Result<()> {
-        if self.sent {
-            return Ok(());
-        }
-        if self.reporter.failed() {
-            return Err(io::Error::other(
-                "CADET actual selected logger failed before readiness; original error retained",
-            ));
-        }
-        self.reporter.message(
-            Level::INFO,
-            "cadet.ready",
-            format_args!(
-                "CADET actual verified PILS identity and {} owner ready",
-                if payload.is_some() {
-                    "CORE/PILS/Node"
-                } else {
-                    "local Server"
-                }
-            ),
-        );
-        if self.reporter.failed() {
-            return Err(io::Error::other(
-                "CADET selected readiness diagnostic failed; original error retained",
-            ));
-        }
-        let mut out = io::stdout().lock();
-        write!(out, "READY cadet peer=")?;
-        for byte in peer {
-            write!(out, "{byte:02x}")?;
-        }
-        if let Some(bytes) = payload {
-            writeln!(
-                out,
-                " peer-backend=core-direct monitoring=peers-tunnels-path-tunnel payload-pool-bytes={bytes}"
-            )?;
-        } else {
-            writeln!(out, " peer-backend=unavailable monitoring=unsupported")?;
-        }
-        out.flush()?;
-        self.child.ready()?;
-        self.sent = true;
-        Ok(())
-    }
-}
 fn stopped(report: Report, peer_enabled: bool) -> io::Result<()> {
     let mut out = io::stdout().lock();
     writeln!(
@@ -345,22 +281,19 @@ async fn application<'p>(
     Ok(*server.report())
 }
 
-pub(super) async fn run(
-    config: &Configuration,
-    bound: BoundListeners,
-    parent: Option<ParentControl>,
-    settings: Settings,
-    clock: Arc<dyn RuntimeClock>,
-    reporter: Reporter,
-    mut ready: Ready<'_>,
-) -> Result<(), Box<dyn Error>> {
-    let signals = Signals::new(parent)?;
-    for error in bound.failures() {
-        reporter.warning(
-            "cadet.listener.alternate",
-            format_args!("cadet alternate listener: {error}"),
-        );
-    }
+pub(super) async fn run(context: Context<'_, Settings>) -> Result<(), Box<dyn Error>> {
+    let Context {
+        config,
+        settings,
+        listeners: bound,
+        signals,
+        clock,
+        reports: reporter,
+        readiness,
+    } = context;
+    let signals = Signals::new(signals);
+    let mut ready = Ready::new(readiness, reporter.clone());
+    let clock: Arc<dyn RuntimeClock> = Arc::new(clock);
     let live = LiveConfiguration::new(config.duplicate()?);
     let (context, resolver) = broker::<16, 256>(
         live.clone(),
@@ -387,7 +320,18 @@ pub(super) async fn run(
         settings.statistics,
         reporter.clone(),
     );
-    let mut dependencies = Dependencies::new(pils, resolver, signals, reporter.clone(), statistics);
+    let recovery_timeout = settings
+        .pils_startup_timeout
+        .checked_add(settings.peer.forced_drain)
+        .ok_or(ProtocolError::Overflow)?;
+    let mut dependencies = Dependencies::new(
+        pils,
+        resolver,
+        signals,
+        reporter.clone(),
+        statistics,
+        recovery_timeout,
+    );
     let mut failures = Failures::new();
     let mut report = Report::default();
     if let Some(identity) = dependencies
@@ -467,7 +411,7 @@ pub(super) async fn run(
     dependencies.close(&mut failures);
     drop(dependencies);
     drop(context);
-    drop(bound); // Original listeners close before their created-path guards.
+    // The native driver retains original listeners until this invocation returns.
     reporter.message(Level::INFO,"cadet.stopped",format_args!("CADET local MQ/dependency owners retired; remote quiescence remains separately reported"));
     if let Err(error) = stopped(report, settings.peer.enabled) {
         failures.record(Stage::Output, Box::new(error));

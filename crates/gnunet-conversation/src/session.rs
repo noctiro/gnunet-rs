@@ -8,6 +8,7 @@ use gnunet_identity::SecretKey;
 use gnunet_types::Error;
 #[cfg(test)]
 mod identity_tests;
+mod retirement;
 mod types;
 pub use types::*;
 
@@ -157,6 +158,24 @@ impl<'id> Session<'id> {
     pub fn rebind_identity(&mut self, previous: &Identity, next: Identity) -> Result<(), Error> {
         self.live(previous)?;
         if previous.epoch() != next.epoch() {
+            return Err(Error::StaleGeneration);
+        }
+        self.identity = next;
+        Ok(())
+    }
+    /// Resume after replacement of the public identity observer. The native
+    /// owner must first fence normal IO on actual observer loss, then verify a
+    /// later branded epoch of that same original observer client. No crypto
+    /// operation may be replayed by treating this as an operation receipt.
+    /// Existing CADET channels, RingInfo targets, effect bytes and deadlines
+    /// retain their original owners; this changes no native channel source.
+    pub fn replace_identity_source(
+        &mut self,
+        previous: &Identity,
+        next: Identity,
+    ) -> Result<(), Error> {
+        self.live(previous)?;
+        if next.epoch() <= previous.epoch() {
             return Err(Error::StaleGeneration);
         }
         self.identity = next;
@@ -356,6 +375,15 @@ impl<'id> Session<'id> {
         })
     }
     fn batch(&mut self, actions: [Option<Action<'id>>; 3], now: u64) -> Result<(), Error> {
+        let deadline = Self::deadline(now, self.limits.write_timeout)?;
+        self.batch_until(actions, now, deadline)
+    }
+    fn batch_until(
+        &mut self,
+        actions: [Option<Action<'id>>; 3],
+        now: u64,
+        deadline: u64,
+    ) -> Result<(), Error> {
         let count = actions.iter().flatten().count();
         let normal = self.normal_effects;
         let new_normal = actions.iter().flatten().filter(|a| !a.close()).count();
@@ -402,7 +430,6 @@ impl<'id> Session<'id> {
                 .map_err(|_| Error::Overflow)?,
             )
             .ok_or(Error::Overflow)?;
-        let deadline = Self::deadline(now, self.limits.write_timeout)?;
         for action in actions.iter().flatten() {
             if let Some(id) = action.call() {
                 self.call(id)?
@@ -727,6 +754,16 @@ impl<'id> Session<'id> {
     fn suppress(&mut self, id: CallId<'id>, keep: Option<EffectId<'id>>) {
         for e in &mut self.effects {
             if e.action.call() == Some(id) && !e.action.close() && Some(e.id) != keep {
+                // Preserve the local control FIFO. In particular a queued
+                // Ring must introduce its CID before a later failure HangUp.
+                if let Action::ClientFrame { frame, .. } = &e.action
+                    && matches!(
+                        Message::decode(frame),
+                        Ok(Message::Ring { .. } | Message::Control { .. })
+                    )
+                {
+                    continue;
+                }
                 e.cancelled = true;
             }
         }
@@ -806,38 +843,6 @@ impl<'id> Session<'id> {
             return Err(Error::Capacity);
         }
         self.append_effect(action, deadline, None)?;
-        Ok(())
-    }
-    fn begin_close(
-        &mut self,
-        id: CallId<'id>,
-        reason: EndReason,
-        now: u64,
-        keep: Option<EffectId<'id>>,
-    ) -> Result<(), Error> {
-        let hard = match Self::deadline(now, self.limits.close_timeout) {
-            Ok(hard) => hard,
-            Err(error) => {
-                self.failure.get_or_insert(error);
-                now
-            }
-        };
-        let c = self.call_mut(id)?;
-        c.reason.get_or_insert(reason);
-        if c.close_queued {
-            return Ok(());
-        }
-        c.close_deadline = Some(hard);
-        c.phase = if c.gone {
-            Phase::Closed
-        } else {
-            Phase::Closing
-        };
-        if !self.client_closing {
-            self.suppress(id, keep);
-        }
-        self.push_close(Action::CloseChannel { call: id }, hard)?;
-        self.call_mut(id)?.close_queued = true;
         Ok(())
     }
     /// Original oldest queued effect. Small single-owner drivers can drain
@@ -923,6 +928,11 @@ impl<'id> Session<'id> {
         }
         if let Some(call) = e.action.call() {
             let c = self.call(call)?;
+            if matches!(e.action, Action::ClientFrame { .. })
+                && c.close_deadline.is_some_and(|until| now >= until)
+            {
+                return Ok(false);
+            }
             if matches!(
                 c.phase,
                 Phase::Opening | Phase::AwaitRing | Phase::Ringing | Phase::Calling
@@ -939,6 +949,53 @@ impl<'id> Session<'id> {
             }
         }
         Ok(!self.client_closed)
+    }
+    /// Current logical cancellation of an original effect, not native exposure.
+    pub fn effect_cancelled(&self, id: EffectId<'id>) -> Result<bool, Error> {
+        Ok(self
+            .effects
+            .get(self.effect_index(id)?)
+            .ok_or(Error::StaleGeneration)?
+            .cancelled)
+    }
+    /// Permit only the bounded drain of an already admitted cancelled frame.
+    /// The host must separately prove that this exact frame already exposed a
+    /// prefix on its original socket. This never authorizes a new submission.
+    pub fn effect_drain_allowed(
+        &self,
+        id: EffectId<'id>,
+        current: &Identity,
+        now: u64,
+    ) -> Result<bool, Error> {
+        let e = self
+            .effects
+            .get(self.effect_index(id)?)
+            .ok_or(Error::StaleGeneration)?;
+        if !e.admitted
+            || !e.cancelled
+            || !self.eligible(e)
+            || self.client_closing
+            || self.client_closed
+            || self.identity != *current
+            || now >= e.deadline
+        {
+            return Ok(false);
+        }
+        let Some(call) = e.action.call() else {
+            return Ok(false);
+        };
+        let c = self.call(call)?;
+        if !c.close_deadline.is_some_and(|until| now < until) {
+            return Ok(false);
+        }
+        Ok(match e.action {
+            Action::ClientFrame { .. } => true,
+            Action::OpenChannel { .. } => !c.gone && c.source.is_some(),
+            Action::PeerFrame { .. } | Action::ReceiveDone { .. } => {
+                !c.gone && c.channel_ready && c.source.is_some()
+            }
+            _ => false,
+        })
     }
     /// Settle the real original effect. No clock/provider is called and no new
     /// frame is allocated. Terminal payload ownership is transferred unchanged.
@@ -986,6 +1043,10 @@ impl<'id> Session<'id> {
         if let Some(call) = e.action.call() {
             let fault = match completion {
                 Completion::Written | Completion::Processed => None,
+                Completion::Unsent(Error::Cancelled) if e.cancelled => None,
+                Completion::Unsent(Error::Closed) if e.action.close() && self.call(call)?.gone => {
+                    None
+                }
                 Completion::Unsent(error) | Completion::Lost { reason: error, .. } => Some(error),
             };
             let c = self.call_mut(call)?;
@@ -1003,7 +1064,10 @@ impl<'id> Session<'id> {
                 }
                 (Action::OpenChannel { .. }, _) => {
                     c.opening = false;
-                    if c.source.is_none() && matches!(completion, Completion::Unsent(_)) {
+                    if matches!(completion, Completion::Unsent(_)) {
+                        // Unsent requires the host to have released any native
+                        // opening reservation. A source names the MQ, not a
+                        // surviving remote channel or a CREATE write.
                         c.gone = true;
                     }
                 }
@@ -1027,10 +1091,26 @@ impl<'id> Session<'id> {
                 (Action::CloseChannel { .. }, _) if c.gone => c.phase = Phase::Closed,
                 _ => {}
             }
+            if matches!(e.action, Action::OpenChannel { .. })
+                && matches!(completion, Completion::Unsent(_))
+            {
+                self.suppress(call, None);
+            }
             if let Some(error) = fault
                 && !e.action.close()
             {
-                self.begin_close(call, EndReason::Failed(error), now, None)?;
+                if matches!(e.action, Action::ClientFrame { .. })
+                    && (!e.cancelled || !matches!(completion, Completion::Unsent(_)))
+                {
+                    // The original shared IPC cannot deliver its notification
+                    // sequence. Retire the Line so callers observe EOF instead
+                    // of silently keeping an ended call alive. A canceled
+                    // unsubmitted frame has no shared transport failure.
+                    self.failure.get_or_insert(error);
+                    self.cancel(error, now)?;
+                } else {
+                    self.begin_close(call, EndReason::Failed(error), now, None)?;
+                }
             }
         } else {
             match (&e.action, completion) {
@@ -1048,6 +1128,8 @@ impl<'id> Session<'id> {
                     self.port_source = None;
                     self.port_ready = false;
                 }
+                (Action::OpenPort { .. }, Completion::Unsent(_) | Completion::Lost { .. })
+                    if self.port_gone && self.port_source.is_some() && !self.client_closing => {}
                 (_, Completion::Unsent(error) | Completion::Lost { reason: error, .. }) => {
                     self.failure.get_or_insert(error);
                     if matches!(e.action, Action::OpenPort { .. }) {
@@ -1067,194 +1149,6 @@ impl<'id> Session<'id> {
             action: e.action,
             completion,
         })
-    }
-    /// Record actual original Channel disappearance. EOF is retained as its
-    /// original error; it never becomes a remote pickup or peer HangUp741.
-    /// No allocation or clock provider is needed to retain this terminal fact.
-    pub fn peer_lost(
-        &mut self,
-        id: CallId<'id>,
-        source: Source,
-        reason: Error,
-    ) -> Result<(), Error> {
-        let notify = !self.client_closing;
-        let now = self.last_now;
-        let c = self.call_mut(id)?;
-        if c.source != Some(source) {
-            return Err(Error::StaleGeneration);
-        }
-        if c.gone {
-            return Err(Error::Replay);
-        }
-        let active = !matches!(c.phase, Phase::AwaitRing | Phase::Closing | Phase::Closed);
-        c.gone = true;
-        c.channel_ready = false;
-        c.failure.get_or_insert(reason);
-        c.notify_hangup |= notify && active;
-        self.begin_close(id, EndReason::Failed(reason), now, None)
-    }
-    /// A known native MQ loss retires only its original port/Channel sources.
-    /// It does not reconnect or replay a ringing/audio intent on a new source.
-    pub fn source_lost(&mut self, source: Source, reason: Error) -> Result<(), Error> {
-        let port_lost = self.port_source == Some(source);
-        if port_lost {
-            self.port_ready = false;
-            self.port_gone = true;
-            self.failure.get_or_insert(reason);
-        }
-        for index in 0..self.calls.len() {
-            let id = self.calls[index]
-                .as_ref()
-                .filter(|c| c.source == Some(source) && !c.gone)
-                .map(|c| c.id);
-            if let Some(id) = id {
-                self.peer_lost(id, source, reason)?;
-            }
-        }
-        if port_lost {
-            self.cancel(reason, self.last_now)?;
-        }
-        Ok(())
-    }
-    /// Record that this actual local IPC is already physically gone before
-    /// cancelling remaining original native channels and effects.
-    pub fn client_lost(&mut self, reason: Error, now: u64) -> Result<(), Error> {
-        self.client_closed = true;
-        self.failure.get_or_insert(reason);
-        self.cancel(reason, now)
-    }
-    /// Cancel this original Line. Physical retirement must happen first in the
-    /// host; pending/admitted effects and their real outcomes remain retained.
-    /// Queue space for every original close was reserved at construction.
-    pub fn cancel(&mut self, reason: Error, now: u64) -> Result<(), Error> {
-        if self.client_closing {
-            return Ok(());
-        }
-        self.client_closing = true;
-        self.port_ready = false;
-        for e in &mut self.effects {
-            if !e.action.close() {
-                e.cancelled = true;
-            }
-        }
-        for index in 0..self.calls.len() {
-            let id = self.calls[index].as_ref().map(|c| c.id);
-            if let Some(id) = id {
-                self.call_mut(id)?.notify_hangup = false;
-                self.begin_close(id, EndReason::Cancelled(reason), now, None)?;
-            }
-        }
-        let deadline = Self::deadline(now, self.limits.close_timeout).unwrap_or(now);
-        if let Some(port) = self.port
-            && !self.port_closing
-        {
-            self.push_close(Action::ClosePort { port }, deadline)?;
-            self.port_closing = true;
-        }
-        self.push_close(Action::CloseClient, deadline)?;
-        self.last_now = self.last_now.max(now);
-        Ok(())
-    }
-    /// Observe known identity source loss and fence all subsequent normal I/O.
-    /// The native owner physically retires the old MQs before settling debts.
-    pub fn identity_lost(&mut self, reason: Error, now: u64) -> Result<(), Error> {
-        self.failure.get_or_insert(reason);
-        self.cancel(reason, now)
-    }
-    /// Advance at most one deferred local HangUp notification. This allocation
-    /// is separate from retaining the original source-loss fact. Resource
-    /// pressure does not erase that fact or turn EOF into a peer message.
-    pub fn progress(&mut self, now: u64) -> Result<bool, Error> {
-        let pending = self
-            .calls
-            .iter()
-            .flatten()
-            .find(|c| c.notify_hangup)
-            .map(|c| (c.id, c.cid));
-        let Some((id, cid)) = pending else {
-            return Ok(false);
-        };
-        if self.client_closing {
-            self.call_mut(id)?.notify_hangup = false;
-            return Ok(true);
-        }
-        let frame = self.client_frame(
-            id,
-            Message::Control {
-                action: ClientControl::HangUp,
-                cid,
-            },
-        )?;
-        self.batch([Some(frame), None, None], now)?;
-        self.call_mut(id)?.notify_hangup = false;
-        Ok(true)
-    }
-    /// Expire original setup/output intents without refreshing any hard bound.
-    /// Connected calls have no invented protocol duration; the native parent's
-    /// original lifetime/cancel guard remains authoritative for ongoing calls.
-    pub fn tick(&mut self, now: u64) -> Result<(), Error> {
-        self.last_now = self.last_now.max(now);
-        for index in 0..self.calls.len() {
-            let id = self.calls[index]
-                .as_ref()
-                .filter(|c| {
-                    matches!(
-                        c.phase,
-                        Phase::Opening | Phase::AwaitRing | Phase::Ringing | Phase::Calling
-                    ) && now >= c.setup_deadline
-                })
-                .map(|c| c.id);
-            if let Some(id) = id {
-                self.begin_close(id, EndReason::Failed(Error::Timeout), now, None)?;
-            }
-        }
-        let expired = self
-            .effects
-            .front()
-            .filter(|e| !e.action.close() && now >= e.deadline)
-            .and_then(|e| e.action.call());
-        if let Some(id) = expired {
-            self.begin_close(id, EndReason::Failed(Error::Deadline), now, None)?;
-        }
-        Ok(())
-    }
-    /// Earliest original retained intent deadline. Native cleanup may continue
-    /// after it only to retire physical resources and report undrained debt.
-    pub fn next_deadline(&self) -> Option<u64> {
-        self.effects
-            .iter()
-            .map(|e| e.deadline)
-            .chain(self.calls.iter().flatten().filter_map(|c| match c.phase {
-                Phase::Opening | Phase::AwaitRing | Phase::Ringing | Phase::Calling => {
-                    Some(c.setup_deadline)
-                }
-                Phase::Closing => c.close_deadline,
-                _ => None,
-            }))
-            .min()
-    }
-    /// Remove a fully retired original owner after all original outcomes and
-    /// required local notifications have been observed. No CID is ever reused.
-    pub fn take_report(&mut self, id: CallId<'id>) -> Result<Option<CallReport<'id>>, Error> {
-        let c = self.call(id)?;
-        if !c.gone || c.debt != 0 || c.notify_hangup {
-            return Ok(None);
-        }
-        let report = CallReport {
-            call: id,
-            cid: c.cid,
-            peer: c.peer,
-            reason: c.reason.ok_or(Error::NotReady)?,
-            failure: c.failure,
-            ring_written: c.ring_written,
-            remote_pickup: c.remote_pickup,
-            local_pickup_written: c.local_pickup_written,
-            remote_hangup: c.remote_hangup,
-            local_hangup_written: c.local_hangup_written,
-        };
-        let slot = id.slot;
-        self.calls[slot] = None;
-        Ok(Some(report))
     }
 }
 

@@ -300,9 +300,9 @@ impl<'c, 'slots, 'p, E: Entropy, const O: usize> Server<'c, 'slots, 'p, E, O> {
                         let sequence = self.sequence()?;
                         self.peer_output = Some(PeerOutput {
                             transmit,
+                            target: PeerTarget::Port,
                             sequence,
                             task: None,
-                            retire: None,
                             until: self.until()?,
                         });
                         // Logical port retirement is admitted here; no second close is issued.
@@ -385,15 +385,11 @@ impl<'c, 'slots, 'p, E: Entropy, const O: usize> Server<'c, 'slots, 'p, E, O> {
                 .iter()
                 .flatten()
                 .any(|b| b.room == room && b.kind == Kind::MERGE)
-                || self.signs.iter().flatten().any(|s| {
-                    s.room == room
-                        && wire::message::Message::decode(
-                            s.frame.expose(),
-                            self.limits.profile,
-                            padding::Decode::Absent,
-                        )
-                        .is_ok_and(|m| m.header().kind == Kind::MERGE)
-                });
+                || self
+                    .signs
+                    .iter()
+                    .flatten()
+                    .any(|s| s.room == room && s.kind == Kind::MERGE);
             if !merge_pending && let Some(m) = self.core.service_merge(room)? {
                 self.queue_peer_control(
                     room,
@@ -536,15 +532,11 @@ impl<'c, 'slots, 'p, E: Entropy, const O: usize> Server<'c, 'slots, 'p, E, O> {
                     .iter()
                     .flatten()
                     .any(|b| b.room == room && b.kind == Kind::MERGE)
-                    || self.signs.iter().flatten().any(|s| {
-                        s.room == room
-                            && wire::message::Message::decode(
-                                s.frame.expose(),
-                                self.limits.profile,
-                                padding::Decode::Absent,
-                            )
-                            .is_ok_and(|m| m.header().kind == Kind::MERGE)
-                    });
+                    || self
+                        .signs
+                        .iter()
+                        .flatten()
+                        .any(|s| s.room == room && s.kind == Kind::MERGE);
                 if pending || self.core.service_merge(room)?.is_some() {
                     continue;
                 }

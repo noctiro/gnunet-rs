@@ -26,14 +26,7 @@ fn render(
             Argument::Bytes(value) => Owned::Bytes(value.to_vec()),
             Argument::Signed(value) => Owned::Signed(*value),
             Argument::Unsigned(value) => Owned::Unsigned(*value),
-            Argument::Error(error) => Owned::Bytes(crate::native::strerror(
-                error.raw_os_error().ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::Unsupported,
-                        "configuration error has no native errno",
-                    )
-                })?,
-            )),
+            Argument::Error(error) => Owned::Bytes(crate::native::error_text(error)),
             Argument::Translated { domain, message } => {
                 Owned::Bytes(translations.gettext(Some(domain), message)?)
             }
@@ -59,7 +52,7 @@ fn render(
 }
 /// Immediately route one original configuration callsite through actual logger
 /// policy, source cache, debug profile, skip, NLS, clock and destination owners.
-/// Formatting/errno/translation is evaluated only after log admission.
+/// Native error formatting and translation run only after log admission.
 pub fn log(
     logger: &mut Logger<'_>,
     clock: &SharedClock,

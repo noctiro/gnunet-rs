@@ -7,14 +7,14 @@
 //! None of these observations establishes a TEST reply or application authority.
 use crate::ConnectError;
 use gnunet_config::Configuration;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use gnunet_config::ProcessEnvironment;
 #[cfg(unix)]
 use nix::unistd::{AccessFlags, access};
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use socket2::SockAddr;
 use socket2::{Domain, Socket, Type};
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use std::io;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 
@@ -27,7 +27,7 @@ pub enum ServicePresence {
     LikelyUp,
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn arm_bound(config: &Configuration, service: &[u8]) -> bool {
     if config
         .get_yesno(service, b"IMMEDIATE_START")
@@ -43,7 +43,7 @@ fn arm_bound(config: &Configuration, service: &[u8]) -> bool {
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn unix(path: &std::path::Path) -> Result<ServicePresence, ConnectError> {
     // Unlike ordinary CLIENT connection selection, this source operation never
     // shortens a long path. Validate the native sockaddr before socket creation.
@@ -65,18 +65,29 @@ fn unix(path: &std::path::Path) -> Result<ServicePresence, ConnectError> {
     }
 }
 
+#[cfg(unix)]
+fn exists(path: &std::path::Path) -> bool {
+    access(path, AccessFlags::F_OK).is_ok()
+}
+#[cfg(windows)]
+fn exists(path: &std::path::Path) -> bool {
+    // Like C access(F_OK), permission/query failure falls through to the
+    // configured TCP alternative. Never promote an unknown node to presence.
+    gnunet_native::paths::exists(path).unwrap_or(false)
+}
+
 /// Test likely service presence with the official synchronous native semantics.
 /// `Err` corresponds to source SYSERR, distinct from definitive Down. A Unix
 /// connect may block just as in C; this operation supplies no fabricated timeout.
 /// Every created socket is local to this call and closed before return.
 pub fn test(config: &Configuration, service: &[u8]) -> Result<ServicePresence, ConnectError> {
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     match config.get_filename(service, b"UNIXPATH", &ProcessEnvironment) {
         Ok(path) => {
             if path.as_os_str().is_empty() {
                 return Err(gnunet_config::Error::InvalidValue.into());
             }
-            if access(&path, AccessFlags::F_OK).is_ok() {
+            if exists(&path) {
                 if arm_bound(config, service) {
                     return Ok(ServicePresence::LikelyUp);
                 }

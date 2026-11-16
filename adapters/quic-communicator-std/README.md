@@ -15,8 +15,9 @@ a wildcard is never presented as a learned public address.
 The raw profile retains stream0 without FIN/reset/STOP and continues accepting
 stream4. The original 32-byte identity proposal and GNUnet frame cursors survive
 canceled drive futures and partial provider writes. H3 uses its own concrete
-HTTP3 link and pure slot loans. It is not HTTP/1 or a private stream framing. The selected upstream h3 implementation identifies itself as experimental; these
-sources do not claim runtime or mixed-C qualification.
+HTTP3 link and pure slot loans, preserving the official application framing.
+The shared [compatibility contract](../../spec/gnunet/compatibility.md) defines
+peer interoperability qualification.
 
 ## Ownership and local facts
 
@@ -95,13 +96,34 @@ The `program` feature connects the shared standard PROGRAM to this runtime,
 configuration, selected logging, signals, Resolver and caller-owned receive
 pools. The `gnunet-communicator-quic` and `gnunet-communicator-http3` binaries use
 that entry point. Configured TLS pairs are loaded with finite byte/chain limits;
-new pairs use exclusive creation, private modes and retained cleanup errors.
+new pairs use exclusive creation and native private file permissions. Original
+parent-directory and file handles authorize cleanup; a replaced credential link
+is refused. Partial pairs remain an explicit error. File flushes and directory
+barrier observations stay separate; Windows reports its unavailable directory
+barrier rather than synthesizing synchronization.
 
-The earlier unavailable-compiler observation remains
-historical and does not describe the current toolchain.
+Linux, macOS, FreeBSD and Windows share the same runtime. Native client startup
+captures original inheritance once and refuses service listeners. Unix applies
+configured process privileges; Windows verifies the configured primary-token
+SID. Shared native stop subscriptions retain the original parent control.
+Identity selection and the first stop check precede TLS credential and UDP
+endpoint creation.
+Standard-stream and credential-file calls retain native OS blocking semantics.
 
-Those results
-remain unproved; successful compilation does not qualify the full GNUnet peer.
+`program.rs` selects PROGRAM options and identity. `program/scheduling.rs`
+composes the shared foreground scheduler, Resolver and stop latch;
+`program/drive.rs` owns runtime progress and retirement. Credential namespace
+ownership and independent terminal errors live in their respective modules.
+
+## Building
+
+```sh
+cargo build --release -p gnunet-communicator-quic -p gnunet-communicator-http3
+```
+
+The pinned Quinn/Rustls/AWS-LC dependencies require a native C toolchain and
+target SDK headers, including the Windows SDK for MSVC and FreeBSD base headers
+when cross-compiling. Both executable profiles use the same native entry.
 
 ## TRANSPORT source recovery
 
@@ -128,11 +150,9 @@ SENT result. Failed old receive callbacks release their original application
 frame as local retirement, not successful delivery. Native source loss and
 explicit shutdown still close their original endpoint and drivers.
 
-The three local IPC source cases cover partial-prefix EOF/reconnection without
-FIFO replay, malformed framing remaining fatal, and announcement/removal
-prefix completion without waiting for later unrelated data. They are controlled private
-Unix MQ witnesses, not normal C interoperability, QUIC/TLS traffic, whole-process
-resource measurements or full feature qualification.
+Local IPC cases cover partial-prefix EOF/reconnection without FIFO replay,
+malformed framing remaining fatal, source identity pauses and announcement
+ordering. Their fixtures select the shared native AF_UNIX owner.
 
 SEND result and queue credit/withdrawal admission use the encoded extent of the
 standard request. A 52-byte SENT result waits when only 48–51 bytes remain,
@@ -164,7 +184,29 @@ Repeated announcements, including changes during local restoration, share one
 original native/canonical 30-second recovery window. Actual REGISTER/address
 announcement completion clears it. Original connection operation bounds and
 queue/flow/send serials do not reset. Current identity comes from the typed PILS
-observation rather than duplicated peer/expiry fields. Physical observer loss
-retains its original producer cause and remains fatal. Raw and HTTP3 retain
-their own application/TLS/ALPN semantics; no GNUnet authentication is added to
-the official public peer proposal.
+observation rather than duplicated peer/expiry fields.
+
+PILS EOF and connection I/O loss enter that same retirement path with no
+verified target. The old TRANSPORT source, connection drivers and frame loans
+retire before the retained PILS client can reconnect. A new socket alone grants
+no identity or IPC admission. A signed, unexpired observation must have a
+strictly newer epoch of the same client and a newer identity revision before
+IPC and endpoint admission resume. The endpoint, TLS configuration, NAT claims,
+frame pool and serial counters remain owned by the process. Repeated losses
+retain the first source cause and original recovery window. Protocol, resource
+and clock errors remain terminal; a failed recovery returns both its first
+connection loss and independent terminal error.
+
+The identity state machine is separate from connection/loan retirement. A
+shared native connect gate and framed IPC checks enforce the same recovery
+bound after clock providers, before socket creation and before read/write.
+Queued frames retain their admitted hard bounds. Recovery completion requires
+actual REGISTER/address writes and a fresh deadline check. Retired partial
+prefixes remain unknown exposure; they are never replayed as fresh output.
+Raw and HTTP3 retain their own application/TLS/ALPN semantics; the official
+public peer proposal gains no GNUnet authentication.
+
+## Statistics publication
+
+See [statistics ownership and shutdown](STATISTICS.md) for metric semantics,
+independent publisher failure and bounded final drain.

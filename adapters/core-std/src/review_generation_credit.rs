@@ -21,7 +21,7 @@ async fn review_same_identity_late_old_send_ok_is_not_extra_new_credit()
         ServiceOptions::default(),
         Arc::new(ManualClock::new(0)),
     )?;
-    let (connection, mut stream) = pair()?;
+    let (connection, mut stream) = pair().await?;
     host.attach_transport(connection)?;
     let mut bytes = [0; 40];
     tr::Response::Connected(tr::PeerId(id.0)).encode(&mut bytes)?;

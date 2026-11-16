@@ -216,6 +216,7 @@ impl Set {
         self.operations.push(OperationReceipt {
             id: id.clone(),
             request_id,
+            mode: p.mode,
             written: 0,
             request_written: false,
             half_done: false,
@@ -639,6 +640,6 @@ impl Drop for Set {
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 #[path = "set/timer_tests.rs"]
 mod timer_tests;

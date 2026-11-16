@@ -21,15 +21,13 @@ use std::{
     ffi::OsStr,
     future::Future,
     io::{self, Write},
-    os::unix::ffi::OsStrExt,
     path::Path,
-    task::Poll,
 };
-use tokio::signal::unix::{SignalKind, signal};
 
 fn row(out: &mut impl Write, value: &Value) -> io::Result<()> {
     serde_json::to_writer(&mut *out, value).map_err(io::Error::other)?;
-    writeln!(out)
+    writeln!(out)?;
+    out.flush()
 }
 fn phase(phase: Phase) -> &'static str {
     match phase {
@@ -47,7 +45,7 @@ fn status_value(status: Status) -> Value {
     json!({
         "phase":phase(status.phase), "active_owner":status.active,
         "interrupted":status.interrupted,
-        "root_identity":status.root.map(|id|json!({"device":id.device,"inode":id.inode})),
+        "root_identity":status.root.map(super::file_identity),
         "historical_files_known":status.known_files,
         "cleanup_pending":status.cleanup_pending, "uncertain_commits":status.uncertain_commits,
         "state_records":status.state_records, "state_fenced":status.fenced,
@@ -98,30 +96,30 @@ fn cause_value(cause: &Cause) -> Value {
         Cause::Directory(error) => json!({
             "kind":"directory", "stage":format!("{:?}",error.stage),
             "created":error.created,
-            "identity":error.identity.map(|id|json!({"device":id.device,"inode":id.inode})),
+            "identity":error.identity.map(super::file_identity),
             "error":error.operation.to_string(),
         }),
         Cause::Revalidate(error) => json!({
             "kind":"revalidation", "stage":format!("{:?}",error.stage),
-            "identity":error.identity.map(|id|json!({"device":id.device,"inode":id.inode})),
+            "identity":error.identity.map(super::file_identity),
             "authenticated_receipt":error.receipt.is_some(), "error":error.operation.to_string(),
         }),
         Cause::RangeRevalidate(error) => {
             json!({"kind":"range_revalidation","stage":format!("{:?}",error.stage),
-            "identity":error.identity.map(|id|json!({"device":id.device,"inode":id.inode})),
+            "identity":error.identity.map(super::file_identity),
             "receipt":error.receipt.as_ref().map(range_value),"error":error.operation.to_string()})
         }
         Cause::Committed(error) => json!({
-            "kind":"committed", "identity":{"device":error.identity.device,"inode":error.identity.inode},
+            "kind":"committed", "identity":super::file_identity(error.identity),
             "authenticated_receipt":true, "subsequent_failure":cause_value(&error.cause),
         }),
         Cause::RangeCommitted(error) => {
-            json!({"kind":"range_committed","identity":{"device":error.identity.device,"inode":error.identity.inode},
+            json!({"kind":"range_committed","identity":super::file_identity(error.identity),
             "receipt":range_value(&error.receipt),"subsequent_failure":cause_value(&error.cause)})
         }
         Cause::Reconcile { path, reason } => json!({
             "kind":"reconciliation_required", "path":path.to_str(),
-            "path_bytes":path.as_os_str().as_bytes(), "reason":reason,
+            "path_bytes":crate::argument::native_bytes(path.as_os_str()), "reason":reason,
         }),
         Cause::State(reason) => json!({"kind":"state_precondition", "reason":reason}),
     }
@@ -141,13 +139,13 @@ fn mode_value(mode: &RootMode) -> Value {
         }
     }
 }
-fn failed(out: &mut impl Write, error: Box<Failure>) -> Box<dyn Error> {
+fn failed(out: &mut super::Output<'_, impl Write>, error: Box<Failure>) -> Box<dyn Error> {
     // Preserve the original typed task failure if writing diagnostic output also fails.
     let _output = row(
         out,
         &json!({
             "event":"fs_task_failed", "path":error.path.to_str(),
-            "path_bytes":error.path.as_os_str().as_bytes(),
+            "path_bytes":crate::argument::native_bytes(error.path.as_os_str()),
             "progress":progress_value(error.progress), "cause":cause_value(&error.cause),
             "state_failure":error.state_failure.as_ref().map(cause_value),
             "interruption":error.interruption.as_ref().map(ToString::to_string),
@@ -160,12 +158,15 @@ fn failed(out: &mut impl Write, error: Box<Failure>) -> Box<dyn Error> {
 }
 pub(super) fn create_file(
     args: &[impl AsRef<OsStr>],
-    out: &mut impl Write,
+    out: &mut super::Output<'_, impl Write>,
 ) -> Result<(), Box<dyn Error>> {
     if args.len() < 3 {
         return Err("task-create-file requires task, CHK/LOC and new output file".into());
     }
-    let root = Uri::parse(args[1].as_ref().as_bytes(), UriLimits::default())?;
+    let root = Uri::parse(
+        crate::argument::wire_bytes(args[1].as_ref())?,
+        UriLimits::default(),
+    )?;
     let content = match root {
         Uri::Content(content) => content,
         Uri::Location(location) => location.content(),
@@ -177,7 +178,7 @@ pub(super) fn create_file(
     let mut local = false;
     let mut at = 3;
     while at < args.len() {
-        let name = args[at].as_ref().as_bytes();
+        let name = args[at].as_ref().as_encoded_bytes();
         if name == b"--local-only" {
             if local {
                 return Err("duplicate --local-only".into());
@@ -245,7 +246,7 @@ pub(super) fn create_file(
     row(
         out,
         &json!({"event":"fs_file_task_created","task_id":hex(&task.task_id()?),"status":status_value(task.status()?),
-        "mode":mode_value(&task.manifest()?.mode),"output_name_bytes":name.as_bytes()}),
+        "mode":mode_value(&task.manifest()?.mode),"output_name_bytes":crate::argument::native_bytes(name)}),
     )?;
     Ok(())
 }
@@ -262,9 +263,12 @@ fn destination(path: &Path) -> Result<(&Path, &OsStr), Box<dyn Error>> {
 
 pub(super) fn create(
     args: &[impl AsRef<OsStr>],
-    out: &mut impl Write,
+    out: &mut super::Output<'_, impl Write>,
 ) -> Result<(), Box<dyn Error>> {
-    let root = Uri::parse(args[1].as_ref().as_bytes(), UriLimits::default())?;
+    let root = Uri::parse(
+        crate::argument::wire_bytes(args[1].as_ref())?,
+        UriLimits::default(),
+    )?;
     if !matches!(root, Uri::Content(_) | Uri::Location(_)) {
         return Err("task-create requires a directory CHK or LOC URI".into());
     }
@@ -286,14 +290,14 @@ pub(super) fn create(
         &json!({
             "event":"fs_task_created", "task_id":hex(&task.task_id()?),
             "status":status_value(task.status()?),
-            "output_name_bytes":name.as_bytes(),
+            "output_name_bytes":crate::argument::native_bytes(name),
         }),
     )?;
     Ok(())
 }
 pub(super) fn status(
     args: &[impl AsRef<OsStr>],
-    out: &mut impl Write,
+    out: &mut super::Output<'_, impl Write>,
 ) -> Result<(), Box<dyn Error>> {
     let task = Task::open(Path::new(args[0].as_ref()), store::Limits::default())
         .map_err(|error| failed(out, error))?;
@@ -304,13 +308,16 @@ pub(super) fn status(
             "event":"fs_task_status", "task_id":hex(&task.task_id()?),
             "status":status_value(task.status()?), "output_revalidated":false,
             "root_uri":std::str::from_utf8(&manifest.root_uri).ok(),
-            "root_uri_bytes":manifest.root_uri, "output_name_bytes":manifest.relative.as_os_str().as_bytes(),
+            "root_uri_bytes":manifest.root_uri, "output_name_bytes":crate::argument::native_bytes(manifest.relative.as_os_str()),
             "mode":mode_value(&manifest.mode),
         }),
     )?;
     Ok(())
 }
-pub(super) fn run(args: &[impl AsRef<OsStr>], out: &mut impl Write) -> Result<(), Box<dyn Error>> {
+pub(super) fn run(
+    args: &[impl AsRef<OsStr>],
+    out: &mut super::Output<'_, impl Write>,
+) -> Result<(), Box<dyn Error>> {
     let interval = duration(args.get(3))?;
     let limit = args
         .get(4)
@@ -326,6 +333,7 @@ pub(super) fn run(args: &[impl AsRef<OsStr>], out: &mut impl Write) -> Result<()
         })
         .transpose()?;
     let source = EndpointSource::unix(Path::new(args[0].as_ref()).to_path_buf());
+    out.interval(interval)?;
     let deadline = target(&source, interval)?;
     let task_path = Path::new(args[1].as_ref());
     let mut task =
@@ -344,8 +352,7 @@ pub(super) fn run(args: &[impl AsRef<OsStr>], out: &mut impl Write) -> Result<()
         .enable_all()
         .build()?
         .block_on(async {
-            let mut interrupt = signal(SignalKind::interrupt())?;
-            let mut terminate = signal(SignalKind::terminate())?;
+            let mut signals = super::stop::StopEvents::new()?;
             let stop = Cell::new(false);
             let mut signal_error = None;
             let mut run =
@@ -359,18 +366,9 @@ pub(super) fn run(args: &[impl AsRef<OsStr>], out: &mut impl Write) -> Result<()
                     })
                 );
             let result = std::future::poll_fn(|cx| {
-                if !stop.get() {
-                    for source in [&mut interrupt, &mut terminate] {
-                        if let Poll::Ready(value) = source.poll_recv(cx) {
-                            stop.set(true);
-                            if value.is_none() {
-                                signal_error = Some(io::Error::new(
-                                    io::ErrorKind::UnexpectedEof,
-                                    "task signal source closed",
-                                ));
-                            }
-                        }
-                    }
+                if !stop.get() && signals.poll(cx) {
+                    stop.set(true);
+                    signal_error = signals.take_failure();
                 }
                 run.as_mut().poll(cx)
             })
@@ -388,6 +386,7 @@ pub(super) fn run(args: &[impl AsRef<OsStr>], out: &mut impl Write) -> Result<()
             }
             Ok::<_, Box<dyn Error>>(result)
         })?;
+    out.cleanup()?;
     match result {
         Ok(done) => {
             let event = match done.disposition {
@@ -439,7 +438,7 @@ impl Error for SignalFailure {
 /// Explicit local cancellation settlement; starts no FS query.
 pub(super) fn cancel(
     args: &[impl AsRef<OsStr>],
-    out: &mut impl Write,
+    out: &mut super::Output<'_, impl Write>,
 ) -> Result<(), Box<dyn Error>> {
     let path = Path::new(args[0].as_ref());
     let mut task =

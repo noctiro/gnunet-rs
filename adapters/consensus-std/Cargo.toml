@@ -16,5 +16,9 @@ gnunet-types.workspace = true
 gnunet-wire.workspace = true
 tokio = { workspace = true, features = ["rt", "net", "time"] }
 
+[dev-dependencies]
+gnunet-native.workspace = true
+tokio = { workspace = true, features = ["io-util"] }
+
 [lints]
 workspace = true

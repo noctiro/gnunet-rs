@@ -6,22 +6,22 @@ use std::{
     process::ExitCode,
 };
 type Failure = Box<dyn Error>;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 mod media;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 mod options;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 mod run;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 mod terminal;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[derive(Debug)]
 struct SelectedFailure {
     original: Option<Failure>,
     logging: Option<io::Error>,
     code: u8,
 }
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 impl std::fmt::Display for SelectedFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if let Some(e) = &self.original {
@@ -33,7 +33,7 @@ impl std::fmt::Display for SelectedFailure {
         Ok(())
     }
 }
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 impl Error for SelectedFailure {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         self.original
@@ -45,7 +45,7 @@ fn main() -> ExitCode {
     match run() {
         Ok(code) => ExitCode::from(code),
         Err(e) => {
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             if let Some(selected) = e.downcast_ref::<SelectedFailure>() {
                 return ExitCode::from(selected.code);
             }
@@ -54,11 +54,11 @@ fn main() -> ExitCode {
         }
     }
 }
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 fn run() -> Result<u8, Failure> {
-    Err("native CONVERSATION command requires Unix".into())
+    Err("native CONVERSATION command requires Unix or Windows".into())
 }
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn run() -> Result<u8, Failure> {
     use gnunet_program_host::{
         logging::Logger,

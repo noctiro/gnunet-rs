@@ -1,49 +1,89 @@
-# gnunet-service-arm
+# ARM service executable
 
-standalone ARM SERVICE entry; `gnunet-arm` remains the separate client. The app exclusively captures CLOSE_LSOCKS descriptors first, uses shared SERVICE
-c/d/h/L/l/v parsing and selected Logger, then the shared fresh-process daemon
-split. No fixture program or foreign C service is launched as ARM itself.
+`gnunet-service-arm` runs the official ARM service over the shared
+[host](../../adapters/arm-service-std/README.md) and bounded protocol state machine.
+It accepts normal SERVICE options, including `-c CONFIG` and `-d`.
+Protocol layouts follow the [central contract](../../spec/gnunet/README.md).
 
-The host loads standard [arm] configuration, performs configured USER
-transition, binds its configured control listeners, closes only the original
-inherited close-set, and runs the ARM reactor/process backend. That early
-EOF is only own-listener startup ownership release. A detached parent receives
-its separate ready byte only after control/managed listeners, SIGCHLD
-port, caller pools and original default-start attempts are settled (Serving). It is not proof that children reached their own readiness.
+## Entry and startup
 
-Use normal SERVICE options, for example `gnunet-service-arm -c CONFIG`, with
-optional `-d`. Runtime execution was not performed during source preparation. The reviewed `gnunet-arm-spawn-helper` must be colocated or installed in the
-ProjectData libexec directory; [arm-rust] SPAWN_HELPER explicitly selects another
-reviewed path. BINARY/CONFIG/GLOBAL_PREFIX/GLOBAL_POSTFIX/PIPECONTROL/IMMEDIATE_START
-and service category selection are handled by the existing registry.
+The entry files perform fresh-process platform actions before providers, runtime
+registration or competing native owners. Unix captures inherited descriptors and
+splits daemon startup before changing configured credentials. Windows captures
+native activation and parent declarations, detaches a supervised console before
+provider import when requested, and verifies the actual configured account.
+Standalone Windows detachment uses the shared re-exec launcher; supervised
+Windows detachment preserves the original process and control connection.
 
-[arm-rust] exposes finite MAX_SERVICES/MAX_CLIENTS/MAX_CHILDREN/MAX_LISTENERS,
-ADDRESSES_PER_SERVICE, FRAME_BYTES/FRAME_SLOTS/TX_BYTES/TX_FRAMES, IO_SLICE_BYTES,
-SETTLEMENT_BUDGET/DIAGNOSTICS, command/environment/argument/descriptor budgets,
-and SHUTDOWN_GRACE/KILL_GRACE (both5s by default). All combined cleanup targets
-are checked and fixed at the first stop, never renewed by another signal. ABI is explicitly align8/align4; only known64-bit Unix C layouts default align8. No32-bit interoperability qualification is implied by allowing explicit align4.
+Both platforms use the same foreground reactor, selected logging, stop
+subscriptions and cleanup deadlines. Readiness follows control/managed listener
+setup, caller-pool preparation and settled default-start attempts. It does not
+assert that managed children reached their own readiness. Parent EOF does not
+request termination. Normal operation emits no internal READY/STOPPED lines to
+stdout; diagnostics use the selected logger.
 
-Healthy manual shutdown preserves the self-stop requester's original socket
-until child reaps and formal listener/timer cleanup finish. TERM uses the
-normal shared pipe-first policy. After original TERM grace, exact original
-children receive native SIGKILL (bypassing the signal pipe); successful kill is
-never counted as death. The same reactor consumes exits before normal
-source closure. Clock/native failures take clock-free physical IO retirement
-and bounded original-native cleanup. Remaining uninterruptible/unowned waits
-cause failure with an Unreaped error retaining the ChildRegistry; a PID
-list or signal result is never called successful reap. A fresh process exits
-failure with that explicit debt; an embedding caller may recover the registry.
+Unix ARM's original close-after-bind set is released after configured binding.
+Windows imported listeners keep their original endpoints and backlog, and gain
+no creator-path cleanup lease. The publisher retains source ownership until
+qualified import/readiness or original-child retirement.
 
-Optional [arm] RESOURCE_DIAGNOSTICS opens the requested ordinary log file and
-enables shared exact-PID wait4 collection before any managed child. File open
-failure is a warning and disables collection, as in C. Every usage
-record is retained in a single backpressured slot until the foreground takes
-and writes it; ordinary diagnostic queue overflow cannot silently lose usage. The configured BINARY(pid), user/systemseconds to3decimals, raw maxrss, in/out
-blocks and voluntary/involuntary switches use kernel data. CPU conversion
-uses correct microseconds/1e6 rather than C's10e6 fractional-time defect. Maxrss
-keeps native units (macOSbytes/LinuxKiB). Write failures are reported and stop the
-service; no zeros or elapsed-time estimates substitute for missing rusage.
+## Configuration and resource bounds
 
-Native supervision and official
-ARM interoperability remain unqualified; successful compilation does not prove
-runtime readiness, child termination or complete GNUnet interoperability.
+`BINARY`, `CONFIG`, `GLOBAL_PREFIX`, `GLOBAL_POSTFIX`, `PIPECONTROL`,
+`IMMEDIATE_START`, `START_ON_DEMAND` and category selection use the shared
+registry. `[arm-rust]` selects finite service/client/child/listener/frame/output
+limits, work budgets and fixed `SHUTDOWN_GRACE`/`KILL_GRACE` targets. Both grace
+periods default to five seconds. ABI selects `align8` or `align4`; 64-bit native
+entries default to the GNU 64-bit `align8` wire profile.
+
+Unix requires the shared `gnunet-arm-spawn-helper`, colocated with the executable
+or installed in ProjectData's libexec directory. `SPAWN_HELPER` selects an
+explicit path. Its command, environment and auxiliary budgets count bytes;
+descriptor limits bound actual child mappings.
+
+Windows creates the selected image directly from an explicit environment/cwd
+snapshot. `MAX_COMMAND_BYTES` bounds local command text. `MAX_ARGUMENTS` includes
+argv0; `MAX_COMMAND_UNITS` and `MAX_ENVIRONMENT_UNITS` count native UTF-16 units.
+`MAX_ENVIRONMENT_ENTRIES`, `MAX_HANDLES` and `MAX_LISTENERS_PER_CHILD` bound native
+resources. Unix helper, auxiliary-byte, environment-byte and descriptor options
+are rejected on Windows instead of being silently ignored.
+
+## Resource diagnostics
+
+Optional `[arm] RESOURCE_DIAGNOSTICS` opens a normal output file and enables
+collection before admitting any managed child. Open failure is a warning and
+disables collection. Records remain backpressured until taken and written;
+ordinary diagnostic queue limits do not discard them. Write/flush failure stops
+the service and preserves its original error.
+
+Unix records use actual consuming wait4 counters: configured BINARY(pid), CPU
+seconds with three fractional digits, native maxrss, block operations and context
+switches. Windows records label CPU microseconds, peak memory bytes, I/O operation
+counts and transfer bytes. Each independent Windows query either supplies its
+actual counters or records its native error. No zero or elapsed-time estimate
+replaces a failed query. These platform records are diagnostics, not ARM frames.
+
+## Shutdown and recovery
+
+Normal self-stop keeps the original requester socket until child reaps and
+formal listener/timer cleanup finish. Cooperative control and native termination
+remain separate from observed death. Grace expiry forces original-process
+termination and continues consuming waits. Repeated stop notices never extend
+the first deadline.
+
+Clock/native failures retire physical service I/O and perform bounded native
+cleanup. `Unreaped` reports remaining native debt. Its `recovery()` provides native cleanup actions and consuming waits;
+`into_recovery()` transfers the original registry with its dependent source/control
+owners. The recovery API keeps that pair together, exposes original child tokens,
+and releases auxiliary owners after recorded retirement. Retained exit/resource
+observations remain available through `take_completed_with_usage()`.
+Neither Drop nor an accepted termination request proves child death.
+
+## Native tests
+
+The Windows `windows_process` target launches the normal executable, verifies
+qualified startup and managed `-d`, exchanges official TEST/LIST/STOP frames,
+checks cooperative child shutdown, consumes the original service exit and reads
+native resource records. It requires a Windows runner. Unix host process tests
+require building the shared helper first. Current native qualification remains
+tracked in [implementation status](../../IMPLEMENTATION_STATUS.md).

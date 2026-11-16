@@ -31,3 +31,6 @@ pub use pool::{AdmissionError, Pool, PoolProgress, Reversal, Setup};
 pub mod process_ports;
 /// Qualified durable replay floors and recovery catalog.
 pub use gnunet_tcp_replay_host as replay;
+
+#[cfg(test)]
+mod test_support;

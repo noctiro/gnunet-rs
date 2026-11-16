@@ -4,6 +4,7 @@
     clippy::panic_in_result_fn,
     reason = "Native regressions assert original wire, callback and source-generation facts"
 )]
+mod support;
 use gnunet_crypto::{EddsaPrivateKey, Entropy};
 use gnunet_service_runtime::connection::Connection;
 use gnunet_transport::{
@@ -24,7 +25,7 @@ use std::{
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::UnixStream,
+    net::TcpStream,
     time::Instant,
 };
 
@@ -98,7 +99,7 @@ fn frame(kind: u16, size: usize) -> Vec<u8> {
 fn kind(bytes: &[u8]) -> u16 {
     u16::from_be_bytes([bytes[2], bytes[3]])
 }
-async fn read(stream: &mut UnixStream) -> Result<Vec<u8>, Failure> {
+async fn read(stream: &mut TcpStream) -> Result<Vec<u8>, Failure> {
     let mut header = [0; 4];
     stream.read_exact(&mut header).await?;
     let size = usize::from(u16::from_be_bytes([header[0], header[1]]));
@@ -110,7 +111,7 @@ async fn read(stream: &mut UnixStream) -> Result<Vec<u8>, Failure> {
     stream.read_exact(&mut bytes[4..]).await?;
     Ok(bytes)
 }
-async fn sent(stream: &mut UnixStream, original: &[u8]) -> Result<(), Failure> {
+async fn sent(stream: &mut TcpStream, original: &[u8]) -> Result<(), Failure> {
     let mut ack = frame(1210, 52);
     ack[4..8].copy_from_slice(&1u32.to_be_bytes());
     ack[8..16].copy_from_slice(&original[8..16]);
@@ -238,7 +239,7 @@ async fn validated(
     server: &mut Server,
     key: &mut Key,
     remote: &Key,
-    comm: &mut UnixStream,
+    comm: &mut TcpStream,
     random: &mut Random,
     observer: &mut Observer,
 ) -> Result<(), Failure> {
@@ -248,7 +249,7 @@ async fn validated_characteristics(
     server: &mut Server,
     key: &mut Key,
     remote: &Key,
-    comm: &mut UnixStream,
+    comm: &mut TcpStream,
     random: &mut Random,
     observer: &mut Observer,
     characteristics: u32,
@@ -263,7 +264,7 @@ async fn validated_queue(
     server: &mut Server,
     key: &mut Key,
     remote: &Key,
-    comm: &mut UnixStream,
+    comm: &mut TcpStream,
     random: &mut Random,
     observer: &mut Observer,
     queue: (u32, u64),
@@ -319,7 +320,7 @@ struct CancellationFixture {
     server: Server,
     key: Key,
     remote: Key,
-    comm: UnixStream,
+    comm: TcpStream,
     random: Random,
     observer: Observer,
     source: Source,
@@ -332,8 +333,8 @@ impl CancellationFixture {
         let mut key = Key(EddsaPrivateKey::from_seed([0x43; 32]));
         let remote = Key(EddsaPrivateKey::from_seed([0x47; 32]));
         let mut server = Server::new(Engine::new(key.identity(), Limits::default())?, 1, 262140)?;
-        let (socket, mut comm) = UnixStream::pair()?;
-        server.admit(Connection::from_unix(socket))?;
+        let (socket, mut comm) = support::pair().await?;
+        server.admit(Connection::from_tcp(socket))?;
         let mut random = Random(0);
         let mut observer = Observer::default();
         validated_characteristics(
@@ -625,8 +626,8 @@ async fn raw_dv_quarantine_does_not_block_its_same_mq_send_callback() -> Result<
     let mut key = Key(EddsaPrivateKey::from_seed([0x13; 32]));
     let remote = Key(EddsaPrivateKey::from_seed([0x17; 32]));
     let mut server = Server::new(Engine::new(key.identity(), Limits::default())?, 1, 262140)?;
-    let (socket, mut comm) = UnixStream::pair()?;
-    let owner = server.admit(Connection::from_unix(socket))?;
+    let (socket, mut comm) = support::pair().await?;
+    let owner = server.admit(Connection::from_tcp(socket))?;
     let mut random = Random(0);
     let mut observer = Observer::default();
     validated(
@@ -778,8 +779,8 @@ async fn partial_original_dv_source_closes_before_a_new_source_can_attach() -> R
     let mut key = Key(EddsaPrivateKey::from_seed([0x31; 32]));
     let remote = Key(EddsaPrivateKey::from_seed([0x37; 32]));
     let mut server = Server::new(Engine::new(key.identity(), Limits::default())?, 1, 262140)?;
-    let (socket, mut comm) = UnixStream::pair()?;
-    server.admit(Connection::from_unix(socket))?;
+    let (socket, mut comm) = support::pair().await?;
+    server.admit(Connection::from_tcp(socket))?;
     let mut random = Random(0);
     let mut observer = Observer::default();
     validated(
@@ -808,7 +809,9 @@ async fn partial_original_dv_source_closes_before_a_new_source_can_attach() -> R
     assert_eq!(comm.read(&mut [0; 1]).await?, 0);
     let replacement = server.dv_attach_source(key.identity())?;
     assert_ne!(source, replacement);
-    assert!(comm.write_all(&original[1..]).await.is_err());
+    // TCP may locally accept a write after received EOF. That is no receipt
+    // from the retired server socket and cannot attach bytes to a new source.
+    let _late_local_write = comm.write_all(&original[1..]).await;
     assert!(server.dv_inbox().is_none());
     assert_eq!(server.dv_source_debts(&replacement), 0);
     server.dv_begin_retire_source(&replacement)?;

@@ -17,5 +17,8 @@ gnunet-wire.workspace = true
 tokio = { workspace = true, features = ["rt", "time"] }
 zeroize.workspace = true
 
+[dev-dependencies]
+gnunet-identity.workspace = true
+
 [lints]
 workspace = true

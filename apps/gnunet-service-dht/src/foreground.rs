@@ -13,7 +13,7 @@ use gnunet_dht_service_host::{
 use gnunet_program_host::{reporting::Reporter, shared_clock::SharedClock};
 use gnunet_resolver_broker::{LiveConfiguration, broker, native_profile};
 use gnunet_service_runtime::{BoundListeners, clock::RuntimeClock};
-use gnunet_service_startup::{ParentControl, daemon::ChildReady};
+use gnunet_service_startup::{ControlReceiver, StopError};
 use std::{
     error::Error,
     fmt,
@@ -28,10 +28,9 @@ pub(super) struct Inputs<'a> {
     pub config: &'a Configuration,
     pub settings: &'a Settings,
     pub bound: &'a BoundListeners,
-    pub parent: Option<ParentControl>,
+    pub parent: Option<ControlReceiver>,
     pub clock: SharedClock,
     pub reports: Reporter,
-    pub child: &'a mut ChildReady,
     pub cleanup: Cleanup,
 }
 #[derive(Debug)]
@@ -48,7 +47,7 @@ struct Failures {
     original: Option<Cause>,
     running: Option<HostError>,
     resolver: Option<gnunet_resolver_broker::BrokerError>,
-    signal: Option<io::Error>,
+    signal: Option<StopError>,
     cleanup: Option<HostError>,
     resolver_close: Option<Cause>,
     logging: Option<io::Error>,
@@ -143,15 +142,19 @@ fn stopped(
     signals: &mut Signals,
     reports: &Reporter,
     cx: &mut Context<'_>,
-) -> Poll<io::Result<()>> {
+) -> Poll<Result<(), StopError>> {
     reports.register(cx);
     if reports.failed() {
         Poll::Ready(Ok(()))
     } else {
-        signals.poll(cx)
+        signals.poll_stop(cx)
     }
 }
-pub(super) async fn run(input: Inputs<'_>) -> Result<(), Cause> {
+pub(super) async fn run(
+    input: Inputs<'_>,
+    notify_ready: impl Future<Output = Result<(), Cause>>,
+) -> Result<(), Cause> {
+    let mut notify_ready = Some(notify_ready);
     let Inputs {
         config,
         settings,
@@ -159,7 +162,6 @@ pub(super) async fn run(input: Inputs<'_>) -> Result<(), Cause> {
         parent,
         clock,
         reports,
-        child,
         cleanup,
     } = input;
     let mut signals = Signals::new(parent)?;
@@ -209,7 +211,7 @@ pub(super) async fn run(input: Inputs<'_>) -> Result<(), Cause> {
             enum Turn {
                 Host(Result<Progress, HostError>),
                 Resolver(gnunet_resolver_broker::BrokerError),
-                Signal(io::Result<()>),
+                Signal(Result<(), StopError>),
                 Guard(HostError),
                 Activity,
                 Logger,
@@ -219,7 +221,7 @@ pub(super) async fn run(input: Inputs<'_>) -> Result<(), Cause> {
                 if reports.failed() {
                     return Poll::Ready(Turn::Logger);
                 }
-                if let Poll::Ready(signal) = signals.poll(cx) {
+                if let Poll::Ready(signal) = signals.poll_stop(cx) {
                     return Poll::Ready(Turn::Signal(signal));
                 }
                 // These original hard guards cannot be hidden by a perpetually
@@ -321,7 +323,16 @@ pub(super) async fn run(input: Inputs<'_>) -> Result<(), Cause> {
                 }
                 // Parent notification follows successful complete actual stdout
                 // flush and real native readiness; no fake provider ACK is used.
-                child.ready()?;
+                let notification = notify_ready
+                    .take()
+                    .ok_or("DHT readiness intent already consumed")?;
+                gnunet_program_host::service::acknowledge_ready(
+                    notification,
+                    &mut signals,
+                    &reports,
+                    settings.shutdown_grace,
+                )
+                .await?;
                 announced = true;
             }
         }
@@ -339,7 +350,7 @@ pub(super) async fn run(input: Inputs<'_>) -> Result<(), Cause> {
             enum End {
                 Progress(Result<Progress, HostError>),
                 Resolver(gnunet_resolver_broker::BrokerError),
-                Signal(io::Result<()>),
+                Signal(Result<(), StopError>),
                 Expired,
                 Activity,
             }
@@ -348,7 +359,7 @@ pub(super) async fn run(input: Inputs<'_>) -> Result<(), Cause> {
                     return Poll::Ready(End::Expired);
                 }
                 reports.register(cx);
-                if let Poll::Ready(signal) = signals.poll(cx) {
+                if let Poll::Ready(signal) = signals.poll_stop(cx) {
                     return Poll::Ready(End::Signal(signal));
                 }
                 // Even a permanently failed Logger or clock cannot suppress the

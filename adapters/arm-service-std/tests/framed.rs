@@ -6,15 +6,48 @@
 use gnunet_arm_service_host::framed::{Error, FramedConnection, Received};
 use gnunet_service_runtime::connection::Connection;
 use std::{error::Error as StdError, future::poll_fn, task::Poll, time::Duration};
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::UnixStream,
-};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 type Test = Result<(), Box<dyn StdError>>;
 fn runtime() -> std::io::Result<tokio::runtime::Runtime> {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
+}
+struct Directory(std::path::PathBuf);
+impl Drop for Directory {
+    fn drop(&mut self) {
+        let _cleanup = std::fs::remove_dir_all(&self.0);
+    }
+}
+async fn pair() -> Result<(Connection, Connection), Box<dyn StdError>> {
+    use gnunet_service_runtime::{
+        LocalListenerAccess,
+        local::{Listener, Stream},
+    };
+    let mut nonce = [0; 16];
+    gnunet_native::entropy::fill(&mut nonce)?;
+    let parent = std::env::temp_dir();
+    let name = format!("gn-arm-frame-{:032x}", u128::from_be_bytes(nonce));
+    gnunet_native::filesystem::Directory::open(&parent)?
+        .create_private_directory(std::ffi::OsStr::new(&name))?;
+    let directory = Directory(parent.join(name));
+    let path = directory.0.join("ipc");
+    let prepared = gnunet_service_runtime::local_listener::prepare(
+        path.clone(),
+        LocalListenerAccess::Owner,
+        5,
+    )
+    .await?;
+    let (socket, _path, _warnings) = prepared.into_parts();
+    #[cfg(unix)]
+    let listener = Listener::from_std(socket.into())?;
+    #[cfg(windows)]
+    let listener = Listener::from_bound_socket(socket)?;
+    let (peer, accepted) = tokio::try_join!(Stream::connect(&path), listener.accept())?;
+    Ok((
+        Connection::from_unix(accepted.0),
+        Connection::from_unix(peer),
+    ))
 }
 async fn frame(io: &mut FramedConnection) -> Result<Vec<u8>, Error> {
     poll_fn(|cx| match io.poll_receive(cx) {
@@ -28,8 +61,8 @@ async fn frame(io: &mut FramedConnection) -> Result<Vec<u8>, Error> {
 #[test]
 fn fragmented_header_and_body_survive_cancel_and_do_not_advance_until_consumed() -> Test {
     runtime()?.block_on(async {
-        let (a, mut peer) = UnixStream::pair()?;
-        let mut io = FramedConnection::new(Connection::from_unix(a), 65535, 65535, 4, 1)?;
+        let (a, mut peer) = pair().await?;
+        let mut io = FramedConnection::new(a, 65535, 65535, 4, 1)?;
         peer.write_all(&[0, 8]).await?;
         assert!(
             tokio::time::timeout(Duration::from_millis(5), frame(&mut io))
@@ -62,8 +95,8 @@ fn zero_small_and_over_capacity_frames_retire_without_synthetic_empty_buffer_eof
             (vec![0, 3, 0, 8], 64),
             (vec![0, 8, 0, 8], 4),
         ] {
-            let (a, mut peer) = UnixStream::pair()?;
-            let mut io = FramedConnection::new(Connection::from_unix(a), capacity, 64, 4, 8)?;
+            let (a, mut peer) = pair().await?;
+            let mut io = FramedConnection::new(a, capacity, 64, 4, 8)?;
             peer.write_all(&header).await?;
             let first = frame(&mut io).await;
             assert!(matches!(first, Err(Error::Malformed | Error::Capacity)));
@@ -76,8 +109,8 @@ fn zero_small_and_over_capacity_frames_retire_without_synthetic_empty_buffer_eof
 #[test]
 fn durable_fifo_and_mq_length_follow_partial_actual_write_attempts() -> Test {
     runtime()?.block_on(async {
-        let (a, mut peer) = UnixStream::pair()?;
-        let mut io = FramedConnection::new(Connection::from_unix(a), 64, 8, 2, 1)?;
+        let (a, mut peer) = pair().await?;
+        let mut io = FramedConnection::new(a, 64, 8, 2, 1)?;
         io.enqueue(&[0, 4, 0, 15])?;
         io.enqueue(&[0, 4, 0, 15])?;
         assert_eq!(io.mq_length(), 2);

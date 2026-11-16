@@ -1,8 +1,11 @@
-//! Real private Unix SDK writes and native owner deadlines; no peer SET result
+//! Native local SDK writes and native owner deadlines; no peer SET result
 //! or official C interoperability success is fabricated by these fixtures.
 use super::*;
 use crate::{Factory, ResultMode};
-use gnunet_service_runtime::clock::{ClockSample, ClockSubscription, RuntimeClock, SystemClock};
+use gnunet_service_runtime::{
+    clock::{ClockSample, ClockSubscription, RuntimeClock, SystemClock},
+    local::{Listener, Stream},
+};
 use gnunet_wire::official::set::ClientRequest;
 use std::{
     error::Error as StdError,
@@ -14,11 +17,12 @@ use std::{
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::{UnixListener, UnixStream},
     time::{sleep_until, timeout},
 };
 
 type Failure = Box<dyn StdError>;
+#[path = "result_tests.rs"]
+mod result_tests;
 const WAIT: Duration = Duration::from_secs(3);
 const SHORT: Duration = Duration::from_millis(80);
 const CLEANUP: Duration = Duration::from_millis(240);
@@ -40,14 +44,14 @@ impl RuntimeClock for FrozenClock {
 }
 struct Socket(PathBuf);
 impl Socket {
-    fn bind() -> Result<(Self, UnixListener), Failure> {
+    fn bind() -> Result<(Self, Listener), Failure> {
         static NEXT: AtomicU64 = AtomicU64::new(1);
-        let path = PathBuf::from(format!(
-            "/tmp/gnrs-set-timer-{}-{}.sock",
+        let path = std::env::temp_dir().join(format!(
+            "set-timer-{}-{}.sock",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
-        let listener = UnixListener::bind(&path)?;
+        let listener = Listener::bind(&path)?;
         Ok((Self(path), listener))
     }
 }
@@ -68,7 +72,7 @@ fn runtime() -> Result<tokio::runtime::Runtime, Failure> {
         .enable_all()
         .build()?)
 }
-async fn frame(peer: &mut UnixStream) -> Result<Vec<u8>, Failure> {
+async fn frame(peer: &mut Stream) -> Result<Vec<u8>, Failure> {
     timeout(WAIT, async {
         let mut header = [0; 4];
         peer.read_exact(&mut header).await?;
@@ -83,12 +87,12 @@ async fn frame(peer: &mut UnixStream) -> Result<Vec<u8>, Failure> {
     })
     .await?
 }
-async fn initialized() -> Result<(Socket, Set, UnixStream), Failure> {
+async fn initialized() -> Result<(Socket, Set, Stream), Failure> {
     initialized_with_clock(Arc::new(FrozenClock)).await
 }
 async fn initialized_with_clock(
     clock: Arc<dyn RuntimeClock>,
-) -> Result<(Socket, Set, UnixStream), Failure> {
+) -> Result<(Socket, Set, Stream), Failure> {
     initialized_with_limits(
         clock,
         Limits {
@@ -101,11 +105,18 @@ async fn initialized_with_clock(
 async fn initialized_with_limits(
     clock: Arc<dyn RuntimeClock>,
     limits: Limits,
-) -> Result<(Socket, Set, UnixStream), Failure> {
+) -> Result<(Socket, Set, Stream), Failure> {
+    initialized_for(clock, limits, OperationType::Union).await
+}
+async fn initialized_for(
+    clock: Arc<dyn RuntimeClock>,
+    limits: Limits,
+    operation: OperationType,
+) -> Result<(Socket, Set, Stream), Failure> {
     let (socket, listener) = Socket::bind()?;
     let factory = Factory::new(EndpointSource::unix_with_clock(socket.0.clone(), clock))?;
     let original = Bounds::new(factory.clock().as_ref(), Duration::from_secs(5))?;
-    let mut owner = factory.set(OperationType::Union, limits, original)?;
+    let mut owner = factory.set(operation, limits, original)?;
     let mut accept = std::pin::pin!(listener.accept());
     let mut peer = None;
     timeout(
@@ -133,24 +144,24 @@ async fn initialized_with_limits(
     )
     .await??;
     let mut peer = peer.ok_or("missing actual accepted source")?;
-    check(matches!(
-        ClientRequest::decode(&frame(&mut peer).await?)?,
-        ClientRequest::Create { operation: 2 }
-    ))?;
+    check(matches!(ClientRequest::decode(&frame(&mut peer).await?)?,
+        ClientRequest::Create { operation: actual } if actual == operation as u32))?;
     Ok((socket, owner, peer))
 }
 async fn operation(
     owner: &mut Set,
-    peer: &mut UnixStream,
+    peer: &mut Stream,
     original: Bounds,
 ) -> Result<OperationId, Failure> {
-    let prepared = Prepared::evaluate(
-        [2; 32],
-        [7; 64],
-        &[],
-        ResultMode::Symmetric,
-        crate::Options::default(),
-    )?;
+    operation_mode(owner, peer, original, ResultMode::Symmetric).await
+}
+async fn operation_mode(
+    owner: &mut Set,
+    peer: &mut Stream,
+    original: Bounds,
+    mode: ResultMode,
+) -> Result<OperationId, Failure> {
+    let prepared = Prepared::evaluate([2; 32], [7; 64], &[], mode, crate::Options::default())?;
     let id = owner
         .commit(prepared, original)
         .map_err(|failure| failure.error)?;
@@ -197,7 +208,7 @@ async fn loss(owner: &mut Set) -> Result<SetLoss, Failure> {
     )
     .await?)
 }
-async fn eof(peer: &mut UnixStream) -> Result<(), Failure> {
+async fn eof(peer: &mut Stream) -> Result<(), Failure> {
     let mut byte = [0; 1];
     check(timeout(WAIT, peer.read(&mut byte)).await?? == 0)
 }
@@ -551,8 +562,7 @@ fn completed_response_ends_partial_phase_but_not_original_operation() -> Result<
                 let SetProgress::Result {
                     operation,
                     epoch: actual,
-                    status,
-                    element,
+                    value,
                     terminal,
                     ..
                 } = event
@@ -563,8 +573,7 @@ fn completed_response_ends_partial_phase_but_not_original_operation() -> Result<
                     operation == id
                         && actual == epoch
                         && actual.live()
-                        && status == crate::Status::AddLocal
-                        && element.data == b"original"
+                        && matches!(&value, crate::ResultValue::AddLocal(element) if element.data == b"original")
                         && terminal.is_none()
                         && owner.operations.len() == 1,
                 )?;

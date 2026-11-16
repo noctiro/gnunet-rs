@@ -236,6 +236,9 @@ struct Peer<'id> {
     cursor: u8,
     application: bool,
     management: Option<management::Stream<'id>>,
+    // A lost MQ can retain only already admitted explicit-Destroy work. Its
+    // original fixed drain bounds remain active; this row performs no more I/O.
+    retiring: Option<CloseCause>,
 }
 /// Native application listener driver over one already constructed pure service.
 /// Startup/Activation/BoundListeners remain caller-owned; this opens no listener,
@@ -551,6 +554,7 @@ impl<'id, 'slots, 'bytes> Server<'id, 'slots, 'bytes> {
             cursor: 0,
             application: false,
             management: None,
+            retiring: None,
         });
         self.report.accepted = self.report.accepted.saturating_add(1);
         observe(Event::Accepted {
@@ -669,6 +673,41 @@ impl<'id, 'slots, 'bytes> Server<'id, 'slots, 'bytes> {
         });
         Poll::Ready(Progress::Activity)
     }
+    fn has_destroy_drain(&self, client: core::Client<'id>) -> bool {
+        self.drains.iter().flatten().any(|drain| {
+            drain.channel.client() == client
+                && self
+                    .core
+                    .channel_info(drain.channel)
+                    .is_ok_and(|info| info.draining)
+        })
+    }
+    fn lost_index(
+        &mut self,
+        index: usize,
+        cause: CloseCause,
+        observe: &mut impl FnMut(Event<'id>),
+    ) -> Result<(), Error> {
+        let client = self.peers[index]
+            .as_ref()
+            .ok_or(ProtocolError::StaleGeneration)?
+            .client;
+        if self.has_destroy_drain(client) {
+            self.core.retire_ingress(client)?;
+            // Explicit Destroy was accepted before this loss. Preserve those
+            // immutable outgoing effects on their existing destination owners;
+            // detaching now would discard their final DATA. No new command,
+            // source output or replacement MQ is admitted from this row.
+            self.peers[index]
+                .as_mut()
+                .ok_or(ProtocolError::StaleGeneration)?
+                .retiring = Some(cause);
+            self.changed();
+            Ok(())
+        } else {
+            self.close_index(index, cause, observe).map(|_| ())
+        }
+    }
     fn poll_write(
         &mut self,
         cx: &mut Context<'_>,
@@ -682,7 +721,7 @@ impl<'id, 'slots, 'bytes> Server<'id, 'slots, 'bytes> {
             Poll::Pending => return Poll::Pending,
             Poll::Ready(Err(error)) => {
                 return Poll::Ready(
-                    self.close_index(index, CloseCause::Fault(Error::Io(error)), observe)
+                    self.lost_index(index, CloseCause::Fault(Error::Io(error)), observe)
                         .map(|_| Progress::Activity),
                 );
             }
@@ -1024,11 +1063,11 @@ impl<'id, 'slots, 'bytes> Server<'id, 'slots, 'bytes> {
         match peer.framed.poll_read(cx) {
             Poll::Pending => Poll::Pending,
             Poll::Ready(Err(error)) => Poll::Ready(
-                self.close_index(index, CloseCause::Fault(Error::Io(error)), observe)
+                self.lost_index(index, CloseCause::Fault(Error::Io(error)), observe)
                     .map(|_| Progress::Activity),
             ),
             Poll::Ready(Ok(ReadStep::Eof)) => Poll::Ready(
-                self.close_index(index, CloseCause::Eof, observe)
+                self.lost_index(index, CloseCause::Eof, observe)
                     .map(|_| Progress::Activity),
             ),
             Poll::Ready(Ok(ReadStep::Progress { bytes, .. })) => {
@@ -1215,6 +1254,19 @@ impl<'id, 'slots, 'bytes> Server<'id, 'slots, 'bytes> {
         if self.shutdown == Some(ShutdownMode::Immediate) {
             return Poll::Ready(
                 self.close_index(index, CloseCause::Shutdown, observe)
+                    .map(|_| Progress::Activity),
+            );
+        }
+        if peer.retiring.is_some() {
+            if self.has_destroy_drain(peer.client) {
+                return Poll::Pending;
+            }
+            let cause = self.peers[index]
+                .as_mut()
+                .and_then(|peer| peer.retiring.take())
+                .ok_or(ProtocolError::StaleGeneration)?;
+            return Poll::Ready(
+                self.close_index(index, cause, observe)
                     .map(|_| Progress::Activity),
             );
         }

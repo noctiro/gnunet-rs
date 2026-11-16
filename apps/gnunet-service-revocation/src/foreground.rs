@@ -11,7 +11,7 @@ use gnunet_program_host::{reporting::Reporter, shared_clock::SharedClock};
 use gnunet_resolver_broker::Driver;
 use gnunet_revocation_host::server::{self, Event, Progress, Server};
 use gnunet_service_runtime::{BoundListeners, clock::RuntimeClock, service::ShutdownMode};
-use gnunet_service_startup::{ParentControl, daemon::ChildReady};
+use gnunet_service_startup::ControlReceiver;
 use std::{
     future::{Future, poll_fn},
     io::{self, Write},
@@ -126,14 +126,13 @@ impl Drop for Owners<'_, '_> {
         }
     }
 }
-pub(super) struct Inputs<'child> {
+pub(super) struct Inputs {
     pub config: Configuration,
     pub settings: Settings,
     pub bound: BoundListeners,
-    pub parent: Option<ParentControl>,
+    pub parent: Option<ControlReceiver>,
     pub clock: SharedClock,
     pub reports: Reporter,
-    pub child: &'child mut ChildReady,
 }
 enum Turn {
     Stop(Stop),
@@ -161,7 +160,10 @@ fn stats_progress(reports: &Reporter, progress: statistics::Progress) {
         statistics::Progress::Closed => reports.debug("revocation.statistics.closed", format_args!("revocation original statistics owner physically closed")),
     }
 }
-pub(super) async fn run(input: Inputs<'_>) -> Result<(), Failure> {
+pub(super) async fn run(
+    input: Inputs,
+    notify_ready: impl Future<Output = Result<(), Failure>>,
+) -> Result<(), Failure> {
     let Inputs {
         config,
         settings,
@@ -169,7 +171,6 @@ pub(super) async fn run(input: Inputs<'_>) -> Result<(), Failure> {
         parent,
         clock,
         reports,
-        child,
     } = input;
     let runtime: Arc<dyn RuntimeClock> = Arc::new(clock);
     let live = LiveConfiguration::new(config);
@@ -238,20 +239,21 @@ pub(super) async fn run(input: Inputs<'_>) -> Result<(), Failure> {
     let recovered = owners.server.inventory().generation();
     // Local SERVICE readiness is the actual initialized IPC/inventory/workers,
     // not a claim that CORE/SETU attached or any remote revocation was accepted.
-    let ready = if reports.failed() {
-        Err(io::Error::other(
-            "selected logging failed before actual REVOCATION readiness",
-        ))
-    } else {
-        let mut out = io::stdout().lock();
-        writeln!(out,"READY revocation wire=0.29.1 inventory-generation={recovered} workers=2 ipc=listening network=core,setu network-ready=actual-events-only").and_then(|()|out.flush()).and_then(|()|child.ready())
-    };
+    let ready: Result<(), Failure> = async {
+        if reports.failed() { return Err(io::Error::other("selected logging failed before REVOCATION readiness").into()); }
+        {
+            let mut out = io::stdout().lock();
+            writeln!(out, "READY revocation wire=0.29.1 inventory-generation={recovered} workers=2 ipc=listening network=core,setu network-ready=actual-events-only")?;
+            out.flush()?;
+        }
+        gnunet_program_host::service::acknowledge_ready(notify_ready, signals.native(), &reports, settings.grace).await
+    }.await;
     let mut stop_at = None;
     let mut stop_alarm: Option<std::pin::Pin<Box<Sleep>>> = None;
     let mut turn = 0usize;
     let mut resolver_failed = false;
     let outcome = if let Err(error) = ready {
-        Err(Box::new(error) as Failure)
+        Err(error)
     } else {
         loop {
             if errors.statistics.is_none()

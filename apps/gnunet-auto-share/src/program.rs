@@ -20,10 +20,8 @@ use settings::Settings;
 use std::{
     cell::RefCell,
     error::Error,
-    ffi::OsStr,
     future::{Future, poll_fn},
     io,
-    os::unix::ffi::OsStrExt,
     path::PathBuf,
     pin::Pin,
     rc::Rc,
@@ -34,7 +32,7 @@ pub(super) type Failure = Box<dyn Error>;
 #[derive(Debug, Default)]
 struct Failures {
     original: Option<Failure>,
-    signal: Option<io::Error>,
+    signal: Option<Failure>,
     resolver: Option<Failure>,
     disconnect: Option<Failure>,
     program: Option<Failure>,
@@ -179,7 +177,7 @@ pub(super) fn run(parent: Option<ParentControl>) -> Result<(), Failure> {
         let [directory] = prepared.main().arguments else {
             return Err("gnunet-auto-share requires exactly one DIRECTORY".into());
         };
-        let directory = PathBuf::from(OsStr::from_bytes(directory));
+        let directory = program::native_path(directory)?.into_owned();
         let disabled = extractor.get()? != 0;
         let settings = extractors.with(|selected| {
             extractor_library.with(|library| {
@@ -199,20 +197,26 @@ pub(super) fn run(parent: Option<ParentControl>) -> Result<(), Failure> {
             disable_creation_time: date.get()? != 0,
             ..Default::default()
         };
-        let user = gnunet_service_startup::configured_user(prepared.main().config, b"auto-share")?
-            .map(|n| gnunet_service_startup::resolve_user(&n))
-            .transpose()?;
-        let applied = gnunet_service_startup::apply_privileges(
-            user.as_ref(),
-            gnunet_service_startup::GroupsProfile::WithInitgroups,
-        )?;
-        if user.is_some() {
-            reports.borrow_mut().log(
-                "auto-share.process-identity",
-                Level::INFO,
-                format_args!("{applied:?}"),
-            );
+        #[cfg(unix)]
+        {
+            let user =
+                gnunet_service_startup::configured_user(prepared.main().config, b"auto-share")?
+                    .map(|n| gnunet_service_startup::resolve_user(&n))
+                    .transpose()?;
+            let applied = gnunet_service_startup::apply_privileges(
+                user.as_ref(),
+                gnunet_service_startup::GroupsProfile::WithInitgroups,
+            )?;
+            if user.is_some() {
+                reports.borrow_mut().log(
+                    "auto-share.process-identity",
+                    Level::INFO,
+                    format_args!("{applied:?}"),
+                );
+            }
         }
+        #[cfg(windows)]
+        gnunet_service_startup::verify_configured_identity(prepared.main().config, b"auto-share")?;
         if reports.borrow().failed() {
             return Ok(());
         }

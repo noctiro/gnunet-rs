@@ -328,6 +328,28 @@ impl<'id, 'slots> Client<'id, 'slots> {
     pub const fn pending_transmit(&self) -> Option<Transmit<'id>> {
         self.core.pending_transmit()
     }
+    /// Remove this exact original frame only when no byte was written, then
+    /// restore its logical reservation. False retains an already exposed frame.
+    /// No socket operation, wire cancellation or remote receipt is created.
+    pub fn discard_unexposed(&mut self, transmit: Transmit<'id>) -> Result<bool, Error> {
+        if self.closed {
+            return Err(ProtocolError::Closed.into());
+        }
+        match self.core.check_discard(transmit) {
+            Err(ProtocolError::OutcomeUnknown) => return Ok(false),
+            result => result?,
+        }
+        let removed = self
+            .physical
+            .framing_mut()
+            .ok_or(ProtocolError::NotReady)?
+            .remove_unwritten(|origin, _| origin == transmit, |_, _| {});
+        if removed != 1 {
+            return Err(ProtocolError::OutcomeUnknown.into());
+        }
+        self.core.discard(transmit)?;
+        Ok(true)
+    }
     /// Copy bounded current channel metadata without granting any credit.
     pub fn channel_info(&self, channel: Channel<'id>) -> Result<ChannelInfo, Error> {
         Ok(self.core.channel_info(channel)?)
@@ -552,6 +574,12 @@ impl<'id, 'slots> Client<'id, 'slots> {
             return Err(ProtocolError::Closed.into());
         }
         self.retire(LossCause::Requested)
+    }
+    /// Cancel only an unattached original connector before an external identity
+    /// gate changes. An attached MQ, its channels and partial output stay owned;
+    /// retrying later never renews the caller's original operation deadline.
+    pub fn cancel_connect(&mut self) -> bool {
+        self.physical.cancel_connect()
     }
     /// Recover an explicit CLIENT clock/time/Resolver-port refusal. This retains
     /// original attached RX/TX and grants no synthetic callback or operation.

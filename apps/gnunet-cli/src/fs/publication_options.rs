@@ -1,7 +1,7 @@
 //! One publication policy selection, frozen into existing BlockOptions/tasks.
 use gnunet::{fs_host::network::BlockOptions, types::AbsoluteTime};
 use gnunet_service_runtime::clock::RuntimeClock;
-use std::{error::Error, ffi::OsStr, os::unix::ffi::OsStrExt};
+use std::{error::Error, ffi::OsStr};
 
 const DEFAULT_LIFETIME_US: u64 = 63_072_000_000_000;
 #[derive(Clone, Copy)]
@@ -28,7 +28,7 @@ impl Selection {
             .get(*at)
             .ok_or("missing publication option")?
             .as_ref()
-            .as_bytes();
+            .as_encoded_bytes();
         if !matches!(
             name,
             b"-p"
@@ -59,7 +59,7 @@ impl Selection {
                     Expiration::Absolute(AbsoluteTime::from_micros(micros))
                 } else {
                     Expiration::Relative(gnunet_config::parse_relative_time_checked(
-                        value.as_bytes(),
+                        crate::argument::wire_bytes(value)?,
                     )?)
                 });
             }

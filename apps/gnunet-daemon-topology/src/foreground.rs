@@ -1,16 +1,9 @@
 //! One PROGRAM task drives actual TOPOLOGY providers plus the shared Resolver.
-use crate::{
-    Failure,
-    control::Signals,
-    early::Inherited,
-    reporting::{Cleanup, Reports},
-    settings::Settings,
-};
+use crate::{Failure, reporting::Reports, settings::Settings};
 use gnunet_client_host::{EndpointSource, LiveConfiguration};
-use gnunet_config::Configuration;
 use gnunet_program_host::{program::Prepared, shared_clock::SharedClock};
-use gnunet_resolver_broker::Driver;
 use gnunet_service_runtime::clock::RuntimeClock;
+use gnunet_service_startup::{ClientStartup, StopSignals};
 use gnunet_topology_host::{Event, Progress, Runtime};
 use std::{
     cell::RefCell,
@@ -21,6 +14,8 @@ use std::{
     task::Poll,
 };
 use tokio::time::Instant;
+mod owners;
+use owners::{Owners, Providers, Resolver};
 #[derive(Debug, Default)]
 struct Failures {
     program: Option<Failure>,
@@ -29,6 +24,7 @@ struct Failures {
     resolver: Option<Failure>,
     cleanup: Option<Failure>,
     statistics: Option<Failure>,
+    statistics_drain: Option<Failure>,
     report: Option<io::Error>,
 }
 impl Failures {
@@ -39,6 +35,7 @@ impl Failures {
             && self.resolver.is_none()
             && self.cleanup.is_none()
             && self.statistics.is_none()
+            && self.statistics_drain.is_none()
             && self.report.is_none()
         {
             Ok(())
@@ -61,10 +58,23 @@ impl std::error::Error for Failures {
             .or(self.resolver.as_deref())
             .or(self.cleanup.as_deref())
             .or(self.statistics.as_deref())
+            .or(self.statistics_drain.as_deref())
             .or(self
                 .report
                 .as_ref()
                 .map(|error| error as &dyn std::error::Error))
+    }
+}
+#[derive(Debug)]
+struct StartupExpired(gnunet_topology_host::Readiness);
+impl std::fmt::Display for StartupExpired {
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(out, "TOPOLOGY source readiness expired: {:?}", self.0)
+    }
+}
+impl std::error::Error for StartupExpired {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&gnunet_types::Error::Deadline)
     }
 }
 fn observe(reports: &Reports, event: Event<'_>) {
@@ -80,53 +90,29 @@ fn observe(reports: &Reports, event: Event<'_>) {
         ),
     }
 }
-struct Owners<'id> {
-    runtime: Runtime<'id>,
-    statistics: crate::statistics::Forwarder<'id>,
-    resolver: Driver<64, 256>,
-    resolver_closed: bool,
-    reports: Reports,
-}
-impl Drop for Owners<'_> {
-    fn drop(&mut self) {
-        if let Err(error) = self
-            .runtime
-            .close(&mut |event| observe(&self.reports, event))
-        {
-            self.reports.cleanup(Cleanup::Runtime, Box::new(error));
-        }
-        if let Some(error) = self.runtime.take_cleanup_error() {
-            self.reports
-                .cleanup(Cleanup::DeferredRuntime, Box::new(error));
-        }
-        if let Some(error) = self.statistics.close() {
-            self.reports.cleanup(Cleanup::Statistics, error);
-        }
-        if !self.resolver_closed {
-            let result = self.resolver.disconnect();
-            self.resolver_closed = true;
-            if let Err(error) = result {
-                self.reports.cleanup(Cleanup::Resolver, Box::new(error));
-            }
-        }
-    }
-}
 pub(super) async fn scheduled(
     prepared: Prepared,
     clock: SharedClock,
     settings: Settings,
-    inherited: Inherited,
+    startup: ClientStartup,
     reports: Reports,
 ) -> Result<(), Failure> {
-    let config = prepared.main().config.duplicate()?;
+    if reports.failed() {
+        return Err("selected TOPOLOGY Logger failed".into());
+    }
+    let deadline = Instant::now()
+        .checked_add(settings.startup)
+        .ok_or("TOPOLOGY startup bound overflow")?;
+    let signals = StopSignals::for_client(startup.parent)?;
     let runtime: Arc<dyn RuntimeClock> = Arc::new(clock.clone());
-    let live = LiveConfiguration::new(config.duplicate()?);
+    let live = LiveConfiguration::new(prepared.main().config.duplicate()?);
     let (mut program_context, resolver) = gnunet_resolver_broker::broker::<64, 256>(
         live.clone(),
         settings.resolver,
         gnunet_resolver_broker::native_profile()?,
         runtime.clone(),
     )?;
+    let resolver = Resolver::new(resolver, reports.clone());
     let resolution = program_context.resolution_context();
     let result = Rc::new(RefCell::new(None));
     let receiving = Rc::clone(&result);
@@ -137,9 +123,16 @@ pub(super) async fn scheduled(
             let stopping = scope.clone();
             let reports = task_reports.clone();
             if let Err(error) = scope.spawn(async move {
-                let completed = run(
-                    config, settings, inherited, resolver, live, resolution, reports,
-                )
+                let completed = run(Inputs {
+                    settings,
+                    clock: runtime,
+                    signals,
+                    resolver,
+                    live,
+                    resolution,
+                    reports,
+                    startup: deadline,
+                })
                 .await;
                 *destination.borrow_mut() = Some(completed);
                 if let Err(error) = stopping.shutdown() {
@@ -185,16 +178,30 @@ pub(super) async fn scheduled(
     }
     .finish()
 }
-async fn run(
-    _config: Configuration,
+struct Inputs {
     settings: Settings,
-    inherited: Inherited,
-    resolver: Driver<64, 256>,
+    clock: Arc<dyn RuntimeClock>,
+    signals: StopSignals,
+    resolver: Resolver,
     live: LiveConfiguration,
     resolution: gnunet_client_host::resolution::SharedResolution,
     reports: Reports,
-) -> Result<(), Failure> {
-    let mut signals = Signals::new(inherited.parent)?;
+    startup: Instant,
+}
+async fn run(input: Inputs) -> Result<(), Failure> {
+    let Inputs {
+        settings,
+        clock,
+        mut signals,
+        resolver,
+        live,
+        resolution,
+        reports,
+        startup,
+    } = input;
+    if Instant::now() >= startup {
+        return Err("TOPOLOGY startup expired before provider construction".into());
+    }
     let mut core = gnunet_core_client_host::Instance::new();
     let mut pils = gnunet_pils::client::Instance::new();
     let mut peerstore = gnunet_peerstore_client_host::Instance::new();
@@ -217,37 +224,63 @@ async fn run(
         },
         settings.limits,
     )?;
+    let providers = Providers::new(runtime, reports.clone());
     let statistics = crate::statistics::Forwarder::new(
         &mut statistics_instance,
         live,
         resolution,
+        clock,
+        providers.runtime.statistics(),
         reports.clone(),
     )?;
     let mut owners = Owners {
-        runtime,
+        providers,
         statistics,
         resolver,
-        resolver_closed: false,
         reports: reports.clone(),
     };
-    let startup = Instant::now()
-        .checked_add(settings.startup)
-        .ok_or("TOPOLOGY startup bound overflow")?;
     let mut ready = false;
     let mut cursor = 0usize;
     let outcome = loop {
+        let stopping = poll_fn(|cx| -> Poll<Result<bool, Failure>> {
+            reports.register(cx);
+            if reports.failed() {
+                return Poll::Ready(Ok(true));
+            }
+            if !ready && Instant::now() >= startup {
+                return Poll::Ready(Err(Box::new(StartupExpired(
+                    owners.providers.runtime.readiness(),
+                ))));
+            }
+            Poll::Ready(match signals.poll_stop(cx) {
+                Poll::Ready(result) => result
+                    .map(|()| true)
+                    .map_err(|error| Box::new(error) as Failure),
+                Poll::Pending => Ok(false),
+            })
+        })
+        .await;
+        match stopping {
+            Ok(true) => break Ok(()),
+            Ok(false) => {}
+            Err(error) => break Err(error),
+        }
+        owners
+            .statistics
+            .refresh(owners.providers.runtime.statistics());
         if reports.failed() {
             break Ok(());
         }
-        owners.statistics.refresh(owners.runtime.statistics());
-        if reports.failed() {
-            break Ok(());
-        }
-        let current = owners.runtime.readiness();
+        let current = owners.providers.runtime.readiness();
         if !ready && current.complete() {
             let output = {
                 let mut out = io::stdout().lock();
-                writeln!(out,"READY topology wire=0.29.1 core=observed pils=verified-current peerstore=actual-sync transport=attached signature-address-coverage={:?} hidden-tasks=0",settings.limits.profile.coverage()).and_then(|()|out.flush())
+                writeln!(
+                    out,
+                    "READY topology address-coverage={:?}",
+                    settings.limits.profile.coverage()
+                )
+                .and_then(|()| out.flush())
             };
             if let Err(error) = output {
                 break Err(Box::new(error) as Failure);
@@ -263,8 +296,8 @@ async fn run(
         }
         let wait = (!ready).then_some(startup);
         let (runtime, resolver, statistics) = (
-            &mut owners.runtime,
-            &mut owners.resolver,
+            &mut owners.providers.runtime,
+            &mut owners.resolver.driver,
             &mut owners.statistics,
         );
         let mut resolving = std::pin::pin!(resolver.drive_waiting(wait, |event| reports.debug(
@@ -276,7 +309,7 @@ async fn run(
             if reports.failed() {
                 return Poll::Ready(Ok(Turn::Logging));
             }
-            if let Poll::Ready(result) = signals.poll(cx) {
+            if let Poll::Ready(result) = signals.poll_stop(cx) {
                 return Poll::Ready(
                     result
                         .map(|()| Turn::Signal)
@@ -310,26 +343,100 @@ async fn run(
         })
         .await;
         cursor = (cursor + 1) % 3;
-        match step{Ok(Turn::Signal|Turn::Logging|Turn::Runtime(Progress::Stopped))=>break Ok(()),Ok(Turn::Runtime(Progress::WaitDeadline))if !ready=>break Err("TOPOLOGY actual source readiness did not complete before original startup deadline".into()),Ok(Turn::Resolver|Turn::Statistics|Turn::Runtime(_))=>{},Err(error)=>break Err(error)}
+        match step {
+            Ok(Turn::Signal | Turn::Logging | Turn::Runtime(Progress::Stopped)) => break Ok(()),
+            Ok(Turn::Runtime(Progress::WaitDeadline)) if !ready => {
+                break Err(
+                    Box::new(StartupExpired(owners.providers.runtime.readiness())) as Failure,
+                );
+            }
+            Ok(Turn::Resolver | Turn::Statistics | Turn::Runtime(_)) => {}
+            Err(error) => break Err(error),
+        }
     };
     // Cleanup is clock-independent and closes every original provider before logs.
-    let native = owners.runtime.close(&mut |event| observe(&reports, event));
-    let cleanup = owners.runtime.take_cleanup_error();
+    let (native, cleanup) = owners.providers.close();
+    let statistics_drain = drain_statistics(&mut owners, &mut signals, &reports)
+        .await
+        .err();
     let statistics = owners.statistics.close();
-    let resolver = owners.resolver.disconnect();
-    owners.resolver_closed = true;
+    let resolver = owners.resolver.close();
     let report = {
         let mut out = io::stdout().lock();
-        writeln!(out,"STOPPED topology ready-observed={ready} original-sources=closed remote-delivery=not-claimed store-results=actual-events-only").and_then(|()|out.flush())
+        writeln!(out, "STOPPED topology ready-observed={ready}").and_then(|()| out.flush())
     };
     Failures {
         task: outcome.err(),
-        native: native.err().map(|e| Box::new(e) as Failure),
+        native: native.map(|e| Box::new(e) as Failure),
         cleanup: cleanup.map(|e| Box::new(e) as Failure),
         statistics,
+        statistics_drain,
         resolver: resolver.err().map(|e| Box::new(e) as Failure),
         report: report.err(),
         ..Default::default()
     }
     .finish()
+}
+
+/// Only the original statistics source and Resolver run after business retirement.
+async fn drain_statistics(
+    owners: &mut Owners<'_>,
+    signals: &mut StopSignals,
+    reports: &Reports,
+) -> Result<(), Failure> {
+    if reports.failed() {
+        return Ok(());
+    }
+    owners
+        .statistics
+        .begin_close(owners.providers.runtime.statistics());
+    let mut cursor = false;
+    while !owners.statistics.is_closed() {
+        let (statistics, resolver) = (&mut owners.statistics, &mut owners.resolver.driver);
+        let mut resolving = std::pin::pin!(resolver.drive_waiting(None, |event| {
+            reports.debug(
+                "topology.resolver.final",
+                format_args!("Resolver: {event:?}"),
+            );
+        }));
+        let stop = poll_fn(|cx| -> Poll<Result<bool, Failure>> {
+            reports.register(cx);
+            if reports.failed() {
+                return Poll::Ready(Ok(true));
+            }
+            if let Poll::Ready(result) = signals.poll_stop(cx) {
+                return Poll::Ready(
+                    result
+                        .map(|()| true)
+                        .map_err(|error| Box::new(error) as Failure),
+                );
+            }
+            if statistics.guard(cx) {
+                return Poll::Ready(Ok(false));
+            }
+            for offset in 0..2 {
+                if reports.failed() {
+                    return Poll::Ready(Ok(true));
+                }
+                if (usize::from(cursor) + offset).is_multiple_of(2) {
+                    if let Poll::Ready(result) = resolving.as_mut().poll(cx) {
+                        return Poll::Ready(
+                            result
+                                .map(|_| false)
+                                .map_err(|error| Box::new(error) as Failure),
+                        );
+                    }
+                } else if statistics.poll(cx, None).is_ready() {
+                    return Poll::Ready(Ok(false));
+                }
+            }
+            Poll::Pending
+        })
+        .await?;
+        if stop {
+            break;
+        }
+        cursor = !cursor;
+    }
+    Ok(())
 }

@@ -5,8 +5,14 @@
 use super::*;
 use content::TAG_BYTES;
 use gnunet_crypto::hash512;
+#[cfg(unix)]
+use std::fs::File;
+#[cfg(unix)]
+use std::os::unix::{ffi::OsStringExt, fs::MetadataExt};
 use std::{
     ffi::OsString,
+    fs,
+    path::PathBuf,
     sync::atomic::{AtomicU64, Ordering},
 };
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -35,13 +41,15 @@ impl Drop for Directory {
 #[test]
 fn actual_validation_duplicate_path_sorted_list_cancel_and_durable_unindex() -> TestResult {
     let directory = Directory::new()?;
-    let path = directory
-        .0
-        .join(OsString::from_vec(if cfg!(target_vendor = "apple") {
-            b"original-\xc3\xa9".to_vec()
-        } else {
-            b"original-\xff".to_vec()
-        }));
+    #[cfg(unix)]
+    let name = OsString::from_vec(if cfg!(target_vendor = "apple") {
+        b"original-\xc3\xa9".to_vec()
+    } else {
+        b"original-\xff".to_vec()
+    });
+    #[cfg(windows)]
+    let name = OsString::from("original-雪");
+    let path = directory.0.join(name);
     let other = directory.0.join("same-content");
     let bytes = vec![0x35; BLOCK_BYTES + 13];
     fs::write(&path, &bytes)?;
@@ -54,6 +62,16 @@ fn actual_validation_duplicate_path_sorted_list_cancel_and_durable_unindex() -> 
             ..Limits::default()
         },
     )?;
+    #[cfg(unix)]
+    assert_eq!(
+        index.directory_sync(),
+        Some(gnunet_native::DirectorySync::Synchronized)
+    );
+    #[cfg(windows)]
+    assert_eq!(
+        index.directory_sync(),
+        Some(gnunet_native::DirectorySync::Unavailable)
+    );
     assert!(matches!(
         index.register([0; 64], &path, 0, 0),
         Err(Error::HashMismatch)
@@ -75,13 +93,26 @@ fn actual_validation_duplicate_path_sorted_list_cancel_and_durable_unindex() -> 
             .next()
             .ok_or("missing original entry")?
             .filename,
-        path.as_os_str().as_bytes()
+        crate::input::protocol_filename(&path)?.as_ref()
     );
-    let native_device = u64::try_from(u128::from(
-        nix::sys::statvfs::fstatvfs(File::open(&path)?)?.filesystem_id(),
-    ))?;
-    let identifiers = index.register(file_id, &path, native_device, fs::metadata(&path)?.ino())?;
-    assert_eq!(identifiers.verification, Verification::Identifiers);
+    #[cfg(unix)]
+    {
+        let native_device = u64::try_from(u128::from(
+            nix::sys::statvfs::fstatvfs(File::open(&path)?)?.filesystem_id(),
+        ))?;
+        let identifiers =
+            index.register(file_id, &path, native_device, fs::metadata(&path)?.ino())?;
+        assert_eq!(identifiers.verification, Verification::Identifiers);
+    }
+    #[cfg(windows)]
+    {
+        let fallback = index.register(file_id, &path, u64::MAX, u64::MAX)?;
+        assert_eq!(fallback.verification, Verification::WholeFileHash);
+        assert!(matches!(
+            index.register([0; 64], &path, u64::MAX, u64::MAX),
+            Err(Error::HashMismatch)
+        ));
+    }
     let empty = directory.0.join("empty");
     fs::write(&empty, [])?;
     let empty_id = hash512(&[]);

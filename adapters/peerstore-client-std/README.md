@@ -11,6 +11,8 @@ exhaustion is explicit. No service, persistence backend, global counter, hidden
 Resolver, worker or task is created. The older TRANSPORT-specific PEERSTORE
 server remains a separate subset and is not used as this general client.
 
+## Public interface
+
 The API accepts borrowed official `Record` and `Filter` values. Subsystem is
 required; STORE also requires a key. An empty C string remains distinct from an
 absent optional selector. Options1 means replace; other raw STORE option values
@@ -54,6 +56,8 @@ monitor loss exposes `Lost`, closes the original MQ, and may restore its retaine
 read-only intent on a new epoch, with fresh credit1 and a new SYNC phase. The original deadline never resets. This explicitly permits re-enumeration or
 live gaps; it makes no uninterrupted or exactly-once stream claim.
 
+## Cancellation and recovery
+
 `cancel` removes exact wholly unwritten originals. STORE requests with any
 exposure terminate locally as Unknown. An iterator's partial original request
 or NEXT remains immutable, then the exact ITERATE_STOP drains on that same MQ. `StopSubmitted` means the original STOP fully wrote; there is no STOP ACK. A
@@ -68,11 +72,3 @@ even while shared CLIENT clock stabilization returns Pending. It reuses the
 same Channel's one native wait alarm; no second timer or task is created. `WaitDeadline` only ends this borrow's wait, without canceling, closing,
 re-admitting or renewing the underlying operation. Already retained completions,
 Closed and port/clock failures keep their existing earlier priority. The record's expiry and operation's absolute UTC deadline remain separate.
-
-The one native model uses Unix streams with a clearly controlled IPC
-actor. It emits a STORE failure-1 and a second request's unanswered MQ
-loss; it does not fabricate saved/durable success. It checks no STORE replay,
-iterator credit/clamping/STOP and two monitor epochs with initial/SYNC/
-live credit and physical cancellation. The model is not a backend or C
-counterpart profile and does not certify the new service/WAL or whole node. Production code relies only on the fixed official codec; it never constructs a
-service response. See the package handoff for its exact codec dependency.

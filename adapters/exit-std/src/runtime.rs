@@ -25,7 +25,7 @@ use tokio::{
 mod types;
 pub use types::{
     Binding, BindingStatus, BuildFailure, Error, Event, Limits, OsEntropy, Parts, Progress, Report,
-    Resolver, Shutdown,
+    Resolver, Shutdown, TunReplacementFailure,
 };
 mod admin;
 mod packet_source;
@@ -638,6 +638,8 @@ impl<'cfg, 'id, 'slots, E: Entropy> Driver<'cfg, 'id, 'slots, E> {
     }
     /// Independently physically close every actual source before its callbacks,
     /// including on a failed clock. First failure never skips another cleanup.
+    /// Persistent interface destruction can wait for open native users; a
+    /// destructor must call defer_interface_cleanup before using this fallback.
     pub fn shutdown(&mut self, mut observe: impl FnMut(Event<'id>)) -> Shutdown {
         self.stopping = true;
         self.engine.shutdown();
@@ -676,9 +678,18 @@ impl<'cfg, 'id, 'slots, E: Entropy> Driver<'cfg, 'id, 'slots, E> {
             quiescent,
         }
     }
+    /// Defer potentially waiting interface destruction for destructor fallback.
+    /// The next transport close retains the pending cleanup as an explicit error.
+    pub fn defer_interface_cleanup(&mut self) {
+        #[cfg(target_os = "freebsd")]
+        if let Some(PacketSource::Native(io)) = self.tun.as_mut() {
+            io.defer_interface_cleanup();
+        }
+    }
 }
 impl<E: Entropy> Drop for Driver<'_, '_, '_, E> {
     fn drop(&mut self) {
+        self.defer_interface_cleanup();
         let _stopped = self.shutdown(|_| {});
     }
 }

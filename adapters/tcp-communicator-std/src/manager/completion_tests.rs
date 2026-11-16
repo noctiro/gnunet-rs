@@ -1,8 +1,8 @@
-//! Local completion admission over real Unix streams; no normal/C-peer claim.
+//! Local completion admission over real loopback streams; no normal/C-peer claim.
 use super::*;
 use gnunet_crypto::EddsaPrivateKey;
 use gnunet_tcp_communicator_core::session::Role;
-use tokio::{io::AsyncReadExt, net::UnixStream};
+use tokio::io::AsyncReadExt;
 
 type Failure = Box<dyn std::error::Error>;
 const QID: u32 = 0x0102_0304;
@@ -39,8 +39,8 @@ async fn finite_capacity_and_one_slot_completion_never_duplicate_ack() -> Result
         check(n > 64 && scratch[48..56] == 3u64.to_be_bytes())?;
         check(queue.setup(0, &mut scratch) == Err(Error::InvalidInput))?;
         check(queue.setup(u64::MAX, &mut scratch) == Err(Error::InvalidInput))?;
-        let (client, mut service) = UnixStream::pair()?;
-        let mut link = Link::new(Connection::from_unix(client), 65535, 1)?;
+        let (client, mut service) = crate::test_support::pair().await?;
+        let mut link = Link::new(Connection::from_tcp(client), 65535, 1)?;
         let mut send = original(peer);
         check(!send.complete(&mut link, 7, true, &queue, &mut scratch)?)?;
         check(send.result_queued)?;
@@ -80,8 +80,8 @@ async fn old_completion_and_terminal_queue_cannot_grant_replacement_credit() -> 
         let mut scratch = [0; 128];
         // Retire each original stage: before ACK, ACK queued, ACK wholly written.
         for stage in 0..3 {
-            let (client, mut old_service) = UnixStream::pair()?;
-            let mut link = Link::new(Connection::from_unix(client), 65535, 1)?;
+            let (client, mut old_service) = crate::test_support::pair().await?;
+            let mut link = Link::new(Connection::from_tcp(client), 65535, 1)?;
             let mut send = original(peer);
             if stage > 0 {
                 check(!send.complete(&mut link, 7, true, &queue, &mut scratch)?)?;
@@ -91,8 +91,8 @@ async fn old_completion_and_terminal_queue_cannot_grant_replacement_credit() -> 
                 old_service.read_exact(&mut [0; 52]).await?;
             }
             link.disconnect();
-            let (client, service) = UnixStream::pair()?;
-            link.attach(Connection::from_unix(client))
+            let (client, service) = crate::test_support::pair().await?;
+            link.attach(Connection::from_tcp(client))
                 .map_err(|rejected| rejected.reason)?;
             check(send.complete(&mut link, 8, true, &queue, &mut scratch)?)?;
             check(link.empty())?;
@@ -103,8 +103,8 @@ async fn old_completion_and_terminal_queue_cannot_grant_replacement_credit() -> 
             )?;
         }
         // Same-source route withdrawal after ACK must not return capacity either.
-        let (client, mut service) = UnixStream::pair()?;
-        let mut link = Link::new(Connection::from_unix(client), 65535, 1)?;
+        let (client, mut service) = crate::test_support::pair().await?;
+        let mut link = Link::new(Connection::from_tcp(client), 65535, 1)?;
         let mut send = original(peer);
         check(!send.complete(&mut link, 7, true, &queue, &mut scratch)?)?;
         flush(&mut link).await?;

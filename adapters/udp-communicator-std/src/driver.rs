@@ -79,8 +79,11 @@ impl Default for Capacity {
 }
 /// One actual progress observation. Neither native IO nor a physical IPC write
 /// supplies remote delivery, service admission, KID or queue credit.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Debug)]
 pub enum Activity {
+    /// One isolated receive failure on the original socket, without peer
+    /// attribution, packet bytes, source retirement or delivery credit.
+    ReceiveError(io::Error),
     /// Actual native/IPC bytes transferred.
     Io,
     /// One complete atomic UDP syscall transferred the original prepared packet.
@@ -379,6 +382,14 @@ impl Driver {
             && self.io.queued_frames() == 0
             && self.completion.is_none()
         {
+            match self.io.poll_shutdown(cx) {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(Err(error)) => {
+                    self.close();
+                    return Poll::Ready(Err(DriverError::Transport(error)));
+                }
+                Poll::Ready(Ok(())) => {}
+            }
             self.io.retire();
             self.lifecycle = Lifecycle::Closed;
             return Poll::Ready(Ok(Activity::Closed));
@@ -683,6 +694,11 @@ impl Driver {
                 }
                 _ => match self.socket.poll_receive(cx) {
                     Poll::Pending => None,
+                    Poll::Ready(Err(SocketError::Io(error)))
+                        if gnunet_native::network::isolated_datagram_receive_error(&error) =>
+                    {
+                        Some(Activity::ReceiveError(error))
+                    }
                     Poll::Ready(Err(error)) => return Poll::Ready(Err(error.into())),
                     Poll::Ready(Ok(receipt)) => self.incoming(identity, journal, receipt)?,
                 },

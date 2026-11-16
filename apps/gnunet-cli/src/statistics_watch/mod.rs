@@ -1,7 +1,5 @@
 //! Shared normal STATISTICS PROGRAM/configuration/Resolver entry point.
-mod control;
 mod driver;
-mod early;
 mod finite;
 mod output;
 use gnunet_program_host::{
@@ -10,9 +8,7 @@ use gnunet_program_host::{
     reporting::Reporter,
     shared_clock::SharedClock,
 };
-use std::{
-    cell::Cell, error::Error, ffi::OsString, io, os::unix::ffi::OsStrExt, rc::Rc, sync::Arc,
-};
+use std::{cell::Cell, error::Error, ffi::OsString, io, rc::Rc, sync::Arc};
 type Failure = Box<dyn Error>;
 #[derive(Clone, Copy)]
 enum Command {
@@ -21,13 +17,13 @@ enum Command {
     Set,
 }
 pub(super) fn run(args: &[OsString]) -> Result<(), Failure> {
-    let command = match args.first().map(|arg| arg.as_os_str().as_bytes()) {
-        Some(b"watch") => Command::Watch,
-        Some(b"get") => Command::Get,
-        Some(b"set") => Command::Set,
+    let command = match args.first().and_then(|arg| arg.to_str()) {
+        Some("watch") => Command::Watch,
+        Some("get") => Command::Get,
+        Some("set") => Command::Set,
         _ => return Err("expected statistics get|set|watch".into()),
     };
-    let inherited = early::capture()?;
+    let inherited = crate::foreground::capture()?;
     let clock = SharedClock::native(64)?;
     let config = gnunet_config::Configuration::create(
         Arc::new(gnunet_config::ProjectData::default()),
@@ -40,8 +36,10 @@ pub(super) fn run(args: &[OsString]) -> Result<(), Failure> {
         // Finite commands interpret GNUNET_ARGS as prefix defaults so its
         // common options cannot become literal selectors after the endpoint.
         // Explicit argv options follow and therefore take precedence.
-        argv =
-            gnunet_program_host::getopt::append_environment(argv, environment.arguments.as_deref());
+        argv = gnunet_program_host::getopt::append_environment(
+            argv,
+            environment.arguments.as_deref(),
+        )?;
         environment.arguments = None;
     }
     argv.extend(args[1..].iter().cloned());
@@ -106,7 +104,7 @@ pub(super) fn selected(error: &(dyn Error + 'static)) -> bool {
 fn run_selected(
     command: Command,
     prepared: program::Prepared,
-    inherited: early::Inherited,
+    inherited: crate::foreground::Inherited,
     clock: SharedClock,
     reports: Reporter,
 ) -> Result<driver::Report, Failure> {
@@ -217,16 +215,30 @@ fn run_selected(
             driver::command(inputs).await
         }
     };
-    runtime.block_on(gnunet_program_host::foreground::run(
+    let result = runtime.block_on(gnunet_program_host::foreground::run(
         prepared,
         &mut context,
         clock,
         stop,
         original,
-    ))
+    ));
+    // Windows stdio uses a blocking OS worker. An unfinished write is reported
+    // as such above; runtime destruction must not wait indefinitely for a reader.
+    // This normal command then exits its process; no background worker is
+    // certified canceled or physically drained by this nonwaiting shutdown.
+    #[cfg(windows)]
+    runtime.shutdown_background();
+    result
 }
 
 fn validate_names(names: &driver::Names, capacity: usize, prefix: usize) -> Result<(), Failure> {
+    #[cfg(windows)]
+    {
+        // PROGRAM preserves native path bytes. Protocol names require Unicode
+        // on Windows rather than publishing local isolated-surrogate encodings.
+        std::str::from_utf8(&names.subsystem)?;
+        std::str::from_utf8(&names.name)?;
+    }
     let bytes = names
         .subsystem
         .len()

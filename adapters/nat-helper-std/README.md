@@ -1,19 +1,98 @@
-# Actual Rust privileged NAT helpers
+# Native NAT helpers and supervision
 
-`gnunet-nat-helper-host::{client,server}` are dedicated single-threaded process entry functions, not functions to invoke in an existing service process: they irreversibly change process credentials, capabilities, no_new_privs, parent-death and signal policy. The binaries are `gnunet-helper-nat-client LOCAL_IP REMOTE_IP PORT` and `gnunet-helper-nat-server LOCAL_IP`. They parse only numeric IPv4 and a nonzero u16 decimal port, with exact argument counts. No config, env-selected executable, private file/key, shared libgnunet FFI, network worker, hidden Tokio runtime, child process or third-party helper is used.
+`gnunet-nat-helper-host::{client,server}` implement the dedicated helper
+executables. Packet construction and validation stay in `gnunet_nat::icmp`;
+process supervision is available separately through feature `supervisor`.
 
-Linux, Darwin/macOS and modern FreeBSD (12+) select the same bounded runner and the same existing pure packet algorithms. Linux and modern FreeBSD raw IPv4 lengths/offsets are network order. Darwin's IP_HDRINCL output uses native-endian outer length; its zero fragment offset has the same representation. Actual receive ABI normalization is supplied by `gnunet_native::nat_helper::normalize_received`, followed by the same `gnunet_nat::icmp::observe` network-order parser. Other targets still return explicit Unsupported before native operations.
+## Executable interfaces
 
-The client opens only one fresh CLOEXEC raw IPPROTO_RAW socket before the credential transition. The server opens raw IPPROTO_ICMP input and IPPROTO_RAW output first, retaining their open errnos until the drop. Before any CLI parsing, socket configuration, diagnostic, UDP bind or protocol I/O, the platform native boundary permanently drops to the invoking UID/GID and verifies the transition. On Linux it replaces all real/effective/saved IDs, clears supplementary groups when effective-root, disables keepcaps, clears v3 effective/permitted/inheritable and ambient capability sets, enables no_new_privs, and verifies all three IDs. Darwin/FreeBSD use their irreversible ID APIs and saved-ID checks; Linux capabilities/no_new_privs/ambient support are not fabricated on BSD. A root caller still has UID0 and is not falsely reported as an ordinary user. An unsupported ambient-capability operation on an older kernel is recorded as unsupported, not fabricated as a successful syscall. Any drop failure closes the raw owners and terminates without parsing input or sending packets.
+```text
+gnunet-helper-nat-client LOCAL_IP REMOTE_IP PORT
+gnunet-helper-nat-server LOCAL_IP
+```
 
-After dropping, Linux PDEATHSIG and an immediate same-parent recheck bind the process to its observed original launching parent. Darwin/FreeBSD have an same-parent check and bounded polling, not a claimed Linux PDEATHSIG equivalent. Both client send variants and their original WouldBlock waits recheck that same captured parent, as the server loop already did; no late pid/name lookup rebinds it. SIGINT/SIGTERM use one process-local handler that only stores an atomic stop bit; SIGPIPE is ignored so the write error can be retained. Poll waits are at most500ms and retain original native deadlines. Controlled stop closes owned sockets and restores output flags/handlers. SIGKILL/process failure still gets normal kernel FD cleanup, not a fabricated userspace cleanup receipt.
+Arguments are numeric IPv4 addresses and a decimal port in `1..65535`, with exact
+argument counts. Raw resources are captured before argument parsing. These are
+fresh, single-threaded process entries: Unix startup changes process credentials
+and signal policy. They must not run inside an existing service process.
 
-All packet generation/parsing comes directly from the existing `gnunet_nat::icmp` API. The shared runner contains the original Linux control flow, one fixed raw buffer, one retained endpoint line and the same IO/error bookkeeping; small platform modules select only the qualified raw ABI. No IP/ICMP checksum or packet algorithm is copied. Darwin native receive normalization restores the outer payload-length+IHL/fragment-offset fields to network order. For XNU TIME_EXCEEDED/code0 input it also reverses XNU's quoted-IP-length conversion; quoted fragment offsets are not swapped. It never recomputes a checksum or turns malformed input into a verified packet. The pure parser checks the restored original shape/checksums. Modern FreeBSD normalization validates the network-order envelope without rewriting it. The client builds both original56-byte reversal variants: ICMP-quoted ECHO with TTL64 and UDP-quoted reversal with its official TTL128 fields, packet ID256, dummy192.0.2.86 and traversal port22225. Both share one original5s local send budget. WouldBlock waits for POLLOUT; EINTR cannot reset that budget. A short raw datagram is an uncertain original outcome and terminates that send; no suffix is ever retried as a separate packet. The second variant is independently attempted within the same original budget, with a second failure retained if necessary. Exit0 means both full local writes only, not peer receipt, traversal or connectivity. C's false exit0 after a failed send is intentionally not copied.
+The sender builds both official 56-byte TIME_EXCEEDED variants. Both outer
+packets are ICMP; one quotes ECHO and the other quotes UDP with the advertised
+port in its original length field. They retain packet ID 256, dummy address
+192.0.2.86, traversal port 22225 and the existing TTL fields. Both sends share one
+fixed five-second budget. Each variant is independently attempted; a second
+failure remains attached to the first. A short datagram is an uncertain original
+outcome, never a stream suffix. Exit zero proves both complete local writes.
 
-The server binds a normal nonblocking UDP socket to LOCAL_IP:22225 after the drop. Every500ms it alternates exactly one empty UDP datagram and one28-byte raw ECHO probe to192.0.2.86, with UDP first. It uses the shared ECHO builder's TTL64 and the kernel's default UDP TTL. Continuous inbound traffic cannot starve the scheduled probes; late wakes skip missed probes instead of bursting. Raw input is a fixed65535-byte buffer; the shared parser checks the packet shape and returns an unauthenticated observation. Malformed/nonmatching packets are discarded, not interpreted as requests or authenticity evidence.
+The observer binds UDP to `LOCAL_IP:22225` and alternates one empty UDP datagram
+and one 28-byte ECHO probe every 500 ms, UDP first. Late wakes skip missed probes.
+One 65535-byte receive buffer and one 22-byte endpoint line bound retained input
+and output. Malformed or unrelated packets are discarded. Stdout contains only
+`IPv4:PORT\n`, or `IPv4\n` for a zero-port diagnostic. Observations are
+unauthenticated and establish no mapping, connectivity or peer identity.
 
-Stdout is exactly C's newline format: `IPv4:PORT\n`, or bare `IPv4\n` for diagnostic port0. No banner, READY, JSON, completion marker, stdin command, ACK or authentication field is added. One original endpoint line (maximum22 bytes) and its exact write cursor are retained through nonblocking partial writes, with one original2s deadline. While it waits, the helper stops admitting another raw observation; memory cannot grow with stdout backpressure. The original output description is retained through a safe owned duplicate and its original flags are restored explicitly; the helper must exclusively own output use while this guard is active (the daemon launcher supplies a dedicated pipe). Real raw/UDP/poll/output errors or exhausted original I/O bounds terminate nonzero and preserve the original errno/cause. This intentionally reports failures C sometimes silently ignored. The service may supervise a distinct new helper source, but must never call that replay, proof of NAT, or an acknowledgement of an old observation.
+## Unix resources and credentials
 
-Original socket ownership closes before error diagnostics. `Failure` retains the original typed cause, an optional independent second client-packet error, and signal/output cleanup errors. OS-owned descriptor Drop exposes no independent close errno and none is invented. Stderr diagnostics are fixed-size, nonblocking, best-effort and never contaminate stdout. The server's controlled parent/stop termination returns0; the owning service must bind that exit to its cancellation/source intent, not infer a reversal or mapping success.
+Linux, macOS and FreeBSD 12+ share the runner. Raw input and full-header output
+open before an irreversible transition to the invoking real UID/GID. Linux also
+clears supplementary groups when effective root, all capability sets, keepcaps
+and ambient capabilities, then enables no_new_privs and verifies the IDs. BSD
+uses its own ID and saved-ID contracts. A real UID-zero caller remains root.
+Any transition failure closes the captured sockets before processing input.
 
-The previous Linux-only revision passed strict macOS and Linux compilation during its integration; that does not qualify this new BSD delta. The new native boundary, common runner and both helper apps pass strict macOS and Linux-target compilation. No helper, raw/socket/process, privilege/capability probe, route/system setting, packet or network path ran. FreeBSD support here explicitly requires FreeBSD12+ under the current Rust platform support baseline (and therefore the modern11+ network-order raw-IP ABI); obsolete pre-11 kernels are not qualified. Native source evidence/target-baseline qualification is recorded in the accompanying native/review handoffs. Installation ownership, SUID/file capabilities, raw IO, irreversible credential transitions, parent lifecycle and helper/service interoperability still need runtime qualification on each target. Compilation alone never qualifies privileged behavior.
+Linux installs PDEATHSIG and rechecks its original parent. macOS and FreeBSD use
+bounded same-parent polling. Stop handlers store only an atomic flag; SIGPIPE is
+ignored so output failure remains observable. Controlled stop restores original
+output flags and handlers, retaining independent restoration failures.
+
+Linux and modern FreeBSD use network-order raw IPv4 lengths. macOS uses native
+outer output length and normalizes only kernel-transformed receive fields before
+the shared network-order parser, including XNU's quoted TIME_EXCEEDED length.
+No checksum or malformed packet is repaired into success.
+
+## Windows resources and lifetime
+
+Windows uses protocol-specific Winsock raw ICMP sockets and network-order IPv4
+headers. The invoking token must already permit raw sockets; no elevation,
+set-ID emulation or alternate credentials are supplied. The UDP probe socket
+uses the shared Winsock asynchronous-error policy.
+
+The observer's protocol stdout is a private local byte pipe created by
+`gnunet_native::pipe::output_pair`. Its writer includes read-attribute
+rights. The supervisor retains the original overlapped reader and passes only
+the synchronous writer as child stdout. The observer checks that same reader's
+connection state before further work. Reader closure ends this generation;
+no PID lookup or replacement process grants liveness.
+
+Output uses nonblocking byte-pipe mode, preserving its original line cursor and
+two-second target. Synchronous reader-state queries retain native errors; pipe
+capacity refusal and positive native writes remain distinct. Stop or reader
+closure fences new writes. Cleanup restores a live endpoint's mode; an already
+closed endpoint cannot be reused. Console callbacks own only an atomic stop bit
+and are explicitly removed. A kernel call cannot be promised interruptible by a
+userspace deadline. Diagnostics have fixed-size formatting and use the original
+stderr route; they never write protocol stdout.
+
+These are native capabilities, not platform substitutions: raw socket access,
+UDP bind, output qualification and restoration retain their actual errors.
+Windows standalone observers require the qualified output pipe; ordinary shell
+redirection does not provide that contract. The normal NAT supervisor prepares
+it automatically. The finite sender observes console stop and its original
+five-second budget; it supplies no Unix parent-death-signal claim.
+
+## Caller-driven supervision
+
+`supervisor::{Supervisor, Paths, Limits, Bounds}` owns original children,
+line framing, generations, wait results and cleanup. Construction starts no
+process or network request. Drive it under the caller's entered Tokio runtime;
+no hidden runtime or forwarding task is created. Paths are explicit executable
+locations, never shell commands.
+
+Copied Bounds retain their original canonical expiry and native target. Process,
+clock and protocol failures have separate typed causes. Cancellation requests
+stop once and continues polling the original child. A requested kill, empty
+output or retirement timeout is not a successful reap. Unknown retirement stays
+in NAT's unresolved cleanup report after the bounded child slot is released.
+
+Installation privileges and native raw-network interoperability are tracked in
+[implementation status](../../IMPLEMENTATION_STATUS.md).

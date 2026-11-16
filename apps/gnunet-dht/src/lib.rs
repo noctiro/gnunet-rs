@@ -6,19 +6,16 @@ use std::{
     process::ExitCode,
 };
 type Cause = Box<dyn Error>;
-#[cfg(unix)]
 #[derive(Debug)]
 struct ProgramFailure {
     original: Option<Cause>,
     logging: Option<io::Error>,
 }
-#[cfg(unix)]
 impl std::fmt::Display for ProgramFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "DHT PROGRAM: {self:?}")
     }
 }
-#[cfg(unix)]
 impl Error for ProgramFailure {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         self.original
@@ -26,17 +23,10 @@ impl Error for ProgramFailure {
             .or_else(|| self.logging.as_ref().map(|e| e as _))
     }
 }
-#[cfg(unix)]
 mod budget;
-#[cfg(unix)]
 mod control;
-#[cfg(unix)]
-mod early;
-#[cfg(unix)]
 mod options;
-#[cfg(unix)]
 mod output;
-#[cfg(unix)]
 mod run;
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -85,11 +75,10 @@ fn entry(mode: Mode) -> ExitCode {
         }
     }
 }
-#[cfg(not(unix))]
-fn execute(_: Mode) -> Result<u8, Cause> {
-    Err("native DHT commands require Unix".into())
-}
-#[cfg(unix)]
+#[expect(
+    unsafe_code,
+    reason = "Unique first inheritance transfer in the fresh command before logger, runtime or file owners"
+)]
 fn execute(mode: Mode) -> Result<u8, Cause> {
     use gnunet_program_host::{
         foreground,
@@ -99,7 +88,9 @@ fn execute(mode: Mode) -> Result<u8, Cause> {
         shared_clock::SharedClock,
     };
     use std::{cell::Cell, rc::Rc, sync::Arc};
-    let early = early::capture()?;
+    // SAFETY: this is the fresh executable's first initialization. No other
+    // descriptor/handle capture, runtime, threads or environment edits exist.
+    let startup = unsafe { gnunet_service_startup::ClientStartup::capture()? };
     let clock = SharedClock::native(64)?;
     let config = gnunet_config::Configuration::create(
         Arc::new(gnunet_config::ProjectData::default()),
@@ -114,7 +105,8 @@ fn execute(mode: Mode) -> Result<u8, Cause> {
     }, selection.options(), std::env::args_os(), &program::Environment::capture(), &mut NlsDisabled, &mut logger, &clock, &mut io::stdout().lock(), &mut io::stderr().lock());
     let reporter = Reporter::new(logger, clock.clone());
     let result = (|| -> Result<u8, Cause> {
-        if let Some(notice) = early.notice {
+        #[cfg(unix)]
+        if let Some(notice) = startup.notice {
             reporter.debug("dht.parent.notice", format_args!("{notice:?}"));
         }
         let prepared = match preparation? {
@@ -159,8 +151,7 @@ fn execute(mode: Mode) -> Result<u8, Cause> {
                 clock: actual,
                 reporter: reporter.clone(),
                 stop: stop.clone(),
-                parent: early.parent,
-                stdout: early.output,
+                parent: startup.parent,
             });
             foreground::run(prepared, &mut context, clock.clone(), stop, product)
                 .await

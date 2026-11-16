@@ -6,18 +6,16 @@ use crate::{
     publish, service,
     settings::Settings,
 };
-use gnunet_program_host::{program::Prepared, shared_clock::SharedClock};
+use gnunet_program_host::{program::Prepared, reporting::Reporter, shared_clock::SharedClock};
 use gnunet_service_runtime::clock::RuntimeClock;
-use gnunet_service_startup::{ControlReceiver, ParentControl};
+use gnunet_service_startup::{ParentControl, StopSignals};
 use std::{
     cell::RefCell,
     future::{Future, poll_fn},
-    io::{self, Write},
     rc::Rc,
     sync::Arc,
-    task::{Context, Poll},
+    task::Poll,
 };
-use tokio::signal::unix::{Signal, SignalKind};
 /// Actual terminal public facts collected while stopping this foreground.
 /// Earlier normal-running notices have already been delivered to its Owner.
 #[derive(Debug)]
@@ -74,49 +72,51 @@ pub struct Inherited {
     /// Actual parent control descriptor, never a copied FD.
     pub parent: Option<ParentControl>,
 }
-fn diagnostic(args: std::fmt::Arguments<'_>) {
-    let _written = writeln!(io::stderr().lock(), "{args}");
+fn diagnostic(reports: &Reporter, args: std::fmt::Arguments<'_>) {
+    reports.warning("zonemaster.activity", args);
 }
 struct Signals {
-    parent: Option<ControlReceiver>,
-    interrupt: Signal,
-    terminate: Signal,
+    stop: StopSignals,
+    #[cfg(windows)]
+    ready: Option<gnunet_service_startup::ReadyWriter>,
 }
 impl Signals {
     fn new(parent: Option<ParentControl>) -> Result<Self, Failure> {
+        #[cfg(unix)]
+        let parent = parent
+            .map(|parent| parent.register().map_err(|failure| failure.error))
+            .transpose()?;
+        #[cfg(windows)]
+        let (parent, ready) = match parent.map(|parent| parent.register()).transpose()? {
+            Some(parent) => (Some(parent.control), Some(parent.ready)),
+            None => (None, None),
+        };
         Ok(Self {
-            parent: parent
-                .map(|p| p.register().map_err(|e| e.error))
-                .transpose()?,
-            interrupt: tokio::signal::unix::signal(SignalKind::interrupt())?,
-            terminate: tokio::signal::unix::signal(SignalKind::terminate())?,
+            stop: StopSignals::new(parent)?,
+            #[cfg(windows)]
+            ready,
         })
     }
-    fn poll(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Failure>> {
-        if let Some(parent) = &mut self.parent {
-            match parent.poll_signal(cx) {
-                Poll::Ready(Ok(Some(s)))
-                    if i32::from(s) == SignalKind::interrupt().as_raw_value()
-                        || i32::from(s) == SignalKind::terminate().as_raw_value() =>
-                {
-                    return Poll::Ready(Ok(()));
-                }
-                Poll::Ready(Ok(Some(_))) => cx.waker().wake_by_ref(),
-                Poll::Ready(Ok(None)) => self.parent = None,
-                Poll::Ready(Err(e)) => return Poll::Ready(Err(e.into())),
-                Poll::Pending => {}
+    async fn ready(&mut self, reports: &Reporter) -> Result<(), Failure> {
+        let notification = async {
+            #[cfg(windows)]
+            if let Some(writer) = &mut self.ready {
+                writer
+                    .signal(gnunet_service_startup::ReadyStatus::AcceptRegistered)
+                    .await?;
             }
-        }
-        for signal in [&mut self.interrupt, &mut self.terminate] {
-            match signal.poll_recv(cx) {
-                Poll::Ready(Some(())) => return Poll::Ready(Ok(())),
-                Poll::Ready(None) => {
-                    return Poll::Ready(Err("ZONEMASTER signal stream ended".into()));
-                }
-                Poll::Pending => {}
-            }
-        }
-        Poll::Pending
+            Ok::<_, Failure>(())
+        };
+        gnunet_program_host::service::acknowledge_ready(
+            notification,
+            &mut self.stop,
+            reports,
+            std::time::Duration::from_secs(5),
+        )
+        .await?;
+        #[cfg(windows)]
+        drop(self.ready.take());
+        Ok(())
     }
 }
 
@@ -129,6 +129,7 @@ pub async fn scheduled(
     settings: Settings,
     inherited: Inherited,
     factory: Option<Box<dyn publish::Factory>>,
+    reports: Reporter,
 ) -> Result<Report, Failure> {
     let factory=factory.ok_or("ZONEMASTER production DHT publish binding is not installed; no publication service was started")?;
     let config = prepared.main().config.duplicate()?;
@@ -140,6 +141,13 @@ pub async fn scheduled(
         gnunet_resolver_broker::native_profile()?,
         runtime_clock.clone(),
     )?;
+    let deferred = Rc::new(RefCell::new(None));
+    let resolver = ResolverOwner {
+        driver: resolver,
+        done: false,
+        reports: reports.clone(),
+        deferred: deferred.clone(),
+    };
     let result = Rc::new(RefCell::new(None));
     let receiving = Rc::clone(&result);
     let program = prepared
@@ -147,15 +155,16 @@ pub async fn scheduled(
             let destination = Rc::clone(&receiving);
             let stop = scope.clone();
             if let Err(error) = scope.spawn(async move {
-                let outcome = run(
+                let outcome = run(Inputs {
                     config,
                     live,
                     settings,
                     inherited,
                     resolver,
-                    runtime_clock,
+                    clock: runtime_clock,
                     factory,
-                )
+                    reports,
+                })
                 .await;
                 *destination.borrow_mut() = Some(outcome);
                 if let Err(error) = stop.shutdown() {
@@ -186,61 +195,82 @@ pub async fn scheduled(
         Ok(code) => Some(format!("ZONEMASTER PROGRAM returned {code}").into()),
         Err(error) => Some(Box::new(error) as Failure),
     };
-    match (task, program) {
+    let outcome = match (task, program) {
         (Ok(report), None) => Ok(report),
         (task, Some(program)) => with_cleanup(task, program),
         (Err(error), None) => Err(error),
+    };
+    let cleanup = deferred.borrow_mut().take();
+    match cleanup {
+        Some(error) => with_cleanup(outcome, Box::new(error)),
+        None => outcome,
     }
 }
 struct ResolverOwner {
     driver: gnunet_resolver_broker::Driver<64, 1024>,
     done: bool,
+    reports: Reporter,
+    deferred: Rc<RefCell<Option<gnunet_resolver_broker::BrokerError>>>,
 }
 impl Drop for ResolverOwner {
     fn drop(&mut self) {
         if !self.done
             && let Err(error) = self.driver.disconnect()
         {
-            diagnostic(format_args!(
-                "ZONEMASTER dropped task Resolver cleanup: {error}"
-            ));
+            diagnostic(
+                &self.reports,
+                format_args!("ZONEMASTER dropped task Resolver cleanup: {error}"),
+            );
+            self.deferred.borrow_mut().get_or_insert(error);
         }
     }
 }
-fn observe(event: service::Event) {
+fn observe(event: service::Event, reports: &Reporter) {
     match event {
         service::Event::Accepted { diagnostics } | service::Event::Rejected { diagnostics } => {
             for d in diagnostics {
-                diagnostic(format_args!("ZONEMASTER accepted socket: {d:?}"));
+                diagnostic(reports, format_args!("ZONEMASTER accepted socket: {d:?}"));
             }
         }
         service::Event::Admission { error, diagnostics } => {
             for d in diagnostics {
-                diagnostic(format_args!("ZONEMASTER rejected socket: {d:?}"));
+                diagnostic(reports, format_args!("ZONEMASTER rejected socket: {d:?}"));
             }
-            diagnostic(format_args!(
-                "ZONEMASTER original socket admission: {error}"
-            ));
+            diagnostic(
+                reports,
+                format_args!("ZONEMASTER original socket admission: {error}"),
+            );
         }
         service::Event::Socket(gnunet_service_runtime::accepted::SocketEvent::Failed(error))
             if error.is_emfile() => {}
-        service::Event::Socket(event) => diagnostic(format_args!("ZONEMASTER socket: {event:?}")),
+        service::Event::Socket(event) => {
+            diagnostic(reports, format_args!("ZONEMASTER socket: {event:?}"))
+        }
         _ => {}
     }
 }
-async fn run(
+struct Inputs {
     config: gnunet_config::Configuration,
     live: gnunet_client_host::LiveConfiguration,
     settings: Settings,
     inherited: Inherited,
-    resolver: gnunet_resolver_broker::Driver<64, 1024>,
+    resolver: ResolverOwner,
     clock: Arc<dyn RuntimeClock>,
-    mut factory: Box<dyn publish::Factory>,
-) -> Result<Report, Failure> {
-    let mut resolver = ResolverOwner {
-        driver: resolver,
-        done: false,
-    };
+    factory: Box<dyn publish::Factory>,
+    reports: Reporter,
+}
+async fn run(input: Inputs) -> Result<Report, Failure> {
+    let Inputs {
+        config,
+        live,
+        settings,
+        inherited,
+        resolver,
+        clock,
+        mut factory,
+        reports,
+    } = input;
+    let mut resolver = resolver;
     let mut signals = Signals::new(inherited.parent)?;
     let resolution = resolver.driver.context().resolution_context();
     let endpoints = [
@@ -264,7 +294,10 @@ async fn run(
         gnunet_service_runtime::BoundListeners::bind(&config, b"zonemaster", inherited.activation)
             .await?;
     for error in bound.failures() {
-        diagnostic(format_args!("ZONEMASTER alternate listener: {error}"));
+        diagnostic(
+            &reports,
+            format_args!("ZONEMASTER alternate listener: {error}"),
+        );
     }
     let listeners = bound.listeners();
     let mut public = factory.open(publish::Inputs {
@@ -299,7 +332,16 @@ async fn run(
     stats_errors
         .try_reserve_exact(4)
         .map_err(|_| gnunet_types::Error::Capacity)?;
+    reports.message(
+        gnunet_program_host::policy::Level::INFO,
+        "zonemaster.ready",
+        format_args!("ZONEMASTER local listeners and worker owner ready"),
+    );
+    let mut readiness = Some(signals.ready(&reports).await);
     let outcome = loop {
+        if let Some(Err(error)) = readiness.take() {
+            break Err(error);
+        }
         enum Turn {
             Stop,
             Activity,
@@ -307,11 +349,19 @@ async fn run(
         let result = {
             let mut resolving =
                 std::pin::pin!(resolver.driver.drive_waiting(None, |event| diagnostic(
+                    &reports,
                     format_args!("ZONEMASTER Resolver: {event:?}")
                 )));
             poll_fn(|cx| {
-                if let Poll::Ready(result) = signals.poll(cx) {
-                    return Poll::Ready(result.map(|()| Turn::Stop));
+                reports.register(cx);
+                if reports.failed() {
+                    return Poll::Ready(Err(std::io::Error::other(
+                        "ZONEMASTER selected diagnostic owner failed",
+                    )
+                    .into()));
+                }
+                if let Poll::Ready(result) = signals.stop.poll_stop(cx) {
+                    return Poll::Ready(result.map(|()| Turn::Stop).map_err(Into::into));
                 }
                 // All actual child native bounds are checked even when the
                 // canonical source races forever. Neither stats nor Resolver
@@ -319,7 +369,7 @@ async fn run(
                 let guarded = server.poll_native_guard(cx);
                 let mut activity = guarded.is_some();
                 if let Some(event) = guarded {
-                    observe(event);
+                    observe(event, &reports);
                 }
                 let owning = owner.poll(cx);
                 let serving = server.poll(cx, &listeners);
@@ -328,9 +378,10 @@ async fn run(
                 if let Poll::Ready(result) = owning {
                     activity = true;
                     match result {
-                        Ok(Event::Failure(error)) => diagnostic(format_args!(
-                            "ZONEMASTER original provider/cleanup: {error}"
-                        )),
+                        Ok(Event::Failure(error)) => diagnostic(
+                            &reports,
+                            format_args!("ZONEMASTER original provider/cleanup: {error}"),
+                        ),
                         Ok(Event::Stopped) => {
                             original = Some("ZONEMASTER owner stopped unexpectedly".into())
                         }
@@ -341,7 +392,7 @@ async fn run(
                 if let Poll::Ready(result) = serving {
                     activity = true;
                     match result {
-                        Ok(event) => observe(event),
+                        Ok(event) => observe(event, &reports),
                         Err(error) => {
                             if original.is_none() {
                                 original = Some(error)
@@ -429,13 +480,13 @@ async fn run(
     let mut alarm = Box::pin(tokio::time::sleep_until(hard));
     while !stats.closed() {
         let result = {
-            let mut resolving = std::pin::pin!(
-                resolver
-                    .driver
-                    .drive_waiting(Some(hard), |event| diagnostic(format_args!(
-                        "ZONEMASTER shutdown Resolver: {event:?}"
-                    )))
-            );
+            let mut resolving = std::pin::pin!(resolver.driver.drive_waiting(
+                Some(hard),
+                |event| diagnostic(
+                    &reports,
+                    format_args!("ZONEMASTER shutdown Resolver: {event:?}")
+                )
+            ));
             poll_fn(|cx| {
                 if alarm.as_mut().poll(cx).is_ready() {
                     let cleanup = stats.abort().err().into_iter().collect();

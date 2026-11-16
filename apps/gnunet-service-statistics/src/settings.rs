@@ -33,8 +33,7 @@ pub(crate) fn configuration(selected: Option<&Path>) -> Result<Configuration, Fa
                 None => project.user_config_file.clone(),
             };
             let path = config.expand_filename(&raw, &ProcessEnvironment)?;
-            (path.is_file() && nix::unistd::access(&path, nix::unistd::AccessFlags::F_OK).is_ok())
-                .then_some(path)
+            path.is_file().then_some(path)
         }
     };
     config.load(path.as_deref())?;

@@ -22,6 +22,9 @@ gnunet-config.workspace = true
 tokio = { workspace = true, features = ["rt", "net", "time", "io-util"] }
 getrandom.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+gnunet-native.workspace = true
+
 [dev-dependencies]
 socket2.workspace = true
 tokio = { workspace = true, features = ["test-util", "sync"] }

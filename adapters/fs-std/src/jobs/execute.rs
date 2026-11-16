@@ -360,6 +360,7 @@ pub(crate) async fn run(
     fs: EndpointSource,
     ds: EndpointSource,
     stop: Stop,
+    metadata_authorization: Option<crate::extraction::NativeMetadataAuthorization>,
 ) -> Run {
     if let Err(error) = registration
         .policy
@@ -478,6 +479,10 @@ pub(crate) async fn run(
         }
         Owner::Unindex(task) => {
             let setup = (|| -> Result<(Vec<u8>, AbsoluteTime, tokio::time::Instant), Error> {
+                if let Some(authorization) = &metadata_authorization {
+                    task.authorize_native_metadata(authorization)
+                        .map_err(Error::Unindex)?;
+                }
                 if !Arc::ptr_eq(&fs.clock(), &ds.clock()) {
                     return Err(Error::Protocol(ProtocolError::InvalidInput));
                 }

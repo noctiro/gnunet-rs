@@ -13,5 +13,7 @@ gnunet-types.workspace = true
 gnunet-wire.workspace = true
 gnunet-statistics = { workspace = true, features = ["alloc"] }
 
+gnunet-native.workspace = true
+
 [lints]
 workspace = true

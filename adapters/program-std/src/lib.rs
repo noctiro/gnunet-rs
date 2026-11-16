@@ -1,6 +1,8 @@
 //! Official v0.29.1 shared program, command-option and logging candidate.
 //! Native OS formatting/regex adapters are isolated; no libgnunet FFI is used.
 #![deny(unsafe_code)]
+#[cfg(feature = "binary-io")]
+pub mod binary_io;
 pub mod clock;
 /// Ordinary configuration-tool composition with explicit selected logging.
 pub mod config_command;
@@ -12,6 +14,8 @@ pub mod helpers;
 pub mod locale;
 pub mod logging;
 mod native;
+#[cfg(feature = "service-runtime")]
+pub mod output;
 pub mod policy;
 pub mod process_stderr;
 pub mod program;

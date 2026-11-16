@@ -6,6 +6,8 @@ drives the verified native PILS client, canonical clock subscriptions/deadlines,
 bounded admission, discovery and fair IO. It spawns no process Resolver, service
 or backend task. The foreground wrapper explicitly polls the process Resolver.
 
+## Public interface
+
 `Runtime::new_service` and `startup::foreground_service` use asynchronous PILS
 signing without reading local IKM. A current verified1831 announcement activates
 the identity. Each accepted purpose35 effect retains its original engine token,
@@ -32,8 +34,7 @@ NEW_RUST_STATE [--local-pils-key]`. It binds official TRANSPORT and companion
 public PEERSTORE IPC, accepts the common original inherited TRANSPORT sockets and
 control stream, and handles SIGINT/SIGTERM. It does not launch PILS, CORE or a
 communicator. The state path is a new-format Rust journal, never a C sqlite path. Configured USERNAME and Unix credential matching remain explicit shared-platform
-limits. Native communicator foreground and complete Node acceptance remain
-required; this runtime is a reusable component, not a complete GNUnet node.
+limits.
 
 The normal entry selects `[PILS] PROFILE` before creating the state directory or
 opening sockets. The default is `reference029` (`reference-0.29.1` is an alias). `deterministic` (`reference-deterministic`) selects the official conditional
@@ -51,6 +52,8 @@ one does not grant managed provenance or successful discovery verification. `Run
 `Limits.discovery_hello_profile`, and supply a Journal opened with the matching
 `peerstore::HelloProfiles`. Inconsistent owners fail before clock subscriptions
 or a native connection. `Journal::open` and default limits retain029 behavior. No disk format or unresolved transaction is migrated when selecting a profile.
+
+## Address publication
 
 Communicator1200/1201 records feed one bounded aggregate owned by original
 physical ClientIds. URI sharing survives another owner's delete/EOF, and duplicate
@@ -80,6 +83,8 @@ pure certificate in the same synchronous step. Its outcome distinguishes a
 queued operation, a refused original plan and an admitted operation that still
 needs retirement. Same-key metadata updates on the same MQ can retain the offer;
 another physical epoch cannot supply its authority.
+
+## Durable projection
 
 `OwnedProjection` copies verified purpose29 values and the common binary HELLO
 message within caller limits. Empty HELLO intent is a managed withdrawal. Its
@@ -116,6 +121,8 @@ still drains, while new requests remain retained until recovery. Known outcomes
 are consumed before later clock errors, and original native causes remain
 available through notices and the storage-failure view.
 
+## Cancellation and recovery
+
 Graceful draining waits for managed withdrawal and required original FEED writes. Permanent close retires the PILS owner before settling local own effects;
 unresolved storage remains owned and can be explicitly recovered without replay
 or old socket ACKs. The foreground composition reports original publication
@@ -131,6 +138,8 @@ preserves the drain state. Timeout, clock refusal or original epoch/peer loss
 fails the drain and retires owned operations without using a replacement identity. The formal foreground uses a canonical-clock 30-second shutdown budget and does
 not repoll its completed shutdown future. `close` remains immediate permanent
 retirement, including explicit abandonment of unfinished drain operations.
+
+## Resource admission
 
 Address quotas are a local admission policy. A complete ADD that exceeds the
 bounded book returns its original `AddressRejection` through pure receive,

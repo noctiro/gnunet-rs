@@ -1,7 +1,7 @@
 //! Actual native range success survives an independent original WAL-name refusal.
 //! Local Rust official-wire peers establish only this receipt/recovery scope;
 //! this is not original-C, P2P, or whole-node interoperability acceptance.
-#![cfg(all(unix, feature = "service"))]
+#![cfg(all(any(unix, windows), feature = "service"))]
 #![expect(
     clippy::panic_in_result_fn,
     reason = "The fallible native receipt regression asserts original frames, authority and recovery facts"
@@ -21,42 +21,22 @@ use gnunet_types::{AbsoluteTime, Error as ProtocolError};
 use gnunet_wire::official::fs::{BlockType, ClientPut, Request, Response};
 use std::{
     fs, io,
-    os::unix::fs::MetadataExt,
-    path::PathBuf,
-    sync::atomic::{AtomicU64, AtomicUsize, Ordering},
+    sync::atomic::{AtomicUsize, Ordering},
     task::Poll,
     time::Duration,
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::{UnixListener, UnixStream},
     time::timeout,
 };
+#[path = "support/local_peer.rs"]
+mod local_peer;
+use gnunet_native::filesystem::FileIdentity;
+use gnunet_service_runtime::local::Stream;
+use local_peer::{Listener, Temporary};
+
 type TestResult = Result<(), Box<dyn std::error::Error>>;
-struct Temporary(PathBuf);
-impl Temporary {
-    fn new() -> io::Result<Self> {
-        static NEXT: AtomicU64 = AtomicU64::new(1);
-        loop {
-            let path = std::env::temp_dir().join(format!(
-                "gnunet-probe-receipt-{}-{}",
-                std::process::id(),
-                NEXT.fetch_add(1, Ordering::Relaxed)
-            ));
-            match fs::create_dir(&path) {
-                Ok(()) => return Ok(Self(path)),
-                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
-                Err(error) => return Err(error),
-            }
-        }
-    }
-}
-impl Drop for Temporary {
-    fn drop(&mut self) {
-        let _cleanup = fs::remove_dir_all(&self.0);
-    }
-}
-async fn frame(stream: &mut UnixStream) -> io::Result<Vec<u8>> {
+async fn frame(stream: &mut Stream) -> io::Result<Vec<u8>> {
     let mut header = [0; 4];
     stream.read_exact(&mut header).await?;
     let length = usize::from(u16::from_be_bytes([header[0], header[1]]));
@@ -91,7 +71,7 @@ fn actual_probe_success_receipt_survives_wal_authority_failure_and_records_only_
             let wal = path.join("records.wal");
             let saved = path.join("records.saved");
             let socket = temp.0.join("fs.sock");
-            let listener = UnixListener::bind(&socket)?;
+            let listener = Listener::bind(&socket).await?;
             let source = EndpointSource::unix(socket);
             let now = source.clock().sample()?.now;
             let deadline = AbsoluteTime::from_micros(now.as_micros() + 5_000_000);
@@ -103,7 +83,7 @@ fn actual_probe_success_receipt_survives_wal_authority_failure_and_records_only_
             let mut injected = false;
             let mut injection_error = None;
             let mut original_wal = None;
-            let mut original_inode = None;
+            let mut original_identity = None;
             let peer = async {
                 let (mut stream, _) = listener.accept().await?;
                 let original = frame(&mut stream).await?;
@@ -143,10 +123,10 @@ fn actual_probe_success_receipt_survives_wal_authority_failure_and_records_only_
                             injected = true;
                             let action = (|| -> io::Result<()> {
                                 let bytes = fs::read(&wal)?;
-                                let identity = fs::metadata(&wal)?;
+                                let identity = FileIdentity::of(&fs::File::open(&wal)?)?;
                                 fs::rename(&wal, &saved)?;
                                 original_wal = Some(bytes);
-                                original_inode = Some((identity.dev(), identity.ino()));
+                                original_identity = Some(identity);
                                 Ok(())
                             })();
                             if let Err(error) = action {
@@ -212,15 +192,13 @@ fn actual_probe_success_receipt_survives_wal_authority_failure_and_records_only_
             assert_eq!(before.historical.successes(), 0);
             assert_eq!(before.historical.trials(), 0);
             let bytes = original_wal.ok_or("missing preserved original WAL bytes")?;
-            let identity = original_inode.ok_or("missing preserved original WAL identity")?;
+            let identity = original_identity.ok_or("missing preserved original WAL identity")?;
             assert_eq!(fs::read(&saved)?, bytes);
-            let metadata = fs::metadata(&saved)?;
-            assert_eq!((metadata.dev(), metadata.ino()), identity);
+            assert_eq!(FileIdentity::of(&fs::File::open(&saved)?)?, identity);
             drop(task);
             fs::rename(&saved, &wal)?;
             assert_eq!(fs::read(&wal)?, bytes);
-            let metadata = fs::metadata(&wal)?;
-            assert_eq!((metadata.dev(), metadata.ino()), identity);
+            assert_eq!(FileIdentity::of(&fs::File::open(&wal)?)?, identity);
             let mut reopened = Task::open(&path, limits)?;
             assert_eq!(*reopened.task_id(), original_id);
             assert_eq!(fs::read(&wal)?, bytes);

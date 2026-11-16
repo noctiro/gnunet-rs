@@ -1,38 +1,24 @@
-//! Standalone standard ARM SERVICE. Early foreign descriptor capture and fork
-//! remain with the fresh-process app; every later owner and cleanup is explicit.
-use gnunet_program_host::{
-    logging::Logger, policy::Level, service as lifecycle, shared_clock::SharedClock,
-};
-use gnunet_service_runtime::{Activation, BoundListeners, process::ChildRegistry};
-use gnunet_service_startup::{
-    ControlNotice, GroupsProfile, ParentControl, RebindHold, apply_privileges, configured_user,
-    daemon::ChildReady, resolve_user,
-};
-use std::{error::Error, fmt};
+//! Standalone ARM SERVICE composition over shared native supervision.
+/// Original listener ownership accepted by native SERVICE startup.
+pub use gnunet_service_runtime::Activation;
+use gnunet_service_runtime::process::ChildRegistry;
+use std::{error::Error, fmt, io};
 mod control;
 mod foreground;
+mod readiness;
 mod reporting;
 mod settings;
+#[cfg(unix)]
+mod unix;
 mod usage;
-/// Actual startup/driver/IO failure; secret configuration values are not printed.
+#[cfg(windows)]
+mod windows;
+#[cfg(unix)]
+pub use unix::{Startup, run};
+#[cfg(windows)]
+pub use windows::{Startup, run};
+/// Actual startup, driver or I/O failure, retaining its original source.
 pub type Failure = Box<dyn Error>;
-/// Explicit original owners captured/selected by the fresh main process.
-pub struct Startup<'a, 'log> {
-    /// Actual standard SERVICE selection (not PROGRAM/GNUNET_ARGS).
-    pub selected: &'a lifecycle::Selected,
-    /// ARM-self CLOSE_LSOCKS route; never adopted as service listener sockets.
-    pub inherited: RebindHold,
-    /// Original optional parent-to-child signal control descriptor.
-    pub parent: Option<ParentControl>,
-    /// Actual ignored malformed original control declaration.
-    pub notice: Option<ControlNotice>,
-    /// The same process clock used by logger, native reactor and timer wakeups.
-    pub clock: &'a SharedClock,
-    /// Explicit selected log destination/policy, no global fd2 replacement.
-    pub logger: &'a mut Logger<'log>,
-    /// Only real full ARM initialization may signal this daemon parent.
-    pub ready: &'a mut ChildReady,
-}
 #[derive(Debug)]
 pub(super) struct Failures {
     pub(super) original: Option<Failure>,
@@ -54,37 +40,40 @@ impl Error for Failures {
 }
 /// Actual remaining native child debt. Never called successful ARM shutdown.
 /// The original registry survives in this error so an embedding caller can
-/// explicitly continue original-PID consuming waits without a reconstructed PID.
+/// explicitly continue original-process consuming waits without PID lookup.
 pub struct Unreaped {
-    registry: ChildRegistry,
+    recovery: Recovery,
     original: Option<Failure>,
     cleanup: Vec<Failure>,
 }
 impl Unreaped {
     pub(super) fn new(
         registry: ChildRegistry,
+        controls: Vec<crate::process::RetainedChild>,
         original: Option<Failure>,
         cleanup: Vec<Failure>,
     ) -> Self {
         Self {
-            registry,
+            recovery: Recovery { registry, controls },
             original,
             cleanup,
         }
     }
-    /// Actual owned original children still awaiting a consuming native wait.
-    pub fn registry(&mut self) -> &mut ChildRegistry {
-        &mut self.registry
+    /// Continue native cleanup without separating the original registry from
+    /// its dependent publisher/control owners.
+    pub fn recovery(&mut self) -> &mut Recovery {
+        &mut self.recovery
     }
-    /// Transfer that same registry; a new one would not own these children.
-    pub fn into_registry(self) -> ChildRegistry {
-        self.registry
+    /// Transfer the same registry together with auxiliary native resources.
+    /// Source descriptors remain owned through explicit original-child cleanup.
+    pub fn into_recovery(self) -> Recovery {
+        self.recovery
     }
 }
 impl fmt::Debug for Unreaped {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("UnreapedArmChildren")
-            .field("pending", &self.registry.pending_children())
+            .field("pending", &self.recovery.registry.pending_children())
             .field("original", &self.original)
             .field("cleanup", &self.cleanup)
             .finish()
@@ -95,7 +84,7 @@ impl fmt::Display for Unreaped {
         write!(
             f,
             "ARM shutdown retains {} actual unreaped children; original={:?}; cleanup={:?}",
-            self.registry.pending_children(),
+            self.recovery.registry.pending_children(),
             self.original,
             self.cleanup
         )
@@ -106,78 +95,93 @@ impl Error for Unreaped {
         self.original.as_deref()
     }
 }
-/// Run the actual standard service in a fresh single-threaded service child.
-/// Call only after the app's once-only early capture/daemon split. This function
-/// changes configured process credentials and owns a current-thread runtime;
-/// it must not be nested inside an existing runtime or concurrent application.
-/// No child, listener, clock, signal or readiness result is fabricated.
-pub fn run(input: Startup<'_, '_>) -> Result<(), Failure> {
-    if tokio::runtime::Handle::try_current().is_ok() {
-        return Err("ARM SERVICE must start before an existing runtime".into());
+
+/// Preserve direct recovery of the original registry when independent reporting
+/// or readiness cleanup fails after the main operation returned native debt.
+pub(super) fn retain_cleanup(original: Failure, cleanup: Failure) -> Failure {
+    match original.downcast::<Unreaped>() {
+        Ok(mut debt) => {
+            debt.cleanup.push(cleanup);
+            debt
+        }
+        Err(original) => Box::new(Failures {
+            original: Some(original),
+            cleanup: vec![cleanup],
+        }),
     }
-    let Startup {
-        selected,
-        inherited,
-        parent,
-        notice,
-        clock,
-        logger,
-        ready,
-    } = input;
-    let reports = reporting::Reports::new(logger, clock);
-    let result = (|| -> Result<(), Failure> {
-        if let Some(notice) = notice {
-            reports.warning(
-                "arm.parent",
-                format_args!("ARM original parent-control declaration: {notice:?}"),
-            );
-            reports.startup_check()?
-        }
-        let config = settings::configuration(selected.configuration())?;
-        clock.testing_skew(&config)?;
-        let settings = settings::Settings::read(&config)?;
-        let user = configured_user(&config, b"arm")?
-            .as_deref()
-            .map(resolve_user)
-            .transpose()?;
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()?;
-        let prepared = {
-            let _entered = runtime.enter();
-            BoundListeners::prepare_before_identity(&config, b"arm", Activation::default())?
-        };
-        let privileges = apply_privileges(user.as_ref(), GroupsProfile::WithInitgroups)?;
-        if user.is_some() {
-            reports.message(
-                Level::INFO,
-                "arm.identity",
-                format_args!("ARM actual configured process identity: {privileges:?}"),
-            );
-            reports.startup_check()?
-        }
-        // Unix is created under the actual target account, avoiding root-owned0700
-        // sockets unusable after USER. CLOSE_LSOCKS EOF is only an early-bind fact,
-        // never a replacement for the separate daemon parent's ready byte.
-        let bound = runtime.block_on(prepared.finish())?;
-        for error in bound.failures() {
-            reports.warning(
-                "arm.listener.alternate",
-                format_args!("ARM actual alternate control listener: {error}"),
-            )
-        }
-        let release = inherited.complete_after_bind(&bound);
-        reports.message(Level::DEBUG,"arm.inherited.released",format_args!("ARM original inherited close-set released: {release:?}; application readiness not claimed"));
-        reports.startup_check()?;
-        runtime.block_on(foreground::run(foreground::Inputs {
-            bound,
-            parent,
-            settings: &settings,
-            config: &config,
-            clock,
-            reports: &reports,
-            ready,
-        }))
-    })();
-    lifecycle::retain_diagnostic(result, reports.take_failure())
+}
+pub(super) fn retain_diagnostic(
+    result: Result<(), Failure>,
+    diagnostic: Option<io::Error>,
+) -> Result<(), Failure> {
+    let diagnostic = diagnostic.map(|error| Box::new(error) as Failure);
+    match (result, diagnostic) {
+        (result, None) => result,
+        (Ok(()), Some(error)) => Err(error),
+        (Err(original), Some(error)) => Err(retain_cleanup(original, error)),
+    }
+}
+
+/// Original process authority plus dependent transfer/control owners after a
+/// failed bounded shutdown. Drop closes local owners only; it never kills/waits.
+pub struct Recovery {
+    registry: ChildRegistry,
+    controls: Vec<crate::process::RetainedChild>,
+}
+impl Recovery {
+    /// Native children still awaiting consuming exit observation.
+    pub fn pending_children(&self) -> usize {
+        self.registry.pending_children()
+    }
+    /// Borrow original lookup capabilities; a numeric PID grants no action.
+    pub fn children(&self) -> impl Iterator<Item = &crate::process::OriginalChild> {
+        self.registry.children()
+    }
+    /// Request a direct native stop for an original child. This bypasses the
+    /// abandoned service control loop and does not prove exit.
+    pub fn request_stop(
+        &mut self,
+        child: &crate::process::OriginalChild,
+    ) -> Result<(), crate::process::LaunchError> {
+        crate::process::force_stop(&mut self.registry, child)
+    }
+    /// Force native termination of an original child, independently of reaping.
+    pub fn kill(
+        &mut self,
+        child: &crate::process::OriginalChild,
+    ) -> Result<(), crate::process::LaunchError> {
+        crate::process::kill(&mut self.registry, child)
+    }
+    /// Consume completed originals and release only their auxiliary owners.
+    /// Earlier completions remain available if a later native query fails.
+    pub fn reap_completed(&mut self) -> Result<(), crate::process::LaunchError> {
+        let result = crate::process::reap_completed(&mut self.registry);
+        self.release_completed();
+        result
+    }
+    /// Take one retained native exit and optional actual resource observation.
+    pub fn take_completed_with_usage(
+        &mut self,
+    ) -> Option<(
+        crate::process::Reaped,
+        Option<crate::process::ResourceUsage>,
+    )> {
+        self.registry.take_completed_with_usage()
+    }
+    /// Register original exit notifications on the caller's enabled runtime.
+    /// Canceling a wait retains this owner and all pending native resources.
+    pub fn poll_exit(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), crate::process::LaunchError>> {
+        crate::process::poll_exit(&mut self.registry, cx)
+    }
+    /// Release auxiliary owners only for children already consumed by this
+    /// registry. This performs no native wait and infers no child exit.
+    pub fn release_completed(&mut self) -> usize {
+        let before = self.controls.len();
+        let registry = &self.registry;
+        self.controls.retain(|child| registry.owns(&child.original));
+        before - self.controls.len()
+    }
 }

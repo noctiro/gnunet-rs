@@ -445,6 +445,7 @@ impl Effect<'_> {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Completion {
     /// All original local writes, or original local control, actually completed.
+    /// Invalid for cleanup actions, which require a physical-retirement disposition.
     Written,
     /// Original action was provably never admitted; unfinished created resources
     /// must be physically retired before reporting this disposition.

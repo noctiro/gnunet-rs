@@ -435,11 +435,11 @@ impl<'id> Communicator<'id> {
         }
         if let Some(state) = &self.discovery {
             for (socket, pending) in state.pending.iter().enumerate() {
-                if let Some((operation, target)) = pending {
+                if let Some(pending) = pending {
                     self.loss.push(Retired::DiscoveryPending {
                         socket,
-                        operation: *operation,
-                        target: *target,
+                        operation: pending.operation,
+                        target: pending.target,
                     })?;
                 }
             }

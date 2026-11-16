@@ -157,13 +157,10 @@ pub(crate) fn frame(
     let mut metadata_bytes = root_metadata.len();
     let mut record_bytes = 0usize;
     for name in &source.names {
-        let mut terminated = allocation(
-            name.bytes
-                .len()
-                .checked_add(1)
-                .ok_or(ProtocolError::Overflow)?,
-        )?;
-        terminated[..name.bytes.len()].copy_from_slice(&name.bytes);
+        let bytes = crate::input_tree::protocol_name(&name.native)?;
+        let mut terminated =
+            allocation(bytes.len().checked_add(1).ok_or(ProtocolError::Overflow)?)?;
+        terminated[..bytes.len()].copy_from_slice(bytes);
         let items = [
             md::Item {
                 kind: 180,

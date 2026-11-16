@@ -1,7 +1,6 @@
 //! Rust-native UDP resources and explicitly fenced durable replay admission.
 //! No production C backend or dependency on TRANSPORT service ownership.
 #![forbid(unsafe_code)]
-#![cfg(unix)]
 #[cfg(feature = "transport")]
 pub mod driver;
 #[cfg(feature = "pils-client")]
@@ -22,3 +21,6 @@ pub mod discovery;
 /// Actual public NAT burst composition for the normal communicator.
 #[cfg(feature = "transport")]
 pub use communicator::burst;
+
+#[cfg(test)]
+mod test_support;

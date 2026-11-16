@@ -17,7 +17,6 @@ use gnunet_types::{AbsoluteTime, Error as Fault};
 use std::{
     collections::{HashMap, HashSet},
     fmt,
-    os::unix::ffi::{OsStrExt, OsStringExt},
     path::{Path, PathBuf},
     sync::{
         Arc,
@@ -634,16 +633,17 @@ impl Task {
         if !file.metadata()?.is_file() {
             return Err(Fault::InvalidInput.into());
         }
-        let raw = filename.as_os_str().as_bytes();
+        let raw = gnunet_native::os_bytes::encode(filename.as_os_str());
         if raw.len() > 4096 || raw.contains(&0) {
             return Err(Fault::InvalidInput.into());
         }
         let words = encode_keywords(extra_keywords)?;
-        let metadata = metadata.snapshot()?;
-        let metadata_length = u32::try_from(metadata.len()).map_err(|_| Fault::Capacity)?;
+        let metadata_snapshot = metadata.snapshot()?;
+        let metadata_length =
+            u32::try_from(metadata_snapshot.len()).map_err(|_| Fault::Capacity)?;
         let body_bytes = 52usize
             .checked_add(raw.len())
-            .and_then(|n| n.checked_add(metadata.len()))
+            .and_then(|n| n.checked_add(metadata_snapshot.len()))
             .and_then(|n| n.checked_add(words.len()))
             .ok_or(Fault::Overflow)?;
         let mut store = Store::create(path, limits.storage)?;
@@ -655,12 +655,49 @@ impl Task {
         body.extend_from_slice(&id);
         body.extend_from_slice(&limits.max_operations.to_be_bytes());
         body.extend_from_slice(&(raw.len() as u32).to_be_bytes());
-        body.extend_from_slice(raw);
+        body.extend_from_slice(&raw);
         body.extend_from_slice(&metadata_length.to_be_bytes());
-        body.extend_from_slice(&metadata);
+        body.extend_from_slice(&metadata_snapshot);
         body.extend_from_slice(&words);
         store.append(MANIFEST, &body)?;
-        Self::from_store(store, limits)
+        let mut task = Self::from_store(store, limits)?;
+        task.manifest.metadata = task
+            .manifest
+            .metadata
+            .clone()
+            .with_authorization_from(&metadata)?;
+        Ok(task)
+    }
+    /// Bind current runtime authority to this task's recorded native selection.
+    /// This changes no persisted setting or receipt. Non-native selections need
+    /// no authority; mismatching native paths/options are refused while metadata
+    /// reconstruction is needed. Retained keyword selection needs no provider.
+    pub fn authorize_native_metadata(
+        &mut self,
+        authorization: &crate::extraction::NativeMetadataAuthorization,
+    ) -> Result<(), Cause> {
+        if self.state.keywords.is_none() && self.manifest.metadata.native_configuration().is_some()
+        {
+            self.manifest.metadata = self
+                .manifest
+                .metadata
+                .clone()
+                .with_native_authorization(authorization)?;
+        }
+        Ok(())
+    }
+    /// Reattach an explicitly configured matching runtime capability after open.
+    /// Status/open alone never execute code or grant authority from task bytes.
+    pub fn authorize_metadata_from(&mut self, current: &MetadataSettings) -> Result<(), Cause> {
+        if self.state.keywords.is_some() {
+            return Ok(());
+        }
+        self.manifest.metadata = self
+            .manifest
+            .metadata
+            .clone()
+            .with_authorization_from(current)?;
+        Ok(())
     }
     /// Reopen bounded history under the original physical exclusive writer lock.
     /// This validates records; it does not read/hash the source or open a socket.
@@ -711,8 +748,11 @@ impl Task {
         if raw.contains(&0) {
             return Err(Cause::Malformed);
         }
-        let filename = PathBuf::from(std::ffi::OsString::from_vec(copy_bytes(raw)?));
-        if !filename.is_absolute() {
+        let filename = PathBuf::from(
+            gnunet_native::os_bytes::decode_owned(copy_bytes(raw)?)
+                .map_err(|_| Cause::Malformed)?,
+        );
+        if !crate::input::absolute_normalized(&filename) {
             return Err(Cause::Malformed);
         }
         let metadata_length = number(&mut bytes)? as usize;
@@ -862,9 +902,9 @@ impl Task {
         if let Err(e) = self.append(BEGIN, &run.to_be_bytes()) {
             return Err(self.failure(e));
         }
-        let filename = match copy_bytes(self.manifest.filename.as_os_str().as_bytes()) {
-            Ok(bytes) => PathBuf::from(std::ffi::OsString::from_vec(bytes)),
-            Err(e) => return Err(self.failure(e)),
+        let filename = match crate::input::owned_path(&self.manifest.filename) {
+            Ok(path) => path,
+            Err(e) => return Err(self.failure(e.into())),
         };
         let mut input = match crate::open_input(&filename) {
             Ok(file) => file,

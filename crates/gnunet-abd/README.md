@@ -6,6 +6,8 @@ restores the C plural IPC leaf serializer's omitted NUL before authenticating. S
 existing Unicode18 lowercase+NFD implementation. Signed expiration and actual
 GNS-record deadlines require a conservative caller UTC interval.
 
+## Public interface
+
 A Query resolves conjunctive and linked role rules by a finite least fixed
 point. Terms of one authenticated ATTR record are AND for the same subject;
 separate records are OR. A linked role uses the same intermediate
@@ -21,6 +23,8 @@ remain distinct. Cancellation retains every admitted original owner until its
 retirement, without inventing a wire cancel or ACK, resetting a hard
 deadline, or opening a replacement source. Native raw causes stay independently
 owned by the host. Outcome is not cleanup completion.
+
+## Limits
 
 Limits explicitly bound retained allocation capacity, principal/role/rule/fact
 counts, supporting proof metadata, lookup owners and linked depth. Names and

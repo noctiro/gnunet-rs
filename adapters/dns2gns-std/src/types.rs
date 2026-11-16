@@ -217,6 +217,15 @@ pub struct RequestReport {
     /// Original failure, independently retained from cleanup outcomes.
     pub error: Option<RequestError>,
 }
+/// Receive errors isolated from the shared listener's lifetime. These errors
+/// identify no client and establish no outcome for an earlier reply.
+#[derive(Debug, Default)]
+pub struct DatagramErrors {
+    /// Actual observed errors, saturating at u64::MAX.
+    pub count: u64,
+    /// First actual native error; repeated errors do not grow retained storage.
+    pub first: Option<io::Error>,
+}
 /// Bounded cumulative runtime observations. No report authorizes old tokens.
 #[derive(Debug)]
 pub struct Report {
@@ -234,6 +243,8 @@ pub struct Report {
     pub first_failure: Option<Arc<RequestReport>>,
     /// Independent listener receive/address errors, at most one per family.
     pub listener_errors: [Option<io::Error>; 2],
+    /// Isolated receive errors; original listener owners remain live.
+    pub datagram_errors: [DatagramErrors; 2],
     /// Original futures/replies force-dropped without observed completion.
     pub unresolved: usize,
     /// All original request futures and replies actually consumed locally.
@@ -248,6 +259,8 @@ pub enum Event {
     Request(Arc<RequestReport>),
     /// One listener source failed and was closed.
     ListenerLost(usize),
+    /// An isolated native receive failed; no packet or peer was identified.
+    DatagramRejected(usize),
     /// All original local owners retired.
     Closed,
 }

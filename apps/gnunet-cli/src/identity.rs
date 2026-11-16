@@ -15,10 +15,8 @@ use serde_json::{Value, json};
 use std::{
     error::Error,
     ffi::{OsStr, OsString},
-    fs::File,
     future::{Future, poll_fn},
-    io::{self, Read, Write},
-    os::unix::ffi::OsStrExt,
+    io::{self, Write},
     path::PathBuf,
     pin::Pin,
     task::Poll,
@@ -175,7 +173,7 @@ fn parse(
     }
     limits.initialization_timeout = timeout;
     for name in names {
-        let name = name.as_os_str().as_bytes();
+        let name = crate::argument::wire_bytes(name)?;
         if name.len() > limits.name_bytes {
             return Err("identity name exceeds configured bound".into());
         }
@@ -232,10 +230,10 @@ fn returned(out: &mut impl Write, identity: &Identity, private: bool) -> Result<
     )
 }
 
-struct Random(File);
+struct Random;
 impl Entropy for Random {
     fn fill(&mut self, output: &mut [u8]) -> std::result::Result<(), Fault> {
-        self.0.read_exact(output).map_err(|_| Fault::Entropy)
+        gnunet_native::entropy::fill(output).map_err(|_| Fault::Entropy)
     }
 }
 #[derive(Debug)]
@@ -421,7 +419,7 @@ async fn lookup(
 ) -> Result<()> {
     let instance = Instance::new();
     let clock = source.clock();
-    let name = command.names[0].as_os_str().as_bytes();
+    let name = crate::argument::wire_bytes(&command.names[0])?;
     let mut lookup = if command.action == Action::Suffix {
         Lookup::by_suffix(&instance, source, name, until, command.limits)?
     } else {
@@ -538,14 +536,12 @@ async fn mutation(
 ) -> Result<()> {
     let instance = Instance::new();
     let mut client = Client::new(&instance, source, command.limits)?;
-    let name = command.names[0].as_os_str().as_bytes();
+    let name = crate::argument::wire_bytes(&command.names[0])?;
     let operation = match command.action {
         Action::Create => {
             let key = match command.imported.take() {
                 Some(key) => key,
-                None => {
-                    SecretKey::generate(command.key_type, &mut Random(File::open("/dev/urandom")?))?
-                }
+                None => SecretKey::generate(command.key_type, &mut Random)?,
             };
             if Instant::now() >= hard {
                 return finish(
@@ -557,7 +553,9 @@ async fn mutation(
             }
             client.create(name, key, until)?
         }
-        Action::Rename => client.rename(name, command.names[1].as_os_str().as_bytes(), until)?,
+        Action::Rename => {
+            client.rename(name, crate::argument::wire_bytes(&command.names[1])?, until)?
+        }
         Action::Delete => client.delete(name, until)?,
         _ => return Err("invalid identity mutation".into()),
     };

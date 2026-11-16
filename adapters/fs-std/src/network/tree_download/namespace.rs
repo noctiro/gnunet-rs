@@ -7,21 +7,35 @@ use gnunet_types::{AbsoluteTime, Error as ProtocolError};
 use std::time::Duration;
 pub(crate) fn checkpoint(
     source: &EndpointSource,
-    deadline: AbsoluteTime,
+    options: &super::super::DownloadOptions,
     last: &mut Option<AbsoluteTime>,
     progress: TreeDownloadProgress,
     control: &mut impl FnMut(TreeDownloadProgress) -> Control,
 ) -> Result<()> {
+    let elapsed = || {
+        options
+            .native_deadline
+            .is_some_and(|hard| tokio::time::Instant::now() >= hard)
+    };
+    if elapsed() {
+        return Err(ProtocolError::Deadline.into());
+    }
     let now = source.clock().sample()?.now;
+    if elapsed() {
+        return Err(ProtocolError::Deadline.into());
+    }
     if last.is_some_and(|previous| now < previous) {
         return Err(ProtocolError::TimeUncertain.into());
     }
     *last = Some(now);
-    if now >= deadline {
+    if now >= options.deadline {
         return Err(ProtocolError::Deadline.into());
     }
     if control(progress) == Control::Cancel {
         return Err(Error::Cancelled);
+    }
+    if elapsed() {
+        return Err(ProtocolError::Deadline.into());
     }
     Ok(())
 }
@@ -57,13 +71,18 @@ pub(super) async fn resolve_namespace(
     )?;
     let result = async {
         loop {
-            checkpoint(source, options.transfer.deadline, last, progress, control)?;
-            match session
+            checkpoint(source, &options.transfer, last, progress, control)?;
+            let observation = tokio::time::Instant::now() + Duration::from_millis(50);
+            let step = session
                 .drive(Some(
-                    tokio::time::Instant::now() + Duration::from_millis(50),
+                    options
+                        .transfer
+                        .native_deadline
+                        .map_or(observation, |hard| observation.min(hard)),
                 ))
-                .await?
-            {
+                .await?;
+            checkpoint(source, &options.transfer, last, progress, control)?;
+            match step {
                 crate::search::Step::Result { result } | crate::search::Step::Update { result } => {
                     match session
                         .result(result)

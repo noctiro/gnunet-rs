@@ -1,6 +1,6 @@
 # GNUnet v0.29.1 session primitives
 
-This workspace crate supplies the next CORE/TRANSPORT primitive chain:
+This crate supplies CORE and TRANSPORT cryptographic primitives:
 raw X25519 and legacy SHA512(DH), EdDSA/PKEY conversion, plain DHKEM(X25519,
 HKDF-SHA256)0x0020, standard split HKDF, incremental SHA512, HMAC-SHA512,
 XChaCha20Poly1305, CAKE role/transcript/record/sequence derivation, and persistent
@@ -12,11 +12,9 @@ The existing repository supplies GNUnet purpose signatures, GNS PKEY/EDKEY
 blinding/signatures, the different legacy GNUnet HKDF and XSalsa20 secretbox. Those algorithms are retained as distinct constructions. In particular current
 CORE uses CAKE, rather than the historical AES+Twofish session exchange.
 
-`UPSTREAM.md` records exact source contracts and the intentionally unfinished
-layers. `tools/inventory.py` inventories every one of the226 public functions in
-the fixed crypto header, including its108 nonfunction surfaces and lexical
-consumers. Its assessments do not update the acceptance ledger. Many official
-crypto APIs remain missing; this package is not a full GNUnet crypto replacement.
+[UPSTREAM.md](UPSTREAM.md) records algorithm and source contracts. The header
+[discovery tool](tools/inventory.py) inventories reference declarations and lexical
+consumers; those mappings are separate from external protocol requirements.
 
 ## Reproduce against an unchanged normal C utility library
 
@@ -40,8 +38,7 @@ O0 and O2. Both callers use the same already normally compiled C library; this
 does not claim two independently optimized utility libraries. CAKE/TCP recipes
 call the public C KDF, MAC and cipher APIs. The UDP key/nonce comparison
 extracts the unchanged `get_iv_key` body and macros from the pinned communicator,
-including its actual 12-byte nonce; the earlier handwritten 16-byte recipe was
-incorrect and its historical evidence remains scoped in the correction audit. ChaCha12 and sequence masking additionally call libsodium APIs
+including its 12-byte nonce. ChaCha12 and sequence masking call libsodium APIs
 used by those C implementations.
 
 All generated Cargo manifests, locks, binaries, fixtures and logs go under the
@@ -74,9 +71,8 @@ owner types expose neither Clone nor Debug nor a general borrowed byte view. The
 secret bytes; its caller must erase that output. Caller
 inputs are still caller-owned: passing a Copy array by value cannot erase other
 copies retained by the caller. AEAD key-slice and UDP key-buffer users must erase
-their own copies. Fourteen exact-code compile failures plus a successful control
-enforce Clone/Debug refusal for the seven baseline secret owner types using the actual
-Cargo-reported library. Compile-fail examples also enforce the exposed scalar
+their own copies. Exact-code compile failures and positive controls enforce
+Clone/Debug refusal using the Cargo-reported library. Compile-fail examples also enforce the exposed scalar
 ownership boundary; failure-path tests exercise partial entropy erasure,
 authentication rejection erasure and atomic codec capacity refusal.
 
@@ -96,15 +92,15 @@ contents, which are never treated as valid outputs in the differential.
 `record_material` and generic AEAD methods accept caller-provided AAD. `seal_record` / `open_record` specifically use current official CAKE empty AAD. They do not include an epoch/header field. Callers must enforce sequence
 uniqueness, replay windows, epoch ratchets, association ownership and rekeying;
 a primitive returning an authenticated sequence is not a replay-admission
-result. The protocol state machine remains a separate unfinished task.
+result. Protocol admission belongs to the
+[CORE](../gnunet-core/README.md) and communicator engines.
 
 The `hpke` module supplies official X25519 and distinct typed Elligator Base/PSK
 contexts, sequential seal/open, default-X25519 one-shot encapsulation and
 private-key codecs. [HPKE.md](HPKE.md)
 records exact source behavior, safe output/ownership decompositions and the
 normal-library verifier `tools/hpke_verify.py`. Auth modes retain the source's
-explicit refusal. This
-does not complete CORE or communicator handshakes.
+explicit refusal.
 
 The `gcm` module supplies AES256-GCM nonce12/tag16 with mature GHASH, explicit
 length bounds and authentication before decryption. `udp` uses exactly empty

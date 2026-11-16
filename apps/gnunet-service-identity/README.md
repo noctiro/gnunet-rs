@@ -1,40 +1,46 @@
-# Rust IDENTITY SERVICE
+# IDENTITY service
 
-`gnunet-service-identity` uses the shared standard SERVICE options (`-c`, `-d`,
-`-h`, `-L`, `-l`, `-v`), default configuration selection and selected Logger. The pinned public v0.29.1 entry is `GNUNET_SERVICE_MAIN("identity",
-GNUNET_SERVICE_OPTION_NONE, ...)`. This app continues to use the existing real
-Ego CRUD, exact/suffix lookup, subscription, IPC, canonical inventory and marked
-snapshot Server; no protocol or key/storage algorithm is replaced.
+`gnunet-service-identity` serves the official IDENTITY IPC protocol through the
+[shared host](../../adapters/identity-std/README.md): ego CRUD, exact/suffix
+lookup, subscription and a private Rust inventory store. Standard SERVICE
+options are `-c`, `-d`, `-h`, `-L`, `-l`, `-v`.
 
-Early startup captures the original inherited listener and parent-control FDs
-once. Explicit daemonization occurs before NSS, runtime, listener paths, store
-or worker. New TCP listeners are prebound before configured `USERNAME`, then
-new Unix listeners are created under the selected UID/GID filesystem policy;
-inherited listeners keep their original ownership. Kernel peer credentials
-remain a separate admission check in the unchanged Server.
+## Startup and platform ownership
 
-One caller-owned future runs on one explicit current-thread runtime with the
-same shared clock, Logger and Resolver broker. It is not moved into a PROGRAM
-scheduler task. Actual listeners, marked-store recovery, original worker and
-Server precede `READY identity ...`; successful stdout flush precedes the
-original daemon `ChildReady` byte. Failed recovery or initialization never
-claims readiness. Parent-control EOF is distinct from a stop signal and cannot
-manufacture a ready byte.
+`main.rs` owns diagnostics; `settings.rs` owns configuration. `foreground.rs`
+and `lifecycle.rs` share the same Server, disk worker, Resolver and stop policy.
+`unix.rs` and `windows.rs` contain only native bootstrap differences.
 
-SIGINT/SIGTERM or the matching parent-control byte starts one finite soft MQ
-grace; a second signal ends it. Selected-Logger failure permanently gates new
-provider polls and wakes the same future. Its native grace is checked before
-canonical/provider progress and is never renewed. Actual MQ retirement and
-Resolver physical closure precede waiting for the original disk result/join. After `Worker::start`, constructor errors run that same worker's shutdown;
-a successfully constructed Server uses its existing shutdown/drain/join. An elapsed native grace is only an observation: an OS filesystem operation is
-not force-canceled, a timeout is not join, and no replacement worker is started.
+Unix captures inherited descriptors once and detaches before runtime, account
+lookup or workers. TCP listeners prepare before configured `USERNAME`; new
+local listeners finish under the selected UID/GID. Windows captures native
+activation and parent bootstrap, verifies the configured account against its
+primary-token SID before listeners/storage, and uses native managed detachment
+or standalone re-exec. Inherited listeners retain their original ownership.
 
-Owned terminal results retain Server/worker reports, original operation,
-Resolver closure, stdout, selected-Logger and independent cleanup errors,
-including a Logger-only failure. Logs contain public metadata, not request
-frames, ego names, keys or snapshots. `STOPPED` reports original results.
+Readiness follows listener setup, marked-store recovery, worker/Server creation
+and successful output flush. The platform callback then acknowledges the
+original parent. Initialization failure never sends success; parent EOF does
+not fabricate a stop. Local credentials and configured IP ACLs remain separate
+admission checks.
 
-Example (choose a final store directory that does **not** already exist):
+## Shutdown and errors
+
+Native stop or parent interrupt/terminate starts one finite MQ grace; a second
+stop ends it. Logger failure stops new work and wakes the same service future.
+Physical MQ/Resolver retirement precedes waiting for the original disk result
+and worker join. Constructor failure after worker startup runs the same cleanup.
+An elapsed grace cannot cancel a kernel filesystem syscall or stand in for join.
+
+Terminal results retain the operation, Server/worker, Resolver, output, Logger
+and independent cleanup failures. Logs contain public metadata, never ego names,
+keys, frames or snapshot bodies.
+
+## Configuration
+
+Choose a final store directory that does not already exist, or an already
+qualified Rust store. This Unix example uses private local IPC; on Windows,
+select absolute native paths for `UNIXPATH` and `DIRECTORY`.
 
 ```ini
 [identity]

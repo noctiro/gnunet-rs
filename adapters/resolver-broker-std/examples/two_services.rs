@@ -39,6 +39,7 @@ async fn run(cfg: Configuration) -> Result {
     let mut registry = ChildRegistry::new(4)?;
     let launcher = LocalLauncher::new(
         cfg.duplicate()?,
+        #[cfg(unix)]
         std::env::current_exe()?,
         LaunchLimits::default(),
         &mut registry,

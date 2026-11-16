@@ -1,7 +1,7 @@
-//! One actual private Unix FS CLIENT flow across a cache miss and task restart.
+//! One actual private native FS CLIENT flow across a cache miss and task restart.
 //! The peer serves real encoder outputs; it is a bounded protocol fixture, not
 //! a production FS daemon, original-C or P2P interoperability observation.
-#![cfg(all(unix, feature = "service"))]
+#![cfg(all(any(unix, windows), feature = "service"))]
 #![expect(
     clippy::panic_in_result_fn,
     reason = "The finite native flow asserts actual requests, authenticated bytes and original MQ retirement"
@@ -19,40 +19,19 @@ use gnunet_fs_host::{
 };
 use gnunet_types::AbsoluteTime;
 use gnunet_wire::official::fs::{BlockType, ClientPut, Request, Response, SEARCH_LOOPBACK_ONLY};
-use std::{
-    collections::HashMap,
-    fs, io,
-    os::unix::fs::DirBuilderExt,
-    path::PathBuf,
-    sync::atomic::{AtomicU64, Ordering},
-    time::Duration,
-};
+use std::{collections::HashMap, fs, io, time::Duration};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::{UnixListener, UnixStream},
     time::timeout,
 };
 
+#[path = "support/local_peer.rs"]
+mod local_peer;
+use gnunet_service_runtime::local::Stream;
+use local_peer::{Listener, Temporary};
+
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 const ANONYMITY: u32 = 7;
-struct Temporary(PathBuf);
-impl Temporary {
-    fn new() -> io::Result<Self> {
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        let path = std::env::temp_dir().join(format!(
-            "gnunet-fs-file-native-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        fs::DirBuilder::new().mode(0o700).create(&path)?;
-        Ok(Self(path))
-    }
-}
-impl Drop for Temporary {
-    fn drop(&mut self) {
-        let _cleanup = fs::remove_dir_all(&self.0);
-    }
-}
 type Blocks = HashMap<[u8; 64], (BlockType, Vec<u8>)>;
 #[derive(Default)]
 struct Encoded {
@@ -74,11 +53,11 @@ impl BlockSink for Encoded {
             if *previous_kind != kind || previous.as_slice() != encoded.block().bytes() {
                 return Err(gnunet_fs_host::Error::Corrupt);
             }
-            return Ok(Insert::Existing);
+            return Ok(Insert::Existing(gnunet_fs_host::Retention::Volatile));
         }
         self.blocks
             .insert(key.query, (kind, encoded.block().bytes().to_vec()));
-        Ok(Insert::Created)
+        Ok(Insert::Created(gnunet_fs_host::Retention::Volatile))
     }
 }
 fn content(bytes: &[u8]) -> TestResult<(Content, Encoded)> {
@@ -102,7 +81,7 @@ fn until(source: &EndpointSource) -> TestResult<AbsoluteTime> {
         .ok_or("fixture deadline overflow")?;
     Ok(AbsoluteTime::from_micros(micros))
 }
-async fn frame(stream: &mut UnixStream) -> io::Result<Vec<u8>> {
+async fn frame(stream: &mut Stream) -> io::Result<Vec<u8>> {
     let mut header = [0; 4];
     stream.read_exact(&mut header).await?;
     let length = usize::from(u16::from_be_bytes([header[0], header[1]]));
@@ -115,7 +94,7 @@ async fn frame(stream: &mut UnixStream) -> io::Result<Vec<u8>> {
     Ok(bytes)
 }
 async fn serve(
-    listener: &UnixListener,
+    listener: &Listener,
     blocks: &Blocks,
     expected: &[[u8; 64]],
     placement: [u8; 32],
@@ -159,7 +138,7 @@ fn joined<T, U>(work: TestResult<T>, peer: TestResult<U>) -> TestResult<(T, U)> 
     match (work, peer) {
         (Ok(work), Ok(peer)) => Ok((work, peer)),
         (Err(work), Err(peer)) => {
-            Err(format!("original file task: {work}; independent Unix peer: {peer}").into())
+            Err(format!("original file task: {work}; independent local peer: {peer}").into())
         }
         (Err(error), _) | (_, Err(error)) => Err(error),
     }
@@ -195,7 +174,7 @@ fn cache_miss_loc_range_pauses_original_mq_then_reopened_task_fetches_only_missi
                 let task_path = temporary.0.join("task");
                 let cache_path = temporary.0.join("cache");
                 let socket_path = temporary.0.join("fs.sock");
-                let listener = UnixListener::bind(&socket_path)?;
+                let listener = Listener::bind(&socket_path).await?;
                 let policy = DownloadOptions {
                     anonymity: ANONYMITY,
                     local_only: true,

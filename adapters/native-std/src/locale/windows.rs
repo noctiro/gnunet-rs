@@ -1,5 +1,8 @@
 //! UCRT locale objects and explicit-locale conversion; no locale installation.
+#[path = "windows/nls.rs"]
+pub(crate) mod nls;
 use super::{ConfigurationFloat, FloatScan, NumberScan, c_string, consumed, prefix};
+use crate::windows_crt::{Errno, crt_error, errno};
 use std::{
     ffi::{CString, c_char, c_int, c_void},
     io,
@@ -27,7 +30,6 @@ unsafe extern "C" {
         locale: RawLocale,
     ) -> u64;
     fn _strtoui64(input: *const c_char, end: *mut *mut c_char, base: c_int) -> u64;
-    fn _errno() -> *mut c_int;
 }
 #[cfg_attr(target_env = "msvc", link(name = "legacy_stdio_definitions"))]
 #[expect(
@@ -70,48 +72,6 @@ impl Drop for Handle {
     }
 }
 
-#[expect(
-    unsafe_code,
-    reason = "UCRT _errno returns the calling thread's initialized CRT errno slot, not Win32 GetLastError storage"
-)]
-fn errno() -> c_int {
-    // SAFETY: this initialized UCRT thread owns the live errno cell.
-    unsafe { *_errno() }
-}
-#[expect(
-    unsafe_code,
-    reason = "Only the current thread's CRT errno cell is updated during synchronous native calls"
-)]
-fn set_errno(value: c_int) {
-    // SAFETY: _errno points to this UCRT thread's writable errno cell.
-    unsafe {
-        *_errno() = value;
-    }
-}
-struct Errno(c_int);
-impl Errno {
-    fn clear() -> Self {
-        let old = Self(errno());
-        set_errno(0);
-        old
-    }
-}
-impl Drop for Errno {
-    fn drop(&mut self) {
-        set_errno(self.0);
-    }
-}
-fn crt_error(operation: &'static str) -> io::Error {
-    let code = errno();
-    let kind = match code {
-        libc::ENOMEM => io::ErrorKind::OutOfMemory,
-        libc::EINVAL => io::ErrorKind::InvalidInput,
-        _ => io::ErrorKind::Other,
-    };
-    // CRT errno and Win32 error numbers are separate namespaces.
-    io::Error::new(kind, format!("{operation} failed (CRT errno {code})"))
-}
-
 /// An independent immutable UCRT locale. Clones share one owned allocation;
 /// comparisons and conversions never change a process or thread selection.
 #[derive(Clone)]
@@ -119,6 +79,9 @@ pub struct LocaleSnapshot {
     handle: Arc<Handle>,
 }
 impl LocaleSnapshot {
+    pub(crate) fn as_raw(&self) -> *mut c_void {
+        self.handle.0.as_ptr()
+    }
     fn owned(raw: RawLocale, operation: &'static str) -> io::Result<Self> {
         let pointer = NonNull::new(raw).ok_or_else(|| crt_error(operation))?;
         Ok(Self {

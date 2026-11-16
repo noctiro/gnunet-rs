@@ -40,3 +40,5 @@ mod tests;
 
 #[cfg(test)]
 mod engine_tests;
+#[cfg(test)]
+mod recovery_tests;

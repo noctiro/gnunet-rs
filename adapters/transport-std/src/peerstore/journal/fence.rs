@@ -1,131 +1,210 @@
-//! Physical writer authority, bounded filesystem reads and original temp inode.
+//! Original directory, full native file identities and private writer exclusion.
 use super::{JournalFailure, MAX_BYTES, OWNER_FILE, TEMP_PREFIX};
+use gnunet_native::{
+    DirectorySync,
+    filesystem::{Directory, EntryInfo, FileIdentity, file_info, private_single_file_identity},
+};
 use gnunet_types::Error;
 use std::{
-    fs::{self, File, Metadata, OpenOptions},
+    ffi::{OsStr, OsString},
+    fs::{self, File},
     io::{self, Read},
-    os::unix::fs::{MetadataExt, OpenOptionsExt},
     path::{Path, PathBuf},
+    sync::Arc,
 };
-#[derive(Clone, Copy, Eq, PartialEq)]
-pub(super) struct Inode {
-    dev: u64,
-    ino: u64,
-}
-impl Inode {
-    pub(super) fn of(metadata: &Metadata) -> Self {
-        Self {
-            dev: metadata.dev(),
-            ino: metadata.ino(),
-        }
-    }
-}
+pub(super) type Inode = FileIdentity;
 pub(super) struct Authority {
     pub(super) parent: PathBuf,
-    pub(super) directory: File,
-    pub(super) directory_id: Inode,
-    pub(super) lock: File,
-    pub(super) lock_id: Inode,
+    pub(super) directory: Directory,
+    directory_id: FileIdentity,
+    lock: File,
+    pub(super) lock_id: FileIdentity,
+    pub(super) barrier: DirectorySync,
 }
 impl Authority {
+    pub(super) fn open(parent: &Path) -> Result<Self, JournalFailure> {
+        let directory =
+            Directory::open(parent).map_err(|cause| JournalFailure::io("directory-open", cause))?;
+        directory
+            .validate_namespace()
+            .map_err(|cause| JournalFailure::io("directory-policy", cause))?;
+        let directory_id = FileIdentity::of(directory.as_file())
+            .map_err(|cause| JournalFailure::io("directory-id", cause))?;
+        let parent = fs::canonicalize(parent)
+            .map_err(|cause| JournalFailure::io("directory-name", cause))?;
+        let name = OsStr::new(OWNER_FILE);
+        let lock = match directory.open_file_for_update(name) {
+            Ok(file) => file,
+            Err(cause) if cause.kind() == io::ErrorKind::NotFound => directory
+                .create_private_file(name)
+                .map_err(|cause| JournalFailure::io("lock-create", cause))?,
+            Err(cause) => return Err(JournalFailure::io("lock-open", cause)),
+        };
+        let lock_id = private_single_file_identity(&lock)
+            .map_err(|cause| JournalFailure::io("lock-policy", cause))?;
+        lock.try_lock().map_err(|cause| match cause {
+            fs::TryLockError::Error(cause) => JournalFailure::io("writer-lock", cause),
+            cause @ fs::TryLockError::WouldBlock => JournalFailure {
+                stage: "writer-lock",
+                classification: Error::Conflict,
+                io: Some(cause.into()),
+                cleanup: None,
+            },
+        })?;
+        let barrier = directory
+            .sync()
+            .map_err(|cause| JournalFailure::io("directory-sync", cause))?;
+        let authority = Self {
+            parent,
+            directory,
+            directory_id,
+            lock,
+            lock_id,
+            barrier,
+        };
+        authority.verify()?;
+        Ok(authority)
+    }
     pub(super) fn verify(&self) -> Result<(), JournalFailure> {
-        let parent = fs::symlink_metadata(&self.parent)
-            .map_err(|e| JournalFailure::io("directory-authority", e))?;
-        let lock = fs::symlink_metadata(self.parent.join(OWNER_FILE))
-            .map_err(|e| JournalFailure::io("lock-authority", e))?;
-        let retained_dir = self
+        let selected = Directory::open(&self.parent)
+            .map_err(|cause| JournalFailure::io("directory-authority", cause))?;
+        let named = FileIdentity::of(selected.as_file())
+            .map_err(|cause| JournalFailure::io("directory-id", cause))?;
+        let held = FileIdentity::of(self.directory.as_file())
+            .map_err(|cause| JournalFailure::io("retained-directory", cause))?;
+        let lock = FileIdentity::of(&self.lock)
+            .map_err(|cause| JournalFailure::io("retained-lock", cause))?;
+        let same = self
             .directory
-            .metadata()
-            .map_err(|e| JournalFailure::io("retained-directory", e))?;
-        let retained_lock = self
-            .lock
-            .metadata()
-            .map_err(|e| JournalFailure::io("retained-lock", e))?;
-        if !parent.is_dir()
-            || !lock.is_file()
-            || parent.file_type().is_symlink()
-            || lock.file_type().is_symlink()
-            || Inode::of(&parent) != self.directory_id
-            || Inode::of(&retained_dir) != self.directory_id
-            || Inode::of(&lock) != self.lock_id
-            || Inode::of(&retained_lock) != self.lock_id
+            .same_file(OsStr::new(OWNER_FILE), &self.lock)
+            .map_err(|cause| JournalFailure::io("lock-authority", cause))?;
+        if named != self.directory_id || held != self.directory_id || lock != self.lock_id || !same
         {
             return Err(JournalFailure::protocol(
                 "physical-authority",
                 Error::Conflict,
             ));
         }
+        self.directory
+            .validate_namespace()
+            .map_err(|cause| JournalFailure::io("directory-policy", cause))?;
+        private_single_file_identity(&self.lock)
+            .map_err(|cause| JournalFailure::io("lock-policy", cause))?;
         Ok(())
     }
+    pub(super) fn read(
+        &self,
+        name: &OsStr,
+    ) -> Result<Option<(Vec<u8>, FileIdentity)>, JournalFailure> {
+        let mut file = match self.directory.open_file(name) {
+            Ok(file) => file,
+            Err(cause) if cause.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(cause) => return Err(JournalFailure::io("readback-open", cause)),
+        };
+        let before = match file_info(&file)
+            .map_err(|cause| JournalFailure::io("readback-metadata", cause))?
+        {
+            EntryInfo::File(info) if info.identity != self.lock_id => info,
+            _ => return Err(JournalFailure::protocol("readback-kind", Error::Conflict)),
+        };
+        if before.bytes > MAX_BYTES as u64 {
+            return Err(JournalFailure::protocol("read-capacity", Error::Capacity));
+        }
+        let mut raw = Vec::new();
+        raw.try_reserve_exact(before.bytes as usize)
+            .map_err(|_| JournalFailure::protocol("read-allocation", Error::Capacity))?;
+        raw.resize(before.bytes as usize, 0);
+        file.read_exact(&mut raw)
+            .map_err(|cause| JournalFailure::io("read", cause))?;
+        let mut trailing = [0];
+        if file
+            .read(&mut trailing)
+            .map_err(|cause| JournalFailure::io("read", cause))?
+            != 0
+        {
+            return Err(JournalFailure::protocol("read-growth", Error::Capacity));
+        }
+        if file_info(&file).map_err(|cause| JournalFailure::io("readback-metadata", cause))?
+            != EntryInfo::File(before)
+            || !self
+                .directory
+                .same_file(name, &file)
+                .map_err(|cause| JournalFailure::io("readback-name", cause))?
+        {
+            return Err(JournalFailure::protocol(
+                "readback-changed",
+                Error::Conflict,
+            ));
+        }
+        Ok(Some((raw, before.identity)))
+    }
+    pub(super) fn sync(&self) -> Result<DirectorySync, JournalFailure> {
+        self.verify()?;
+        let observed = self
+            .directory
+            .sync()
+            .map_err(|cause| JournalFailure::io("directory-sync", cause))?;
+        self.verify()?;
+        Ok(observed)
+    }
 }
-
 pub(super) struct Temporary {
-    pub(super) path: PathBuf,
+    authority: Arc<Authority>,
+    name: OsString,
     pub(super) file: File,
-    pub(super) inode: Inode,
+    pub(super) inode: FileIdentity,
+    cleaned: bool,
+}
+impl Temporary {
+    pub(super) fn create(authority: Arc<Authority>) -> Result<Self, JournalFailure> {
+        for _ in 0..16 {
+            let mut nonce = [0; 16];
+            getrandom::fill(&mut nonce)
+                .map_err(|_| JournalFailure::protocol("temporary-entropy", Error::Entropy))?;
+            let name = OsString::from(format!("{TEMP_PREFIX}{:032x}", u128::from_be_bytes(nonce)));
+            let file = match authority.directory.create_private_file(&name) {
+                Ok(file) => file,
+                Err(cause) if cause.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(cause) => return Err(JournalFailure::io("temporary-open", cause)),
+            };
+            let inode = private_single_file_identity(&file)
+                .map_err(|cause| JournalFailure::io("temporary-metadata", cause))?;
+            return Ok(Self {
+                authority,
+                name,
+                file,
+                inode,
+                cleaned: false,
+            });
+        }
+        Err(JournalFailure::protocol(
+            "temporary-collision",
+            Error::Capacity,
+        ))
+    }
+    pub(super) fn publish(&self, target: &OsStr) -> io::Result<()> {
+        self.authority
+            .directory
+            .replace_file(&self.name, &self.file, target)
+    }
+    pub(super) fn present(&self) -> io::Result<bool> {
+        match self.authority.directory.same_file(&self.name, &self.file) {
+            Err(cause) if cause.kind() == io::ErrorKind::NotFound => Ok(false),
+            result => result,
+        }
+    }
+    pub(super) fn discard(&mut self) -> io::Result<()> {
+        self.cleaned = true;
+        match self.authority.directory.remove_file(&self.name, &self.file) {
+            Err(cause) if cause.kind() == io::ErrorKind::NotFound => Ok(()),
+            result => result,
+        }
+    }
 }
 impl Drop for Temporary {
     fn drop(&mut self) {
-        if fs::symlink_metadata(&self.path)
-            .is_ok_and(|m| m.is_file() && Inode::of(&m) == self.inode)
-        {
-            let _cleanup = fs::remove_file(&self.path);
+        if !self.cleaned {
+            let _cleanup = self.discard();
         }
     }
-}
-pub(super) fn open_data(path: &Path) -> io::Result<File> {
-    OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(path)
-}
-pub(super) fn read_bounded(file: &mut File) -> Result<Vec<u8>, JournalFailure> {
-    let size = file
-        .metadata()
-        .map_err(|e| JournalFailure::io("read-size", e))?
-        .len();
-    if size > MAX_BYTES as u64 {
-        return Err(JournalFailure::protocol("read-capacity", Error::Capacity));
-    }
-    let mut raw = Vec::new();
-    raw.try_reserve_exact(size as usize)
-        .map_err(|_| JournalFailure::protocol("read-allocation", Error::Capacity))?;
-    file.take(MAX_BYTES as u64 + 1)
-        .read_to_end(&mut raw)
-        .map_err(|e| JournalFailure::io("read", e))?;
-    if raw.len() > MAX_BYTES {
-        return Err(JournalFailure::protocol("read-growth", Error::Capacity));
-    }
-    Ok(raw)
-}
-pub(super) fn temporary_file(parent: &Path) -> Result<Temporary, JournalFailure> {
-    for _ in 0..16 {
-        let mut nonce = [0; 16];
-        getrandom::fill(&mut nonce)
-            .map_err(|_| JournalFailure::protocol("temporary-entropy", Error::Entropy))?;
-        let path = parent.join(format!("{TEMP_PREFIX}{:032x}", u128::from_be_bytes(nonce)));
-        match OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(&path)
-        {
-            Ok(file) => {
-                let inode = Inode::of(
-                    &file
-                        .metadata()
-                        .map_err(|e| JournalFailure::io("temporary-metadata", e))?,
-                );
-                return Ok(Temporary { path, file, inode });
-            }
-            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
-            Err(e) => return Err(JournalFailure::io("temporary-open", e)),
-        }
-    }
-    Err(JournalFailure::protocol(
-        "temporary-collision",
-        Error::Capacity,
-    ))
 }

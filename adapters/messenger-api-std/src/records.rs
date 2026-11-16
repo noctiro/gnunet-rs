@@ -98,23 +98,28 @@ impl std::fmt::Debug for RecordProgress<'_> {
 /// Actual physical record-owner stop accounting. Pending original jobs remain
 /// identifiable without exporting any private key or ciphertext.
 pub struct RecordLoss<'a> {
-    general: Option<ns::Loss<'a>>,
-    monitor: Option<ns::Loss<'a>>,
+    // Cold native loss reports must not enlarge every normal progress event,
+    // especially on Windows where original socket retirement is larger.
+    general: Option<Box<ns::Loss<'a>>>,
+    monitor: Option<Box<ns::Loss<'a>>>,
     pending: Vec<Pending<'a>>,
 }
 impl<'a> RecordLoss<'a> {
     /// Transfer both actual stopped source reports while their instance remains
     /// live. Original domain bindings can be observed before consumption.
     pub fn into_sources(self) -> (Option<ns::Loss<'a>>, Option<ns::Loss<'a>>) {
-        (self.general, self.monitor)
+        (
+            self.general.map(|loss| *loss),
+            self.monitor.map(|loss| *loss),
+        )
     }
     /// Actual general source physical-close accounting, if it existed.
-    pub const fn general(&self) -> Option<&ns::Loss<'_>> {
-        self.general.as_ref()
+    pub fn general(&self) -> Option<&ns::Loss<'_>> {
+        self.general.as_deref()
     }
     /// Actual monitor source physical-close accounting, if it existed.
-    pub const fn monitor(&self) -> Option<&ns::Loss<'_>> {
-        self.monitor.as_ref()
+    pub fn monitor(&self) -> Option<&ns::Loss<'_>> {
+        self.monitor.as_deref()
     }
     /// Original domain bindings retired with the owner, without secret content.
     pub fn bindings(&self) -> impl Iterator<Item = Binding<'a>> + '_ {
@@ -201,8 +206,8 @@ impl<'a> Records<'a> {
         self.next_credit = false;
         self.stopped = true;
         RecordLoss {
-            general,
-            monitor,
+            general: general.map(Box::new),
+            monitor: monitor.map(Box::new),
             pending: core::mem::take(&mut self.pending),
         }
     }

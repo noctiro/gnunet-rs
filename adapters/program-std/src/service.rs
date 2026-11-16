@@ -1,6 +1,10 @@
 //! Pinned SERVICE command options over the existing GETOPT and logging owners.
-//! Configuration selection is shared; listener preparation, daemonization,
-//! process identity and runtime ownership stay explicit with the service caller.
+//! Configuration selection is shared. The optional native service driver owns
+//! process startup; embedded callers can instead compose those boundaries.
+#[cfg(feature = "service-runtime")]
+mod acknowledgement;
+#[cfg(feature = "service-runtime")]
+pub mod native;
 use crate::{
     config_observer,
     getopt::Options,
@@ -10,12 +14,13 @@ use crate::{
     program::{Environment, Failure},
     shared_clock::SharedClock,
 };
+#[cfg(feature = "service-runtime")]
+pub use acknowledgement::acknowledge_ready;
 use gnunet_config::{Configuration, Environment as _, ProcessEnvironment, ProjectData};
 use std::{
     ffi::OsString,
     fmt,
     io::{self, Write},
-    os::unix::ffi::OsStrExt,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -59,7 +64,7 @@ pub fn load_configuration(
     let mut config = Configuration::create(project.clone(), Default::default())?;
     let path = match selected {
         Some(path) => {
-            if !path.is_file() {
+            if !std::fs::metadata(path)?.is_file() {
                 return Err(gnunet_config::Error::InvalidInput.into());
             }
             Some(path.to_path_buf())
@@ -154,7 +159,11 @@ pub fn prepare(
     logger.setup_routed(
         service,
         loglevel.as_deref(),
-        logfile.path.as_deref().map(|p| p.as_os_str().as_bytes()),
+        logfile
+            .path
+            .as_deref()
+            .map(|p| gnunet_native::os_bytes::encode(p.as_os_str()))
+            .as_deref(),
         &environment.logging,
         &Stamp::setup_now()?,
         stderr,
@@ -242,3 +251,12 @@ pub fn retain_diagnostic<T>(
         })),
     }
 }
+
+#[cfg(all(windows, feature = "service-runtime"))]
+mod windows;
+#[cfg(all(windows, feature = "service-runtime"))]
+pub use windows::DetachCause;
+#[cfg(all(windows, feature = "service-runtime"))]
+pub use windows::DetachFailure;
+#[cfg(all(windows, feature = "service-runtime"))]
+pub use windows::detach;

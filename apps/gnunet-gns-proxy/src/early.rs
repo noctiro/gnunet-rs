@@ -1,37 +1,12 @@
-//! First inherited descriptor transfer before logger/runtime construction.
+//! Capture original native inheritance before allocating other resources.
 use crate::Cause;
-use gnunet_service_startup::{ControlNotice, InheritedMode, InheritedResources, ParentControl};
-pub(super) struct Early {
-    pub parent: Option<ParentControl>,
-    pub notice: Option<ControlNotice>,
-}
+use gnunet_service_startup::ClientStartup;
 #[expect(
     unsafe_code,
-    reason = "Unique first startup transfer before logger, runtime, stdio reader or other fd owner in this fresh executable"
+    reason = "Once-only native inheritance capture is the fresh executable's first resource operation"
 )]
-pub(super) fn capture() -> Result<Early, Cause> {
-    // SAFETY: called first by this single-threaded fresh executable. No prior
-    // fd/env capture, threads, environment edits or competing resource owners.
-    let captured = unsafe {
-        gnunet_service_startup::capture_from_environment(InheritedMode::CloseAfterConfiguredBind)?
-    };
-    match captured.inherited {
-        InheritedResources::CloseAfterBind(hold) => {
-            let nonempty = !hold.is_empty();
-            let report = hold.abort();
-            if nonempty {
-                return Err(format!(
-                    "GNS proxy PROGRAM binds its own TCP sockets; it accepts no inherited listening socket; retired inherited descriptors: {report:?}"
-                )
-                .into());
-            }
-        }
-        InheritedResources::Listeners(_) => {
-            return Err("unexpected GNS proxy activation mode".into());
-        }
-    }
-    Ok(Early {
-        parent: captured.parent_control,
-        notice: captured.control_notice,
-    })
+pub(super) fn capture() -> Result<ClientStartup, Cause> {
+    // SAFETY: fresh single-threaded executable before logger, files or runtime;
+    // no competing inheritance capture or route/environment mutation exists.
+    Ok(unsafe { ClientStartup::capture()? })
 }

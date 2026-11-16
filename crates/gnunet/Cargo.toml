@@ -44,13 +44,13 @@ official-nat-burst = ["std", "dep:gnunet-nat-burst-host"]
 official-nat-client = ["std", "dep:gnunet-nat-client-host"]
 nat = ["dep:gnunet-nat"]
 nat-alloc = ["nat", "gnunet-nat/alloc"]
-official-nat = ["std", "dep:gnunet-nat-host"]
+official-nat = ["std", "dep:gnunet-nat-host", "gnunet-nat-host/providers"]
 revocation = ["dep:gnunet-revocation"]
 official-revocation-client = ["std", "dep:gnunet-revocation-client-host"]
 official-revocation-server = ["std", "revocation", "dep:gnunet-revocation-host"]
 topology = ["dep:gnunet-topology"]
 topology-alloc = ["topology", "gnunet-topology/alloc"]
-official-topology = ["std", "dep:gnunet-topology-host"]
+official-topology = ["std", "topology-alloc", "official-core-client", "official-pils-client", "official-peerstore-client", "dep:gnunet-topology-host"]
 did = ["dep:gnunet-did", "json"]
 official-did-client = ["std", "dep:gnunet-did-host"]
 namestore = ["dep:gnunet-namestore"]
@@ -277,73 +277,75 @@ gnunet-statistics.workspace = true
 gnunet-config = { workspace = true, optional = true }
 gnunet-dnsstub-host = { workspace = true, optional = true }
 gnunet-statistics-store = { workspace = true, optional = true }
-gnunet-resolver-broker = { workspace = true, optional = true }
 gnunet-resolver-host = { workspace = true, optional = true }
 
 [target.'cfg(unix)'.dependencies]
-gnunet-secretsharing-client-host = { workspace = true, optional = true }
-gnunet-abd-host = { workspace = true, optional = true }
-gnunet-consensus-host = { workspace = true, optional = true }
-gnunet-abd-client-host = { workspace = true, optional = true }
-gnunet-consensus-client-host = { workspace = true, optional = true }
-gnunet-scalarproduct-host = { workspace = true, optional = true }
-gnunet-scalarproduct-client-host = { workspace = true, optional = true }
-gnunet-set-client-host = { workspace = true, optional = true }
+gnunet-unix-communicator-host = { workspace = true, optional = true }
+
+[target.'cfg(any(unix, windows))'.dependencies]
 gnunet-quic-communicator-host = { workspace = true, optional = true }
 gnunet-transport-dv-bridge-host = { workspace = true, optional = true }
 gnunet-transport-dv-runtime-host = { workspace = true, optional = true }
 gnunet-transport-dv-store-host = { workspace = true, optional = true }
 gnunet-transport-service-host = { workspace = true, optional = true }
 gnunet-transport-dv-crypto-host = { workspace = true, optional = true }
-gnunet-unix-communicator-host = { workspace = true, optional = true }
-gnunet-nse-client-host = { workspace = true, optional = true }
-gnunet-zonemaster-host = { workspace = true, optional = true }
 gnunet-dns-tools-host = { workspace = true, optional = true }
 gnunet-dns-service-host = { workspace = true, optional = true }
 gnunet-hostlist-host = { workspace = true, optional = true }
 gnunet-pt-host = { workspace = true, optional = true }
 gnunet-testbed-host = { workspace = true, optional = true }
-gnunet-dns-client-host = { workspace = true, optional = true }
-gnunet-nat-test-host = { workspace = true, optional = true }
-gnunet-nat-burst-host = { workspace = true, optional = true }
-gnunet-nat-client-host = { workspace = true, optional = true }
-gnunet-reclaim-client-host = { workspace = true, optional = true }
-gnunet-namestore-client-host = { workspace = true, optional = true }
 gnunet-namestore-host = { workspace = true, optional = true }
-gnunet-namecache-client-host = { workspace = true, optional = true }
 gnunet-namecache-host = { workspace = true, optional = true }
-gnunet-identity-client-host = { workspace = true, optional = true }
 gnunet-identity-host = { workspace = true, optional = true }
-gnunet-regex-client-host = { workspace = true, optional = true }
 gnunet-vpn-host = { workspace = true, optional = true }
 gnunet-exit-host = { workspace = true, optional = true }
 gnunet-tun-host = { workspace = true, optional = true }
-gnunet-vpn-client-host = { workspace = true, optional = true }
-gnunet-seti-host = { workspace = true, optional = true }
-gnunet-set-host = { workspace = true, optional = true }
-gnunet-rps-host = { workspace = true, optional = true }
-gnunet-rps-client-host = { workspace = true, optional = true }
-gnunet-setu-host = { workspace = true, optional = true }
-gnunet-setu-client-host = { workspace = true, optional = true }
-gnunet-cadet-host = { workspace = true, optional = true }
-gnunet-datastore-host = { workspace = true, optional = true }
-gnunet-fs-host = { workspace = true, optional = true }
 gnunet-nse-host = { workspace = true, optional = true }
-gnunet-core-client-host = { workspace = true, optional = true }
-gnunet-dht-client-host = { workspace = true, optional = true }
-gnunet-gns-client-host = { workspace = true, optional = true }
-gnunet-client-host = { workspace = true, optional = true }
 gnunet-core-host = { workspace = true, optional = true }
 gnunet-transport-host = { workspace = true, optional = true }
-gnunet-transport-application-host = { workspace = true, optional = true }
-gnunet-pils-host = { workspace = true, optional = true }
 gnunet-peerstore-host = { workspace = true, optional = true }
-gnunet-peerstore-client-host = { workspace = true, optional = true }
-gnunet-seti-client-host = { workspace = true, optional = true }
 gnunet-program-host = { workspace = true, optional = true }
 gnunet-tcp-communicator-host = { workspace = true, optional = true }
-gnunet-ipc-unix = { path = "../../adapters/ipc-unix", optional = true }
 gnunet-service-startup = { workspace = true, optional = true }
 gnunet-service-runtime = { workspace = true, optional = true }
 gnunet-arm-host = { workspace = true, optional = true }
 gnunet-arm-service-host = { workspace = true, optional = true }
+gnunet-consensus-host = { workspace = true, optional = true }
+gnunet-set-host = { workspace = true, optional = true }
+gnunet-seti-host = { workspace = true, optional = true }
+gnunet-setu-host = { workspace = true, optional = true }
+gnunet-scalarproduct-host = { workspace = true, optional = true }
+gnunet-nat-burst-host = { workspace = true, optional = true }
+gnunet-nat-test-host = { workspace = true, optional = true }
+gnunet-rps-host = { workspace = true, optional = true }
+gnunet-zonemaster-host = { workspace = true, optional = true }
+gnunet-abd-host = { workspace = true, optional = true }
+gnunet-datastore-host = { workspace = true, optional = true }
+gnunet-secretsharing-client-host = { workspace = true, optional = true }
+gnunet-abd-client-host = { workspace = true, optional = true }
+gnunet-consensus-client-host = { workspace = true, optional = true }
+gnunet-scalarproduct-client-host = { workspace = true, optional = true }
+gnunet-set-client-host = { workspace = true, optional = true }
+gnunet-nse-client-host = { workspace = true, optional = true }
+gnunet-dns-client-host = { workspace = true, optional = true }
+gnunet-nat-client-host = { workspace = true, optional = true }
+gnunet-namecache-client-host = { workspace = true, optional = true }
+gnunet-rps-client-host = { workspace = true, optional = true }
+gnunet-setu-client-host = { workspace = true, optional = true }
+gnunet-fs-host = { workspace = true, optional = true }
+gnunet-core-client-host = { workspace = true, optional = true }
+gnunet-dht-client-host = { workspace = true, optional = true }
+gnunet-pils-host = { workspace = true, optional = true }
+gnunet-seti-client-host = { workspace = true, optional = true }
+gnunet-resolver-broker = { workspace = true, optional = true }
+gnunet-client-host = { workspace = true, optional = true }
+gnunet-ipc-unix = { path = "../../adapters/ipc-unix", optional = true }
+gnunet-reclaim-client-host = { workspace = true, optional = true }
+gnunet-namestore-client-host = { workspace = true, optional = true }
+gnunet-identity-client-host = { workspace = true, optional = true }
+gnunet-regex-client-host = { workspace = true, optional = true }
+gnunet-vpn-client-host = { workspace = true, optional = true }
+gnunet-gns-client-host = { workspace = true, optional = true }
+gnunet-peerstore-client-host = { workspace = true, optional = true }
+gnunet-cadet-host = { workspace = true, optional = true }
+gnunet-transport-application-host = { workspace = true, optional = true }

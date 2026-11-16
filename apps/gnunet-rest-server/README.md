@@ -1,46 +1,95 @@
-# Foreground REST
+# REST server
 
-Actual `gnunet-rest-server -c <config>` PROGRAM frontend. Captures inherited listeners/parent control once before configuration/runtime, applies configured `[rest] USERNAME` through shared startup, then uses the shared foreground helper to retain the sole original PROGRAM future outside the task scope, with one explicitly driven process Resolver. Scheduler/admission failure sets the same Stop latch and continues that exact future through cleanup; it never replaces or simply drops it. Listener binding maps actual `[rest] HTTP_PORT` (default7776), BIND_TO (127.0.0.1) and BIND_TO6 (::1) to shared listeners. Optional UNIXPATH, inherited listener ownership, shared ACL/Unix credentials, signal soft drain and finite shutdown grace are supported. No listener or key/native backend is claimed ready before construction/bind; READY says backend initialization is per request and conditional OpenID activation is explicit. It does not assert an external GNS or RECLAIM service is ready.
+`gnunet-rest-server` serves GNUnet CONFIG, IDENTITY, NAMESTORE, RECLAIM and GNS
+HTTP routes through their native Rust clients. Optional OpenID Connect uses the
+same RECLAIM source and an explicit persistent provider. Linux, macOS, FreeBSD
+and Windows share the application and [REST host](../../adapters/rest-std/README.md).
 
-`[rest-rust]` resources: MAX_CLIENTS(default16,max64), MAX_BODY_BYTES(65535), MAX_OUTPUT_BYTES(262144,max1048576), MAX_RECORD_TEXT_BYTES(262140), MAX_ITEMS(1024), JSON_NODES(4096,max8192), JSON_WORK(4000000,max16000000), MAX_HTTP_WIRE_BYTES(131072,max262144), IO_SLICE_BYTES(4096), REQUEST_LIFETIME(30s), OUTPUT_LIFETIME(5s), SHUTDOWN_GRACE(5s). Values are finite/nonzero and native client/frame capacities still apply. `[identity]`, `[namestore]`, `[reclaim]`, `[gns]` retain their shared CLIENT configuration/Resolver. No implicit alternate provider/source is created.
+## Building and running
 
-Actual `[rest] BASIC_AUTH_ENABLED` defaults YES. Enabled authentication requires the explicitly configured BASIC_AUTH_SECRET_FILE, an owned private regular file opened no-follow with bounded contents. If this explicit file is absent, startup generates a fresh52-character random Base32 credential into a private temporary, fsyncs/checks close, publishes the complete inode with no-overwrite hard-link and directory sync. Existing credentials are never overwritten or imported from an identity/key store. Creation failure retains original write/close/temporary-cleanup causes and never announces readiness. Username is the effective native user's name, or explicit `[rest-rust] BASIC_AUTH_USERNAME`. Production code reads this specific authentication file. Disable authentication only explicitly when that is the intended policy.
+```sh
+cargo build --release -p gnunet-rest-server
+./target/release/gnunet-rest-server -c rest.conf
+```
 
-REST_ALLOW_ORIGIN selects up to64 comma-separated complete origins within4096 bytes, with surrounding spaces/tabs trimmed; absent configuration authorizes no ordinary origin. Empty/invalid entries and credentialed '*' are rejected before opening the authentication secret. REST_ECHO_ORIGIN_WEBEXT explicitly enables valid moz-extension/chrome-extension origins independently of the ordinary allowlist. REST_ALLOW_CREDENTIALS and REST_ALLOW_HEADERS supply CORS fields. Request Origin must be a single valid serialized origin; matching compares the complete scheme/host/effective-port tuple, never a string prefix, and supports bracketed IPv6 and explicitly selected null origins. Dynamic responses use Vary: Origin, including unmatched responses. AUTH values and all request/body/response payloads are redacted in diagnostics.
+Enable build feature `oidc` to include OpenID Connect. Its AWS-LC backend requires
+a native C toolchain and target SDK headers. The active official REST daemon uses
+plain HTTP; TLS termination is outside this process.
 
-STOPPED follows physical HTTP/native job destruction, listener cleanup and independent Resolver cleanup. It reports canceled job count and does not imply remote mutation rollback. No hidden library tasks exist. The foreground connects CONFIG/GNS, fresh Basic-secret creation and explicitly enabled conditional OpenID. It implements no dormant TLS settings, consistent with the active C daemon. Shared PROGRAM help/version returns process success. The reference C REST daemon returns raw `GNUNET_OK=1` after normal scheduler shutdown; the Rust foreground returns process success.
+```ini
+[rest]
+HTTP_PORT = 7776
+BIND_TO = 127.0.0.1
+BIND_TO6 = ::1
+BASIC_AUTH_SECRET_FILE = /absolute/private/path/rest-secret
+```
 
-CONFIG output uses the active C user-output selection independently of PROGRAM -c input: XDG_CONFIG_HOME/project config_file or expanded project user_config_file. `[rest-rust] CONFIG_OUTPUT` is an explicit output override. Its parent must already exist, be owned and not group/world writable; path/lock/target ownership/fencing failures are startup errors. One explicit bounded worker serializes shared Configuration writes and is polled with HTTP/Resolver. STOPPED also follows original worker drain/join and reports independent failure; in-progress OS filesystem syscalls can require kernel progress beyond a logical shutdown grace. Live CLIENT configuration updates only after the commit receipt. Existing HTTP listener/auth policy, signer and process privileges remain fixed until restart.
+The secret parent must already exist and have a protected native namespace.
+Standard PROGRAM `-c`, `-L`, `-l`, `-h` and `-v` options apply. Endpoint, access,
+CORS, resource and OpenID options are in the [configuration reference](CONFIGURATION.md).
 
-Build feature `oidc` plus `[rest-rust] OIDC_ENABLED=YES` is required. `[rest-rust] OIDC_ORIGIN` and `[reclaim-rest-plugin] address` supply issuer/login UI. The active `oidc_json_web_algorithm` is exactly RS256(default) or HS512; HS512 requires `jwt_secret`. OIDC requires an explicit absolute `[rest-rust] OIDC_STATE_DIRECTORY`: a new directory or one already marked for this Rust OIDC namespace. A new directory generates RSA2048 through mature AWS-LC once and commits its PKCS8 signer plus initial state before readiness. Existing qualified state restores the original signer and live issued grants/accesses, keeping their original expiration and one-use redemption; missing/corrupt/mismatched state fails closed without replacing a key. Existing C JWK/IDENTITY/store paths are never read, migrated or adopted. Embedders may explicitly select ephemeral `Provider::new`; the foreground uses `Provider::persistent`. `[reclaim-rest-plugin] OIDC_CLIENT_HMAC_SECRET` enables confidential clients; otherwise only public PKCE clients work. `expiration_time` supplies finite TTL(default300s,max1day). OIDC_SESSIONS(default64,max1024), OIDC_GRANTS(16,max128), OIDC_ACCESS_TOKENS(32,max1024), OIDC_CACHE_BYTES(1MiB,max8MiB) are explicit pools. `OIDC_CONSUME_STATUS_PROFILE` is `canonical`(default) or `c-native-little`; original raw status is always retained.
+## Authentication and native startup
 
-OIDC persistence uses one explicit qualified snapshot worker, private0700 directory/0600 files, nofollow/ownership/link checks, exclusive lock and atomic file+directory-synchronized commit receipts. `OIDC_SNAPSHOT_BYTES` bounds the complete private signer/config/artifact image (default cache bytes plus finite metadata headroom, max64MiB); no raw signer/token/code enters logs. A dropped HTTP wait never drops an admitted store result: foreground independently polls and drains/joins the worker after closing HTTP jobs, retaining original and independent cleanup failures. Issuer/login/client-secret/algorithm mismatch rejects restore rather than silently changing authority. The RECLAIM source profile is selected once on Context for REST and OpenID, including builds without OpenID. It is not signer state. Private snapshots use RSTOID02 and refuse older private images without migration. Sessions, Reserved rows, original HTTP/native scopes and callback authorization are never restored. Recovery discards expired artifacts, rejects observed time rollback below the committed source/wall floor, and derives finite native hard bounds from the smaller remaining original source/wall expiration without renewing TTL. JWT expiration is unchanged while `expires_in` reflects remaining lifetime after commit. Userinfo always performs RECLAIM ticket consumption; there is no persisted-cache success fallback. Reissuing the same deterministic access token through a new grant updates its one bounded slot, not duplicate bearer entries. The provider adds no refresh-token/key-rotation API.
+Startup captures original listeners and parent control before other native
+owners. Unix applies the configured process identity; Windows verifies its
+primary-token SID. A configured identity mismatch fails before worker or listener
+startup. Stop subscriptions use native signals/console events and the original
+parent channel. Inherited listeners retain their original ownership.
 
-## Original-owner finally and selected diagnostics
+Basic authentication defaults to enabled. The configured secret is an owned
+private ordinary file with 1–4096 bytes, opened without following its leaf link.
+An absent secret is generated from OS entropy, staged with private permissions,
+synchronized and explicitly closed before no-replacement publication. A
+concurrently created credential is qualified and read without replacement.
+The default username comes from native account lookup, including the actual
+primary-token SID on Windows. `[rest-rust] BASIC_AUTH_USERNAME` overrides it.
+Secrets, authentication headers, tokens and request bodies stay out of diagnostics.
 
-The selected Logger/Reporter handles process-identity, parent declarations,
-listener/HTTP/Resolver events and terminal errors. A permanent logging failure
-wakes the original task and fences each following live provider class, including
-a Resolver callback that logged and returned Pending in the same poll. No new
-fd2 fallback bypasses a selected destination. Event diagnostics contain metadata,
-not authentication values, request bodies, codes or tokens.
+## Configuration publication
 
-The CONFIG and conditional OIDC driver owners live outside the fallible body,
-from before their first startup. Every later OIDC/context/listener/READY/loop
-error reaches their shutdown futures. A nested HTTP finally calls
-close_all on the same Server even if binding or READY failed. After jobs and
-handlers are physically gone, the same Resolver is disconnected clock-free;
-CONFIG and OIDC shutdown futures are fairly polled together until original
-worker settlement/join. A single retirement Sleep starts at the first observed
-Stop or cleanup, is checked/registered before canonical/provider waits, and is
-never renewed between HTTP and worker stages. Expiry records an independent
-error and cannot be used to drop a blocked fsync/join as if it had completed. The returned owned report retains worker results and original HTTP
-observations even when only PROGRAM or logging failed.
+`[rest-rust] CONFIG_OUTPUT` explicitly selects the CONFIG output. Otherwise the
+shared project/XDG user-output selection applies independently of PROGRAM `-c`.
+Its existing parent must be owned and protected; existing output and lock files
+must be private ordinary files.
 
-OIDC persistent startup itself catches failures after Worker::start, invokes
-the same worker.shutdown, and retains the initial cause plus independent actual
-Stopped report/unmatched completion. The public signature, snapshot format and
-cryptographic/data algorithms are unchanged. A started constructor remains the
-original owned future through Stop and produces its owner/error before
-finally; a Stop before its first poll prevents starting it. The configured
-external GNS client calls are unchanged.
+The single bounded worker retains the original directory, target and writer-lock
+handles. Shared serialization produces standard GNUnet INI. Publication stages
+private bytes in that directory, synchronizes and closes the original writer,
+rechecks the original target and request bounds, then replaces the name atomically.
+Cleanup operates on the original staged file. Replaced namespace/file selections
+are refused. Stage, publication uncertainty, writer-close and cleanup errors stay
+independent. Windows reports directory synchronization as `Unavailable`; file
+publication does not manufacture a directory-durability receipt.
+
+`LiveConfiguration` and the HTTP result change only after the matched worker
+receipt. Dropping an HTTP wait does not abandon or replay an admitted write.
+Listener/authentication policy, signer and process identity remain fixed until
+restart; later client selectors use the new configuration snapshot.
+
+## Shutdown and ownership
+
+Shared PROGRAM scheduling retains the original product future through scheduler
+failure and drives its existing cleanup. The first stop fixes one native grace
+bound across HTTP and worker retirement. It stops new admissions, closes original
+HTTP jobs/listeners, disconnects the Resolver and fairly drains the CONFIG and
+optional OpenID workers until their actual joins. Expiry is an independent error,
+not proof that a pending filesystem call was canceled.
+
+`READY` reports local construction and binding; remote service initialization is
+per request. `STOPPED` retains actual local cancellation and worker results,
+without claiming rollback of remote mutations. Standard-stream and filesystem
+calls retain native OS blocking semantics. Selected logging and independent
+cleanup failures remain available together.
+
+## Source layout and constraints
+
+`main.rs` selects PROGRAM and native identity; `early.rs` transfers startup
+resources; `settings.rs` selects finite profiles; `authorization.rs` owns CORS and
+Basic credentials; `foreground.rs` drives original providers through cleanup;
+`lifecycle.rs` retains the Resolver and selected diagnostic boundary. Protocol and
+HTTP behavior remain in the REST libraries.
+
+Responses use bounded JSON, record, body and output pools. A result exceeding a
+configured limit is an explicit failure. Each request freezes related CLIENT
+selectors together before native admission. Qualification follows the shared
+[compatibility contract](../../spec/gnunet/compatibility.md).

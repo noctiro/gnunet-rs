@@ -41,7 +41,7 @@ impl Framed {
                 },
                 reserved: Budget::default(),
                 accounting: Accounting::Remaining,
-                io_slice_bytes: usize::MAX,
+                io_slice_bytes: 32 * 1024,
             },
         )?;
         // Reserve the first metadata allocation before the domain admits this

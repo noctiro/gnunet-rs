@@ -4,12 +4,12 @@ use crate::{
     wire::{Ack, Body, Control},
 };
 use alloc::{collections::VecDeque, vec::Vec};
-use gnunet_session_crypto::{
-    Prk, session,
-    udp::{BoxView, DatagramKey},
-};
+use gnunet_session_crypto::{Prk, session};
 use gnunet_types::Error;
 use zeroize::Zeroizing;
+mod boxed;
+pub use boxed::PreparedBox;
+
 const INITIAL_KEYS: u32 = 128;
 const REFILL_KEYS: u32 = 64;
 const LOW_KEYS: usize = 96;
@@ -358,127 +358,6 @@ impl Receiver {
             message,
             incoming_ack,
             acknowledgements: [Some(ack), rekey_ack],
-        })
-    }
-    /// Authenticate an original cached KID before replay/byte/window commit.
-    /// Unknown or consumed IDs are explicit; forged tags leave the valid original
-    /// KID available. Only exact used plaintext scratch is erased on every path.
-    pub fn boxed(
-        &mut self,
-        identity: &Identity,
-        packet: &[u8],
-        scratch: &mut [u8],
-    ) -> Result<Received, Error> {
-        self.check(identity)?;
-        if packet.len() > MAX_PACKET_BYTES {
-            return Err(Error::TooLarge);
-        }
-        let view = BoxView::parse(packet)?;
-        if scratch.len() < view.ciphertext.len() {
-            return Err(Error::Capacity);
-        }
-        let mut matching = false;
-        let mut unused = false;
-        let mut selected = None;
-        // A public selector is not an authenticator. Try each original unused
-        // candidate before rejecting a collision; no candidate is consumed by a
-        // bad tag, and a used earlier candidate cannot hide a live later one.
-        'windows: for (window_index, window) in self.windows.iter().enumerate() {
-            for (slot_index, slot) in window.keys.iter().enumerate() {
-                if slot.kid != *view.kid {
-                    continue;
-                }
-                matching = true;
-                if slot.used {
-                    continue;
-                }
-                unused = true;
-                let key = DatagramKey::derive(&window.master, slot.sequence)?;
-                match key.open_box(packet, scratch) {
-                    Ok(n) => {
-                        selected = Some((window_index, slot_index, n));
-                        break 'windows;
-                    }
-                    Err(Error::Authentication) => {}
-                    Err(error) => return Err(error),
-                }
-            }
-        }
-        let Some((window, slot, n)) = selected else {
-            return Err(if unused {
-                Error::Authentication
-            } else if matching {
-                Error::Replay
-            } else {
-                Error::NotFound
-            });
-        };
-        // Borrowed scratch is never retained after this closure, even if payload,
-        // rekey preflight or subsequent parsing refuses an authenticated packet.
-        let prepared = (|| {
-            let bytes = self.windows[window]
-                .bytes
-                .checked_add(packet.len() as u64)
-                .ok_or(Error::Overflow)?;
-            let retire = bytes >= self.policy.maximum_secret_bytes;
-            let body = Body::decode(&scratch[..n])?;
-            let message = payload(&body)?;
-            let incoming_ack = match body.control {
-                Some(Control::Ack(ack)) => Some(ack),
-                _ => None,
-            };
-            let RekeyPlan {
-                window: rekey,
-                ack: rekey_ack,
-                ..
-            } = self.rekey(identity, &body)?;
-            // A retiring original window itself makes room for at most one
-            // newly authenticated rekey. It must not receive fresh KID credit.
-            let victims = if retire {
-                [None; 2]
-            } else {
-                self.victims(usize::from(rekey.is_some()), Some(window))?
-            };
-            let refill = if retire {
-                None
-            } else {
-                self.windows[window].plan_refill(1)?
-            };
-            let rekey_ack =
-                rekey_ack.filter(|ack| !retire || ack.cmac != self.windows[window].cmac);
-            Ok::<_, Error>((
-                message,
-                incoming_ack,
-                rekey,
-                rekey_ack,
-                victims,
-                refill,
-                bytes,
-                retire,
-            ))
-        })();
-        use zeroize::Zeroize as _;
-        scratch[..n].zeroize();
-        let (message, incoming_ack, rekey, rekey_ack, victims, refill, bytes, retire) = prepared?;
-        self.windows[window].keys[slot].used = true;
-        self.windows[window].bytes = bytes;
-        let mut ack = None;
-        if let Some(refill) = refill {
-            self.windows[window].refill(refill);
-            ack = Some(self.windows[window].ack());
-        }
-        if retire {
-            drop(self.windows.remove(window));
-        } else {
-            self.remove(victims);
-        }
-        if let Some(window) = rekey {
-            self.windows.push_back(window);
-        }
-        Ok(Received {
-            message,
-            incoming_ack,
-            acknowledgements: [ack, rekey_ack],
         })
     }
     /// Retire this namespace/peer generation and erase all masters immediately.

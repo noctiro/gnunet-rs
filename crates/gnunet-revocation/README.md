@@ -4,6 +4,8 @@ This independent noalloc port follows GNUnet v0.29.1,
 `346358e26d4dcc2dc4f51bef5d52dca29c7d8165`, revocation.h,
 revocation_api.c, gnunet-service-revocation.c and gnsrecord_pow.c.
 
+## Public interface
+
 The complete current certificate is372 public bytes: timestamp8, informational
 TTL8,32BE64 nonces, typed public key36 and signature64. Both current blindable
 key families use the same width. Decoding validates framing/type only. Its
@@ -53,6 +55,5 @@ not yet rehashed. Afterwards it retains the current best pool; empty
 positions repeat one candidate instead of fabricating additional distinct work. Only `certificate()` after the target is reached exposes completed sorted
 mining work, still without asserting current lifetime or service acceptance.
 
-Native client/SERVICE, marked durable inventory, CORE/SETU and ordinary CLI are
-composed by the existing host/application layers. Their existence does not
-establish REVOCATION or whole-GNUnet acceptance.
+Native clients, service hosting, durable inventory and CORE/SETU integration
+belong to the [host adapter](../../adapters/revocation-std/README.md).

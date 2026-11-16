@@ -26,6 +26,7 @@ const POLICIES: &[Policy] = &[
             "gnunet-config",
             "gnunet-fs",
             "gnunet-fs-codec",
+            "gnunet-native",
             "gnunet-program-host",
             "gnunet-service-runtime",
             "gnunet-service-startup",
@@ -41,6 +42,7 @@ const POLICIES: &[Policy] = &[
         dependencies: &[
             "gnunet-config",
             "gnunet-gnsrecord",
+            "gnunet-native",
             "gnunet-program-host",
             "gnunet-service-runtime",
             "nix",
@@ -54,6 +56,7 @@ const POLICIES: &[Policy] = &[
         dependencies: &[
             "gnunet-config",
             "gnunet-crypto",
+            "gnunet-native",
             "gnunet-nse",
             "gnunet-nse-host",
             "gnunet-pils-host",
@@ -61,7 +64,6 @@ const POLICIES: &[Policy] = &[
             "gnunet-service-runtime",
             "gnunet-service-startup",
             "gnunet-types",
-            "libc",
             "tokio",
         ],
     },
@@ -74,12 +76,12 @@ const POLICIES: &[Policy] = &[
             "gnunet-config",
             "gnunet-crypto",
             "gnunet-gnsrecord",
+            "gnunet-native",
             "gnunet-program-host",
             "gnunet-service-runtime",
             "gnunet-service-startup",
             "gnunet-session-crypto",
             "gnunet-types",
-            "libc",
             "tokio",
             "zeroize",
         ],
@@ -92,6 +94,7 @@ const POLICIES: &[Policy] = &[
             "bytes",
             "gnunet-config",
             "gnunet-gnsrecord",
+            "gnunet-native",
             "gnunet-service-runtime",
             "gnunet-types",
             "http-body-util",
@@ -119,7 +122,7 @@ const POLICIES: &[Policy] = &[
         name: "gnunet-extractor-host",
         directory: "adapters/extractor-std",
         core: false,
-        dependencies: &["libc"],
+        dependencies: &["gnunet-native"],
     },
     Policy {
         name: "gnunet-secretsharing-host",
@@ -166,6 +169,7 @@ const POLICIES: &[Policy] = &[
         core: false,
         dependencies: &[
             "gnunet-config",
+            "gnunet-native",
             "gnunet-program-host",
             "gnunet-service-runtime",
             "gnunet-service-startup",
@@ -178,7 +182,7 @@ const POLICIES: &[Policy] = &[
         name: "gnunet-qr-host",
         directory: "adapters/qr-std",
         core: false,
-        dependencies: &["gnunet-types", "libc"],
+        dependencies: &["gnunet-types", "gnunet-native"],
     },
     Policy {
         name: "gnunet-qr-command",
@@ -186,6 +190,7 @@ const POLICIES: &[Policy] = &[
         core: false,
         dependencies: &[
             "gnunet-config",
+            "gnunet-native",
             "gnunet-program-host",
             "gnunet-qr-host",
             "gnunet-service-runtime",
@@ -211,6 +216,7 @@ const POLICIES: &[Policy] = &[
             "gnunet-identity",
             "gnunet-identity-client-host",
             "gnunet-idna",
+            "gnunet-native",
             "gnunet-pils",
             "gnunet-pils-host",
             "gnunet-program-host",
@@ -284,9 +290,11 @@ const POLICIES: &[Policy] = &[
         core: false,
         dependencies: &[
             "getrandom",
+            "gnunet-native",
             "gnunet-types",
             "gnunet-wire",
             "libc",
+            "windows-sys",
             "zeroize",
         ],
     },
@@ -372,6 +380,7 @@ const POLICIES: &[Policy] = &[
             "gnunet-program-host",
             "gnunet-resolver-broker",
             "gnunet-service-runtime",
+            "gnunet-service-startup",
             "gnunet-types",
             "gnunet-wire",
             "subtle",
@@ -544,6 +553,7 @@ const POLICIES: &[Policy] = &[
             "gnunet-client-host",
             "gnunet-resolver-broker",
             "gnunet-service-runtime",
+            "gnunet-service-startup",
             "num-bigint",
             "tokio",
         ],
@@ -742,6 +752,7 @@ const POLICIES: &[Policy] = &[
             "gnunet-resolver-broker",
             "gnunet-rps-client-host",
             "gnunet-service-runtime",
+            "gnunet-service-startup",
             "tokio",
         ],
     },
@@ -762,7 +773,6 @@ const POLICIES: &[Policy] = &[
             "gnunet-service-runtime",
             "gnunet-service-startup",
             "gnunet-types",
-            "nix",
             "tokio",
             "zeroize",
         ],
@@ -772,6 +782,8 @@ const POLICIES: &[Policy] = &[
         directory: "apps/gnunet-datastore",
         core: false,
         dependencies: &[
+            // Normal-process binary I/O fixtures create private native roots.
+            "gnunet-native",
             "gnunet-client",
             "gnunet-client-host",
             "gnunet-config",
@@ -782,7 +794,6 @@ const POLICIES: &[Policy] = &[
             "gnunet-service-startup",
             "gnunet-types",
             "gnunet-wire",
-            "nix",
             "tokio",
             "zeroize",
         ],
@@ -802,8 +813,10 @@ const POLICIES: &[Policy] = &[
             "gnunet-program-host",
             "gnunet-resolver-broker",
             "gnunet-service-runtime",
+            "gnunet-service-startup",
             "tokio",
             "zeroize",
+            "gnunet-native", // Native process/transport test fixtures.
         ],
     },
     Policy {
@@ -830,6 +843,12 @@ const POLICIES: &[Policy] = &[
             "gnunet-config",
             "gnunet-program-host",
             "gnunet-service-startup",
+            // Native executable integration fixtures only (dev-dependencies).
+            "gnunet-arm-core",
+            "gnunet-native",
+            "gnunet-service-runtime",
+            "socket2",
+            "tokio",
         ],
     },
     Policy {
@@ -856,7 +875,6 @@ const POLICIES: &[Policy] = &[
             "h3",
             "h3-quinn",
             "http",
-            "libc",
             "quinn",
             "rcgen",
             "rustls",
@@ -1040,6 +1058,7 @@ const POLICIES: &[Policy] = &[
             "gnunet-program-host",
             "gnunet-resolver-broker",
             "gnunet-service-runtime",
+            "gnunet-service-startup",
             "gnunet-types",
             "gnunet-wire",
             "tokio",
@@ -1050,13 +1069,13 @@ const POLICIES: &[Policy] = &[
         name: "gnunet-hello-cli",
         directory: "apps/gnunet-hello",
         core: false,
-        dependencies: &["gnunet-peer-tools-host"],
+        dependencies: &["gnunet-peer-tools-host", "gnunet-service-startup"],
     },
     Policy {
         name: "gnunet-pils-cli",
         directory: "apps/gnunet-pils",
         core: false,
-        dependencies: &["gnunet-peer-tools-host"],
+        dependencies: &["gnunet-peer-tools-host", "gnunet-service-startup"],
     },
     Policy {
         name: "gnunet-transport-service-host",
@@ -1080,6 +1099,7 @@ const POLICIES: &[Policy] = &[
             "gnunet-program-host",
             "gnunet-resolver-broker",
             "gnunet-service-runtime",
+            "gnunet-native",
             "gnunet-service-startup",
             "gnunet-snapshot-host",
             "gnunet-transport",
@@ -1100,6 +1120,7 @@ const POLICIES: &[Policy] = &[
             "gnunet-service-runtime",
             "gnunet-types",
             "gnunet-config",
+            "gnunet-service-startup",
             "gnunet-program-host",
             "gnunet-resolver-broker",
             "tokio",
@@ -1112,6 +1133,9 @@ const POLICIES: &[Policy] = &[
         dependencies: &[
             "gnunet-nse-client-host",
             "gnunet-config",
+            "gnunet-native",
+            "gnunet-wire",
+            "gnunet-service-startup",
             "gnunet-program-host",
             "tokio",
         ],
@@ -1121,6 +1145,8 @@ const POLICIES: &[Policy] = &[
         directory: "apps/gnunet-core",
         core: false,
         dependencies: &[
+            // Normal-process fixtures create private native directories.
+            "gnunet-native",
             "gnunet-config",
             "gnunet-core-client-host",
             "gnunet-client-host",
@@ -1152,11 +1178,11 @@ const POLICIES: &[Policy] = &[
         dependencies: &[
             "gnunet-dns",
             "gnunet-dns-client-host",
-            "gnunet-client-host",
             "gnunet-config",
             "gnunet-program-host",
             "gnunet-resolver-broker",
             "gnunet-service-runtime",
+            "gnunet-service-startup",
             "tokio",
             "zeroize",
         ],
@@ -1165,13 +1191,13 @@ const POLICIES: &[Policy] = &[
         name: "gnunet-dns-monitor",
         directory: "apps/gnunet-dns-monitor",
         core: false,
-        dependencies: &["gnunet-dns-tools-host"],
+        dependencies: &["gnunet-dns-tools-host", "gnunet-service-startup"],
     },
     Policy {
         name: "gnunet-dns-redirector",
         directory: "apps/gnunet-dns-redirector",
         core: false,
-        dependencies: &["gnunet-dns-tools-host"],
+        dependencies: &["gnunet-dns-tools-host", "gnunet-service-startup"],
     },
     Policy {
         name: "gnunet-dns-interception",
@@ -1190,8 +1216,10 @@ const POLICIES: &[Policy] = &[
         directory: "adapters/dns-service-std",
         core: false,
         dependencies: &[
+            "gnunet-crypto",
             "gnunet-dns-interception",
             "gnunet-dnsstub-host",
+            "gnunet-native",
             "gnunet-service-runtime",
             "gnunet-tun-host",
             "gnunet-types",
@@ -1215,6 +1243,9 @@ const POLICIES: &[Policy] = &[
             "gnunet-config",
             "gnunet-dns-interception",
             "gnunet-dns-service-host",
+            "gnunet-dnsstub-host",
+            "gnunet-native",
+            "gnunet-tun-host",
             "gnunet-program-host",
             "gnunet-resolver-broker",
             "gnunet-service-runtime",
@@ -1298,6 +1329,7 @@ const POLICIES: &[Policy] = &[
             "gnunet-resolver-broker",
             "gnunet-service-runtime",
             "gnunet-service-startup",
+            "gnunet-native",
             "gnunet-hello",
             "socket2",
             "tokio",
@@ -1396,7 +1428,7 @@ const POLICIES: &[Policy] = &[
             "gnunet-config",
             "gnunet-types",
             "socket2",
-            "libc",
+            "gnunet-native",
             "zeroize",
         ],
     },
@@ -1409,6 +1441,8 @@ const POLICIES: &[Policy] = &[
             "gnunet-program-host",
             "gnunet-config",
             "gnunet-types",
+            "gnunet-service-startup",
+            "tokio",
         ],
     },
     Policy {
@@ -1434,6 +1468,9 @@ const POLICIES: &[Policy] = &[
         directory: "adapters/nat-test-std",
         core: false,
         dependencies: &[
+            "gnunet-service-startup",
+            "gnunet-native",
+            "socket2",
             "gnunet-nat-client-host",
             "gnunet-nat-host",
             "gnunet-nat",
@@ -1453,6 +1490,7 @@ const POLICIES: &[Policy] = &[
         directory: "apps/gnunet-nat",
         core: false,
         dependencies: &[
+            "gnunet-service-startup",
             "gnunet-nat-test-host",
             "gnunet-config",
             "gnunet-program-host",
@@ -1464,6 +1502,7 @@ const POLICIES: &[Policy] = &[
         directory: "apps/gnunet-nat-auto",
         core: false,
         dependencies: &[
+            "gnunet-service-startup",
             "gnunet-nat-test-host",
             "gnunet-config",
             "gnunet-program-host",
@@ -1475,6 +1514,8 @@ const POLICIES: &[Policy] = &[
         directory: "adapters/nat-burst-std",
         core: false,
         dependencies: &[
+            "socket2",
+            "gnunet-native",
             "gnunet-types",
             "gnunet-nat",
             "gnunet-service-runtime",
@@ -1544,6 +1585,7 @@ const POLICIES: &[Policy] = &[
         core: false,
         dependencies: &[
             "gnunet-http-host",
+            "gnunet-nat-helper-host",
             "gnunet-nat",
             "gnunet-wire",
             "gnunet-types",
@@ -1566,6 +1608,8 @@ const POLICIES: &[Policy] = &[
         core: false,
         dependencies: &[
             "gnunet-nat",
+            "gnunet-service-runtime",
+            "tokio",
             "gnunet-types",
             "gnunet-wire",
             "gnunet-native",
@@ -1647,7 +1691,6 @@ const POLICIES: &[Policy] = &[
         core: false,
         dependencies: &[
             "gnunet-ipc-unix",
-            "gnunet-client",
             "gnunet-types",
             "gnunet-config",
             "gnunet-topology-host",
@@ -1812,12 +1855,11 @@ const POLICIES: &[Policy] = &[
         directory: "adapters/rest-std",
         core: false,
         dependencies: &[
+            "gnunet-native",
             "gnunet-config",
             "gnunet-gns-client-host",
             "gnunet-snapshot-host",
             "gnunet-oidc-crypto-host",
-            "nix",
-            "libc",
             "gnunet-rest",
             "gnunet-types",
             "gnunet-json",
@@ -1844,6 +1886,7 @@ const POLICIES: &[Policy] = &[
         directory: "apps/gnunet-rest-server",
         core: false,
         dependencies: &[
+            "gnunet-native",
             "gnunet-config",
             "gnunet-rest",
             "gnunet-oidc-crypto-host",
@@ -1863,7 +1906,6 @@ const POLICIES: &[Policy] = &[
             "zeroize",
             "uzers",
             "nix",
-            "libc",
         ],
     },
     Policy {
@@ -1884,6 +1926,7 @@ const POLICIES: &[Policy] = &[
             "gnunet-types",
             "gnunet-wire",
             "zeroize",
+            "getrandom",
             "tokio",
         ],
     },
@@ -1915,7 +1958,6 @@ const POLICIES: &[Policy] = &[
             "gnunet-service-runtime",
             "gnunet-service-startup",
             "gnunet-types",
-            "nix",
             "tokio",
             "zeroize",
         ],
@@ -1936,7 +1978,6 @@ const POLICIES: &[Policy] = &[
             "gnunet-service-startup",
             "gnunet-types",
             "gnunet-wire",
-            "nix",
             "tokio",
             "zeroize",
         ],
@@ -1971,6 +2012,7 @@ const POLICIES: &[Policy] = &[
             "gnunet-client-host",
             "gnunet-config",
             "gnunet-ipc-unix",
+            "gnunet-native",
             "gnunet-program-host",
             "gnunet-resolver-broker",
             "gnunet-service-runtime",
@@ -2134,6 +2176,8 @@ const POLICIES: &[Policy] = &[
             "gnunet-wire",
             "zeroize",
             "tokio",
+            "gnunet-native",
+            "socket2",
         ],
     },
     Policy {
@@ -2218,6 +2262,7 @@ const POLICIES: &[Policy] = &[
             "gnunet-service-runtime",
             "gnunet-service-startup",
             "tokio",
+            "gnunet-native", // Native process/transport test fixtures.
         ],
     },
     Policy {
@@ -2238,6 +2283,7 @@ const POLICIES: &[Policy] = &[
             "gnunet-wire",
             "zeroize",
             "tokio",
+            "gnunet-native", // Native process/transport test fixtures.
         ],
     },
     Policy {
@@ -2276,8 +2322,6 @@ const POLICIES: &[Policy] = &[
             "gnunet-native",
             "gnunet-crypto",
             "gnunet-types",
-            "libc",
-            "nix",
             "zeroize",
             "tokio",
         ],
@@ -2294,6 +2338,8 @@ const POLICIES: &[Policy] = &[
             "gnunet-wire",
             "zeroize",
             "tokio",
+            "gnunet-native",
+            "socket2",
         ],
     },
     Policy {
@@ -2309,6 +2355,10 @@ const POLICIES: &[Policy] = &[
             "gnunet-service-runtime",
             "gnunet-service-startup",
             "tokio",
+            "gnunet-native",
+            "gnunet-wire",
+            "socket2",
+            "zeroize",
         ],
     },
     Policy {
@@ -2483,7 +2533,14 @@ const POLICIES: &[Policy] = &[
         name: "gnunet-tun-host",
         directory: "adapters/tun-std",
         core: false,
-        dependencies: &["libc", "nix", "socket2", "tokio"],
+        dependencies: &[
+            "gnunet-crypto",
+            "gnunet-native",
+            "libc",
+            "nix",
+            "socket2",
+            "tokio",
+        ],
     },
     Policy {
         name: "gnunet-vpn-client-host",
@@ -2625,7 +2682,7 @@ const POLICIES: &[Policy] = &[
             "gnunet-types",
             "gnunet-wire",
             "getrandom",
-            "libc",
+            "gnunet-native",
             "sha2",
             "tokio",
         ],
@@ -2704,7 +2761,7 @@ const POLICIES: &[Policy] = &[
         directory: "adapters/cadet-std",
         core: false,
         dependencies: &[
-            "libc",
+            "gnunet-native",
             "socket2",
             "gnunet-cadet",
             "zeroize",
@@ -2784,6 +2841,7 @@ const POLICIES: &[Policy] = &[
         directory: "adapters/fs-std",
         core: false,
         dependencies: &[
+            "gnunet-native",
             "time",
             "unicode-normalization",
             "gnunet-core-client-host",
@@ -2816,7 +2874,7 @@ const POLICIES: &[Policy] = &[
             "gnunet-datastore",
             "gnunet-crypto",
             "getrandom",
-            "nix",
+            "gnunet-native",
             "uzers",
             "gnunet-client",
             "gnunet-client-host",
@@ -2887,6 +2945,7 @@ const POLICIES: &[Policy] = &[
             "gnunet-gnsrecord",
             "gnunet-idna",
             "gnunet-service-runtime",
+            "gnunet-native",
             "gnunet-types",
             "socket2",
             "tokio",
@@ -2960,7 +3019,6 @@ const POLICIES: &[Policy] = &[
             "gnunet-service-startup",
             "gnunet-types",
             "gnunet-native",
-            "nix",
             "tokio",
         ],
     },
@@ -2972,6 +3030,10 @@ const POLICIES: &[Policy] = &[
             "gnunet-program-host",
             "gnunet-config",
             "gnunet-types",
+            "gnunet-native",
+            "gnunet-service-runtime",
+            "gnunet-service-startup",
+            "tokio",
             "rcgen",
             "base64ct",
             "time",
@@ -2998,7 +3060,6 @@ const POLICIES: &[Policy] = &[
             "gnunet-transport-application-host",
             "gnunet-types",
             "gnunet-wire",
-            "libc",
             "socket2",
             "tokio",
         ],
@@ -3026,7 +3087,6 @@ const POLICIES: &[Policy] = &[
             "gnunet-udp-communicator-host",
             "gnunet-wire",
             "getrandom",
-            "nix",
             "socket2",
             "tokio",
         ],
@@ -3084,7 +3144,6 @@ const POLICIES: &[Policy] = &[
             "gnunet-service-startup",
             "gnunet-types",
             "gnunet-wire",
-            "nix",
             "tokio",
         ],
     },
@@ -3101,7 +3160,6 @@ const POLICIES: &[Policy] = &[
             "gnunet-service-runtime",
             "gnunet-service-startup",
             "gnunet-types",
-            "nix",
             "tokio",
         ],
     },
@@ -3162,9 +3220,9 @@ const POLICIES: &[Policy] = &[
             "gnunet-service-runtime",
             "gnunet-service-startup",
             "gnunet-types",
-            "nix",
             "zeroize",
             "tokio",
+            "gnunet-native", // Native process test fixtures.
         ],
     },
     Policy {
@@ -3213,6 +3271,7 @@ const POLICIES: &[Policy] = &[
             "gnunet-config",
             "gnunet-resolver-broker",
             "gnunet-service-runtime",
+            "gnunet-native",
             "gnunet-service-startup",
             "getrandom",
             "tokio",
@@ -3246,6 +3305,7 @@ const POLICIES: &[Policy] = &[
         core: false,
         dependencies: &[
             "gnunet-config",
+            "gnunet-native",
             "gnunet-types",
             "gnunet-service-runtime",
             "nix",
@@ -3329,7 +3389,7 @@ const POLICIES: &[Policy] = &[
             "gnunet-crypto",
             "gnunet-types",
             "getrandom",
-            "libc",
+            "gnunet-native",
             "zeroize",
         ],
     },
@@ -3352,7 +3412,6 @@ const POLICIES: &[Policy] = &[
             "gnunet-crypto",
             "gnunet-types",
             "socket2",
-            "libc",
             "getrandom",
             "tokio",
         ],
@@ -3411,7 +3470,7 @@ const POLICIES: &[Policy] = &[
         core: false,
         dependencies: &[
             // Native journal opens use O_DIRECTORY/O_NOFOLLOW constants.
-            "libc",
+            "gnunet-native",
             "socket2",
             "getrandom",
             "gnunet-crypto",
@@ -3458,8 +3517,7 @@ const POLICIES: &[Policy] = &[
             "gnunet-client-host",
             "gnunet-service-runtime",
             "gnunet-service-startup",
-            "libc",
-            "nix",
+            "gnunet-native",
             "tokio",
             "getrandom",
             "zeroize",
@@ -3720,6 +3778,7 @@ const POLICIES: &[Policy] = &[
         dependencies: &[
             "gnunet-dnsstub",
             "gnunet-types",
+            "gnunet-native",
             "tokio",
             "socket2",
             "getrandom",
@@ -3752,6 +3811,7 @@ const POLICIES: &[Policy] = &[
             "gnunet-client",
             "gnunet-client-host",
             "gnunet-config",
+            "gnunet-native",
             "gnunet-resolver-broker",
             "gnunet-service-runtime",
             "gnunet-service-startup",
@@ -3776,7 +3836,6 @@ const POLICIES: &[Policy] = &[
             "gnunet-service-runtime",
             "gnunet-service-startup",
             "libc",
-            "nix",
             "socket2",
             "tokio",
         ],
@@ -3792,6 +3851,7 @@ const POLICIES: &[Policy] = &[
             "gnunet-dns",
             "gnunet-dnsstub-host",
             "gnunet-idna",
+            "gnunet-native",
             "gnunet-resolver-service-core",
             "gnunet-service-runtime",
             "gnunet-service-startup",
@@ -3810,6 +3870,7 @@ const POLICIES: &[Policy] = &[
             "gnunet-arm-host",
             "gnunet-arm-core",
             "gnunet-config",
+            "gnunet-native",
             "gnunet-client-host",
             "gnunet-program-host",
             "gnunet-service-runtime",
@@ -3841,13 +3902,16 @@ const POLICIES: &[Policy] = &[
         directory: "adapters/program-std",
         core: false,
         dependencies: &[
+            "zeroize",
             "libc",
             "getrandom",
             "gnunet-config",
             "gnunet-crypto",
             "gnunet-types",
+            "gnunet-native",
             "gnunet-resolver-broker",
             "gnunet-service-runtime",
+            "gnunet-service-startup",
             "tokio",
         ],
     },
@@ -3855,13 +3919,14 @@ const POLICIES: &[Policy] = &[
         name: "gnunet-native",
         directory: "adapters/native-std",
         core: false,
-        dependencies: &["libc", "windows-sys"],
+        dependencies: &["getrandom", "zeroize", "libc", "nix", "windows-sys"],
     },
     Policy {
         name: "gnunet-statistics-store",
         directory: "adapters/statistics-store",
         core: false,
         dependencies: &[
+            "gnunet-native",
             "gnunet-statistics",
             "gnunet-types",
             "gnunet-wire",
@@ -3880,6 +3945,7 @@ const POLICIES: &[Policy] = &[
             "uzers",
             "libc",
             "tokio",
+            "socket2",
         ],
     },
     Policy {
@@ -4097,6 +4163,7 @@ const POLICIES: &[Policy] = &[
             "gnunet-client-host",
             "gnunet-config",
             "gnunet-ipc-unix",
+            "gnunet-native",
             "gnunet-program-host",
             "gnunet-resolver-broker",
             "gnunet-service-runtime",
@@ -4104,6 +4171,7 @@ const POLICIES: &[Policy] = &[
             "gnunet-types",
             "nix",
             "serde_json",
+            "socket2",
             "tokio",
             "zeroize",
         ],
@@ -4114,12 +4182,13 @@ const POLICIES: &[Policy] = &[
         core: false,
         dependencies: &[
             "gnunet",
+            "gnunet-native",
             "gnunet-program-host",
             "gnunet-service-runtime",
             "gnunet-service-startup",
             "tokio",
             "libc",
-            "nix",
+            "socket2",
         ],
     },
     Policy {
@@ -4180,10 +4249,30 @@ fn forbidden_feature(feature: &str) -> bool {
             .split(['-', '_', '/', ':', '?'])
             .any(|part| matches!(part, "legacy" | "native" | "full"))
 }
+fn forbidden_forwarding(selection: &str) -> bool {
+    // Cargo validates dep:name against the manifest. Dependency names belong to
+    // the dependency policy, independently of removed feature-tier names.
+    if selection.starts_with("dep:") {
+        return false;
+    }
+    let feature = selection
+        .split_once('/')
+        .map_or(selection, |(_, feature)| feature);
+    forbidden_feature(feature)
+}
 fn c_gnunet(name: &str) -> bool {
     let name = name.to_ascii_lowercase().replace('_', "-");
     name.contains("libgnunet") || (name.contains("gnunet") && name.ends_with("-sys"))
 }
+
+// These fixtures need lower-level capabilities without adding production edges.
+const DEVELOPMENT_ONLY: &[(&str, &str)] = &[
+    ("gnunet-consensus-host", "gnunet-native"),
+    ("gnunet-conversation-host", "gnunet-identity"),
+    ("gnunet-daemon-pt", "gnunet-native"),
+    ("gnunet-pt-host", "gnunet-crypto"),
+    ("gnunet-vpn-client-host", "gnunet-config"),
+];
 
 pub(crate) fn check_deps() -> CheckResult<()> {
     validate_dependencies(&metadata()?)
@@ -4210,7 +4299,11 @@ fn validate_dependencies(meta: &Value) -> CheckResult<()> {
             // Cargo exposes the package name independently of local renames and
             // target/optional/build flags. None can bypass this boundary.
             let dependency_name = field(dependency, "name")?;
-            if c_gnunet(dependency_name) || !rule.dependencies.contains(&dependency_name) {
+            let fixture =
+                dependency["kind"] == "dev" && DEVELOPMENT_ONLY.contains(&(name, dependency_name));
+            if c_gnunet(dependency_name)
+                || !(rule.dependencies.contains(&dependency_name) || fixture)
+            {
                 return Err(format!("forbidden dependency {name} -> {dependency_name}").into());
             }
             for requested in array(dependency, "features")? {
@@ -4577,7 +4670,10 @@ fn validate_fs_extraction_graph(meta: &Value, feature: &str) -> CheckResult<()> 
         let name = field(package, "name")?;
         let manifest = field(package, "manifest_path")?;
         path.push(name);
-        let permitted_host = matches!(name, "gnunet-fs-host" | "gnunet-extractor-host");
+        let permitted_host = matches!(
+            name,
+            "gnunet-fs-host" | "gnunet-extractor-host" | "gnunet-native"
+        );
         if (manifest.contains("/adapters/") && !permitted_host)
             || manifest.contains("/apps/")
             || c_gnunet(name)
@@ -4701,11 +4797,40 @@ fn validate_features(meta: &Value) -> CheckResult<()> {
         let features = package["features"]
             .as_object()
             .ok_or("features object absent")?;
-        if features
-            .get("default")
-            .is_some_and(|value| value.as_array().is_none_or(|values| !values.is_empty()))
-        {
-            return Err(format!("default features must be empty: {name}").into());
+        if let Some(defaults) = features.get("default") {
+            let defaults = defaults.as_array().ok_or("default feature list absent")?;
+            if !defaults.is_empty() {
+                // Library storage/runtime tiers stay explicit. A binary-only
+                // package can select its normal commands through local features.
+                let targets = array(package, "targets")?;
+                let mut binary = false;
+                for target in targets {
+                    for kind in array(target, "kind")? {
+                        match kind.as_str() {
+                            Some("bin") => binary = true,
+                            Some("test" | "bench" | "example" | "custom-build") => {}
+                            _ => {
+                                return Err(format!(
+                                    "library default features must be empty: {name}"
+                                )
+                                .into());
+                            }
+                        }
+                    }
+                }
+                if !binary
+                    || defaults.iter().any(|selection| {
+                        selection.as_str().is_none_or(|selection| {
+                            selection == "default" || !features.contains_key(selection)
+                        })
+                    })
+                {
+                    return Err(format!(
+                        "binary defaults must select local command features: {name}"
+                    )
+                    .into());
+                }
+            }
         }
         for (feature, dependencies) in features {
             if forbidden_feature(feature) {
@@ -4715,7 +4840,7 @@ fn validate_features(meta: &Value) -> CheckResult<()> {
                 let dependency = dependency
                     .as_str()
                     .ok_or("feature member is not a string")?;
-                if forbidden_feature(dependency) {
+                if forbidden_forwarding(dependency) {
                     return Err(format!("private feature forwarding: {name}/{dependency}").into());
                 }
             }
@@ -5011,6 +5136,31 @@ mod tests {
     fn fixture() -> Value {
         let packages: Vec<_> = POLICIES.iter().map(|rule| serde_json::json!({"id":rule.name,"name":rule.name,"manifest_path":format!("/workspace/{}/Cargo.toml",rule.directory),"features":{"default":[]},"dependencies":[],"links":null})).collect();
         serde_json::json!({"workspace_root":"/workspace","workspace_members":packages.iter().map(|p|p["id"].clone()).collect::<Vec<_>>(),"packages":packages})
+    }
+    #[test]
+    fn development_fixtures_cannot_promote_test_capabilities_to_production() -> CheckResult<()> {
+        for &(owner, dependency) in DEVELOPMENT_ONLY {
+            for kind in [Value::Null, "dev".into(), "build".into()] {
+                let mut meta = fixture();
+                let package = meta["packages"]
+                    .as_array_mut()
+                    .ok_or("packages absent")?
+                    .iter_mut()
+                    .find(|package| package["name"] == owner)
+                    .ok_or("owner absent")?;
+                package["dependencies"] = serde_json::json!([{
+                    "name":dependency,"rename":"fixture_alias","kind":kind,
+                    "target":"cfg(windows)","optional":true,"features":[]
+                }]);
+                if validate_dependencies(&meta).is_ok() != (kind == "dev") {
+                    return Err(format!(
+                        "incorrect fixture boundary: {owner} -> {dependency} ({kind})"
+                    )
+                    .into());
+                }
+            }
+        }
+        Ok(())
     }
     #[test]
     fn renamed_optional_target_and_test_dependencies_cannot_hide_ffi_or_layer_edges()
@@ -5361,6 +5511,59 @@ mod tests {
         Ok(())
     }
     #[test]
+    fn optional_native_package_does_not_become_a_private_feature_tier() -> CheckResult<()> {
+        let mut meta = fixture();
+        meta["packages"][0]["features"] = serde_json::json!({
+            "default": [], "runtime": ["dep:gnunet-native", "gnunet-native/std"]
+        });
+        validate_features(&meta)?;
+        meta["packages"][0]["features"]["runtime"] =
+            serde_json::json!(["gnunet-native/legacy-native"]);
+        if validate_features(&meta).is_ok() {
+            return Err("dependency name allowed a removed feature tier".into());
+        }
+        Ok(())
+    }
+    #[test]
+    fn binary_command_defaults_do_not_enable_library_default_tiers() -> CheckResult<()> {
+        for (targets, defaults, accepted) in [
+            (
+                serde_json::json!([{"kind":["bin"]},{"kind":["test"]}]),
+                serde_json::json!(["statistics"]),
+                true,
+            ),
+            (
+                serde_json::json!([{"kind":["lib"]},{"kind":["bin"]}]),
+                serde_json::json!(["statistics"]),
+                false,
+            ),
+            (
+                serde_json::json!([{"kind":["proc-macro"]}]),
+                serde_json::json!(["statistics"]),
+                false,
+            ),
+            (
+                serde_json::json!([{"kind":["bin"]}]),
+                serde_json::json!(["dep:network"]),
+                false,
+            ),
+            (
+                serde_json::json!([{"kind":["bin"]}]),
+                serde_json::json!(["default"]),
+                false,
+            ),
+        ] {
+            let mut meta = fixture();
+            meta["packages"][0]["targets"] = targets;
+            meta["packages"][0]["features"] =
+                serde_json::json!({"default": defaults, "statistics": ["dep:network"]});
+            if validate_features(&meta).is_ok() != accepted {
+                return Err("binary command defaults changed the library feature boundary".into());
+            }
+        }
+        Ok(())
+    }
+    #[test]
     fn pils_native_feature_cannot_leak_into_service_or_omit_client_activation() -> CheckResult<()> {
         let mut meta = fixture();
         let facade = meta["packages"]
@@ -5507,6 +5710,47 @@ mod tests {
         })
     }
 
+    #[test]
+    fn fs_extraction_allows_native_files_without_allowing_a_runtime_edge() -> CheckResult<()> {
+        let mut meta = fs_extraction_fixture("host");
+        let helper = meta["packages"]
+            .as_array_mut()
+            .ok_or("packages absent")?
+            .iter_mut()
+            .find(|package| package["id"] == "helper")
+            .ok_or("helper absent")?;
+        helper["name"] = "gnunet-native".into();
+        helper["manifest_path"] = "/workspace/adapters/native-std/Cargo.toml".into();
+        let nodes = meta["resolve"]["nodes"]
+            .as_array_mut()
+            .ok_or("nodes absent")?;
+        let fs = nodes
+            .iter_mut()
+            .find(|node| node["id"] == "fs")
+            .ok_or("FS absent")?;
+        fs["deps"]
+            .as_array_mut()
+            .ok_or("dependencies absent")?
+            .push(serde_json::json!({"name":"native","pkg":"helper","dep_kinds":[{"kind":null}]}));
+        let helper = nodes
+            .iter_mut()
+            .find(|node| node["id"] == "helper")
+            .ok_or("helper node absent")?;
+        let runtime = helper["deps"].take();
+        helper["deps"] = serde_json::json!([]);
+        validate_fs_extraction_graph(&meta, "host")?;
+        let nodes = meta["resolve"]["nodes"]
+            .as_array_mut()
+            .ok_or("nodes absent")?;
+        nodes
+            .iter_mut()
+            .find(|node| node["id"] == "helper")
+            .ok_or("helper node absent")?["deps"] = runtime;
+        if validate_fs_extraction_graph(&meta, "host").is_ok() {
+            return Err("native file dependency concealed a runtime edge".into());
+        }
+        Ok(())
+    }
     #[test]
     fn fs_extraction_resolved_graph_rejects_renamed_transitive_runtime_leaks() -> CheckResult<()> {
         for feature in ["host", "facade"] {

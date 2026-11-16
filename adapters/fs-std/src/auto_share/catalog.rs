@@ -9,22 +9,16 @@ use crate::{
     input_tree::{InputDir, stamp},
 };
 use gnunet_crypto::Hash512State;
-use nix::{
-    fcntl::{OFlag, openat},
-    sys::stat::Mode,
-    unistd::{UnlinkatFlags, unlinkat},
-};
 use std::{
     ffi::OsStr,
-    fs::File,
-    io::{Read, Write},
-    os::unix::ffi::OsStrExt,
     path::{Path, PathBuf},
 };
+mod image;
+use image::Image;
 const MARK: u16 = 0x4153;
-const MAGIC: &[u8; 8] = b"FSASHR01";
-const IMAGE: &str = "auto-share-state-v1";
-const NEXT: &str = "auto-share-next-v1";
+const MAGIC: &[u8; 8] = b"FSASHR03";
+const IMAGE: &str = "catalog.image";
+const NEXT: &str = "catalog.next";
 const MAX_IMAGE: usize = 8 * 1024 * 1024;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum Phase {
@@ -74,9 +68,10 @@ pub(super) struct Version {
 }
 pub(super) struct Catalog {
     store: Store,
+    image: Image,
     root: PathBuf,
     pub directory: PathBuf,
-    pub root_id: (u64, u64),
+    pub root_id: crate::FileIdentity,
     pub versions: Vec<Version>,
     limits: Limits,
     generation: u64,
@@ -161,17 +156,22 @@ impl Catalog {
         let root = std::fs::canonicalize(root)?;
         let input = InputDir::open(&root).map_err(super::ScanError::from)?;
         let stamp = stamp(input.descriptor()).map_err(super::ScanError::from)?;
-        let directory = root.join(OsStr::from_bytes(STATE));
+        let directory = root.join(component(STATE)?);
         let (mut store, created) = match std::fs::symlink_metadata(&directory) {
             Ok(_) => (Store::open(&directory, limits.catalog)?, false),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                let mut s =
-                    Store::create_at(input.descriptor(), OsStr::from_bytes(STATE), limits.catalog)?;
+                let mut s = Store::create_at(
+                    input.descriptor(),
+                    component(STATE)?.as_ref(),
+                    limits.catalog,
+                )?;
                 let mut header = Vec::new();
                 put(&mut header, MAGIC)?;
-                num(&mut header, stamp.device)?;
-                num(&mut header, stamp.inode)?;
-                blob(&mut header, root.as_os_str().as_bytes())?;
+                put(&mut header, stamp.identity.as_bytes())?;
+                blob(
+                    &mut header,
+                    gnunet_native::os_bytes::encode(root.as_os_str()).as_ref(),
+                )?;
                 s.append(MARK, &header)?;
                 (s, true)
             }
@@ -191,48 +191,28 @@ impl Catalog {
             p: 0,
         };
         if header.take(8)? != MAGIC
-            || header.n()? != stamp.device
-            || header.n()? != stamp.inode
-            || header.bytes(4096)? != root.as_os_str().as_bytes()
+            || header.take(32)? != stamp.identity.as_bytes()
+            || header.bytes(4096)? != gnunet_native::os_bytes::encode(root.as_os_str()).as_ref()
             || header.p != header.b.len()
         {
             return Err(Error::Binding("auto-share root/manifest mismatch"));
         }
+        let image = Image::new(store.directory())?;
         let mut this = Self {
             store,
+            image,
             root,
             directory,
-            root_id: (stamp.device, stamp.inode),
+            root_id: stamp.identity,
             versions: Vec::new(),
             limits,
             generation: 0,
             next: 1,
             fenced: false,
         };
-        // The fixed temp is in this recognized private Rust-owned namespace. Observe
-        // its actual opened inode before unlink. It is never adopted as committed.
-        match openat(
-            this.store.directory(),
-            IMAGE,
-            OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK | OFlag::O_CLOEXEC,
-            Mode::empty(),
-        ) {
-            Ok(fd) => {
-                let file = File::from(fd);
-                if !file.metadata()?.is_file() {
-                    return Err(Error::Binding("catalog image is not regular"));
-                }
-                let mut bytes = Vec::new();
-                bytes
-                    .try_reserve_exact(MAX_IMAGE + 1)
-                    .map_err(|_| Error::Binding("catalog allocation"))?;
-                file.take((MAX_IMAGE + 1) as u64).read_to_end(&mut bytes)?;
-                if bytes.len() > MAX_IMAGE {
-                    return Err(Error::Binding("catalog image exceeds bound"));
-                }
-                this.decode(&bytes)?;
-            }
-            Err(nix::errno::Errno::ENOENT) => {
+        match this.image.read()? {
+            Some(bytes) => this.decode(&bytes)?,
+            None => {
                 if !created {
                     return Err(Error::Binding(
                         "marked auto-share root lost canonical image",
@@ -247,20 +227,17 @@ impl Catalog {
                     4096,
                 )
                 .map_err(super::ScanError::from)?;
-                if directory
-                    .names
-                    .iter()
-                    .any(|n| !matches!(n.bytes.as_slice(), b".lock" | b"records.wal"))
-                {
+                if directory.names.iter().any(|n| {
+                    n.native != OsStr::new(".lock") && n.native != OsStr::new("records.wal")
+                }) {
                     return Err(Error::Binding(
                         "existing auto-share catalog lost canonical image",
                     ));
                 }
                 this.commit()?;
             }
-            Err(e) => return Err(std::io::Error::from_raw_os_error(e as i32).into()),
         }
-        this.recover_temp()?;
+        this.image.recover_temp()?;
         Ok(this)
     }
     pub fn check_root(&self) -> Result<(), Error> {
@@ -272,10 +249,24 @@ impl Catalog {
         let named = InputDir::open(&self.directory).map_err(super::ScanError::from)?;
         let x = stamp(named.descriptor()).map_err(super::ScanError::from)?;
         let y = stamp(self.store.directory()).map_err(super::ScanError::from)?;
-        if (a.device, a.inode) != self.root_id || (x.device, x.inode) != (y.device, y.inode) {
+        if a.identity != self.root_id || x.identity != y.identity {
             return Err(Error::Binding("auto-share original directory changed"));
         }
         Ok(())
+    }
+    pub fn directory_sync(&self) -> Option<gnunet_native::DirectorySync> {
+        use gnunet_native::DirectorySync;
+        if self.fenced {
+            return None;
+        }
+        Some(
+            match (self.store.directory_sync()?, self.image.directory_sync()?) {
+                (DirectorySync::Synchronized, DirectorySync::Synchronized) => {
+                    DirectorySync::Synchronized
+                }
+                _ => DirectorySync::Unavailable,
+            },
+        )
     }
     pub fn root(&self) -> &Path {
         &self.root
@@ -347,13 +338,7 @@ impl Catalog {
         self.commit()?;
         // Actual original intent is durable before this fresh path is made. A crash
         // here burns the id; this path is never renamed/reused for another version.
-        nix::sys::stat::mkdirat(
-            self.store.directory(),
-            relative(id).as_path(),
-            Mode::S_IRWXU,
-        )
-        .map_err(|e| std::io::Error::from_raw_os_error(e as i32))?;
-        self.store.directory().sync_all()?;
+        self.image.create_version(relative(id).as_os_str())?;
         Ok(id)
     }
     pub fn prepared(
@@ -649,38 +634,6 @@ impl Catalog {
         }
         Ok(())
     }
-    fn recover_temp(&self) -> Result<(), Error> {
-        match openat(
-            self.store.directory(),
-            NEXT,
-            OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK | OFlag::O_CLOEXEC,
-            Mode::empty(),
-        ) {
-            Ok(fd) => {
-                let file = File::from(fd);
-                let a = file.metadata()?;
-                if !a.is_file() {
-                    return Err(Error::Binding("foreign temporary auto-share image"));
-                }
-                use std::os::unix::fs::MetadataExt;
-                let b = nix::sys::stat::fstatat(
-                    self.store.directory(),
-                    NEXT,
-                    nix::fcntl::AtFlags::AT_SYMLINK_NOFOLLOW,
-                )
-                .map_err(|e| std::io::Error::from_raw_os_error(e as i32))?;
-                if a.dev() != b.st_dev as u64 || a.ino() != b.st_ino as u64 {
-                    return Err(Error::Binding("temporary catalog inode changed"));
-                }
-                unlinkat(self.store.directory(), NEXT, UnlinkatFlags::NoRemoveDir)
-                    .map_err(|e| std::io::Error::from_raw_os_error(e as i32))?;
-                self.store.directory().sync_all()?;
-                Ok(())
-            }
-            Err(nix::errno::Errno::ENOENT) => Ok(()),
-            Err(e) => Err(std::io::Error::from_raw_os_error(e as i32).into()),
-        }
-    }
     fn commit(&mut self) -> Result<(), Error> {
         self.check_root()?;
         let generation = self
@@ -688,74 +641,9 @@ impl Catalog {
             .checked_add(1)
             .ok_or(Error::Binding("catalog generation exhausted"))?;
         let bytes = self.encode(generation)?;
-        let fd = openat(
-            self.store.directory(),
-            NEXT,
-            OFlag::O_WRONLY | OFlag::O_CREAT | OFlag::O_EXCL | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC,
-            Mode::S_IRUSR | Mode::S_IWUSR,
-        )
-        .map_err(|e| std::io::Error::from_raw_os_error(e as i32))?;
-        let mut file = File::from(fd);
-        let m = match file.metadata() {
-            Ok(m) => m,
-            Err(error) => {
-                self.fenced = true;
-                return Err(io(
-                    "temporary catalog inode",
-                    false,
-                    error,
-                    Some(std::io::Error::other(
-                        "created temporary inode could not be observed; path left untouched",
-                    )),
-                ));
-            }
-        };
-        use std::os::unix::fs::MetadataExt;
-        let mut visible = false;
-        let result = (|| -> std::io::Result<()> {
-            file.write_all(&bytes)?;
-            file.sync_all()?;
-            nix::fcntl::renameat(self.store.directory(), NEXT, self.store.directory(), IMAGE)
-                .map_err(|e| std::io::Error::from_raw_os_error(e as i32))?;
-            visible = true;
-            self.store.directory().sync_all()?;
-            Ok(())
-        })();
-        if let Err(error) = result {
+        if let Err(error) = self.image.write(&bytes) {
             self.fenced = true;
-            let cleanup = if !visible {
-                match nix::sys::stat::fstatat(
-                    self.store.directory(),
-                    NEXT,
-                    nix::fcntl::AtFlags::AT_SYMLINK_NOFOLLOW,
-                ) {
-                    Ok(now)
-                        if {
-                            #[cfg_attr(
-                                target_os = "linux",
-                                expect(
-                                    clippy::unnecessary_cast,
-                                    reason = "Native dev_t widening is required by the narrower macOS stat layout"
-                                )
-                            )]
-                            let device = now.st_dev as u64;
-                            device == m.dev() && now.st_ino == m.ino()
-                        } =>
-                    {
-                        unlinkat(self.store.directory(), NEXT, UnlinkatFlags::NoRemoveDir)
-                            .map_err(|e| std::io::Error::from_raw_os_error(e as i32))
-                            .err()
-                    }
-                    Ok(_) => Some(std::io::Error::other(
-                        "temporary image replaced; foreign inode left untouched",
-                    )),
-                    Err(nix::errno::Errno::ENOENT) => None,
-                    Err(e) => Some(std::io::Error::from_raw_os_error(e as i32)),
-                }
-            } else {
-                None
-            };
-            return Err(io("atomic catalog commit", visible, error, cleanup));
+            return Err(error);
         }
         self.generation = generation;
         Ok(())
@@ -764,16 +652,21 @@ impl Catalog {
 
 /// Empty denotes the selected top-level object; every other component is literal.
 pub(super) fn metadata_relative(bytes: &[u8]) -> Result<(), Error> {
-    if bytes.contains(&0) {
-        return Err(Error::Binding("NUL metadata path"));
-    }
-    let path = Path::new(OsStr::from_bytes(bytes));
-    if path.is_absolute()
-        || path
-            .components()
-            .any(|c| !matches!(c, std::path::Component::Normal(_)))
+    if bytes.contains(&0)
+        || !bytes.is_empty()
+            && bytes
+                .split(|b| *b == b'/')
+                .any(|p| p.is_empty() || matches!(p, b"." | b".."))
     {
-        return Err(Error::Binding("metadata relative path"));
+        return Err(Error::Binding("invalid metadata coordinate"));
+    }
+    let native = crate::output::from_protocol_name(bytes)
+        .map_err(|_| Error::Binding("metadata coordinate encoding"))?;
+    if Path::new(native)
+        .components()
+        .any(|c| !matches!(c, std::path::Component::Normal(_)))
+    {
+        return Err(Error::Binding("metadata relative coordinate"));
     }
     Ok(())
 }

@@ -5,11 +5,12 @@ use crate::{
 };
 use gnunet_client_host::channel::Channel;
 use gnunet_service_runtime::{
-    clock::{Deadline, RuntimeClock},
+    clock::{Bounds, Deadline, RuntimeClock},
     framing::{Class, OwnedFrame},
 };
 use gnunet_types::Error as ProtocolError;
-use std::{collections::VecDeque, pin::Pin, sync::Arc};
+use std::{collections::VecDeque, pin::Pin, sync::Arc, time::Duration};
+use tokio::time::{Instant, Sleep};
 mod io;
 #[derive(Clone, Copy)]
 struct Origin<'a> {
@@ -22,13 +23,13 @@ struct State<'a> {
     rid: [u8; 8],
     desired: Option<Family>,
     source: Option<OwnedFrame>,
-    expires: u64,
+    bounds: Bounds,
     epoch: Option<Epoch<'a>>,
     pending: bool,
     exposed: bool,
     written: bool,
     reason: Option<Reason>,
-    hard: Option<u64>,
+    retirement: Option<Bounds>,
 }
 /// Caller-driven official VPN address allocation client. It creates no task,
 /// service, Resolver or platform device. Loss terminates original requests;
@@ -45,6 +46,7 @@ pub struct Client<'a> {
     epoch: Option<Epoch<'a>>,
     alarm: Option<Pin<Box<Deadline>>>,
     alarm_at: Option<u64>,
+    native_alarm: Option<Pin<Box<Sleep>>>,
     read_first: bool,
     yield_due: bool,
     closed: bool,
@@ -85,6 +87,7 @@ impl<'a> Client<'a> {
             epoch: None,
             alarm: None,
             alarm_at: None,
+            native_alarm: None,
             read_first: false,
             yield_due: false,
             closed: false,
@@ -133,6 +136,10 @@ impl<'a> Client<'a> {
         if !self.events.is_empty() {
             return Err(ProtocolError::WouldBlock.into());
         }
+        let native = Instant::now();
+        if self.next_native_deadline().is_some_and(|at| native >= at) {
+            return Err(ProtocolError::WouldBlock.into());
+        }
         let now = self.sample()?;
         if response_until <= now
             || response_until == u64::MAX
@@ -141,6 +148,14 @@ impl<'a> Client<'a> {
                 .checked_add(self.limits.retirement_grace_micros)
                 .is_none_or(|hard| hard == u64::MAX)
         {
+            return Err(ProtocolError::Deadline.into());
+        }
+        let hard = native
+            .checked_add(Duration::from_micros(response_until - now))
+            .ok_or(ProtocolError::Overflow)?;
+        hard.checked_add(Duration::from_micros(self.limits.retirement_grace_micros))
+            .ok_or(ProtocolError::Overflow)?;
+        if Instant::now() >= hard {
             return Err(ProtocolError::Deadline.into());
         }
         let index = self
@@ -167,13 +182,16 @@ impl<'a> Client<'a> {
             rid,
             desired,
             source: Some(OwnedFrame::new(bytes)),
-            expires: response_until,
+            bounds: Bounds {
+                expires: response_until,
+                hard,
+            },
             epoch: None,
             pending: false,
             exposed: false,
             written: false,
             reason: None,
-            hard: None,
+            retirement: None,
         });
         self.next_rid = next;
         self.alarm = None;
@@ -238,7 +256,17 @@ impl<'a> Client<'a> {
         self.slots
             .iter()
             .filter_map(|s| s.as_ref())
-            .map(|s| s.hard.unwrap_or(s.expires))
+            .map(|s| s.retirement.unwrap_or(s.bounds).expires)
+            .min()
+    }
+    /// Earliest unchanged native response or partial-retirement target. This
+    /// remains effective while the canonical clock is stalled or refused.
+    #[must_use]
+    pub fn next_native_deadline(&self) -> Option<Instant> {
+        self.slots
+            .iter()
+            .filter_map(|slot| slot.as_ref())
+            .map(|state| state.retirement.unwrap_or(state.bounds).hard)
             .min()
     }
     /// Consume one retained local completion, without IO.
@@ -263,7 +291,12 @@ impl<'a> Client<'a> {
             Submission::Unsent
         }
     }
-    fn cancel_index(&mut self, index: usize, reason: Reason, now: u64) -> Result<Cancel, Error> {
+    fn cancel_index(
+        &mut self,
+        index: usize,
+        reason: Reason,
+        native: Instant,
+    ) -> Result<Cancel, Error> {
         let state = self.slots[index].as_ref().ok_or(ProtocolError::Stale)?;
         if state.reason.is_some() {
             return Err(ProtocolError::Stale.into());
@@ -282,10 +315,17 @@ impl<'a> Client<'a> {
         state.source = None;
         state.reason = Some(reason);
         if state.pending {
-            state.hard = Some(
-                now.saturating_add(self.limits.retirement_grace_micros)
-                    .min(state.expires + self.limits.retirement_grace_micros),
-            );
+            state.retirement = Some(Bounds {
+                expires: state
+                    .bounds
+                    .expires
+                    .checked_add(self.limits.retirement_grace_micros)
+                    .ok_or(ProtocolError::Overflow)?,
+                hard: native
+                    .min(state.bounds.hard)
+                    .checked_add(Duration::from_micros(self.limits.retirement_grace_micros))
+                    .ok_or(ProtocolError::Overflow)?,
+            });
             self.alarm = None;
             self.alarm_at = None;
             return Ok(Cancel::Draining);
@@ -300,10 +340,18 @@ impl<'a> Client<'a> {
     /// Suppress this original callback. No CANCEL IPC exists. Wholly unwritten
     /// frames are removed; original partial frames drain under a fixed bound.
     /// An already exposed request may still create a lease after cancellation.
+    /// This operation samples no canonical clock. Continue driving or polling
+    /// the native guard until any original partial frame retires.
     pub fn cancel(&mut self, operation: Operation<'_>) -> Result<Cancel, Error> {
         let index = self.index(operation)?;
-        let now = self.sample()?;
-        self.cancel_index(index, Reason::Cancelled, now)
+        let result = self.cancel_index(index, Reason::Cancelled, Instant::now())?;
+        self.retire_idle_connect();
+        Ok(result)
+    }
+    fn retire_idle_connect(&mut self) {
+        if self.channel.framing().is_none() && self.slots.iter().all(Option::is_none) {
+            self.channel.detach();
+        }
     }
     fn prepare(&mut self) -> Result<(), Error> {
         let epoch = self.epoch.ok_or(ProtocolError::NotReady)?;
@@ -352,6 +400,7 @@ impl<'a> Client<'a> {
         }
         self.alarm = None;
         self.alarm_at = None;
+        self.native_alarm = None;
         if retry && !self.closed {
             self.channel.schedule_retry()?;
         }

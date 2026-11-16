@@ -92,6 +92,14 @@ impl<'s, 'p, 'c, 'slots> State<'s, 'p, 'c, 'slots> {
             return Ok(true);
         }
         let bound = self.origin.at(deadline)?;
+        if self.cadet_recovery.is_some()
+            && matches!(
+                effect.action(),
+                Action::OpenPort { .. } | Action::OpenChannel { .. } | Action::PeerFrame { .. }
+            )
+        {
+            return Ok(true);
+        }
         match effect.action() {
             Action::OpenPort { port } => {
                 if self.pending_native.is_some() || self.source.is_none() {

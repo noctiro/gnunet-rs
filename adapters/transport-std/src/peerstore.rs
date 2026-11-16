@@ -405,9 +405,9 @@ mod framing_resource_tests {
             let root = std::env::temp_dir().join(format!("gnunet-ps-framing-{}", std::process::id()));
             fs::create_dir_all(&root)?;
             let mut journal = Journal::open(root.join("journal"))?;
-            let (stream, mut peer) = tokio::net::UnixStream::pair()?;
+            let (stream, mut peer) = crate::test_support::pair().await?;
             let mut server = Server::new(1)?;
-            server.admit(Connection::from_unix(stream))?;
+            server.admit(stream)?;
             let capacity = 1024 * 1024;
             let mut expected = Vec::with_capacity(capacity + 12);
             for _ in 0..16 {

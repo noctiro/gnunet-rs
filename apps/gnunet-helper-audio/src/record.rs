@@ -12,14 +12,17 @@ fn main() -> ExitCode {
         );
         return ExitCode::from(2);
     }
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     let result = gnunet_conversation_audio_host::record(Default::default());
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     {
-        let _actual = writeln!(io::stderr().lock(), "Pulse profile requires Unix");
+        let _actual = writeln!(
+            io::stderr().lock(),
+            "native audio helpers require Unix or Windows"
+        );
         return ExitCode::from(1);
     }
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     match result {
         Ok(_) => ExitCode::SUCCESS,
         Err(error) => {

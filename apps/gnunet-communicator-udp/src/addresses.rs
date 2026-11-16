@@ -1,5 +1,7 @@
 //! Actual NAT/interface references, original communicator writes and unsigned
 //! PILS feeds remain three distinct local facts. No address-validation ACK.
+mod interfaces;
+
 use gnunet_nat_client_host as nat;
 use gnunet_pils::client::{Epoch, OperationId, OperationKind};
 use gnunet_pils_host::client::{Client, Progress};
@@ -69,11 +71,27 @@ pub(super) struct Reverse<'nat> {
     pub ordinal: u64,
     pub remote: SocketAddr,
 }
-#[derive(Clone, Copy, Debug)]
+#[derive(Debug)]
+pub(super) enum NatRefusal {
+    Capacity,
+    Classification(io::Error),
+}
+impl fmt::Display for NatRefusal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Capacity => f.write_str("bounded address claim capacity exhausted"),
+            Self::Classification(error) => write!(f, "address classification: {error}"),
+        }
+    }
+}
+#[derive(Debug)]
 pub(super) enum NatObservation<'nat> {
     None,
     Accepted,
-    Backpressure,
+    Rejected {
+        address: SocketAddr,
+        reason: NatRefusal,
+    },
     Retired,
     Reverse(Reverse<'nat>),
 }
@@ -325,61 +343,6 @@ impl<'nat, 'pils> Addresses<'nat, 'pils> {
         self.next_id = next;
         Ok(())
     }
-    /// Complete real interface snapshot, with actual bound ports already filled.
-    /// Allocation/format/classification preflight leaves old claims unchanged.
-    pub fn replace_interfaces(
-        &mut self,
-        addresses: &[SocketAddr],
-        classify: &mut impl FnMut(SocketAddr) -> io::Result<u32>,
-    ) -> Result<(), Failure> {
-        if self.report.closing {
-            return Err(Fault::Closed.into());
-        }
-        let mut desired = Vec::new();
-        desired
-            .try_reserve_exact(self.maximum)
-            .map_err(|_| Fault::Capacity)?;
-        for &address in addresses {
-            if !usable(address) || desired.iter().any(|(a, _)| *a == address) {
-                continue;
-            }
-            if desired.len() == self.maximum {
-                return Err(Fault::Capacity.into());
-            }
-            Text::new(address, false)?;
-            Text::new(address, true)?;
-            desired.push((address, classify(address).map_err(Failure::Network)?));
-        }
-        let retained = self
-            .claims
-            .iter()
-            .filter(|claim| claim.origin != Origin::Interface)
-            .count();
-        let new_rows = desired
-            .iter()
-            .filter(|(address, _)| !self.rows.iter().any(|row| row.address == *address))
-            .count();
-        if retained
-            .checked_add(desired.len())
-            .is_none_or(|n| n > self.maximum)
-        {
-            return Err(Fault::Capacity.into());
-        }
-        self.next_id
-            .checked_add(u32::try_from(new_rows).map_err(|_| Fault::Capacity)?)
-            .ok_or(Fault::Overflow)?;
-        self.claims
-            .retain(|claim| claim.origin != Origin::Interface);
-        for (address, network) in desired {
-            self.claims.push(Claim {
-                origin: Origin::Interface,
-                address,
-                network,
-            });
-        }
-        self.reconcile_feed()?;
-        Ok(())
-    }
     /// Borrow actual progress before Root releases a held callback. Accepted
     /// means copied into bounded original app contexts, never mapping success.
     pub fn observe_nat(
@@ -390,6 +353,9 @@ impl<'nat, 'pils> Addresses<'nat, 'pils> {
     ) -> Result<NatObservation<'nat>, Failure> {
         match progress {
             nat::Progress::Ended(end) => {
+                if end.source.session != registration.session() {
+                    return Err(Fault::StaleGeneration.into());
+                }
                 self.claims.retain(|claim|!matches!(claim.origin,Origin::Nat(session,_,_) if session==end.source.session));
                 self.report.nat_losses = self.report.nat_losses.saturating_add(1);
                 self.reconcile_feed()?;
@@ -444,9 +410,20 @@ impl<'nat, 'pils> Addresses<'nat, 'pils> {
                                     || (!self.rows.iter().any(|row| row.address == address)
                                         && self.rows.len() == self.maximum)
                                 {
-                                    return Ok(NatObservation::Backpressure);
+                                    return Ok(NatObservation::Rejected {
+                                        address,
+                                        reason: NatRefusal::Capacity,
+                                    });
                                 }
-                                let network = classify(address).map_err(Failure::Network)?;
+                                let network = match classify(address) {
+                                    Ok(network) => network,
+                                    Err(error) => {
+                                        return Ok(NatObservation::Rejected {
+                                            address,
+                                            reason: NatRefusal::Classification(error),
+                                        });
+                                    }
+                                };
                                 self.row(address, network)?;
                                 self.claims.push(Claim {
                                     origin,
@@ -496,7 +473,7 @@ impl<'nat, 'pils> Addresses<'nat, 'pils> {
         match progress {
             Progress::Connected(epoch) => {
                 if self.pils_epoch.is_some_and(|old| old != *epoch) {
-                    self.begin_close();
+                    return Err(Fault::StaleGeneration.into());
                 }
                 self.pils_epoch = Some(*epoch);
             }
@@ -530,9 +507,14 @@ impl<'nat, 'pils> Addresses<'nat, 'pils> {
                         _ => self.report.feed_unknown = self.report.feed_unknown.saturating_add(1),
                     }
                 }
-                if self.pils_epoch == Some(*epoch) {
-                    self.begin_close();
+                if self.pils_epoch.is_some_and(|old| old != *epoch) {
+                    return Err(Fault::StaleGeneration.into());
                 }
+                self.pils_epoch = None;
+                // A new source needs a fresh snapshot of current intent, not a
+                // replay of the old FEED or a claim that it was never applied.
+                self.bump()?;
+                self.report.clear_feed_written = false;
             }
             _ => {}
         }

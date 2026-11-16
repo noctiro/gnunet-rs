@@ -1,116 +1,134 @@
 # Native VPN coordinator
 
-`coordinator::Coordinator::new(Parts { server, cadet, device }, policies, Limits)`
-composes the caller's local SERVICE and pure Engine pools, one exclusively
-transferred fresh CADET client and one verified TUN. Both MQ owners must share
-exactly the same RuntimeClock Arc. Construction validates and fallibly allocates
-only a fixed flow metadata table; every original physical owner is returned on
-refusal. Call `poll` / `drive` with the local service listeners. No task,
-thread, Resolver or implicit automatic discovery service is started.
+`Coordinator::new(Parts { server, cadet, device }, policies, Limits)` composes
+caller-owned Engine pools, the local SERVICE, one exclusive CADET client and one
+qualified packet device. SERVICE and CADET share the same `RuntimeClock` owner.
+Construction allocates a bounded flow table and returns all original owners on
+refusal. Call `poll` or `drive` on the existing runtime; no task, thread, Resolver
+or discovery connection starts implicitly.
 
-The TUN descriptor is either newly kernel allocated by `Device::open_linux` /
-`open_utun`, or explicitly borrowed through `borrow_existing`. Newly created
-interfaces run MTU/address/netmask/link ioctls, IPv6 DAD observation and
-native prefix-route operations. A submitted route request is never readiness:
-original correlated ACK is required. EEXIST is checked by the exact
-route query, never accepted blindly. Borrowed devices are unchanged: a real
-snapshot must match the configured plan and exact route queries plus DAD
-must succeed. Borrowed route states remain BorrowedVerified/Unverified/Released;
-logical release never claims another owner's route disappeared or deletes it.
-The coordinator requires the separately integrated borrowed-route Engine hooks.
+## Native device and routing
 
-There is one original configure deadline across all stages, not one renewed
-budget per syscall. IPv6 tentative state keeps the original DAD deadline. After
-an Ready sample, bounded distinct monitoring queries continue; an actual
-missing/failed address, source loss or inability to obtain a fresh sample stops
-admission. Control effects, snapshots, query completions and readiness observations
-are delivered as their original typed native receipts through `Event`.
+`Device` selects native creation, explicit borrowed adoption, or the Unix helper
+process boundary. FreeBSD recoverable creation retains its original
+[checkpoint owner](../tun-std/RECOVERY.md). Windows adopts an explicitly trusted
+[Wintun session](../tun-std/WINDOWS.md).
 
-raw TUN reads enter `Engine::forward_tun`, retaining converted official
-VPN/EXIT bytes in the caller's shared packet slabs. Configured Internet exits use
-only the caller's finite explicit policies. External mode offers original
-`DiscoveryRequest`s; the caller must bind provider admission, result and
+Newly created interfaces run MTU, address/mask and link operations, DAD, and
+prefix-route operations. Readiness requires actual successful native receipts;
+route rejection is reconciled through an exact query. Existing devices instead
+require matching interface snapshots, exact routes and DAD without mutation.
+Borrowed route release is logical and never deletes or claims absence of
+another owner's routes. Snapshots and native returns are time-local observations,
+not an atomic configuration image or remote reachability proof.
+
+Every control job keeps a finite original deadline. A late or failed route query
+cannot grant readiness. Periodic IPv6 monitoring uses separate finite queries;
+non-ready state or independent close failure stops admission. Typed `Event`
+values preserve actual mutation, query, DAD and cleanup results.
+
+## Packet and peer ownership
+
+TUN input enters `Engine::forward_tun`; the caller's shared slabs retain official
+VPN/EXIT frames. Configured exits use explicit bounded policies. External
+selection emits `DiscoveryRequest` and requires matching admission, result and
 retirement through `discovery_queued`, `select_exit`, `discovery_failed` and
-`retire_discovery`. No automatic REGEX discovery is implemented here. Service
-flows use their original requested peer and the explicitly configured peer AF
-profile. No private fragmentation or AF guessing is introduced.
+`retire_discovery`. The consuming application owns actual REGEX discovery.
+Service flows retain their requested peer and explicit numeric AF profile.
 
-The CADET CREATE must finish writing and the exact current requested
-channel must receive service credit before it is bound to the pure flow.
-Queued CREATE and local write alone are insufficient. Opening and every native
-TX have finite original deadlines. One shared immutable CADET TX owns each actual
-attempt, including partial writes. Whole-write and positive-prefix callbacks go
-to the original core effect. A native channel destroyed during a partial DATA
-write retires logical peer authority but retains the immutable original native
-frame, buffer and mapping until MQ write completion or physical loss.
-Application data is never replayed on a replacement MQ. A whole native suffix
-written after the channel ended remains a RetiredWrite, retaining its actual
-positive exposure without becoming a successful peer send.
+CADET CREATE must finish writing and receive actual current-channel credit before
+peer binding. One immutable native transmission retains each admitted frame and
+its original deadline, including partial writes. Replacement MQs never replay
+application bytes. Completion after channel retirement remains a retired write,
+separate from successful peer sending or remote processing.
 
-Received CADET message strings retain their outer delivery receipt. Every
-inner official VPN/EXIT frame is processed in order. The original core delivery
-becomes eligible only after an whole TUN packet write; all inner frames
-must complete before the one outer CADET receive_done is submitted. Processing
-credit is distinct from local ACK whole-writing and from remote IP delivery.
-Capacity retains original received input under a finite deadline. Permanent
-malformation/oversize or exhausted deadlines close the channel, without
-inventing success or sending a false processing ACK. Slow channels are scanned
-fairly and cannot monopolize another channel's completion.
+Each received CADET envelope retains its outer delivery receipt. Inner messages
+are processed in order, and a core delivery becomes eligible only after its
+whole original TUN packet writes. All inner messages must finish before the one
+outer `receive_done`. Capacity waits preserve the original input deadline.
+Malformed input, cancellation and expiry close the channel without false credit.
+A remote channel close may let already-bound input finish on its original TUN;
+local cancellation, device loss or a Closing flow discards it. Old flow authority
+never revives through late credit or another packet.
 
-A later remote channel Destroyed does not discard an earlier complete received
-envelope while its original replies wait for TUN capacity or TUN writes.
-The exact flow first enters a monotonic peer-ended state: new local packets for
-that tuple and new peer prepare/queue/open/bind work are refused, while only the
-already-bound received envelope can finish on its original TUN. Buffered peer
-output is canceled; admitted immutable native attempts retain their receipts
-and deadlines. TUN admission is capped by the original input deadline as well as
-the existing TUN-write deadline. Each inner delivery is released only after the
-TUN completion; the finished outer receipt is dropped locally, without a
-CADET ACK on the ended channel. After held input and that link's native attempt
-settle, the original peer-loss cleanup runs. Other links and MQ credit continue.
-Local cancellation/Closing, device failure, malformed input and original expiry
-still discard held input and preserve the first flow failure. No old flow is
-rebound or revived by late credit, receipt or another packet. Whole-MQ source
-loss retains its existing immediate failure/cleanup policy. This source change
-was not exercised against a TUN, helper, device, socket or peer.
+## Session recovery
 
-`request_shutdown` stops admission under one original finite grace. Owned cleanup
-queries exact original routes and deletes only routes on the original newly
-created device; borrowed configurations are only logically released. Existing
-partial native attempts retain their physical owners. `close` independently stops
-all IPC MQs, the CADET MQ and original TUN without a logical-clock sample;
-`close_report` retains each independent native stop and first cleanup error.
-Exposed route work whose missing ACK cannot exclude a late effect remains Unknown
-even after independent source close. An unexpected old-TUN loss is not repaired
-using a new epoch or guessed reused ifindex. `debt()` reports current remaining
-flow/buffer/external-provider work, including after explicit late retirement.
-A local close report is not a claim that downstream applications processed data
-or that unresolved kernel effects or external discovery work quiesced.
+Windows callers opt into `enable_wintun_recovery` before the first drive. An
+unexpected loss returns the ended session's original adapter through
+`Event::TunLost`. The coordinator cancels old native observers and routing jobs,
+marks old packet effects lost and continues CADET, IPC, discovery and flow
+retirement. The caller must consume or release the retained adapter.
 
-Memory is bounded by caller Engine/client pools, the configured flow table,
-live received CADET envelopes (one per flow), one raw incoming packet,
-one immutable native CADET TX and one immutable TUN TX. No maximum payload vectors
-are preallocated for each possible channel. Configured policy storage is borrowed.
-Native control/query ports retain their own fixed resource limits.
+`recover_wintun` checks that capability against the exact lost packet epoch.
+It waits for old jobs, flows and packets to quiesce, restarts the same native
+adapter, and attaches a fresh core packet generation. No name or reused index
+can substitute another interface. Refusal identifies whether the caller retains
+the adapter, owns a prepared session, or the coordinator owns the installed
+session. Configuration is then read and verified through the existing control
+state machine before `tun_ready` can succeed.
 
-This package provides a runtime library; it does not add the VPN foreground
-process, automatic official REGEX discovery, an EXIT daemon or privileged platform
-provisioning permissions. Unsupported platform operations return their actual
-native refusal. Fragment/IPsec/active routing exclusions remain those documented
-by the shared packet core. No full GNUnet-node interoperability claim follows
-from these code paths. The author ran only rustfmt parse/check, not Cargo, tests,
-compiler, sockets, TUN, ioctl, address/route changes or private-key reads.
+`refresh_wintun` uses the same retirement and verification workflow with a fresh
+packet handle on the exact retained native scope. Original creator lifetime and
+owned route debt remain attached; no absence or borrowed ownership is inferred.
+Its explicit native stage failures retain the original recovery owner.
 
-Central integration compiles this library and the optional SDK graph on the
-current macOS host. A full metadata table drops and retires only the never-opened
-new ingress flow, preserving existing channels. Routing tokens are retained
-before later validation. Only an successful same-epoch explicit close of
-this coordinator's newly created nonpersistent device can prove owned interface
-removal; unexpected loss or a close errno keeps unresolved effects Unknown.
-Earlier close errno remains an independent report field. No privileged
-TUN/route operation or full coordinator forwarding run has been qualified. The
-separate local process DNS/negative-IPC profile does not exercise this coordinator.
-Native control close errors remain independent of successful kernel ACK/Get
-results. A first close errno and the count of unconfirmed closes stay visible in
-Close/debt; admission stops and periodic watchers are not reopened after that
-failure. An unknown closed descriptor is never retried.
+Core `rebind_tun_same_interface` transfers the original route scope without
+claiming absence. Owned routes use an explicit Verify action and
+`route_reverified`; borrowed routes retain borrowed verification. No route
+mutation or old packet is replayed, and owned cleanup debt never becomes borrowed
+by replacing its packet session.
+
+One outage deadline covers old-debt draining, restart and verification. Rapid
+failures reuse it; positive native I/O or one second admitted without an observed
+loss ends the episode. The quiet interval is retry policy, not evidence of
+packet delivery. The installed service owns bounded retry delays and first/latest
+failure diagnostics. Native device qualification remains in the central
+[open work](../../IMPLEMENTATION_STATUS.md).
+
+## Physical interface recovery
+
+`reopen_wintun` consumes the shared physical recovery intent. It checks the lost
+packet epoch and waits for original routing, flow and packet debt. The native
+adapter then provides a sealed old-scope absence observation and reopens only the
+selected provider name, GUID and compartment. Old owned scope becomes Absent;
+an old borrowed view is released logically. `can_retire_tun` and `retire_tun`
+still require original jobs and independent flows/packets to quiesce.
+
+`restore_wintun` additionally permits recreation from an original native creator
+after selected-provider NotFound. Borrowed originals never acquire a creation
+recipe. Every replacement attaches a fresh core source: reopened devices use
+read-only snapshot, route and DAD verification; newly created devices receive
+new configuration and route jobs under their own scope. Old deletion authority
+and configuration effects do not transfer. Native admission is not readiness.
+An absence fact remains available even when a later native reopen fails, and
+independent reconciliation errors keep both causes. Refusals identify retained,
+provisional and installed ownership explicitly.
+
+Source-bound native control errors and non-ready observer results probe actual
+physical absence before process shutdown. Present-interface configuration failure
+does not become device loss. Recovery preserves original typed failures as
+bounded diagnostics. Retired control timers stop contributing wake deadlines;
+live old jobs and the original outage budget keep their independent wakes.
+The installed service owns physical retry policy and releases every retained
+intent on stop. Native qualification remains in
+[open work](../../IMPLEMENTATION_STATUS.md).
+
+## Shutdown and resource bounds
+
+`request_shutdown` stops admission under one original grace. Owned cleanup checks
+and deletes only the original owned routes; borrowed views are released without
+mutation. `close` independently stops IPC, CADET, control observers and the packet
+owner without sampling the logical clock. `close_report`, cleanup errors and
+`debt()` keep independent outcomes visible, including late discovery retirement.
+
+Uncertain native effects remain Unknown until actual reconciliation. Successful
+close of a newly created nonpersistent Unix device may provide its platform's
+removal proof. Wintun's void release API provides no separate kernel-removal
+completion, so it cannot settle route debt. Physical close never proves remote
+processing, and an unknown close result is not retried on a reused handle.
+
+Memory is bounded by caller Engine/client pools, the fixed flow table, one
+received CADET envelope per flow, one raw input packet, one immutable CADET
+transmission and one immutable TUN transmission. No maximum payload allocation
+is made for every possible channel. Original helper stop and process wait are
+separate obligations; helpers are actually reaped by the consuming application.

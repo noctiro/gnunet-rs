@@ -6,17 +6,23 @@ rust-version="1.99.1"
 license="MPL-2.0"
 autoexamples=false
 [workspace]
+[features]
+default=[]
+service=["dep:gnunet-program-host"]
 [dependencies]
+gnunet-program-host={path="@REPOSITORY@/adapters/program-std",default-features=false,optional=true,features=["service-runtime"]}
+gnunet-service-startup={path="@REPOSITORY@/adapters/service-startup",default-features=false}
 gnunet-config={path="@REPOSITORY@/adapters/config-std",default-features=false}
 gnunet-arm-service-core={path="@REPOSITORY@/crates/gnunet-arm-service-core",default-features=false}
 gnunet-arm-core={path="@REPOSITORY@/crates/gnunet-arm-core",default-features=false}
 gnunet-service-runtime={path="@REPOSITORY@/adapters/service-runtime",default-features=false}
 gnunet-native={path="@REPOSITORY@/adapters/native-std",default-features=false}
-gnunet-ipc-unix={path="@REPOSITORY@/adapters/ipc-unix",default-features=false}
 tokio={version="=1.54.1",default-features=false,features=["rt","net","time","io-util","signal"]}
 socket2={version="=0.6.5",default-features=false}
-nix={version="=0.31.3",default-features=false,features=["fs","poll"]}
+[target.'cfg(unix)'.dependencies]
 libc={version="=0.2.191",default-features=false}
+[dev-dependencies]
+tokio={version="=1.54.1",default-features=false,features=["macros"]}
 [[bin]]
 name="gnunet-arm-listener-child-fixture"
 path="examples/listener_child.rs"
@@ -66,3 +72,8 @@ unwrap_used = "deny"
 broken_intra_doc_links = "deny"
 invalid_html_tags = "deny"
 
+
+[[test]]
+name = "windows_reactor"
+path = "tests/windows_reactor.rs"
+harness = false

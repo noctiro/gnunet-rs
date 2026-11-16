@@ -15,21 +15,17 @@ use std::{
     fs::{File, OpenOptions},
     future::{Future, poll_fn},
     io::{Read, Write},
-    os::unix::ffi::OsStrExt,
     path::{Path, PathBuf},
     pin::Pin,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
-    task::{Context, Poll},
+    task::Poll,
     thread::{self, JoinHandle},
     time::Duration,
 };
-use tokio::{
-    signal::unix::{Signal, SignalKind},
-    time::Instant,
-};
+use tokio::time::Instant;
 use zeroize::Zeroizing;
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 fn row(out: &mut impl Write, value: serde_json::Value) -> Result<()> {
@@ -347,40 +343,6 @@ impl Computation {
         })
     }
 }
-#[derive(Clone, Copy, Debug)]
-enum WorkSignal {
-    Interrupt,
-    Terminate,
-}
-struct WorkSignals {
-    interrupt: Signal,
-    terminate: Signal,
-}
-impl WorkSignals {
-    fn new() -> std::io::Result<Self> {
-        Ok(Self {
-            interrupt: tokio::signal::unix::signal(SignalKind::interrupt())?,
-            terminate: tokio::signal::unix::signal(SignalKind::terminate())?,
-        })
-    }
-    fn poll(&mut self, cx: &mut Context<'_>) -> Poll<std::io::Result<WorkSignal>> {
-        for (source, signal) in [
-            (&mut self.interrupt, WorkSignal::Interrupt),
-            (&mut self.terminate, WorkSignal::Terminate),
-        ] {
-            match source.poll_recv(cx) {
-                Poll::Ready(Some(())) => return Poll::Ready(Ok(signal)),
-                Poll::Ready(None) => {
-                    return Poll::Ready(Err(std::io::Error::other(format!(
-                        "revocation CPU {signal:?} signal stream ended"
-                    ))));
-                }
-                Poll::Pending => {}
-            }
-        }
-        Poll::Pending
-    }
-}
 #[derive(Debug, Default)]
 struct ComputationFailure {
     joined: bool,
@@ -479,9 +441,9 @@ async fn compute(
     o: &Options,
     out: &mut impl Write,
 ) -> Result<()> {
-    // Register both real Unix stop streams before allocation/thread startup, so
+    // Register native stop subscriptions before allocation/thread startup, so
     // a stop during that startup is retained for this original work owner.
-    let mut signals = WorkSignals::new()?;
+    let mut signals = gnunet_service_runtime::signals::Termination::new()?;
     let mut work = Computation::start(certificate, target.is_some(), o)?;
     let mut failures = ComputationFailure::default();
     let received = poll_fn(|cx| {
@@ -492,12 +454,10 @@ async fn compute(
             return Poll::Ready(result);
         }
         if failures.cancellation.is_none()
-            && let Poll::Ready(result) = signals.poll(cx)
+            && let Poll::Ready(result) = signals.poll_stop(cx)
         {
             failures.cancellation = Some(match result {
-                Ok(signal) => {
-                    format!("original CPU work canceled by {signal:?} between hashes").into()
-                }
+                Ok(()) => "original CPU work canceled by native stop request between hashes".into(),
                 Err(error) => Box::new(error) as Box<dyn Error>,
             });
             work.cancel.store(true, Ordering::Release);
@@ -675,7 +635,7 @@ pub(super) fn run(args: &[OsString], out: &mut impl Write) -> Result<()> {
                 "prepare" => {
                     prepare(
                         PathBuf::from(&operands[0]),
-                        operands[1].as_os_str().as_bytes(),
+                        crate::argument::wire_bytes(&operands[1])?,
                         Path::new(&operands[2]),
                         &o,
                         out,

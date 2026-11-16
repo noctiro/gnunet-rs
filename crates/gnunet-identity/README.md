@@ -6,6 +6,8 @@ IPC semantics of GNUnet v0.29.1, revision
 `gnunet-wire::official::identity`. Private disk layout and internal state are
 separate from that official local protocol.
 
+## Public interface
+
 The active operations are START624, RESULT_CODE625, UPDATE626, CREATE629,
 RENAME630, DELETE631, LOOKUP632, and LOOKUP_BY_SUFFIX633. This revision's public
 header and active message handlers have no default-ego get/set operation. Old
@@ -73,8 +75,6 @@ may contain the same opaque key, as the official service permits; no key hash
 or secret-derived public identifier is introduced.
 
 The default feature set has no allocation or operating-system dependency. The
-core has no filesystem, socket, executor, private-key loading, or storage format. Native client/service, authorized root-key production and durable recovery
-are separate adapters. The one focused pure model source uses only a published,
-noncryptographic all-zero mock body, not generated secrets or key derivation. The focused
-pure model passed for official framing, Unicode names, snapshot budgets and
-transaction settlement. It uses only the public mock body described above.
+core has no filesystem, socket, executor, private-key loading or storage format.
+Native clients, service hosting, key production and durable recovery belong to
+the adapters.

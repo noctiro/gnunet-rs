@@ -184,6 +184,22 @@ pub enum Fault {
         /// Original native/protocol/resource/EOF cause.
         cause: gnunet_pils_host::client::LossCause,
     },
+    /// The fixed recovery bound ended with its original PILS connection cause.
+    IdentityRecoveryTimeout {
+        /// Epoch at the first physical connection loss, for diagnostics only.
+        epoch: u64,
+        /// Original EOF or stream IO failure; retries do not replace it.
+        cause: gnunet_pils_host::client::ConnectionLoss,
+    },
+    /// Failed recovery preserving both its first source loss and terminal error.
+    IdentityRecoveryFailure {
+        /// First lost native source epoch, for diagnostics only.
+        epoch: u64,
+        /// The initiating connection cause, not replaced by retries.
+        cause: gnunet_pils_host::client::ConnectionLoss,
+        /// Actual independent terminal protocol, clock, resource or IO error.
+        terminal: Box<Fault>,
+    },
     /// Actual original TRANSPORT EOF.
     TransportLost,
     /// Pinned Quinn constructor violated its reserved driver contract.
@@ -228,6 +244,8 @@ impl std::error::Error for Fault {
             Self::Read(e) => Some(e),
             Self::Write(e) => Some(e),
             Self::Nat(e) => Some(e),
+            Self::IdentityRecoveryTimeout { cause, .. } => Some(cause),
+            Self::IdentityRecoveryFailure { terminal, .. } => Some(terminal.as_ref()),
             Self::IdentitySource { cause, .. } => match cause {
                 gnunet_pils_host::client::LossCause::Io(e) => Some(e),
                 gnunet_pils_host::client::LossCause::Protocol(e)
@@ -332,14 +350,14 @@ pub enum Event<'id> {
         /// Actual retained original crypto operations.
         retained: usize,
     },
-    /// Healthy identity cut, before any next-generation connection admission.
+    /// Identity authority cut, before any next-generation connection admission.
     IdentityRetiring {
         /// Original process endpoint epoch.
         epoch: Epoch<'id>,
-        /// Identity frozen into the old connection generation.
-        previous: [u8; 32],
-        /// Latest verified public target; it may still coalesce.
-        next: [u8; 32],
+        /// Identity frozen into the old generation; None before initial authority.
+        previous: Option<[u8; 32]>,
+        /// Latest verified target; None while a replacement source is unsigned.
+        next: Option<[u8; 32]>,
         /// Actual old physical IPC source retirement, without replay.
         facts: TransportLoss,
     },

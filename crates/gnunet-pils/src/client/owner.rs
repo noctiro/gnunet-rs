@@ -81,6 +81,12 @@ impl Epoch<'_> {
     pub const fn value(self) -> u64 {
         self.serial
     }
+    /// Whether this is a later nonwrapping epoch of the same original client.
+    /// This comparison supplies no socket, identity or operation authority.
+    #[must_use]
+    pub fn is_successor_of(self, previous: Self) -> bool {
+        self.brand == previous.brand && self.serial > previous.serial
+    }
 }
 /// One original copied output frame. Cancellation does not revoke its byte lease.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

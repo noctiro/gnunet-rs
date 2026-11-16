@@ -1,9 +1,8 @@
 //! Explicit single file worker. It receives only bounded zeroizing INI bytes.
+use super::target::Target;
 use gnunet_types::Error;
 use std::{
-    fs::{self, File, OpenOptions},
     io,
-    os::unix::fs::{MetadataExt, OpenOptionsExt},
     path::PathBuf,
     sync::{
         Arc,
@@ -25,8 +24,8 @@ pub enum Exposure {
 /// Actual original error family from the shared writer or directory boundary.
 #[derive(Debug)]
 pub enum Cause {
-    /// Exact shared Configuration writer error.
-    Configuration(gnunet_config::Error),
+    /// Exact shared anchored publication and its independent cleanup facts.
+    Publication(gnunet_native::filesystem::publication::Failure),
     /// Exact independent native metadata/sync error.
     Io(io::Error),
     /// Exact original runtime clock fault before publication.
@@ -35,8 +34,10 @@ pub enum Cause {
 /// What the shared source exposed about its own temporary cleanup.
 #[derive(Debug)]
 pub enum Cleanup {
-    /// Existing atomic writer does not return a cleanup receipt.
-    NotReported,
+    /// The shared publication retained its actual cleanup result in Cause.
+    Reported,
+    /// Successful publication already retired its original staged link.
+    Retired,
     /// No shared write/temporary operation was started.
     NotNeeded,
 }
@@ -57,8 +58,8 @@ pub struct Failure {
 pub struct Job {
     domain: Arc<()>,
     serial: u64,
-    until: u64,
-    hard: tokio::time::Instant,
+    pub(super) until: u64,
+    pub(super) hard: tokio::time::Instant,
 }
 impl PartialEq for Job {
     fn eq(&self, other: &Self) -> bool {
@@ -80,16 +81,21 @@ impl Job {
         self.hard
     }
 }
-/// Actual successful original file and directory sync/rename receipt.
+/// Actual successful file-sync, writer-close and name-publication receipt.
 #[derive(Debug)]
 pub struct Committed {
-    job: Job,
-    generation: u64,
+    pub(super) job: Job,
+    pub(super) generation: u64,
+    pub(super) directory_sync: gnunet_native::DirectorySync,
 }
 impl Committed {
     /// Original worker admission.
     pub fn job(&self) -> &Job {
         &self.job
+    }
+    /// Actual native directory barrier, independently of successful file publication.
+    pub const fn directory_sync(&self) -> gnunet_native::DirectorySync {
+        self.directory_sync
     }
     /// Exact new committed generation.
     pub const fn generation(&self) -> u64 {
@@ -141,218 +147,6 @@ pub struct Refusal {
     pub body: Zeroizing<Vec<u8>>,
     /// Original configuration corresponding to that update.
     pub configuration: gnunet_config::Configuration,
-}
-#[derive(Clone, Copy, Eq, PartialEq)]
-struct Inode {
-    dev: u64,
-    ino: u64,
-}
-fn id(m: &fs::Metadata) -> Inode {
-    Inode {
-        dev: m.dev(),
-        ino: m.ino(),
-    }
-}
-struct Target {
-    path: PathBuf,
-    parent: PathBuf,
-    directory: File,
-    directory_id: Inode,
-    lock: File,
-    lock_id: Inode,
-    expected: Option<Inode>,
-    generation: u64,
-    blocked: Option<Arc<Failure>>,
-}
-impl Target {
-    fn open(path: PathBuf) -> io::Result<Self> {
-        if !path.is_absolute()
-            || path.file_name().is_none()
-            || path.components().any(|c| {
-                matches!(
-                    c,
-                    std::path::Component::ParentDir | std::path::Component::CurDir
-                )
-            })
-        {
-            return Err(io::ErrorKind::InvalidInput.into());
-        }
-        let parent = path
-            .parent()
-            .ok_or(io::ErrorKind::InvalidInput)?
-            .to_path_buf();
-        let directory = OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
-            .open(&parent)?;
-        let meta = directory.metadata()?;
-        if meta.uid() != nix::unistd::geteuid().as_raw() || meta.mode() & 0o022 != 0 {
-            return Err(io::ErrorKind::PermissionDenied.into());
-        }
-        let directory_id = id(&meta);
-        let lock_path = parent.join(".gnunet-rest-configuration.lock");
-        let lock = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-            .open(lock_path)?;
-        let meta = lock.metadata()?;
-        if !meta.is_file()
-            || meta.uid() != nix::unistd::geteuid().as_raw()
-            || meta.mode() & 0o077 != 0
-        {
-            return Err(io::ErrorKind::PermissionDenied.into());
-        }
-        let lock_id = id(&meta);
-        lock.try_lock().map_err(io::Error::other)?;
-        let expected = match fs::symlink_metadata(&path) {
-            Ok(m) if m.is_file() && m.uid() == nix::unistd::geteuid().as_raw() => Some(id(&m)),
-            Ok(_) => return Err(io::ErrorKind::PermissionDenied.into()),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => None,
-            Err(e) => return Err(e),
-        };
-        let target = Self {
-            path,
-            parent,
-            directory,
-            directory_id,
-            lock,
-            lock_id,
-            expected,
-            generation: 0,
-            blocked: None,
-        };
-        target.fence()?;
-        Ok(target)
-    }
-    fn fence(&self) -> io::Result<()> {
-        let p = fs::symlink_metadata(&self.parent)?;
-        let l = fs::symlink_metadata(self.parent.join(".gnunet-rest-configuration.lock"))?;
-        if !p.is_dir()
-            || id(&p) != self.directory_id
-            || id(&self.directory.metadata()?) != self.directory_id
-            || !l.is_file()
-            || id(&l) != self.lock_id
-            || id(&self.lock.metadata()?) != self.lock_id
-        {
-            return Err(io::ErrorKind::PermissionDenied.into());
-        }
-        let actual = match fs::symlink_metadata(&self.path) {
-            Ok(m) if m.is_file() => Some(id(&m)),
-            Ok(_) => return Err(io::ErrorKind::PermissionDenied.into()),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => None,
-            Err(e) => return Err(e),
-        };
-        if actual != self.expected {
-            return Err(io::Error::other("original configuration target changed"));
-        }
-        Ok(())
-    }
-    fn commit(
-        &mut self,
-        job: Job,
-        expected: u64,
-        body: &[u8],
-        configuration: &mut gnunet_config::Configuration,
-        clock: &dyn gnunet_service_runtime::clock::RuntimeClock,
-    ) -> Result<Committed, Arc<Failure>> {
-        if let Some(failure) = &self.blocked {
-            return Err(failure.clone());
-        }
-        let known = |stage, cause| {
-            Arc::new(Failure {
-                stage,
-                cause: Cause::Io(cause),
-                exposure: Exposure::NotPublished,
-                cleanup: Cleanup::NotNeeded,
-            })
-        };
-        if expected != self.generation {
-            return Err(known(
-                "generation",
-                io::Error::other("original configuration generation is stale"),
-            ));
-        }
-        let next = self
-            .generation
-            .checked_add(1)
-            .ok_or_else(|| known("generation", io::ErrorKind::InvalidInput.into()))?;
-        if tokio::time::Instant::now() >= job.hard {
-            return Err(known("original-deadline", io::ErrorKind::TimedOut.into()));
-        }
-        let sample = clock.sample().map_err(|cause| {
-            Arc::new(Failure {
-                stage: "original-clock",
-                cause: Cause::Clock(cause),
-                exposure: Exposure::NotPublished,
-                cleanup: Cleanup::NotNeeded,
-            })
-        })?;
-        if sample.now.as_micros() >= job.until {
-            return Err(known(
-                "original-logical-deadline",
-                io::ErrorKind::TimedOut.into(),
-            ));
-        }
-        self.fence()
-            .map_err(|cause| known("original-target-fence", cause))?;
-        // Use the existing shared native atomic writer: its exact existing
-        // expansion/temp-file/write/fsync/close/mode/rename implementation is
-        // authoritative. No parallel raw INI storage algorithm is introduced.
-        if let Err(cause) = configuration.write_serialized(&self.path, body) {
-            let failure = Arc::new(Failure {
-                stage: "shared-atomic-write",
-                cause: Cause::Configuration(cause),
-                exposure: Exposure::Unknown,
-                cleanup: Cleanup::NotReported,
-            });
-            self.blocked = Some(failure.clone());
-            return Err(failure);
-        }
-        let finish = (|| -> io::Result<Inode> {
-            let parent = fs::symlink_metadata(&self.parent)?;
-            let lock = fs::symlink_metadata(self.parent.join(".gnunet-rest-configuration.lock"))?;
-            if !parent.is_dir()
-                || id(&parent) != self.directory_id
-                || id(&self.directory.metadata()?) != self.directory_id
-                || !lock.is_file()
-                || id(&lock) != self.lock_id
-                || id(&self.lock.metadata()?) != self.lock_id
-            {
-                return Err(io::ErrorKind::PermissionDenied.into());
-            }
-            let metadata = fs::symlink_metadata(&self.path)?;
-            if !metadata.is_file() {
-                return Err(io::ErrorKind::PermissionDenied.into());
-            }
-            let actual = id(&metadata);
-            self.directory.sync_all()?;
-            Ok(actual)
-        })();
-        match finish {
-            Ok(actual) => {
-                self.expected = Some(actual);
-                self.generation = next;
-                Ok(Committed {
-                    job,
-                    generation: next,
-                })
-            }
-            Err(cause) => {
-                let failure = Arc::new(Failure {
-                    stage: "post-publication-directory-sync",
-                    cause: Cause::Io(cause),
-                    exposure: Exposure::Unknown,
-                    cleanup: Cleanup::NotReported,
-                });
-                self.blocked = Some(failure.clone());
-                Err(failure)
-            }
-        }
-    }
 }
 /// One explicit storage thread, one admitted body and one completion. The target
 /// is caller-owned configuration output, never discovered from a key store.

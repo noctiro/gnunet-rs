@@ -1,127 +1,23 @@
-# Native host boundaries
+# Native platform adapter
 
-This adapter implements native socket, hostname, identity and filesystem boundaries. Unix hostname
-behavior follows
-GNUnet v0.29.1 `src/lib/util/resolver_api.c:1149-1255` and the
-`GNUNET_OS_get_hostname_max_length` macro in `src/include/gnunet_os_lib.h:389-400`,
-at revision `346358e26d4dcc2dc4f51bef5d52dca29c7d8165`.
+Native socket, process, filesystem, identity, locale and device primitives used by the host adapters. Platform calls and unsafe ABI handling stay behind these ownership boundaries.
 
-## Hostnames and name resolution
+## Interfaces
 
-On Unix, `hostname` performs the native sysconf/gethostname sequence with the official
-255-byte fallback. `local_fqdn` implements the `HAVE_GETADDRINFO` branch: native
-hostname, NULL service and hints, the first result's canonical name when present,
-otherwise the original hostname. It returns an error on native resolution failure. Both return `OsString` and preserve native bytes. Diagnostic formatting may be lossy;
-the stored hostname and diagnostic fields are not converted to UTF-8.
+| Boundary | Reference |
+| --- | --- |
+| Filesystem and processes | [Contract](API.md#anchored-filesystem-operations) |
+| Network observations | [Contract](API.md#interface-snapshots-and-datagrams) |
+| Locale and calendars | [Contract](API.md#locale-readers) |
+| Native provider loading | [Contract](API.md#native-library-references) |
 
-On Windows, `hostname` uses `GetHostNameW`; `local_fqdn` uses `GetAddrInfoW`
-with null service/hints and the same first-canonical-name fallback. UTF-16
-is preserved in `OsString`. Each call owns a successful Winsock startup reference
-and releases it after its native result owner. No environment hostname fallback
-is used.
+## Integration
 
-The adapter calls native OS APIs, not libgnunet. Each unsafe operation is individually
-scoped with its pointer, initialization and lifetime argument. A private RAII
-owner releases the successful getaddrinfo allocation exactly once, including
-early errors. No foreign pointers are exposed by the public API. Core protocol
-libraries and the IPC adapter continue to forbid unsafe code.
+The [API reference](API.md) documents native capabilities, errors and resource
+ownership. Shared composition rules are in [Architecture](../../ARCHITECTURE.md).
 
-The synchronous FQDN helper can block and use native NSS/mDNS/DNS. Ordinary
-GNUnet forward and reverse requests use the official resolver IPC and must not
-call this helper as their implementation. Native build profiles using the older
-gethostbyname2/gethostbyname alternatives remain pending.
+## API documentation
 
-`cargo test -p gnunet-native --locked` exercises the native hostname and
-numeric getaddrinfo components. These tests do not issue a lookup for the host's
-hostname, alter host configuration, or certify all native NSS profiles. Positive combined FQDN interoperability still needs an isolated native resolver
-environment; the separate resolver owner tracks that acceptance gap.
-
-## Unix address snapshots
-
-`addresses::resolve` is the separate explicit-hints boundary used by ARM's
-managed listener address selection. It passes raw host bytes and a genuinely
-NULL service, copies every result's family/type/protocol/flags and sockaddr,
-then frees the successful list through one owner on every exit. A finite result
-limit refuses the entire list. `Hints::arm` selects AF_INET when IPv6 is disabled,
-otherwise AF_UNSPEC, with type0, IPPROTO_TCP and flags0 as in the pinned source. It does not implement ordinary GNUnet resolver IPC. Numeric family/error/byte
-tests run locally; ordinary BINDTO names can still consult native NSS/DNS.
-
-## Socket initialization
-
-`network::initialize_accepted_stream` applies the official source initialization
-policy to a borrowed original socket. `initialize_reactor_stream` uses the same
-native setters without the C select descriptor-number limit. The borrow neither
-accepts, closes nor substitutes the socket. At most two ordered nonfatal
-diagnostics are retained; fatal failure preserves earlier diagnostics and the
-original native error. The accepting owner closes the socket on fatal refusal.
-
-Unix uses descriptor inheritance/nonblocking flags, Darwin NOSIGPIPE and TCP
-NODELAY. Windows uses handle inheritance control, Winsock FIONBIO and TCP_NODELAY.
-`set_exclusive_address_use` selects Windows SO_EXCLUSIVEADDRUSE before a service
-listener binds. This avoids mapping Unix address-reuse policy onto Windows.
-
-## Windows identities
-
-`identity::process_user` reads the primary-token user through a uniquely owned
-TOKEN_QUERY handle. `identity::account_sid` resolves a native account name through
-LookupAccountNameW. Both return validated, fixed-capacity SID owners; no Unix
-numeric identity, environment fallback or privilege change is introduced. Account
-names and referenced domains have explicit UTF-16 bounds. Native lookup failures
-retain their Win32 error. Process SIDs do not authenticate TCP peers.
-
-## Windows paths and files
-
-`paths::profile_directory` queries the process-token user's profile through
-GetUserProfileDirectoryW with a finite UTF-16 bound. It neither opens that
-directory nor substitutes an environment or registry guess. `open_directory`
-uses native directory-open flags, checks metadata on the owned handle and
-requests traverse access plus optional read/list access.
-
-`identity::file_owner` reads the owner SID from the original opened file or
-directory handle; a subsequent pathname lookup is not used. READ_CONTROL is
-required and errors remain explicit. Ownership is a time-local observation,
-not an authorization decision.
-
-`paths::create_private_file` creates a new noninheritable disk-file handle with
-a protected DACL granting only the process-token user full control. Existing
-names and alternate data streams are refused; streams cannot have independent
-private permissions. The caller owns writing, syncing and closing that file.
-`publish_file` selects explicit `Publication::Create` or `Replace`: creation
-refuses an existing destination; replacement uses ReplaceFileW with destination
-ACL/metadata merging and retains merge errors. Both accept native Unicode and
-bounded long paths. A failed replacement can have changed the namespace; callers
-must inspect both names and preserve any surviving prepared file. No automatic
-fallback drops the destination ACL. Publication alone does not guarantee
-parent-directory crash durability.
-
-## Locale readers
-
-`locale` shares comparison selection, bounded C-string views and typed conversion
-results. POSIX and Windows backends own their native handles separately.
-`LocaleSnapshot` is immutable and shared through `Arc`; only its last owner frees
-the allocation. Named snapshots never install a locale. Native conversion reports
-consumption and range failure independently, including signed zero and overflow.
-
-Windows uses UCRT `_create_locale`, `_get_current_locale`, `_free_locale` and
-explicit-locale comparison/conversion functions. Configuration floats use a
-private C locale and validate the remaining whitespace; formatting uses native
-bounded `%f`. Neither operation changes the thread or process locale, including
-failure and late TLS destruction. CRT errno is preserved and is kept distinct
-from Win32 error numbers. See Microsoft's [locale creation](https://learn.microsoft.com/en-us/cpp/c-runtime-library/reference/create-locale-wcreate-locale)
-and [ownership](https://learn.microsoft.com/en-us/cpp/c-runtime-library/reference/free-locale)
-contracts.
-
-The POSIX current-thread capability retains the pinned source's mixed-locale
-failure effect through a TLS owner and detaches it before freeing it. Its unsafe
-acquisition contract requires external native-locale mutation/lifetime exclusion.
-The same exclusion protects Windows current-thread observations, which expose no
-raw locale pointer or installation authority. Native tests exercise thread-exit
-ownership and the distinct late-destructor contracts.
-
-## Verification and constraints
-
-`cargo xtask verify runtime` runs real sockets and shared framing/CLIENT/Resolver
-TCP scenarios on the native host. Native hostname tests do not resolve the host's
-own name or change system configuration. FQDN interoperability still requires a
-controlled native resolver environment. Platform gaps remain in
-[implementation status](../../IMPLEMENTATION_STATUS.md).
+```sh
+cargo doc -p gnunet-native --no-deps --open
+```

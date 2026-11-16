@@ -1,21 +1,108 @@
 # gnunet-service-dns
 
-Linux standard SERVICE with the official `-c/--config`, `-d/--daemonize`, `-h/--help`, `-L/--log`, `-l/--logfile`, and `-v/--version` options. `-v` requests the version; no positional argument or PROGRAM-only option is accepted. The selected logger is used by runtime diagnostics, including failures, source retirement and cleanup. Its first write failure wakes the original task and stops interception through the normal original-owner cleanup path; final logging failure never replaces service or cleanup errors.
+The DNS interception service composes the bounded interception engine, native
+client IPC, DNSSTUB, STATISTICS and one explicitly selected packet source.
+The shared foreground runs on Linux, macOS, Windows and FreeBSD. Unix uses the
+bundled privileged helper; Windows selects automatic WinDivert capture or a
+manually routed Wintun packet source. Linux supports automatic interception
+policy; macOS/FreeBSD provide a delegated
+[PF backend](../../adapters/dns-service-std/PF.md). Remaining behavior is tracked in the
+[implementation status](../../IMPLEMENTATION_STATUS.md).
 
-The sole initial descriptor capture precedes options, logger and detach. A detached child refreshes the logger PID before creating its Reporter. Adopted/TCP listeners prepare before configured USER/WithInitgroups; target Unix listener completion and policy happen after that transition. Every listener completes before the helper, DNSSTUB or Gateway is opened. Parent-control and SIGINT/SIGTERM retain the existing stop path. No service key file is read or created. Explicit `-c` and SERVICE default configuration selection use the shared SERVICE loader, including installed-default fallback.
+## Configuration and startup
 
-Official `[dns]` keys are IFNAME (gnunet-dns), IPV4ADDR (169.254.1.1), IPV4MASK (255.255.0.0), IPV6ADDR (2001:DB8::1), IPV6PREFIX (126), DNS_EXIT (8.8.8.8), SKIP_ROUTING_SETUP, USERNAME, UNIXPATH, PORT/HOSTNAME and normal SERVICE ACL/UID/GID settings. Default Unix UID/GID matching is enabled. DNS_EXIT must be a usable explicit numeric address; invalid configuration fails before packet interception rather than guessing an upstream. Explicit TCP listener configuration uses shared SERVICE ACLs; official defaults use local Unix IPC/PORT0.
+Standard SERVICE options include `-c/--config`, `-d/--daemonize`, help, version
+and logging. `[dns]` selects service listeners, ACLs, interface addresses and
+`SKIP_ROUTING_SETUP`. On Unix, `[dns-rust] HELPER_BINARY` selects an absolute
+helper executable; the default is the sibling `gnunet-helper-dns`. Windows
+provider selection is described below.
 
-`[dns-rust]` resource overrides: MAX_CLIENTS1..64 (16), MAX_REQUESTS1..4096 (128), DNS_BYTES12..65479 (65479), PAYLOAD_POOL_BYTES>=DNS_BYTES and<=256MiB (4MiB), IO_SLICE_BYTES1..65535 (65535), DNSSTUB_SOCKETS1..16 (16). Finite positive duration keys INPUT_LIFETIME10s, CALLBACK_LIFETIME30s, REQUEST_LIFETIME30s, REQUEST_HARD_LIFETIME45s, HELPER_INPUT_LIFETIME10s, MAINTENANCE_INTERVAL50ms, STATISTICS_TIMEOUT5s and SHUTDOWN_GRACE60s cannot overflow native/canonical time. REQUEST_HARD_LIFETIME must cover REQUEST_LIFETIME. HELPER_BINARY may be an absolute expanded path to the installed Rust helper; by default the sibling `gnunet-helper-dns` executable is selected. A C helper is not used as a fallback.
+```sh
+gnunet-service-dns -c node.conf
+```
 
-Only after all original listeners, Server, helper process and DNSSTUB owner exist, stdout READY is written and flushed and the original ChildReady status is sent once. READY reports helper spawn, **interception-setup=unacknowledged**, DNSSTUB ownership and no DNSSEC claim. The official helper has no setup ACK. STOPPED retains MQ/pipe/child/independent cleanup observations. Normal/error/signal exit closes original native owners without waiting for the logical clock and fairly drives original helper retirement to its finite bound. Forced/unconfirmed helper cleanup is an error, not quiescence. Helpers need root provisioning with the same effective GID as the daemon for its DNSSTUB firewall exemption. No setuid/chown/firewall/TUN/route command is executed during source preparation.
+Unix startup captures inherited descriptors before other resources, prepares
+TCP/adopted listeners before configured identity changes, and creates local
+listeners under that identity. Windows startup captures native activation,
+checks configured identity and uses the qualified parent readiness channel.
+Detachment precedes runtime resources and stop subscriptions.
 
-The installed helper is Linux-only and privileged integration is unexecuted. This is DNS interception SERVICE and its platform helper, not a complete GNUnet node, DNSSEC validator, upstream DNS server, or the separate DNSSTUB API.
+On Unix, the helper receives the official six arguments and MQ214/TUN_PI framing.
+Process creation and local pipe writes do not acknowledge interception setup
+or TUN delivery. The READY line identifies the packet source and this
+unacknowledged interception boundary.
 
-## official STATISTICS publication
+## Windows automatic interception
 
-Six original nonpersistent `dns` counters delegate to the shared `gnunet_ipc_unix::producer::Producer<6>` on the same live configuration, Resolver and exact RuntimeClock Arc. Exact names are in `statistics.rs`; it contains only static metric definitions and construction. Actual helper queue admission supplies the historical “answered via TUN interface” counter (no unavailable TUN-written ACK); socket-open failures, original unmatched responses, stale client replies, non-DNS UDP rejection and admitted intercepted requests supply the others. DNSSTUB admission refusals remain separate GatewayReport observations.
+With `SKIP_ROUTING_SETUP=NO`, `[dns-rust] WINDIVERT_DLL` selects an absolute
+trusted official WinDivert 2.2 DLL. Its dependencies, exact ABI and documented
+thread safety are part of the operator's provider trust. The matching signed
+kernel driver must already be installed, and opening capture requires native
+administrator privileges. The service uses `NO_INSTALL`: it does not install or
+download a driver, create a TUN, or change the machine's routing tables.
 
-The shared publisher owns one immutable relative mutation at a time, splits unsigned deltas safely, advances its source accounting only after an same-epoch local whole write, and fences loss/Unknown instead of replaying into a replacement source. `[statistics] DISABLE` is honored. An independent publisher failure is retained without stopping healthy interception. Shutdown first physically closes original DNS data sources without a logical-clock wait, then jointly polls the same helper/publisher and shared Resolver to a fixed finite target. Nonpersistent unconfirmed writes are reported without a remote ACK or durability claim.
+```ini
+[dns]
+SKIP_ROUTING_SETUP = NO
 
-The consumed Gateway report retains original helper wait/signal errors and independent MQ/source cleanup errors in the final multi-cause failure. An absent helper exit at the original grace remains unconfirmed; `into_report` neither joins the helper nor bypasses its existing Drop fallback. READY/STOPPED output and selected logger writes use conventional bounded synchronous stdio, whose OS blocking is not force-cancelable by a network deadline.
+[dns-rust]
+WINDIVERT_DLL = C:\GNUnet\WinDivert.dll
+```
+
+The filter captures outbound IPv4/IPv6 UDP destination-port 53 queries.
+DNSSTUB exclusively binds and retains its original upstream ports before filter
+creation; those ports are excluded to prevent recursive capture of `DNS_EXIT`
+queries. A failed original socket stops admission rather than opening an
+unexcluded replacement. Reply metadata stays bound to its captured request,
+original session and observed inbound interface identity. A stale route refuses
+only its query; fresh captures can use a newly observed interface. An expired
+injection is canceled and retains its original completion loan within a fixed
+retirement bound, without replaying the old reply. See [capture ownership](../../adapters/native-std/WINDIVERT.md)
+for finite queues, asynchronous loans and uncertain teardown.
+
+## Windows manually routed interface
+
+`[dns-rust] WINTUN_DLL` must select an absolute trusted official Wintun DLL,
+including trusted dependencies and ABI. The service loads that explicit path;
+it performs no download or provider search. `WINTUN_RING_BYTES` selects a native
+power-of-two ring capacity, default 128 KiB per direction.
+
+`WINTUN_MODE=create` creates the requested `[dns] IFNAME`, configures both address
+families, sets each IP family's MTU and raises administrative state.
+`WINTUN_MODE=existing` opens the named adapter unchanged; addresses, MTUs and
+routing remain with its administrator. Neither mode acknowledges IPv6 DAD or
+remote reachability. The original provider/session and GUID/LUID identity remain
+owned through packet I/O and shutdown.
+
+```ini
+[dns]
+IFNAME = gnunet-dns
+SKIP_ROUTING_SETUP = YES
+
+[dns-rust]
+WINTUN_DLL = C:\GNUnet\wintun.dll
+WINTUN_MODE = create
+WINTUN_RING_BYTES = 128 KiB
+```
+
+Administrator policy must direct intercepted DNS traffic to this interface and
+exempt the daemon's `DNS_EXIT` traffic from recursion. `WINTUN_DLL` requires
+manual mode; `WINDIVERT_DLL` requires automatic mode. `HELPER_BINARY` is a Unix
+option and is rejected for Windows. Local Windows endpoint access uses native ACLs; explicit Unix UID/GID matching requests are rejected.
+
+## Resource ownership and shutdown
+
+The [shared host](../../adapters/dns-service-std/README.md) owns client queues,
+packet transports and resolver requests. Native stop control and the selected
+Reporter feed the same foreground. Logger failure stops new work.
+
+Shutdown closes local admission, retires requests and drives the original
+packet source and STATISTICS producer within one fixed native grace interval.
+Failed waits retain the original child; exit status, wait errors, native stop errors,
+forced termination and pending frame prefixes remain separate observations.
+Native device-close errors are retained synchronously, including early report
+conversion. Native whole-packet submissions are distinct from helper pipe writes.
+Unconfirmed process retirement or control cleanup fails the service.
+
+Ready/stopped output and diagnostics use synchronous output. Network deadlines
+do not preempt an operating-system output call.

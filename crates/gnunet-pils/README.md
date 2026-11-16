@@ -4,6 +4,8 @@ This allocation-free owner implements PILS1831..1838 service decisions: initial
 empty-context identity, signed HELLO updates, unsigned address feeds, exact
 purpose-region Ed25519 signing, X25519 DHKEM decapsulation and legacy hashed DH. The host owns connections, queue admission, clocks and persistence. Encoded output is not a remote acknowledgement or durable write.
 
+## Public interface
+
 `MasterKey` owns the persisted initial32 bytes. `ActiveIdentity` owns current
 signing/exchange keys. Neither is cloneable or printable. The explicit
 `with_active_seed` callback constructs separate CORE/TCP key owners without
@@ -84,8 +86,6 @@ with stream retirement preceding key erasure and lease release. Active
 reference service semantics have no periodic identity/HELLO task: startup and
 FEED produce updates. Native composition supplies no new protocol or C backend.
 
-Pure-core, production-host models, native Rust compositions, normal-C direct and
-controlled-loss runs retain separate source-bound evidence scopes; none alone
-establishes independent whole-Node status. Malformed FEED refusal and safe exact
-purpose validation remain explicit differences from erroneous reference input
-handling, without weakening valid official messages or inventing private fields.
+Malformed FEED refusal and exact purpose validation preserve the documented
+reference differences without weakening valid official messages or adding
+private fields.

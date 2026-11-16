@@ -1,10 +1,6 @@
 //! Byte-preserving table-driven public GETOPT engine and callback ownership.
-use std::{
-    ffi::OsString,
-    io,
-    os::unix::ffi::{OsStrExt, OsStringExt},
-    rc::Rc,
-};
+use gnunet_native::os_bytes;
+use std::{ffi::OsString, io, rc::Rc};
 /// Original descriptor argument mode; optional long arguments retain the source
 /// wrapper's required-short-argument behavior.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -343,7 +339,7 @@ impl<'a> Options<'a> {
         let mut parser = Parser::new(
             arguments
                 .into_iter()
-                .map(|v| prefix(v.as_os_str().as_bytes()).to_vec())
+                .map(|v| prefix(&os_bytes::encode(&v)).to_vec())
                 .collect(),
             &self.specs,
             posixly_correct,
@@ -896,22 +892,23 @@ impl<'a> Parser<'a> {
         }
     }
 }
-/// Append literal-space GNUNET_ARGS tokens, preserving tabs/quotes as ordinary bytes.
-#[must_use]
+/// Append literal-space GNUNET_ARGS tokens, preserving tabs/quotes as ordinary
+/// bytes. Windows refuses malformed local string encodings instead of replacing
+/// code units. Failure returns no partially appended argument vector.
 pub fn append_environment(
     arguments: impl IntoIterator<Item = OsString>,
     environment: Option<&[u8]>,
-) -> Vec<OsString> {
+) -> io::Result<Vec<OsString>> {
     let mut args = arguments.into_iter().collect::<Vec<_>>();
     if let Some(value) = environment {
-        args.extend(
-            prefix(value)
-                .split(|&b| b == b' ')
-                .filter(|v| !v.is_empty())
-                .map(|v| OsString::from_vec(v.to_vec())),
-        );
+        for token in prefix(value)
+            .split(|&b| b == b' ')
+            .filter(|v| !v.is_empty())
+        {
+            args.push(os_bytes::decode(token)?.into_owned());
+        }
     }
-    args
+    Ok(args)
 }
 
 #[cfg(test)]

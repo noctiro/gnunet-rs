@@ -1,5 +1,23 @@
 # gnunet-helper-nat-client
 
-Official positional CLI: `gnunet-helper-nat-client LOCAL_IP REMOTE_IP PORT` (numeric IPv4, decimal1..65535). No stdin/stdout protocol, configuration loader, private key or subprocess exists. The process opens its raw writer before permanently dropping to the invoking IDs (and Linux capability sets), then parses arguments and sends both official reversal packet variants under one finite5s bound. Exit0 proves only both whole local datagram writes; raw errors/short writes/cancellation produce nonzero and preserve causes. No remote ACK, NAT mapping or connectivity is inferred.
+Send the two official GNUnet reversal variants using the shared
+[native helper implementation](../../adapters/nat-helper-std/).
 
-Packet code is shared `gnunet_nat::icmp`; privileged/native operations are isolated in `gnunet-native::nat_helper`. Source dispatch covers Linux, Darwin/macOS and FreeBSD12+; remaining OS targets explicitly return Unsupported. See the host README for exact ABI, lifetime, privilege and cleanup contracts. Source preparation does not install/set SUID or capabilities.
+## Arguments and result
+
+```text
+gnunet-helper-nat-client LOCAL_IP REMOTE_IP PORT
+```
+
+Addresses are numeric IPv4 and the port is decimal `1..65535`. There is no stdin
+or stdout protocol. Both packets share one fixed five-second send budget. Exit
+zero proves both whole local writes; errors, short writes and cancellation
+remain failures and establish no remote receipt or connectivity.
+
+## Platforms and privileges
+
+Linux, macOS, FreeBSD 12+ and Windows select native backends using the same
+packet algorithms. Unix opens raw resources before permanently dropping to the
+invoking IDs and applicable Linux capability policy. Windows uses the invoking
+token's existing raw-socket permission and performs no elevation. See the host
+for exact credential, lifetime and cleanup contracts.

@@ -4,10 +4,11 @@ use gnunet_arm_cli::{
     state::{Action, Kind, State, relative_time},
 };
 use gnunet_arm_core::wire::{RequestStatus, ResultCode, ServiceInfo, ServiceStatus};
-use std::{
-    ffi::{OsStr, OsString},
-    os::unix::ffi::{OsStrExt, OsStringExt},
-};
+#[cfg(unix)]
+use std::ffi::OsStr;
+use std::ffi::OsString;
+#[cfg(unix)]
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
 fn parse(args: &[&str]) -> options::Parsed {
     options::parse(args.iter().map(OsString::from), None, false, b"0.29.1")
 }
@@ -78,6 +79,7 @@ fn malformed_relative_time_is_rejected_safely_without_running_undefined_c_path()
     }
 }
 #[test]
+#[cfg(unix)]
 fn native_arguments_permutation_prefixes_and_last_string_are_preserved() {
     let raw = OsString::from_vec(b"svc\xff".to_vec());
     let p = options::parse(
@@ -118,6 +120,48 @@ fn native_arguments_permutation_prefixes_and_last_string_are_preserved() {
     );
     assert!(p.options.quiet);
     assert_eq!(p.options.timeout, 1_000_000);
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_native_paths_and_appended_arguments_preserve_surrogates() {
+    use gnunet_native::os_bytes;
+    use std::os::windows::ffi::OsStringExt;
+    let native = OsString::from_wide(&[
+        b'C' as u16,
+        b':' as u16,
+        b'\\' as u16,
+        0xd800,
+        b' ' as u16,
+        b'x' as u16,
+    ]);
+    let parsed = options::parse(
+        [
+            "gnunet-arm".into(),
+            "--config".into(),
+            native.clone(),
+            "--".into(),
+            native.clone(),
+        ],
+        None,
+        false,
+        b"0.29.1",
+    );
+    assert_eq!(parsed.exit, None);
+    assert_eq!(
+        parsed.options.config,
+        Some(os_bytes::encode(&native).into_owned())
+    );
+    assert_eq!(parsed.remaining, [native]);
+    let mut extra = OsString::from("--init ");
+    let service = OsString::from_wide(&[b's' as u16, 0xdfff]);
+    extra.push(&service);
+    let parsed = options::parse(["gnunet-arm".into()], Some(&extra), false, b"0.29.1");
+    assert_eq!(parsed.exit, None);
+    assert_eq!(
+        parsed.options.init,
+        Some(os_bytes::encode(&service).into_owned())
+    );
 }
 #[test]
 fn exact_phase_order_and_stdio_bits_survive_all_flags() {
@@ -339,7 +383,7 @@ fn relative_time_display_uses_original_rounding_thresholds() {
         (18_060_000_000, "5 h"),
         (u64::MAX, "forever"),
     ] {
-        assert_eq!(relative_time(value), expected);
+        assert_eq!(relative_time(value), expected.as_bytes());
     }
 }
 

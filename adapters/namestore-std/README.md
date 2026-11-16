@@ -1,6 +1,6 @@
 # Actual NAMESTORE SERVICE adapter
 
-`gnunet-namestore-host` is a Unix caller-driven SERVICE owner for the active
+`gnunet-namestore-host` is a caller-driven Unix/Windows SERVICE owner for the active
 v0.29.1 protocol. It composes the pure NAMESTORE Core/streams with shared
 SERVICE accepted connections, ACL/credentials, canonical clock and retained
 Framed I/O. It borrows one separately and explicitly started
@@ -16,12 +16,12 @@ at an await. Its committed generation is1, without a client transaction,
 monitor event or business-commit count. Existing marked generation0/missing
 canonical state is refused. A committed zero-length body is also refused;
 a normal committed empty authority has the valid 12-byte format. Actual commit
-errors retain the original Storage failure Arc, exposure and error source chain. No silent reset or legacy state import is attempted. `Server::new(core, &mut Worker, generation, Limits, Ports)` also checks the
+errors retain the original Storage failure Arc, exposure and error source chain. File flush/readback and directory-barrier availability follow the [shared snapshot contract](../snapshot-std/README.md#initialization-and-transaction-contracts). No silent reset or legacy state import is attempted. `Server::new(core, &mut Worker, generation, Limits, Ports)` also checks the
 worker namespace. Accepted sources get checked original Client identities,
 finite deadlines and their own retained cursors. Constructor/admission allocation
 is fallible; canonical ACL/Unix credential checks precede private frame allocation.
 
-## commands and original persistence
+## Commands and persistence
 
 The service handles STORE batches and single_tx, filtered Lookup,
 ZoneToName, credited iterator START/NEXT/STOP, monitor START/NEXT/SYNC and1750–1752
@@ -115,15 +115,6 @@ are not promoted to durability by themselves; only the original physical worker
 receipt permits commit. No late result is sent to a replacement Client allocation.
 
 ## Checks
-
-One controlled IPC/worker/
-restart model source uses only published structural mock bytes and public A
-record values, with no key generation, signing, encryption or decryption. This model is intentionally ignored and compile-only under the current execution
-boundary: although helpers do not peek files, the production path would send
-mock zone bytes through snapshot encoding, integrity hashing, file publication
-and recovery. It must not be run as an indirect key/storage test or counted as a
-passed runtime model. This is not private-key or C interoperability evidence and does not
-restore any stopped GNS host/recovery, DHT or UDP communicator implementation.
 
 No storage, recovery, official C interoperability
 or whole-service qualification is claimed by those compile checks.

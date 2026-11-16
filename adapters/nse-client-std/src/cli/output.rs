@@ -1,22 +1,28 @@
-//! One original bounded stdio line. This uses conventional synchronous stdout,
-//! never changes inherited descriptor/status flags and spawns no worker/task.
-//! OS write/flush duration is explicitly not cancellable by a network deadline.
+//! One bounded original line and cancel-safe native stdout work.
+mod retirement;
 use super::Failure;
 use crate::Estimate;
+use gnunet_program_host::binary_io;
+pub(super) use retirement::settle;
 use std::{
     fmt::{self, Write as _},
-    io::{self, Write as _},
+    future::Future,
+    io,
+    pin::Pin,
     task::{Context, Poll},
     time::Duration,
 };
-use tokio::time::Instant;
-/// Single bounded line and its actual stdio-accepted prefix.
+use tokio::time::{Instant, Sleep};
+const CAPACITY: usize = 2048;
+/// One line, one original native write, and its exact observed positive prefix.
 pub(super) struct Output {
-    stdout: io::Stdout,
-    bytes: [u8; 2048],
+    native: Option<binary_io::Output>,
+    bytes: [u8; CAPACITY],
     len: usize,
     at: usize,
+    pending: bool,
     hard: Option<Instant>,
+    alarm: Pin<Box<Sleep>>,
     timeout: Duration,
 }
 impl Output {
@@ -25,11 +31,13 @@ impl Output {
             return Err("invalid NSE output timeout".into());
         }
         Ok(Self {
-            stdout: io::stdout(),
-            bytes: [0; 2048],
+            native: Some(binary_io::Output::stdout_text(CAPACITY)?),
+            bytes: [0; CAPACITY],
             len: 0,
             at: 0,
+            pending: false,
             hard: None,
+            alarm: Box::pin(tokio::time::sleep(Duration::ZERO)),
             timeout,
         })
     }
@@ -38,7 +46,7 @@ impl Output {
     }
     pub(super) fn admit(&mut self, value: Estimate) -> Result<(), Failure> {
         if self.pending() {
-            return Err("NSE output backpressure: original line still pending".into());
+            return Err("NSE output backpressure: original line remains pending".into());
         }
         let mut out = Fixed {
             bytes: &mut self.bytes,
@@ -80,51 +88,78 @@ impl Output {
         )?;
         self.len = out.at;
         self.at = 0;
-        self.hard = Some(
-            Instant::now()
-                .checked_add(self.timeout)
-                .ok_or("NSE stdout deadline overflow")?,
-        );
+        let hard = Instant::now()
+            .checked_add(self.timeout)
+            .ok_or("NSE stdout deadline overflow")?;
+        self.alarm.as_mut().reset(hard);
+        self.hard = Some(hard);
         Ok(())
     }
-    /// A complete line was accepted/flushed through real stdio; this is not a
-    /// fsync, remote receipt, or exact count of bytes physically exposed by the
-    /// stdio implementation. Each call handles only this bounded original line.
     pub(super) fn poll(&mut self, cx: &mut Context<'_>) -> Poll<Result<bool, Failure>> {
         let Some(hard) = self.hard else {
             return Poll::Pending;
         };
-        if Instant::now() >= hard {
+        let native = self
+            .native
+            .as_mut()
+            .ok_or("NSE stdout owner already retired")?;
+        if self.pending {
+            let result = {
+                let mut completion = std::pin::pin!(native.complete());
+                completion.as_mut().poll(cx)
+            };
+            if let Poll::Ready(result) = result {
+                self.pending = false;
+                let count = result?;
+                if count == 0 {
+                    return Poll::Ready(Err(io::Error::from(io::ErrorKind::WriteZero).into()));
+                }
+                self.at = self
+                    .at
+                    .checked_add(count)
+                    .filter(|at| *at <= self.len)
+                    .ok_or("NSE stdout invalid native count")?;
+            }
+        }
+        if Instant::now() >= hard || self.alarm.as_mut().poll(cx).is_ready() {
             return Poll::Ready(Err(format!(
-                "NSE stdout line expired before next write: {}/{} bytes accepted by stdio",
-                self.at, self.len
+                "NSE stdout line deadline: {}/{} bytes observed, native work pending={}",
+                self.at, self.len, self.pending
             )
             .into()));
         }
-        // The kernel/stdio duration of this synchronous call is an explicit OS
-        // boundary. No network/native target is claimed able to force it to end.
-        match self.stdout.write(&self.bytes[self.at..self.len]) {
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => {
-                cx.waker().wake_by_ref();
-                Poll::Pending
-            }
-            Err(error) => Poll::Ready(Err(error.into())),
-            Ok(0) => Poll::Ready(Err(io::Error::from(io::ErrorKind::WriteZero).into())),
-            Ok(n) => {
-                self.at = self.at.checked_add(n).ok_or("NSE stdout cursor overflow")?;
-                if self.at > self.len {
-                    return Poll::Ready(Err("NSE stdout invalid stdio byte count".into()));
-                }
-                if self.at == self.len {
-                    self.stdout.flush()?;
-                    self.hard = None;
-                    Poll::Ready(Ok(true))
-                } else {
-                    cx.waker().wake_by_ref();
-                    Poll::Pending
-                }
-            }
+        if self.pending {
+            return Poll::Pending;
         }
+        if self.at == self.len {
+            self.hard = None;
+            return Poll::Ready(Ok(true));
+        }
+        native.begin(&self.bytes[self.at..self.len])?;
+        self.pending = true;
+        // Register the original reply waker immediately; waiting cancellation
+        // never re-admits the write. One next cooperative poll observes progress.
+        let result = {
+            let mut completion = std::pin::pin!(native.complete());
+            completion.as_mut().poll(cx)
+        };
+        if let Poll::Ready(result) = result {
+            self.pending = false;
+            let count = result?;
+            if count == 0 {
+                return Poll::Ready(Err(io::Error::from(io::ErrorKind::WriteZero).into()));
+            }
+            self.at = self
+                .at
+                .checked_add(count)
+                .filter(|at| *at <= self.len)
+                .ok_or("NSE stdout invalid native count")?;
+            cx.waker().wake_by_ref();
+        }
+        Poll::Pending
+    }
+    pub(super) fn retire(&mut self) -> Option<binary_io::Retirement> {
+        self.native.take().map(binary_io::Output::retire)
     }
 }
 struct Fixed<'a> {

@@ -1,7 +1,6 @@
 //! Actual dedicated marked public DV watermark ledger on the shared fenced
 //! snapshot backend and one explicit bounded worker. No private keys/nonces, C store,
 //! T1 generation source, crypto provider or hidden retry is used here.
-#![cfg(unix)]
 #![forbid(unsafe_code)]
 /// Actual BOX durable-fact and live-replay gate with original bounded loans.
 pub mod box_admission;

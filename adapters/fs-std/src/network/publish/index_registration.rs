@@ -4,7 +4,7 @@ use crate::ipc;
 use gnunet_client_host::{ConnectError, EndpointSource};
 use gnunet_fs::client::Event;
 use gnunet_types::{AbsoluteTime, Error as ProtocolError};
-use std::{future::Future, os::unix::ffi::OsStrExt, path::Path, time::Duration};
+use std::{future::Future, path::Path, time::Duration};
 
 /// Original actual INDEX_STARTED receipt and independent retirement trouble.
 pub(crate) struct IndexAnswer {
@@ -92,11 +92,13 @@ async fn execute(
         return Err(before_submit(ProtocolError::Cancelled.into()));
     }
     let mut identity = ipc::Instance::new();
+    let filename =
+        crate::input::protocol_filename(filename).map_err(|error| before_submit(error.into()))?;
     let request = gnunet_wire::official::fs::Request::IndexStart {
         device: 0,
         inode: 0,
         file_id,
-        filename: filename.as_os_str().as_bytes(),
+        filename: &filename,
     };
     let mut client = ipc::Client::<0>::new(
         &mut identity,

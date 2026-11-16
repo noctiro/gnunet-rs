@@ -33,6 +33,9 @@ use tokio::time::{Instant, Sleep};
 
 mod identity;
 mod recovery;
+#[cfg(all(test, feature = "fresh-tls"))]
+#[path = "runtime/identity/native_tests.rs"]
+mod source_tests;
 
 impl From<endpoint::Failure> for Fault {
     fn from(e: endpoint::Failure) -> Self {
@@ -517,10 +520,42 @@ impl<'id, 'pils, 'pool, 'slots, 'buf> Runtime<'id, 'pils, 'pool, 'slots, 'buf> {
         observe: &mut impl FnMut(Event<'id>),
     ) -> Result<bool, Fault> {
         use gnunet_pils_host::client::Progress as P;
-        let result = {
-            let mut f = std::pin::pin!(self.pils.drive(None));
-            f.as_mut().poll(cx)
-        };
+        // A lost source cannot reconnect before old drivers and frame loans
+        // actually retire. Native probes remain tied to the original bound.
+        if self.identity.source_lost()
+            && (self.rows.iter().any(Option::is_some) || !self.loans.available())
+        {
+            return Ok(false);
+        }
+        let mut refused = None;
+        let result = self.pils.poll_guarded(cx, None, &mut || {
+            let checked = (|| {
+                self.identity.guard_native()?;
+                if Instant::now() >= self.hard || !self.ever_ready && Instant::now() >= self.startup
+                {
+                    return Err(Protocol::Deadline.into());
+                }
+                let now = self.clock.sample()?.now.as_micros();
+                self.identity.guard_native()?;
+                if Instant::now() >= self.hard
+                    || !self.ever_ready && Instant::now() >= self.startup
+                    || now >= self.until
+                {
+                    return Err(Protocol::Deadline.into());
+                }
+                self.identity.guard(now)
+            })();
+            match checked {
+                Ok(()) => Ok(()),
+                Err(error) => {
+                    refused = Some(error);
+                    Err(Protocol::Deadline.into())
+                }
+            }
+        });
+        if let Some(error) = refused {
+            return Err(error);
+        }
         match result {
             Poll::Pending => Ok(false),
             Poll::Ready(Err(e)) => Err(e.into()),
@@ -553,10 +588,38 @@ impl<'id, 'pils, 'pool, 'slots, 'buf> Runtime<'id, 'pils, 'pool, 'slots, 'buf> {
                     feeds: report.feeds().count(),
                     retained: report.retained(),
                 });
-                Err(Fault::IdentitySource {
-                    epoch: epoch.value(),
-                    cause,
-                })
+                self.pils_input = None;
+                if report.retained() != 0 || report.feeds().next().is_some() || !self.pils.is_idle()
+                {
+                    return Err(Fault::IdentitySource {
+                        epoch: epoch.value(),
+                        cause,
+                    });
+                }
+                let cause = match cause.into_connection_loss() {
+                    Ok(cause) => cause,
+                    Err(cause) => {
+                        return Err(Fault::IdentitySource {
+                            epoch: epoch.value(),
+                            cause,
+                        });
+                    }
+                };
+                let hard = if self.ever_ready {
+                    self.hard
+                } else {
+                    self.hard.min(self.startup)
+                };
+                let change = self.identity.lose(epoch, cause, utc, hard, self.until)?;
+                if let identity::Change::Begin { previous, next } = change {
+                    self.retire_identity(previous, next, observe)?;
+                    self.identity_updates = self.identity_updates.saturating_add(1);
+                }
+                Ok(true)
+            }
+            Poll::Ready(Ok(P::Connected(epoch))) => {
+                self.identity.connected(epoch)?;
+                Ok(true)
             }
             Poll::Ready(Ok(P::Closed)) => Err(Fault::IdentityLost),
             Poll::Ready(Ok(P::Unavailable(e))) => Err(e.into()),
@@ -1606,7 +1669,13 @@ impl<'id, 'pils, 'pool, 'slots, 'buf> Runtime<'id, 'pils, 'pool, 'slots, 'buf> {
             observe(Event::TransportRestored {
                 generation: self.ipc.generation(),
             });
-            if self.identity.restored() {
+            if self.identity.bound().is_some() {
+                self.identity.guard_native()?;
+                let current = self.clock.sample()?.now.as_micros();
+                self.identity.guard(current)?;
+                self.ipc.set_recovery_bound(None)?;
+            }
+            if self.identity.restored()? {
                 self.identity_recoveries = self.identity_recoveries.saturating_add(1);
                 observe(Event::IdentityRestored {
                     epoch: self.epoch,
@@ -1652,13 +1721,15 @@ impl<'id, 'pils, 'pool, 'slots, 'buf> Runtime<'id, 'pils, 'pool, 'slots, 'buf> {
         wait: Option<Instant>,
         mut observe: impl FnMut(Event<'id>),
     ) -> Poll<Result<Progress, Fault>> {
-        let result = self.poll_inner(cx, wait, &mut observe);
-        if matches!(result, Poll::Ready(Err(_))) {
-            // Clock/source failure must not leave a background driver/socket
-            // awaiting a future successful clock sample or caller continuation.
-            self.abort(&mut observe)
+        match self.poll_inner(cx, wait, &mut observe) {
+            Poll::Ready(Err(error)) => {
+                // Clock/source failure must not leave a background driver/socket
+                // awaiting a future successful clock sample or caller continuation.
+                self.abort(&mut observe);
+                Poll::Ready(Err(self.identity.failure(error)))
+            }
+            result => result,
         }
-        result
     }
     fn abort(&mut self, observe: &mut impl FnMut(Event<'id>)) {
         self.begin_close(observe);

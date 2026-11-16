@@ -4,6 +4,8 @@
     clippy::panic_in_result_fn,
     reason = "Finite native socket and durable replay witnesses assert actual IO outcomes."
 )]
+#[path = "../src/test_support/directory.rs"]
+mod support;
 use gnunet_crypto::Entropy;
 use gnunet_types::Error;
 use gnunet_udp_communicator_core::{
@@ -34,7 +36,7 @@ impl Scratch {
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
-        std::fs::create_dir(&path)?;
+        support::private_directory(&path)?;
         Ok(Self(path))
     }
 }

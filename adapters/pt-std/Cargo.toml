@@ -25,5 +25,7 @@ gnunet-service-startup = { workspace = true, optional = true }
 gnunet-program-host = { workspace = true, features = ["runtime", "resolver-broker"], optional = true }
 gnunet-resolver-broker = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["rt", "net", "time"] }
+[dev-dependencies]
+gnunet-crypto.workspace = true
 [lints]
 workspace = true

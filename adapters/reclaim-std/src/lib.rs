@@ -1,7 +1,6 @@
 //! Caller-driven official RECLAIM SERVICE and real original provider bridge.
 //! No GNS resolver, persistent key store, task or worker is created here.
 #![forbid(unsafe_code)]
-#![cfg(unix)]
 mod providers;
 pub mod server;
 pub use gnunet_client_host::EndpointSource;

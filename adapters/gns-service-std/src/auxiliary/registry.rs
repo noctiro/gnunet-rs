@@ -78,9 +78,32 @@ impl Files {
     /// Explicit ordinary files profile. No libc NSS call, GANA-completeness
     /// assertion or hidden fallback is introduced.
     pub fn system(limits: Limits) -> Result<Self, Error> {
+        Self::from_paths(None, None, limits)
+    }
+    /// Select explicit files or native system defaults. Windows uses its native
+    /// system directory's drivers/etc files; Unix uses /etc. Discovery/read
+    /// failures remain errors, and no environment-derived fallback is added.
+    pub fn from_paths(
+        protocols: Option<&Path>,
+        services: Option<&Path>,
+        limits: Limits,
+    ) -> Result<Self, Error> {
+        if let (Some(protocols), Some(services)) = (protocols, services) {
+            return Self::from_files(protocols, services, limits);
+        }
+        #[cfg(unix)]
+        let (default_protocols, default_services) = (
+            std::path::PathBuf::from("/etc/protocols"),
+            std::path::PathBuf::from("/etc/services"),
+        );
+        #[cfg(windows)]
+        let (default_protocols, default_services) = {
+            let directory = gnunet_native::paths::internet_database_directory()?;
+            (directory.join("protocol"), directory.join("services"))
+        };
         Self::from_files(
-            Path::new("/etc/protocols"),
-            Path::new("/etc/services"),
+            protocols.unwrap_or(&default_protocols),
+            services.unwrap_or(&default_services),
             limits,
         )
     }

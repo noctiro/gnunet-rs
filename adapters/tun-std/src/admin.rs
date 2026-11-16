@@ -1,14 +1,31 @@
 //! Actual read-only per-interface observations, never restore/route ownership.
-use crate::{Epoch, Info, OwnedTun, platform};
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
-use std::os::fd::{AsRawFd, OwnedFd};
+use crate::{Epoch, Info, OwnedTun, Version};
 use std::{io, net::Ipv4Addr};
 use tokio::time::Instant;
+/// Requested IP observations. Default queries link state only; an unrequested
+/// family is never queried or represented as absent. Native errors for requested
+/// families retain their original classification.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct SnapshotOptions {
+    /// Query the applicable IPv4 MTU and selected IPv4 address/netmask.
+    pub ipv4: bool,
+    /// Query the applicable IPv6 MTU. Address/DAD uses its separate observer.
+    pub ipv6: bool,
+}
 /// Address-specific native IPv4 observation; zero is never invented for absence.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Ipv4Observation {
+    /// This snapshot did not request IPv4 address observations.
+    NotRequested,
     /// Actual address/netmask octets returned by the kernel, including real zero.
     Present(Ipv4Addr),
+    /// A completed native selection found no assigned address.
+    Unassigned,
+    /// Windows found several addresses without an original primary selection.
+    Ambiguous {
+        /// Actual number of native matching addresses.
+        count: usize,
+    },
     /// Actual EADDRNOTAVAIL from this exact interface getter.
     Absent {
         /// Native absence errno, retained without normalization.
@@ -69,8 +86,15 @@ pub struct NativeSnapshot {
     deadline: Instant,
     started_at: Instant,
     observed_at: Instant,
-    mtu: u32,
-    flags: u32,
+    options: SnapshotOptions,
+    link_mtu: u32,
+    #[cfg(windows)]
+    ipv4_mtu: Option<u32>,
+    #[cfg(windows)]
+    ipv6_mtu: Option<u32>,
+    flags: Option<u32>,
+    up: bool,
+    windows_status: Option<(i32, i32)>,
     address: Ipv4Observation,
     netmask: Ipv4Observation,
     close_error: Option<io::Error>,
@@ -101,27 +125,65 @@ impl NativeSnapshot {
     pub const fn observed_at(&self) -> Instant {
         self.observed_at
     }
-    /// Actual MTU from SIOCGIFMTU.
+    /// Exact scope requested for these original read-only observations.
     #[must_use]
-    pub const fn mtu(&self) -> u32 {
-        self.mtu
+    pub const fn options(&self) -> SnapshotOptions {
+        self.options
     }
-    /// Actual IFF_UP bit from the native flags getter.
+    /// Actual link-layer MTU from the Unix interface getter or Windows IF_ROW2.
+    /// This is distinct from Windows family-specific IP MTUs.
+    #[must_use]
+    pub const fn link_mtu(&self) -> u32 {
+        self.link_mtu
+    }
+    /// Applicable MTU for a requested IP family. Unix reports its shared link
+    /// limit; Windows reports that family's actual IP-interface MTU. None means
+    /// not requested, never missing-family evidence. Availability and address/DAD
+    /// have their own native observations.
+    #[must_use]
+    pub const fn ip_mtu(&self, version: Version) -> Option<u32> {
+        let requested = match version {
+            Version::V4 => self.options.ipv4,
+            Version::V6 => self.options.ipv6,
+        };
+        if !requested {
+            return None;
+        }
+        #[cfg(unix)]
+        {
+            Some(self.link_mtu)
+        }
+        #[cfg(windows)]
+        {
+            match version {
+                Version::V4 => self.ipv4_mtu,
+                Version::V6 => self.ipv6_mtu,
+            }
+        }
+    }
+    /// Actual native administrative state; no operational-readiness claim.
     #[must_use]
     pub const fn up(&self) -> bool {
-        self.flags & libc::IFF_UP as u32 != 0
+        self.up
     }
-    /// Actual native interface flags (both 16-bit words on FreeBSD).
+    /// Actual Unix interface flags (both 16-bit words on FreeBSD).
+    /// Windows has native administrative/operational states instead and returns None.
     #[must_use]
-    pub const fn flags(&self) -> u32 {
+    pub const fn flags(&self) -> Option<u32> {
         self.flags
     }
-    /// Actual primary IPv4 address or explicit native absence.
+    /// Actual Windows administrative and operational status values, in that order.
+    /// Unix returns None instead of inventing equivalent Windows states.
+    #[must_use]
+    pub const fn windows_status(&self) -> Option<(i32, i32)> {
+        self.windows_status
+    }
+    /// Actual selected IPv4 address, native absence, ambiguity or NotRequested.
     #[must_use]
     pub const fn ipv4_address(&self) -> Ipv4Observation {
         self.address
     }
-    /// Actual primary IPv4 netmask or explicit native absence.
+    /// Actual selected IPv4 netmask, native absence, ambiguity or NotRequested.
     #[must_use]
     pub const fn ipv4_netmask(&self) -> Ipv4Observation {
         self.netmask
@@ -131,166 +193,15 @@ impl NativeSnapshot {
     pub const fn close_error(&self) -> Option<&io::Error> {
         self.close_error.as_ref()
     }
+    #[cfg(unix)]
     pub(crate) fn take_close_error(&mut self) -> Option<io::Error> {
         self.close_error.take()
     }
 }
-impl OwnedTun {
-    /// Read current actual MTU/link/primary IPv4 configuration on the original
-    /// verified device. No native write, adoption, restoration or rollback occurs.
-    pub fn snapshot(&self, until: Instant) -> Result<NativeSnapshot, AdminFailure> {
-        snapshot(self.epoch(), self.info.clone(), until, || {
-            self.admin_source(until)
-        })
-    }
-    pub(crate) fn admin_source(&self, until: Instant) -> Result<(), AdminFailure> {
-        if !self.epoch.current() || self.fd.is_none() {
-            return Err(AdminFailure::SourceRetired);
-        }
-        if Instant::now() >= until {
-            return Err(AdminFailure::Deadline);
-        }
-        let actual = platform::verify(self.fd.as_ref().ok_or(AdminFailure::SourceRetired)?)?;
-        if actual.name != self.info.name || actual.index != self.info.index {
-            return Err(AdminFailure::SourceRetired);
-        }
-        Ok(())
-    }
-}
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
-fn get(fd: &OwnedFd, command: libc::c_ulong, request: &mut libc::ifreq) -> io::Result<()> {
-    #[cfg(all(target_os = "linux", target_env = "musl"))]
-    let request_code = libc::c_int::try_from(command)
-        .map_err(|_| platform::invalid("read-only ioctl command overflow"))?;
-    #[cfg(not(all(target_os = "linux", target_env = "musl")))]
-    let request_code = command;
-    #[expect(
-        unsafe_code,
-        reason = "Private callers select only four exact read-only ifreq getters with initialized exclusive ABI storage and a bounded interface name"
-    )]
-    // SAFETY: request layout/size agree with each selected getter; synchronous
-    // ioctl retains no pointer and mutates no network configuration.
-    let result = unsafe { libc::ioctl(fd.as_raw_fd(), request_code, request as *mut libc::ifreq) };
-    if result < 0 {
-        Err(io::Error::last_os_error())
-    } else {
-        Ok(())
-    }
-}
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
-fn ipv4(fd: &OwnedFd, name: &str, command: libc::c_ulong) -> io::Result<Ipv4Observation> {
-    let mut req = platform::request(name)?;
-    match get(fd, command, &mut req) {
-        Err(e) if e.raw_os_error() == Some(libc::EADDRNOTAVAIL) => Ok(Ipv4Observation::Absent {
-            errno: libc::EADDRNOTAVAIL,
-        }),
-        Err(e) => Err(e),
-        Ok(()) => {
-            #[expect(
-                unsafe_code,
-                reason = "Successful SIOCGIFADDR/SIOCGIFNETMASK initialized the sockaddr storage in this exact ifreq union"
-            )]
-            // SAFETY: both documented outputs are the same sockaddr ABI storage.
-            let a = unsafe { req.ifr_ifru.ifru_addr };
-            if u32::from(a.sa_family) != libc::AF_INET as u32 {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "native IPv4 getter family",
-                ));
-            }
-            Ok(Ipv4Observation::Present(Ipv4Addr::from([
-                a.sa_data[2] as u8,
-                a.sa_data[3] as u8,
-                a.sa_data[4] as u8,
-                a.sa_data[5] as u8,
-            ])))
-        }
-    }
-}
 
-/// Shared real read-only getters. The supplied source check is run before and
-/// between actual syscalls; neither pipe metadata nor a configuration claim can
-/// construct NativeSnapshot.
-pub(crate) fn snapshot(
-    epoch: Epoch,
-    info: Info,
-    until: Instant,
-    check: impl Fn() -> Result<(), AdminFailure>,
-) -> Result<NativeSnapshot, AdminFailure> {
-    check()?;
-    let started_at = Instant::now();
-    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
-    {
-        let socket: OwnedFd = platform::control_socket()?.into();
-        platform::nonblocking(&socket)?;
-        let result = (|| {
-            let mut req = platform::request(&info.name)?;
-            get(&socket, platform::SIOCGIFMTU, &mut req)?;
-            #[expect(
-                unsafe_code,
-                reason = "Successful SIOCGIFMTU wrote this exact initialized ifreq MTU union member"
-            )]
-            // SAFETY: this request was synchronously filled by the matching getter.
-            let mtu = u32::try_from(unsafe { req.ifr_ifru.ifru_mtu })
-                .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "negative native MTU"))?;
-            check()?;
-            let mut req = platform::request(&info.name)?;
-            get(&socket, platform::SIOCGIFFLAGS, &mut req)?;
-            #[expect(
-                unsafe_code,
-                reason = "Successful SIOCGIFFLAGS wrote the documented initialized ifreq flags union member"
-            )]
-            // SAFETY: read only the scalar flags written by this exact getter.
-            let native_flags = unsafe { req.ifr_ifru.ifru_flags };
-            #[cfg(not(target_os = "freebsd"))]
-            let flags = u32::from(native_flags as u16);
-            #[cfg(target_os = "freebsd")]
-            let flags =
-                u32::from(native_flags[0] as u16) | (u32::from(native_flags[1] as u16) << 16);
-            check()?;
-            let address = ipv4(&socket, &info.name, libc::SIOCGIFADDR)?;
-            check()?;
-            let netmask = ipv4(&socket, &info.name, platform::SIOCGIFNETMASK)?;
-            check()?;
-            Ok::<_, AdminFailure>((mtu, flags, address, netmask))
-        })();
-        let close_error = nix::unistd::close(socket).err().map(io::Error::from);
-        let completed = result.and_then(|fields| {
-            check()?;
-            let observed_at = Instant::now();
-            if observed_at >= until {
-                return Err(AdminFailure::Deadline);
-            }
-            Ok((fields, observed_at))
-        });
-        let ((mtu, flags, address, netmask), observed_at) = match completed {
-            Ok(fields) => fields,
-            Err(failure) => {
-                return Err(match close_error {
-                    Some(close_error) => AdminFailure::WithClose {
-                        failure: Box::new(failure),
-                        close_error,
-                    },
-                    None => failure,
-                });
-            }
-        };
-        Ok(NativeSnapshot {
-            epoch,
-            interface: info,
-            deadline: until,
-            started_at,
-            observed_at,
-            mtu,
-            flags,
-            address,
-            netmask,
-            close_error,
-        })
-    }
-    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "freebsd")))]
-    {
-        let _inputs = (epoch, info, until, started_at);
-        Err(AdminFailure::Kernel(io::ErrorKind::Unsupported.into()))
-    }
-}
+#[cfg(unix)]
+mod unix;
+#[cfg(unix)]
+pub(crate) use unix::snapshot;
+#[cfg(windows)]
+mod windows;

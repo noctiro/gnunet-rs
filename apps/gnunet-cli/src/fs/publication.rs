@@ -15,14 +15,14 @@ use std::{
     ffi::OsStr,
     fmt::Write as _,
     io::{self, Read, Write},
-    os::unix::ffi::OsStrExt,
     path::Path,
 };
 use zeroize::Zeroizing;
 
-fn write_row(out: &mut impl Write, row: &serde_json::Value) -> io::Result<()> {
+fn write_row(out: &mut super::Output<'_, impl Write>, row: &serde_json::Value) -> io::Result<()> {
     serde_json::to_writer(&mut *out, row).map_err(io::Error::other)?;
-    writeln!(out)
+    writeln!(out)?;
+    out.flush()
 }
 pub(super) fn hex(bytes: &[u8]) -> String {
     let mut text = String::with_capacity(bytes.len() * 2);
@@ -61,7 +61,7 @@ fn ublock_result(
     result: Result<PublishedUblocks, Box<UblockFailure>>,
     operation: &str,
     uri: &[u8],
-    out: &mut impl Write,
+    out: &mut super::Output<'_, impl Write>,
 ) -> Result<(), Box<dyn Error>> {
     let target_uri = std::str::from_utf8(uri).ok();
     let target_uri_bytes = target_uri.is_none().then_some(uri);
@@ -105,7 +105,7 @@ fn ublock_result(
 
 pub(super) fn indexed(
     args: &[impl AsRef<OsStr>],
-    out: &mut impl Write,
+    out: &mut super::Output<'_, impl Write>,
 ) -> Result<(), Box<dyn Error>> {
     super::publish::run(
         args,
@@ -119,17 +119,19 @@ pub(super) fn indexed(
 
 pub(super) fn keywords(
     args: &[impl AsRef<OsStr>],
-    out: &mut impl Write,
+    out: &mut super::Output<'_, impl Write>,
 ) -> Result<(), Box<dyn Error>> {
     let parsed = super::publish::settings::keyword_arguments(args, true)?;
     let args = parsed.positional;
     let interval = duration(args.get(3))?;
     let mut metadata = super::publish::settings::RecordMetadata::new(parsed.manual)?;
     let metadata = metadata.plan()?;
-    let Uri::Keywords(keywords) = Uri::parse(args[1].as_bytes(), UriLimits::default())? else {
+    let Uri::Keywords(keywords) =
+        Uri::parse(crate::argument::wire_bytes(args[1])?, UriLimits::default())?
+    else {
         return Err("fs publish-keywords requires a KSK URI".into());
     };
-    let uri = Uri::parse(args[2].as_bytes(), UriLimits::default())?;
+    let uri = Uri::parse(crate::argument::wire_bytes(args[2])?, UriLimits::default())?;
     let encoded = uri_bytes(uri)?;
     let source = EndpointSource::unix(Path::new(args[0]).to_path_buf());
     let options = UblockOptions::new(
@@ -156,15 +158,15 @@ pub(super) fn keywords(
 
 pub(super) fn namespace(
     args: &[impl AsRef<OsStr>],
-    out: &mut impl Write,
+    out: &mut super::Output<'_, impl Write>,
 ) -> Result<(), Box<dyn Error>> {
     let parsed = super::publish::settings::metadata_arguments(args, 5, 6, &[])?;
     let args = parsed.positional;
     let interval = duration(args.get(5))?;
     let secret = seed(Path::new(args[1]))?;
-    let label = args[2].as_bytes();
-    let update = args[3].as_bytes();
-    let uri = Uri::parse(args[4].as_bytes(), UriLimits::default())?;
+    let label = crate::argument::wire_bytes(args[2])?;
+    let update = crate::argument::wire_bytes(args[3])?;
+    let uri = Uri::parse(crate::argument::wire_bytes(args[4])?, UriLimits::default())?;
     let encoded = uri_bytes(uri)?;
     let source = EndpointSource::unix(Path::new(args[0]).to_path_buf());
     let options = UblockOptions::new(

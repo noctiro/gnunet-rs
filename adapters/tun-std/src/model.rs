@@ -1,7 +1,68 @@
 //! One controlled datagram-FD ownership model. It is not a real TUN qualification.
 use super::*;
-use std::{error::Error, os::unix::net::UnixDatagram, time::Duration};
+use std::{cell::Cell, error::Error, os::unix::net::UnixDatagram, rc::Rc, time::Duration};
 use tokio::time::Instant;
+#[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "A controlled descriptor proves registration refusal preserves its owner and queued teardown admits no packet"
+)]
+fn refused_registration_keeps_the_original_source() -> Result<(), Box<dyn Error>> {
+    let (left, right) = UnixDatagram::pair()?;
+    right.set_nonblocking(true)?;
+    let handle = DeviceHandle::from_fd(left.into());
+    platform::nonblocking(handle.fd()?)?;
+    let owned = OwnedTun {
+        handle: Some(handle),
+        info: Info {
+            name: "registration-model".to_owned(),
+            index: 0,
+            mode: Mode::Utun,
+        },
+        limits: Limits { packet_bytes: 1400 },
+        epoch: Epoch(Rc::new(Stamp {
+            alive: Cell::new(true),
+            route_table: None,
+        })),
+        next_effect: 0,
+    };
+    let original = owned.epoch();
+    let refusal = match AsyncTun::try_new(owned) {
+        Err(refusal) => refusal,
+        Ok(_) => {
+            return Err("registration without an entered runtime unexpectedly succeeded".into());
+        }
+    };
+    let (owned, _actual) = refusal.into_parts();
+    assert_eq!(owned.epoch(), original);
+    assert!(original.current());
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?
+        .block_on(async {
+            let mut tun = AsyncTun::try_new(owned)?;
+            let until = Instant::now() + Duration::from_secs(1);
+            let mut raw = [0; 40];
+            raw[0] = 0x60;
+            raw[6] = 59;
+            raw[7] = 64;
+            let queued = tun.queue(&raw, until)?;
+            let mut bytes = [0; 64];
+            assert_eq!(
+                right.recv(&mut bytes).err().map(|e| e.kind()),
+                Some(std::io::ErrorKind::WouldBlock)
+            );
+            let loss = tun.close();
+            assert_eq!(loss.pending, Some(queued));
+            assert_eq!(loss.epoch, original);
+            assert!(!original.current());
+            assert!(matches!(
+                tun.poll_write(&mut std::task::Context::from_waker(std::task::Waker::noop())),
+                std::task::Poll::Ready(WriteEvent::Closed)
+            ));
+            Ok::<(), Box<dyn Error>>(())
+        })
+}
 #[test]
 #[expect(
     clippy::panic_in_result_fn,
@@ -11,9 +72,15 @@ fn controlled_fd_preserves_packet_owner_without_claiming_tun() -> Result<(), Box
     tokio::runtime::Builder::new_current_thread().enable_all().build()?.block_on(async{
         let (left,right)=UnixDatagram::pair()?;
         let info=Info{name:"controlled-model".to_owned(),index:0,mode:Mode::Utun};
-        // Private constructor bypasses device qualification only inside this
-        // internal model; the public from_fd still requires actual kernel proof.
-        let owned=OwnedTun::verified(left.into(),info,Limits{packet_bytes:1400})?;
+        // Assemble only this private controlled-FD model. Both public adoption
+        // APIs still require actual kernel device evidence.
+        let handle=DeviceHandle::from_fd(left.into());
+        platform::nonblocking(handle.fd()?)?;
+        let owned=OwnedTun {
+            handle:Some(handle),info,limits:Limits{packet_bytes:1400},
+            epoch:Epoch(Rc::new(Stamp{alive:Cell::new(true),route_table:None})),
+            next_effect:0,
+        };
         let mut tun=AsyncTun::new(owned)?;
         let original=tun.epoch();
         let until=Instant::now()+Duration::from_secs(1);

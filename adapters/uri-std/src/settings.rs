@@ -3,7 +3,6 @@ use gnunet_config::Configuration;
 use std::{
     ffi::OsString,
     io,
-    os::unix::ffi::OsStringExt,
     time::{Duration, Instant},
 };
 /// One parsed configured executable and the complete unchanged URI argument.
@@ -42,12 +41,7 @@ fn number(
     Ok(value)
 }
 fn copy(input: &[u8]) -> io::Result<OsString> {
-    let mut bytes = Vec::new();
-    bytes
-        .try_reserve_exact(input.len())
-        .map_err(io::Error::other)?;
-    bytes.extend_from_slice(input);
-    Ok(OsString::from_vec(bytes))
+    gnunet_native::os_bytes::decode(input).map(std::borrow::Cow::into_owned)
 }
 impl Settings {
     /// Select exactly one original URI through the ordinary argument slice.

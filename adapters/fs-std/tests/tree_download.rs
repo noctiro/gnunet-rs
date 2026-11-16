@@ -1,6 +1,6 @@
 //! Focused recursive extraction over actual encrypted repository blocks.
 //! No FS fixture or service is running; a missing endpoint detects cache/inline misses.
-#![cfg(all(unix, feature = "service"))]
+#![cfg(all(any(unix, windows), feature = "service"))]
 #![expect(
     clippy::panic_in_result_fn,
     reason = "Fallible extraction tests assert real authenticated output and parent completion boundaries"
@@ -13,7 +13,7 @@ use gnunet_fs::{
 };
 use gnunet_fs_codec::Compressor;
 use gnunet_fs_host::{
-    BlockSink, Buffers, Control, Insert, Limits, OutputDir, Repository,
+    BlockSink, Buffers, Control, Insert, Limits, OWNER_MARKER_NAME, OutputDir, Repository,
     ipc::EndpointSource,
     network::{DownloadOptions, tree_download::TreeDownloadOptions},
 };
@@ -147,7 +147,7 @@ fn publish(buffers: &mut Buffers, bytes: &[u8], sink: &mut impl BlockSink) -> Te
 struct Discard;
 impl BlockSink for Discard {
     fn insert_block(&mut self, _node: EncodedNode<'_>) -> gnunet_fs_host::Result<Insert> {
-        Ok(Insert::Created)
+        Ok(Insert::Created(gnunet_fs_host::Retention::Volatile))
     }
 }
 
@@ -308,10 +308,9 @@ fn cancellation_preserves_independent_temporary_cleanup_failure() -> TestResult 
                     if foreign_path.is_none()
                         && let Ok(entries) = fs::read_dir(&tree)
                         && let Some(entry) = entries.filter_map(Result::ok).find(|entry| {
-                            entry
-                                .file_name()
-                                .to_string_lossy()
-                                .starts_with(".gnunet-fs-output-")
+                            entry.file_name() != OWNER_MARKER_NAME
+                                && entry.file_name() != "file.bin"
+                                && entry.file_type().is_ok_and(|kind| kind.is_file())
                         })
                     {
                         let path = entry.path();
@@ -360,4 +359,38 @@ fn cancellation_preserves_independent_temporary_cleanup_failure() -> TestResult 
         assert_eq!(fs::read(foreign_path)?, b"foreign sentinel");
         Ok::<_, Box<dyn std::error::Error>>(())
     })
+}
+
+#[tokio::test(start_paused = true)]
+async fn expired_enclosing_transfer_refuses_tree_before_creating_output() -> TestResult {
+    let temporary = Temporary::new()?;
+    let mut cache = Repository::open(temporary.0.join("cache"))?;
+    let mut buffers = Buffers::new();
+    let root = publish(&mut buffers, &directory_bytes(&[])?, &mut cache)?;
+    let mut output = OutputDir::open(&temporary.0)?;
+    let source = EndpointSource::unix(temporary.0.join("unused.sock"));
+    let mut policy = options(&source)?;
+    policy.transfer.native_deadline = Some(tokio::time::Instant::now());
+    let error = output
+        .download_tree(
+            "expired",
+            source,
+            root,
+            &mut buffers,
+            Some(&mut cache),
+            policy,
+            |_| Control::Continue,
+        )
+        .await
+        .err()
+        .ok_or("expired outer transfer was admitted")?;
+    assert!(matches!(
+        error.cause,
+        gnunet_fs_host::Error::Transfer(ref error)
+            if matches!(error.as_ref(), gnunet_fs_host::network::Error::Deadline { .. })
+    ));
+    assert!(!error.progress.root_created);
+    assert!(error.walk.is_none());
+    assert!(!temporary.0.join("expired").exists());
+    Ok(())
 }

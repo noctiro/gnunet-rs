@@ -1,6 +1,6 @@
 //! Native original-MQ NSE subscription. No NSE algorithm, PoW, key or service.
 #![forbid(unsafe_code)]
-#![cfg(unix)]
+#![cfg(any(unix, windows))]
 pub use gnunet_client::nse::{Double, Epoch, Estimate, Instance, Observation};
 pub use gnunet_client_host::{ConnectError as Error, EndpointSource};
 pub use gnunet_service_runtime::clock;

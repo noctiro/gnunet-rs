@@ -2,9 +2,8 @@
 use crate::{
     Clock, HostError, Limits, Progress,
     endpoint::Source,
-    launch::LocalLauncher,
+    launch::{LocalLauncher, StartupSignal},
     mq::{Mq, Physical, Pulse, Tx, Wake},
-    process::readiness::RegisteredReadiness,
 };
 use gnunet_arm_core::{
     ConnectionEpoch,
@@ -25,12 +24,12 @@ use std::{
 use tokio::time::{Instant, Sleep};
 struct SignalSlot {
     operation: OperationId,
-    reader: Option<RegisteredReadiness>,
+    observation: Option<StartupSignal>,
     notified: bool,
 }
 fn close_signals(signals: &mut [SignalSlot]) {
     for slot in signals {
-        slot.reader = None;
+        slot.observation = None;
     }
 }
 fn size(limits: Limits, name: Option<&[u8]>, local_start: bool) -> Result<(), HostError> {
@@ -90,7 +89,7 @@ impl CallbackContext<'_, '_> {
         self.core.operation_cancel(id)?;
         for slot in &mut *self.signals {
             if slot.operation == id {
-                slot.reader = None;
+                slot.observation = None;
             }
         }
         Ok(())
@@ -293,7 +292,7 @@ impl<'a, 'registry> ClientHost<'a, 'registry> {
         self.core.operation_cancel(id)?;
         for slot in &mut self.signals {
             if slot.operation == id {
-                slot.reader = None;
+                slot.observation = None;
             }
         }
         Ok(())
@@ -349,15 +348,15 @@ impl<'a, 'registry> ClientHost<'a, 'registry> {
             .iter()
             .position(|s| s.operation == id)
             .ok_or(Error::StaleGeneration)?;
-        self.signals[index].reader = None;
+        self.signals[index].observation = None;
         self.core.startup_signal_closed(id)?;
         self.signals.swap_remove(index);
         Ok(())
     }
     fn effect(&mut self) -> Result<bool, HostError> {
         let now = self.clock.now()?;
-        if let Some((id, result, has_pipe)) = self.pending_start {
-            self.core.startup_report(id, result, has_pipe, now)?;
+        if let Some((id, result, has_signal)) = self.pending_start {
+            self.core.startup_report(id, result, has_signal, now)?;
             self.pending_start = None;
             return Ok(true);
         }
@@ -401,19 +400,23 @@ impl<'a, 'registry> ClientHost<'a, 'registry> {
                     self.launcher.configure(configuration)?;
                 }
                 let started = self.launcher.start(stdio)?;
-                let has_pipe = started.signal.is_some();
-                if has_pipe {
+                let has_signal = started.signal.is_some();
+                if has_signal {
                     self.signals.push(SignalSlot {
                         operation,
-                        reader: started.signal,
+                        observation: started.signal,
                         notified: false,
                     });
                 }
                 // Store the real outcome before reporting; a core refusal/canceled
                 // drive can retry this report without running a second child.
-                self.pending_start = Some((operation, started.result, has_pipe));
-                self.core
-                    .startup_report(operation, started.result, has_pipe, self.clock.now()?)?;
+                self.pending_start = Some((operation, started.result, has_signal));
+                self.core.startup_report(
+                    operation,
+                    started.result,
+                    has_signal,
+                    self.clock.now()?,
+                )?;
                 self.pending_start = None;
             }
         }
@@ -476,9 +479,9 @@ impl<'a, 'registry> ClientHost<'a, 'registry> {
         }
         for slot in &mut self.signals {
             if !slot.notified
-                && let Some(reader) = &slot.reader
+                && let Some(observation) = &mut slot.observation
             {
-                match reader.poll_ready(cx) {
+                match observation.poll_completion(cx) {
                     Poll::Ready(Ok(_readiness)) => {
                         slot.notified = true;
                         if let Err(e) = self.core.startup_signal_ready(slot.operation) {
@@ -623,8 +626,8 @@ impl<'a, 'registry> ClientHost<'a, 'registry> {
         close_signals(&mut self.signals);
         // Copy until the core accepts the exact original report. A refusal must
         // not discard real startup/pipe metadata or authorize another launch.
-        if let Some((id, result, has_pipe)) = self.pending_start {
-            self.core.retire_startup(id, result, has_pipe)?;
+        if let Some((id, result, has_signal)) = self.pending_start {
+            self.core.retire_startup(id, result, has_signal)?;
             self.pending_start = None;
         }
         loop {

@@ -375,16 +375,23 @@ pub enum Event<'a> {
     },
 }
 pub(crate) const STATE: &[u8] = b".auto-share-rust";
-pub(crate) fn component(bytes: &[u8]) -> Result<&std::ffi::OsStr, Error> {
-    use std::os::unix::ffi::OsStrExt;
+pub(crate) fn component(bytes: &[u8]) -> Result<std::borrow::Cow<'_, std::ffi::OsStr>, Error> {
     if bytes.is_empty()
         || matches!(bytes, b"." | b"..")
         || bytes.contains(&0)
         || bytes.contains(&b'/')
+        || cfg!(windows) && bytes.contains(&b'\\')
     {
         return Err(Error::Binding("invalid auto-share component"));
     }
-    Ok(std::ffi::OsStr::from_bytes(bytes))
+    let native = gnunet_native::os_bytes::decode(bytes)?;
+    let mut components = std::path::Path::new(&*native).components();
+    if !matches!(components.next(), Some(std::path::Component::Normal(_)))
+        || components.next().is_some()
+    {
+        return Err(Error::Binding("invalid native auto-share component"));
+    }
+    Ok(native)
 }
 pub(crate) fn relative(version: u64) -> PathBuf {
     PathBuf::from(format!("version-{version:016x}"))

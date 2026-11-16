@@ -7,6 +7,8 @@
     clippy::panic_in_result_fn,
     reason = "Actual socket tests assert wire bytes, original identities, capacities and physical close outcomes"
 )]
+#[path = "support/local.rs"]
+mod local;
 use gnunet_client::resolver::{Family, FamilyProfile, Request, Response, WireId};
 use gnunet_dns::{AbsoluteTime, Idna};
 use gnunet_idna::{Backend, NativeProfile, Workspace};
@@ -15,6 +17,7 @@ use gnunet_resolver_host::{
     storage::{Geometry, Store},
 };
 use gnunet_resolver_service_core::{owner::Resolver, storage::Limits as CoreLimits};
+use gnunet_service_runtime::local::Stream as UnixStream;
 use gnunet_service_runtime::service::{Listener, ServiceOptions, ShutdownMode};
 use gnunet_wire::official::Frame;
 use std::{
@@ -26,7 +29,7 @@ use std::{
 };
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
-    net::{TcpListener, TcpStream, UdpSocket, UnixListener, UnixStream},
+    net::{TcpListener, TcpStream, UdpSocket},
     time::Instant,
 };
 type E = Box<dyn std::error::Error>;
@@ -161,7 +164,7 @@ fn name_wire(s: &[u8]) -> Vec<u8> {
 fn actual_unix_partial_io_and_cached_hosts_do_not_open_udp() -> Result<(), E> {
     rt().block_on(async {
         let p = path("partial");
-        let listener = UnixListener::bind(&p)?;
+        let listener = local::bind(&p)?;
         let l = Limits {
             io_slice_bytes: 1,
             ..Limits::default()
@@ -270,7 +273,7 @@ fn actual_ipv6_dns_transport_ptr_and_wrong_id_malformed_are_nonterminal() -> Res
 fn actual_two_clients_duplicate_ids_malformed_isolation_and_eof_cancel() -> Result<(), E> {
     rt().block_on(async {
         let p = path("isolation");
-        let listener = UnixListener::bind(&p)?;
+        let listener = local::bind(&p)?;
         let udp = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await?;
         setup!(host, Limits::default(), 4, b"192.0.2.5 hit.example\n");
         host.add_dns_endpoint(udp.local_addr()?)?;
@@ -311,12 +314,13 @@ fn actual_two_clients_duplicate_ids_malformed_isolation_and_eof_cancel() -> Resu
 fn canceled_drive_retains_real_dns_owner_and_resumes_without_replay() -> Result<(), E> {
     rt().block_on(async {
         let p = path("resume");
-        let listener = UnixListener::bind(&p)?;
+        let listener = local::bind(&p)?;
         let udp = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await?;
         setup!(host, Limits::default(), 4, b"");
         host.add_dns_endpoint(udp.local_addr()?)?;
+        host.set_search_domain(Some(b"owned.example"))?;
         let mut s = UnixStream::connect(&p).await?;
-        s.write_all(&req(23, Family::V4, b"resume.example")).await?;
+        s.write_all(&req(23, Family::V4, b"resume")).await?;
         let mut q = [0; 512];
         let (n, peer) = driven(
             &mut host,
@@ -324,6 +328,13 @@ fn canceled_drive_retains_real_dns_owner_and_resumes_without_replay() -> Result<
             udp.recv_from(&mut q),
         )
         .await??;
+        assert_eq!(&q[12..n], b"\x06resume\x05owned\x07example\0\0\x01\0\x01");
+        assert!(matches!(
+            host.set_search_domain(Some(b"replaced.example")),
+            Err(gnunet_resolver_host::HostError::Core(
+                gnunet_types::Error::Conflict
+            ))
+        ));
         assert_eq!(host.pending_lookups(), 1);
         assert_eq!(host.pending_stub_requests(), 1);
         assert_eq!(host.report().requests, 1);
@@ -349,7 +360,7 @@ fn canceled_drive_retains_real_dns_owner_and_resumes_without_replay() -> Result<
 fn actual_stub_eviction_detaches_old_owner_and_later_request_survives() -> Result<(), E> {
     rt().block_on(async {
         let p = path("eviction");
-        let listener = UnixListener::bind(&p)?;
+        let listener = local::bind(&p)?;
         let udp = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await?;
         setup!(host, Limits::default(), 1, b"");
         host.add_dns_endpoint(udp.local_addr()?)?;
@@ -404,7 +415,7 @@ fn actual_stub_eviction_detaches_old_owner_and_later_request_survives() -> Resul
 fn genuine_socket_backpressure_retains_effect_ticket_across_canceled_drive() -> Result<(), E> {
     rt().block_on(async {
         let p = path("backpressure");
-        let listener = UnixListener::bind(&p)?;
+        let listener = local::bind(&p)?;
         socket2::SockRef::from(&listener).set_send_buffer_size(4096)?;
         let udp = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await?;
         let limits = Limits {
@@ -498,7 +509,7 @@ fn actual_ipc_no_upstream_uses_original_thirty_second_monotonic_deadline() -> Re
     rt().block_on(async {
         tokio::time::pause();
         let p = path("timeout");
-        let listener = UnixListener::bind(&p)?;
+        let listener = local::bind(&p)?;
         setup!(host, Limits::default(), 4, b"");
         let mut s = UnixStream::connect(&p).await?;
         s.write_all(&req(81, Family::V4, b"not-in-hosts.example"))
@@ -534,7 +545,7 @@ fn actual_ipc_no_upstream_uses_original_thirty_second_monotonic_deadline() -> Re
 fn actual_consumed_dns_capacity_error_retains_datagram_and_original_owner() -> Result<(), E> {
     rt().block_on(async {
         let p = path("resource");
-        let listener = UnixListener::bind(&p)?;
+        let listener = local::bind(&p)?;
         let udp = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await?;
         setup!(host, Limits::default(), 4, b"");
         host.add_dns_endpoint(udp.local_addr()?)?;
@@ -600,7 +611,7 @@ fn actual_consumed_dns_capacity_error_retains_datagram_and_original_owner() -> R
 fn actual_tcp_acl_denial_never_allocates_client_and_unix_still_works() -> Result<(), E> {
     rt().block_on(async {
         let p = path("acl");
-        let unix = UnixListener::bind(&p)?;
+        let unix = local::bind(&p)?;
         let tcp = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
         let mut config = gnunet_config::Configuration::new(Default::default());
         config.set_value(b"resolver", b"REJECT_FROM", Some(b"127.0.0.1;"))?;
@@ -645,7 +656,7 @@ fn actual_tcp_acl_denial_never_allocates_client_and_unix_still_works() -> Result
 fn actual_wall_clock_timer_wakes_no_upstream_lookup_after_thirty_seconds() -> Result<(), E> {
     rt().block_on(async {
         let p = path("real-timeout");
-        let listener = UnixListener::bind(&p)?;
+        let listener = local::bind(&p)?;
         setup!(host, Limits::default(), 4, b"");
         let started = Instant::now();
         let mut client = UnixStream::connect(&p).await?;
@@ -689,7 +700,7 @@ fn queued_start_never_mints_after_deadline_and_unrelated_buffered_eof_is_cleaned
 {
     rt().block_on(async {
         let p = path("expired-start");
-        let listener = UnixListener::bind(&p)?;
+        let listener = local::bind(&p)?;
         let udp = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await?;
         setup!(
             host,
@@ -781,7 +792,7 @@ fn queued_start_never_mints_after_deadline_and_unrelated_buffered_eof_is_cleaned
 fn consumed_datagram_waits_behind_real_tx_pressure_then_recovers_on_drive() -> Result<(), E> {
     rt().block_on(async {
         let p = path("pending-recover");
-        let listener = UnixListener::bind(&p)?;
+        let listener = local::bind(&p)?;
         let udp = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await?;
         setup!(
             host,

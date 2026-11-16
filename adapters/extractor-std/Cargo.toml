@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
-libc.workspace = true
+gnunet-native.workspace = true
 
 [lints]
 workspace = true

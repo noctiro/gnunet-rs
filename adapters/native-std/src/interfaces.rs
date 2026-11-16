@@ -1,11 +1,58 @@
-//! Actual owned getifaddrs snapshot with finite metadata/address limits.
+//! Actual owned native interface snapshots with finite metadata/address limits.
 //! No libgnunet, shell command, DNS, route mutation or background monitor.
-use std::{
-    ffi::CStr,
-    io,
-    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV6},
-    ptr,
-};
+use std::net::{IpAddr, SocketAddr};
+#[cfg(unix)]
+mod unix;
+#[cfg(windows)]
+mod windows;
+#[cfg(unix)]
+pub use unix::snapshot;
+#[cfg(windows)]
+pub use windows::snapshot;
+#[cfg(windows)]
+mod identity;
+#[cfg(any(windows, test))]
+mod identity_value;
+#[cfg(all(test, unix))]
+pub(crate) use identity_value::Identity;
+#[cfg(windows)]
+mod rename;
+#[cfg(windows)]
+mod table;
+#[cfg(windows)]
+pub use identity::Identity;
+#[cfg(windows)]
+mod retirement;
+#[cfg(windows)]
+pub(crate) use identity::compartment;
+#[cfg(windows)]
+pub(crate) use retirement::require_vacant;
+#[cfg(windows)]
+pub use retirement::{InterfacePresence, RetiredScope, RetirementLimits};
+#[cfg(all(test, unix))]
+#[path = "interfaces/retirement/selection.rs"]
+mod retirement_selection_model;
+/// Actual native interface state, keeping platform flag words distinct.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InterfaceState {
+    /// Original POSIX IFF_* flags.
+    #[cfg(unix)]
+    UnixFlags(u32),
+    /// Original Windows adapter facts; flag bits are not interpreted as POSIX.
+    #[cfg(windows)]
+    Windows {
+        /// Original adapter flags.
+        flags: u32,
+        /// Native IF_OPER_STATUS value.
+        oper_status: i32,
+        /// Native NET_IF_ACCESS_TYPE from GetIfEntry2.
+        access_type: i32,
+        /// Native IANA interface type.
+        if_type: u32,
+        /// Native per-address duplicate-address-detection state.
+        dad_state: i32,
+    },
+}
 /// Explicit snapshot limits; exceeding a limit fails the whole snapshot instead
 /// of silently turning an incomplete scan into address removals.
 #[derive(Clone, Copy, Debug)]
@@ -33,21 +80,65 @@ pub struct InterfaceAddress {
     pub name: Vec<u8>,
     /// Actual native interface index, or0 if unavailable.
     pub index: u32,
-    /// Actual original interface flag bits.
-    pub flags: u32,
+    /// Original native interface state.
+    pub state: InterfaceState,
     /// Actual interface Internet address.
     pub address: SocketAddr,
     /// Actual netmask when supplied by getifaddrs.
     pub netmask: Option<IpAddr>,
 }
 impl InterfaceAddress {
-    /// Actual IFF_UP flag. No routability or remote connectivity is inferred.
+    /// Native up-state observation. No remote connectivity is inferred.
     pub fn is_up(&self) -> bool {
-        self.flags & (libc::IFF_UP as u32) != 0
+        match self.state {
+            #[cfg(unix)]
+            InterfaceState::UnixFlags(flags) => flags & (libc::IFF_UP as u32) != 0,
+            #[cfg(windows)]
+            InterfaceState::Windows { oper_status, .. } => {
+                oper_status == windows_sys::Win32::NetworkManagement::Ndis::IfOperStatusUp
+            }
+        }
     }
-    /// Actual loopback interface flag.
+    /// Whether captured state permits this address as a unicast source.
+    /// Windows additionally requires preferred/deprecated DAD state. POSIX
+    /// getifaddrs supplies interface flags but no portable per-address DAD state.
+    pub fn is_usable(&self) -> bool {
+        if !self.is_up() {
+            return false;
+        }
+        match self.state {
+            #[cfg(unix)]
+            InterfaceState::UnixFlags(_) => true,
+            #[cfg(windows)]
+            InterfaceState::Windows { dad_state, .. } => matches!(
+                dad_state,
+                windows_sys::Win32::Networking::WinSock::IpDadStatePreferred
+                    | windows_sys::Win32::Networking::WinSock::IpDadStateDeprecated
+            ),
+        }
+    }
+    /// Whether this native interface supports IPv4 broadcast addressing.
+    pub fn supports_ipv4_broadcast(&self) -> bool {
+        match self.state {
+            #[cfg(unix)]
+            InterfaceState::UnixFlags(flags) => flags & (libc::IFF_BROADCAST as u32) != 0,
+            #[cfg(windows)]
+            InterfaceState::Windows { access_type, .. } => {
+                access_type == windows_sys::Win32::NetworkManagement::Ndis::NET_IF_ACCESS_BROADCAST
+            }
+        }
+    }
+    /// Actual native loopback-interface classification.
     pub fn is_loopback(&self) -> bool {
-        self.flags & (libc::IFF_LOOPBACK as u32) != 0
+        match self.state {
+            #[cfg(unix)]
+            InterfaceState::UnixFlags(flags) => flags & (libc::IFF_LOOPBACK as u32) != 0,
+            #[cfg(windows)]
+            InterfaceState::Windows { if_type, .. } => {
+                if_type
+                    == windows_sys::Win32::NetworkManagement::IpHelper::IF_TYPE_SOFTWARE_LOOPBACK
+            }
+        }
     }
 }
 /// Classify an Internet destination against a complete caller-owned interface
@@ -80,134 +171,4 @@ pub fn classify(rows: &[InterfaceAddress], remote: SocketAddr) -> u32 {
         }
     });
     if local { 2 } else { 3 }
-}
-struct List(*mut libc::ifaddrs);
-impl Drop for List {
-    #[expect(
-        unsafe_code,
-        reason = "freeifaddrs releases exactly the successful getifaddrs list owned by this RAII object"
-    )]
-    fn drop(&mut self) {
-        if !self.0.is_null() {
-            // SAFETY: successful getifaddrs ownership is transferred exactly once; no view outlives this owner.
-            unsafe { libc::freeifaddrs(self.0) };
-        }
-    }
-}
-fn capacity() -> io::Error {
-    io::Error::new(
-        io::ErrorKind::OutOfMemory,
-        "interface snapshot limit/allocation exceeded",
-    )
-}
-#[expect(
-    unsafe_code,
-    reason = "copy native IP sockaddr fields from one live getifaddrs list; validate family before native cast"
-)]
-fn address(raw: *const libc::sockaddr) -> Option<SocketAddr> {
-    if raw.is_null() {
-        return None;
-    }
-    // SAFETY: getifaddrs supplies a valid sockaddr for its indicated family;
-    // each family branch copies only the corresponding complete native struct.
-    let family = unsafe { (*raw).sa_family } as i32;
-    match family {
-        libc::AF_INET => {
-            // SAFETY: this live getifaddrs address has the IPv4 family; copy
-            // its complete native struct without assuming alignment.
-            let a = unsafe { ptr::read_unaligned(raw.cast::<libc::sockaddr_in>()) };
-            Some(SocketAddr::new(
-                IpAddr::V4(Ipv4Addr::from(a.sin_addr.s_addr.to_ne_bytes())),
-                u16::from_be(a.sin_port),
-            ))
-        }
-        libc::AF_INET6 => {
-            // SAFETY: this live getifaddrs address has the IPv6 family; copy
-            // its complete native struct without assuming alignment.
-            let a = unsafe { ptr::read_unaligned(raw.cast::<libc::sockaddr_in6>()) };
-            Some(SocketAddr::V6(SocketAddrV6::new(
-                Ipv6Addr::from(a.sin6_addr.s6_addr),
-                u16::from_be(a.sin6_port),
-                a.sin6_flowinfo,
-                a.sin6_scope_id,
-            )))
-        }
-        _ => None,
-    }
-}
-/// Obtain one real complete owned snapshot. Native errors/unsupported metadata
-/// are returned as actual IO failures; no cached or fabricated interface exists.
-#[expect(
-    unsafe_code,
-    reason = "bounded traversal/copy of a successful native getifaddrs allocation held by one RAII owner"
-)]
-pub fn snapshot(limits: Limits) -> io::Result<Vec<InterfaceAddress>> {
-    if limits.nodes == 0
-        || limits.addresses == 0
-        || limits.name_bytes == 0
-        || limits.name_bytes > 65535
-    {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "invalid interface limits",
-        ));
-    }
-    let mut head = ptr::null_mut();
-    // SAFETY: head is an initialized writable pointer slot for getifaddrs.
-    if unsafe { libc::getifaddrs(&mut head) } != 0 {
-        return Err(io::Error::last_os_error());
-    }
-    let owner = List(head);
-    let mut rows = Vec::new();
-    let mut at = owner.0;
-    let mut nodes = 0usize;
-    while !at.is_null() {
-        nodes = nodes.checked_add(1).ok_or_else(capacity)?;
-        if nodes > limits.nodes {
-            return Err(capacity());
-        }
-        // SAFETY: at is a node owned by this live native list; pointers are read
-        // only while owner is live, and every retained field is copied.
-        let node = unsafe { &*at };
-        at = node.ifa_next;
-        let Some(endpoint) = address(node.ifa_addr) else {
-            continue;
-        };
-        if rows.len() >= limits.addresses {
-            return Err(capacity());
-        }
-        if node.ifa_name.is_null() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "missing interface name",
-            ));
-        }
-        // SAFETY: getifaddrs owns this nonnull, NUL-terminated interface name;
-        // the bounded scan stops at that NUL while the original list is live.
-        let n = unsafe { libc::strnlen(node.ifa_name, limits.name_bytes + 1) };
-        if n > limits.name_bytes {
-            return Err(capacity());
-        }
-        // SAFETY: strnlen found a terminating NUL within the live allocation;
-        // if_nametoindex receives this same original native interface string.
-        let name = unsafe { CStr::from_ptr(node.ifa_name) }.to_bytes();
-        // SAFETY: the same original NUL-terminated native interface name remains
-        // live for this synchronous, read-only lookup.
-        let index = unsafe { libc::if_nametoindex(node.ifa_name) };
-        let mut copied = Vec::new();
-        copied
-            .try_reserve_exact(name.len())
-            .map_err(|_| capacity())?;
-        copied.extend_from_slice(name);
-        rows.try_reserve(1).map_err(|_| capacity())?;
-        let netmask = address(node.ifa_netmask).map(|s| s.ip());
-        rows.push(InterfaceAddress {
-            name: copied,
-            index,
-            flags: node.ifa_flags as u32,
-            address: endpoint,
-            netmask,
-        });
-    }
-    Ok(rows)
 }

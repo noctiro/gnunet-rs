@@ -4,6 +4,11 @@ use crate::*;
 use alloc::vec::Vec;
 use core::{cell::Cell, fmt, ptr};
 use zeroize::Zeroizing;
+#[derive(Clone, Copy)]
+enum OutputFraming {
+    Helper,
+    Packet,
+}
 /// Stable caller allocation domain, no hidden global IDs or Atomic64 target need.
 pub struct Instance {
     next: Cell<u64>,
@@ -548,31 +553,55 @@ impl<'id> Engine<'id> {
         r: Request<'id>,
         out: &mut [u8],
     ) -> Result<(Effect<'id>, usize), Error> {
+        self.prepare_output(r, out, OutputFraming::Helper)
+    }
+    /// Build a checksummed raw IP/UDP reply for a native packet device. No helper
+    /// framing is introduced; the original output lifecycle owns admission.
+    pub fn prepare_packet(
+        &mut self,
+        r: Request<'id>,
+        out: &mut [u8],
+    ) -> Result<(Effect<'id>, usize), Error> {
+        self.prepare_output(r, out, OutputFraming::Packet)
+    }
+    fn prepare_output(
+        &mut self,
+        r: Request<'id>,
+        out: &mut [u8],
+        framing: OutputFraming,
+    ) -> Result<(Effect<'id>, usize), Error> {
         let row = self.row(r)?;
         if row.phase != Phase::Output || row.output.is_some() || row.expired {
             return Err(Error::NotReady);
         }
-        let size =
-            8 + match row.from.family() {
+        let prefix = match framing {
+            OutputFraming::Helper => HELPER_PREFIX,
+            OutputFraming::Packet => 0,
+        };
+        let size = prefix
+            + match row.from.family() {
                 Family::V4 => 20,
                 Family::V6 => 40,
-            } + 8
-                + row.payload.len();
+            }
+            + 8
+            + row.payload.len();
         if out.len() < size {
             return Err(Error::Capacity);
         }
-        gnunet_wire::official::MessageHeader::from_total_size(
-            gnunet_wire::official::message_type::DNS_HELPER,
-            size,
-        )?
-        .encode(out)?;
-        out[4..6].fill(0);
-        let protocol: u16 = if row.from.family() == Family::V4 {
-            0x0800
-        } else {
-            0x86dd
-        };
-        out[6..8].copy_from_slice(&protocol.to_be_bytes());
+        if matches!(framing, OutputFraming::Helper) {
+            gnunet_wire::official::MessageHeader::from_total_size(
+                gnunet_wire::official::message_type::DNS_HELPER,
+                size,
+            )?
+            .encode(out)?;
+            out[4..6].fill(0);
+            let protocol: u16 = if row.from.family() == Family::V4 {
+                0x0800
+            } else {
+                0x86dd
+            };
+            out[6..8].copy_from_slice(&protocol.to_be_bytes());
+        }
         let mut udp = [0; 8];
         udp[..2].copy_from_slice(&row.destination_port.to_be_bytes());
         udp[2..4].copy_from_slice(&row.source_port.to_be_bytes());
@@ -582,8 +611,8 @@ impl<'id> Engine<'id> {
             gnunet_vpn::packet::UDP,
             &udp,
             &row.payload,
-            &mut out[8..],
-        )? + 8;
+            &mut out[prefix..],
+        )? + prefix;
         let effect = Effect {
             request: r,
             serial: self.scope.domain.allocate()?,
@@ -615,7 +644,7 @@ impl<'id> Engine<'id> {
         o.phase = OutputPhase::Queued;
         Ok(())
     }
-    /// Actual positive original prefix, not an ACK or delivery.
+    /// Actual positive local exposure, not a remote acknowledgement.
     pub fn exposed(&mut self, e: Effect<'id>) -> Result<(), Error> {
         let o = self.output_mut(e)?;
         if !matches!(o.phase, OutputPhase::Queued | OutputPhase::Exposed) {
@@ -624,8 +653,8 @@ impl<'id> Engine<'id> {
         o.phase = OutputPhase::Exposed;
         Ok(())
     }
-    /// Actual local complete write. Helper pipe write retires only that original
-    /// service output, not remote receipt or an unprovided TUN_WRITE ACK.
+    /// Complete local output write. The caller distinguishes helper pipe writes
+    /// and native packet submissions; neither establishes remote delivery.
     pub fn written(&mut self, e: Effect<'id>) -> Result<(), Error> {
         let o = self.output_mut(e)?;
         if !matches!(o.phase, OutputPhase::Queued | OutputPhase::Exposed) {
@@ -637,6 +666,25 @@ impl<'id> Engine<'id> {
         } else {
             o.phase = OutputPhase::Written;
         }
+        Ok(())
+    }
+    /// Retire one original packet output after its native operation has actually
+    /// stopped, without claiming delivery or closing other requests' source.
+    /// The caller retains its unsent/unknown/accepted exposure observation.
+    pub fn packet_stopped(&mut self, effect: Effect<'id>) -> Result<(), Error> {
+        if !matches!(effect.destination, Destination::Helper(_)) {
+            return Err(Error::InvalidInput);
+        }
+        if !matches!(
+            self.output_mut(effect)?.phase,
+            OutputPhase::Queued | OutputPhase::Exposed
+        ) {
+            return Err(Error::Conflict);
+        }
+        let row = self.row_mut(effect.request)?;
+        row.output = None;
+        row.expired = true;
+        row.phase = Phase::Dropped;
         Ok(())
     }
     /// Native never-admitted output allocation failed, with no exposed bytes.

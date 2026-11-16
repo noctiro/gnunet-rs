@@ -10,7 +10,6 @@ use std::{
     fmt,
     future::{Future, poll_fn},
     io::{self, Read},
-    os::unix::fs::OpenOptionsExt,
     sync::Arc,
     task::{Context, Poll},
     time::Duration,
@@ -47,6 +46,7 @@ fn gate(d: &mut Dispatcher, cx: &mut Context<'_>) -> Result<(), qr::Error> {
     d.guard(cx).map_err(|e| match e {
         gnunet_uri_host::Cause::Io(e) => qr::Error::Io(e),
         gnunet_uri_host::Cause::Clock(e) => qr::Error::Protocol(e),
+        other => qr::Error::Io(io::Error::other(other)),
     })
 }
 async fn check(d: &mut Dispatcher) -> Result<(), Failure> {
@@ -63,10 +63,16 @@ async fn file(
     check(d).await?;
     // Nonblocking open avoids waiting for a FIFO writer before the actual fstat
     // can reject it. This does not claim remote filesystems are preemptible.
-    let mut input = std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NONBLOCK)
-        .open(path)?;
+    #[cfg(unix)]
+    let mut input = {
+        use std::os::unix::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(path)?
+    };
+    #[cfg(windows)]
+    let mut input = gnunet_native::paths::open_regular_file(path)?;
     check(d).await?;
     let metadata = input.metadata()?;
     check(d).await?;
@@ -119,6 +125,35 @@ async fn file(
     }
     Ok(bytes)
 }
+#[expect(
+    unsafe_code,
+    reason = "The operator-selected configuration supplies trusted libpng/ZBar providers implementing their public C ABIs"
+)]
+fn scan(
+    libraries: &qr::LibraryPaths,
+    encoded: &[u8],
+    limits: qr::Limits,
+    before_native: &mut impl FnMut() -> Result<(), qr::Error>,
+) -> Result<qr::Symbol, qr::Error> {
+    // SAFETY: providers and loader context come only from trusted local startup
+    // configuration, never from decoded symbols or image bytes.
+    unsafe { qr::scan_png(libraries, encoded, limits, before_native) }
+}
+#[expect(
+    unsafe_code,
+    reason = "The configured absolute provider or authorized Unix loader search supplies the trusted public ZBar ABI"
+)]
+fn open_camera(
+    library: Option<&std::path::Path>,
+    device: &std::ffi::CStr,
+    display: bool,
+    limits: qr::Limits,
+    before_native: &mut impl FnMut() -> Result<(), qr::Error>,
+) -> Result<qr::Camera, qr::Error> {
+    // SAFETY: only trusted local startup configuration selects provider code;
+    // device selection is an explicit native input operation.
+    unsafe { qr::Camera::open(library, device, display, limits, before_native) }
+}
 /// The same real guard is polled while waiting between finite camera scans.
 async fn pause(d: &mut Dispatcher, duration: Duration) -> Result<(), Failure> {
     let mut timer = Box::pin(tokio::time::sleep(duration));
@@ -148,9 +183,12 @@ pub(super) async fn run(
             Input::Png(path) => {
                 let encoded = file(&mut dispatcher, path, settings.limits, &mut facts).await?;
                 poll_fn(|cx| {
-                    Poll::Ready(qr::scan_png(&encoded, settings.limits, &mut || {
-                        gate(&mut dispatcher, cx)
-                    }))
+                    Poll::Ready(scan(
+                        &settings.libraries,
+                        &encoded,
+                        settings.limits,
+                        &mut || gate(&mut dispatcher, cx),
+                    ))
                 })
                 .await?
             }
@@ -158,7 +196,8 @@ pub(super) async fn run(
                 let device = qr::Camera::device(device)?;
                 camera = Some(
                     poll_fn(|cx| {
-                        Poll::Ready(qr::Camera::open(
+                        Poll::Ready(open_camera(
+                            settings.libraries.zbar.as_deref(),
                             &device,
                             settings.display,
                             settings.limits,

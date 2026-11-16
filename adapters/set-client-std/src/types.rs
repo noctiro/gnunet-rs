@@ -19,6 +19,13 @@ pub enum Error {
     Protocol(Fault),
     /// Unknown original public result word, preserved without treating it as success.
     UnexpectedStatus(u16),
+    /// A known element status contradicts the original operation's result mode.
+    UnexpectedResult {
+        /// Result mode selected before the request was written.
+        mode: ResultMode,
+        /// Actual received status.
+        status: Status,
+    },
     /// Actual CLIENT configuration/Resolver/endpoint-selection port failure.
     Client(gnunet_client_host::ConnectError),
     /// Actual shared Clock sample/subscription/notification failure. The error
@@ -73,7 +80,10 @@ impl Error {
             Self::Deadline(_) => LossOrigin::Bounds,
             Self::Clock(_) => LossOrigin::Clock,
             Self::Client(_) => LossOrigin::Selector,
-            Self::Protocol(_) | Self::UnexpectedStatus(_) | Self::Io(_) => LossOrigin::Source,
+            Self::Protocol(_)
+            | Self::UnexpectedStatus(_)
+            | Self::UnexpectedResult { .. }
+            | Self::Io(_) => LossOrigin::Source,
         }
     }
 }
@@ -85,6 +95,9 @@ impl fmt::Display for Error {
             Self::UnexpectedStatus(status) => {
                 write!(f, "unexpected original SET result status {status}")
             }
+            Self::UnexpectedResult { mode, status } => {
+                write!(f, "SET result status {status:?} contradicts mode {mode:?}")
+            }
             Self::Client(e) | Self::Clock(e) => fmt::Display::fmt(e, f),
             Self::Io(e) => fmt::Display::fmt(e, f),
         }
@@ -95,7 +108,7 @@ impl std::error::Error for Error {
         match self {
             Self::Deadline(_) => None,
             Self::Protocol(e) => Some(e),
-            Self::UnexpectedStatus(_) => None,
+            Self::UnexpectedStatus(_) | Self::UnexpectedResult { .. } => None,
             Self::Client(e) | Self::Clock(e) => Some(e),
             Self::Io(e) => Some(e),
         }

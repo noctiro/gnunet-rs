@@ -1,8 +1,11 @@
-//! Component regression over real private Unix streams and datagrams. Identity
-//! readiness in the recovery cases is a model precondition. The identity case
-//! uses actual pure PILS generation and native announcements, without claiming
-//! a normal PILS daemon or a C node.
+//! Real private Unix streams/datagrams and signed pure-Service PILS announcements.
+//! These component fixtures do not qualify a normal PILS daemon or official C node.
 use super::*;
+use gnunet_wire::official::communicator::Characteristics;
+#[path = "tests/deadline.rs"]
+mod deadline;
+#[path = "tests/source.rs"]
+mod source;
 use std::{
     os::unix::{ffi::OsStrExt, fs::DirBuilderExt},
     path::{Path, PathBuf},
@@ -49,11 +52,15 @@ struct Trace {
     identities: Vec<[u8; 32]>,
     transport_losses: usize,
     retired: Vec<(u32, [u8; 8], SendOutcome, usize, bool)>,
+    paused: usize,
+    resumed: usize,
 }
 impl Trace {
     fn observe(&mut self, event: Event<'_>) {
         match event {
             Event::Identity { peer, .. } => self.identities.push(peer),
+            Event::IdentityPaused { .. } => self.paused += 1,
+            Event::IdentityResumed { .. } => self.resumed += 1,
             Event::TransportLost { .. } => self.transport_losses += 1,
             Event::SendError {
                 retrying: false, ..
@@ -135,12 +142,24 @@ fn ack(value: &[u8], queue: u32, mid: [u8; 8], expected: i32) -> Result<(), Fail
         queue: q, message_id, peer: PEER, status
     } if q == queue && message_id == mid && status == expected))
 }
-fn ready_precondition(runtime: &mut Runtime<'_>) {
-    runtime.peer = Some([7; 32]);
-    runtime.registered = true;
-    runtime.address_written = true;
-    runtime.ever_ready = true;
-    runtime.restoring = false;
+async fn setup(
+    runtime: &mut Runtime<'_>,
+    service: &mut UnixStream,
+    trace: &mut Trace,
+) -> Result<(), Failure> {
+    let now = runtime.clock.sample()?.now.as_micros();
+    check(runtime.setup(now, &mut |event| trace.observe(event))?)?;
+    flush(runtime, trace).await?;
+    check(matches!(
+        Request::decode(&read_frame(service).await?)?,
+        Request::Register { .. }
+    ))?;
+    check(matches!(
+        Request::decode(&read_frame(service).await?)?,
+        Request::AddAddress { .. }
+    ))?;
+    runtime.reannounce(now, &mut |event| trace.observe(event))?;
+    check(runtime.ready())
 }
 
 async fn recovery(disconnect: bool) -> Result<(), Failure> {
@@ -148,6 +167,8 @@ async fn recovery(disconnect: bool) -> Result<(), Failure> {
     let destination = dir.0.join("missing");
     let service_path = dir.0.join("transport");
     let listener = UnixListener::bind(&service_path)?;
+    let pils_path = dir.0.join("pils");
+    let pils_listener = UnixListener::bind(&pils_path)?;
     let clock: Arc<dyn RuntimeClock> = Arc::new(gnunet_service_runtime::clock::SystemClock);
     let instance = Instance::new();
     let mut pils_instance = gnunet_pils::client::Instance::new();
@@ -156,7 +177,7 @@ async fn recovery(disconnect: bool) -> Result<(), Failure> {
         &mut pils_instance,
         Sources {
             transport: EndpointSource::unix_with_clock(service_path, clock.clone()),
-            pils: EndpointSource::unix_with_clock(dir.0.join("unused-pils"), clock),
+            pils: EndpointSource::unix_with_clock(pils_path, clock),
         },
         dir.0.join("native").as_os_str().as_bytes(),
         Limits {
@@ -169,7 +190,24 @@ async fn recovery(disconnect: bool) -> Result<(), Failure> {
     let mut trace = Trace::default();
     poll_fn(|cx| runtime.poll_connect(cx, &mut |event| trace.observe(event))).await?;
     let (mut service, _) = listener.accept().await?;
-    ready_precondition(&mut runtime);
+    let now = runtime.clock.sample()?.now.as_micros();
+    let producer = gnunet_pils::Service::<4096>::new(
+        gnunet_pils::MasterKey::from_seed([17; 32]),
+        runtime.limits.profile,
+        now,
+        gnunet_pils::HelloLimits {
+            maximum_input_bytes: 4096,
+            maximum_address_bytes: 2048,
+            maximum_addresses: 16,
+        },
+    )?;
+    while runtime.pils.epoch().is_none() {
+        poll_fn(|cx| runtime.poll_pils(cx, now, &mut |event| trace.observe(event))).await?;
+    }
+    let (mut pils, _) = pils_listener.accept().await?;
+    pils.write_all(producer.announcement()).await?;
+    identity(&mut runtime, &mut trace).await?;
+    setup(&mut runtime, &mut service, &mut trace).await?;
     let create = create(&destination)?;
     service.write_all(&create).await?;
     input(&mut runtime, &mut trace).await?;
@@ -225,7 +263,7 @@ async fn recovery(disconnect: bool) -> Result<(), Failure> {
         poll_fn(|cx| runtime.poll_connect(cx, &mut |event| trace.observe(event))).await?;
         let (replacement, _) = listener.accept().await?;
         service = replacement;
-        ready_precondition(&mut runtime);
+        setup(&mut runtime, &mut service, &mut trace).await?;
         // The old held CREATE was retired, not replayed on this stream.
         service.write_all(&create).await?;
         input(&mut runtime, &mut trace).await?;
@@ -397,7 +435,7 @@ async fn changed_identity_preserves_original_packet_and_exposed_ack() -> Result<
     let (mut pils, _) = pils_listener.accept().await?;
     pils.write_all(producer.announcement()).await?;
     identity(&mut runtime, &mut trace).await?;
-    check(runtime.peer == Some(a))?;
+    check(runtime.peer() == Some(a))?;
     check(runtime.setup(now, &mut |event| trace.observe(event))?)?;
     flush(&mut runtime, &mut trace).await?;
     check(matches!(
@@ -501,7 +539,7 @@ async fn changed_identity_preserves_original_packet_and_exposed_ack() -> Result<
     pils.write_all(producer.announcement()).await?;
     identity(&mut runtime, &mut trace).await?;
     check(
-        runtime.peer == Some(b)
+        runtime.peer() == Some(b)
             && runtime.ready()
             && runtime.epoch == epoch
             && runtime.socket_epoch == socket
@@ -556,6 +594,27 @@ async fn changed_identity_preserves_original_packet_and_exposed_ack() -> Result<
     pils.write_all(producer.announcement()).await?;
     identity(&mut runtime, &mut trace).await?;
     check(runtime.epoch == epoch && runtime.pils.epoch() == pils_epoch && runtime.ready())?;
+    pils = source::restore(
+        &mut runtime,
+        &mut trace,
+        &pils_listener,
+        pils,
+        &mut producer,
+        (&first, &second),
+        false,
+    )
+    .await?;
+    pils = source::restore(
+        &mut runtime,
+        &mut trace,
+        &pils_listener,
+        pils,
+        &mut producer,
+        (&first, &second),
+        true,
+    )
+    .await?;
+    let b = *producer.identity().public_key().as_bytes();
     flush(&mut runtime, &mut trace).await?;
     ack(&read_frame(&mut transport).await?, queues[1], NEW_MID, 1)?;
     check(matches!(
@@ -606,20 +665,46 @@ async fn changed_identity_preserves_original_packet_and_exposed_ack() -> Result<
             .is_err_and(|e| e.kind() == io::ErrorKind::WouldBlock),
     )?;
     // Only actual EOF is a lost PILS source; a valid PID update above was not.
+    let lost_epoch = runtime
+        .pils
+        .epoch()
+        .ok_or("missing current PILS epoch")?
+        .value();
     drop(pils);
-    let result = loop {
-        match poll_fn(|cx| runtime.poll_pils(cx, now, &mut |event| trace.observe(event))).await {
-            Ok(()) => {}
-            Err(error) => break error,
-        }
-    };
-    check(matches!(result, Fault::IdentityLost))?;
-    check(!runtime.close(&mut |event| trace.observe(event)).uncertain())?;
+    while !runtime.identity.paused() {
+        poll_fn(|cx| runtime.poll_pils(cx, now, &mut |event| trace.observe(event))).await?;
+    }
+    check(
+        runtime.peer().is_none()
+            && !runtime.ready()
+            && runtime.epoch == epoch
+            && runtime.socket_epoch == socket,
+    )?;
+    // Fault injection into the original parent bound: a paused source must
+    // still retire physically and retain both EOF and the terminal deadline.
+    runtime.parent.hard = Instant::now()
+        .checked_sub(Duration::from_micros(1))
+        .ok_or(Protocol::Overflow)?;
+    let error = poll_fn(|cx| runtime.poll(cx, None, &mut |event| trace.observe(event)))
+        .await
+        .err()
+        .ok_or("expired paused source did not fail")?;
+    check(
+        matches!(error.cause,Fault::IdentityRecovery {epoch,cause:gnunet_pils_host::client::ConnectionLoss::Eof,terminal} if epoch==lost_epoch && matches!(*terminal,Fault::Deadline)),
+    )?;
+    check(
+        error
+            .cleanup
+            .as_ref()
+            .is_some_and(|cleanup| !cleanup.uncertain())
+            && runtime.closed
+            && runtime.socket.is_none(),
+    )?;
     Ok(())
 }
 #[test]
-fn verified_identity_change_keeps_original_packets_and_ack_debt_on_same_mq() -> Result<(), Failure>
-{
+fn verified_identity_changes_and_source_recovery_keep_original_packets_and_ack_debt()
+-> Result<(), Failure> {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?

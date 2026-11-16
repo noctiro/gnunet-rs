@@ -5,6 +5,8 @@ The public `src/include/gnunet_hello_uri_lib.h` declares 30 functions, one callb
 and two opaque types. The normal built `libgnunethello` exports exactly those 30
 function names. This is an API coverage obligation, not proof from a function count.
 
+## Reference behavior
+
 The implementation is derived from the behavior of `src/lib/hello/hello-uri.c`,
 `src/lib/util/strings.c`, `src/lib/util/time.c`,
 `src/include/gnunet_container_lib.h`, `src/include/gnunet_protocols.h`,
@@ -17,6 +19,8 @@ check. Rust separates parsing and verification, so every mapping of a C verified
 parser includes the explicit `verify_at(profile, now)` step. The public C parser's
 `noverify` integer is replaced by types and an explicit operation, never authority
 inferred from a caller-provided Boolean.
+
+## Interface map
 
 | Official function | Rust equivalent |
 |---|---|
@@ -65,6 +69,8 @@ by explicit all-zero public values; they remain unverified. `HelloBuilder::sign`
 additionally performs the official PILS purpose7 signing step with existing pure
 Rust Ed25519 and the exact selected C address-hash profile.
 
+## Reference profiles
+
 The live normal oracle observes descending sorting despite conflicting comments
 in the C DLL insertion macro. It also observes SHA512(empty) in the normal build,
 SHA512(canonical address bytes) in the conditional build, count/reserved omission,
@@ -78,6 +84,8 @@ serializer's expiration are used to compare explicit-time Rust bytes.
 The C invalid-signature/expiry/noverify matrix distinguishes DHT's hidden check.
 Compile-fail controls and positive examples test the borrowed Rust ownership
 contract; they do not imply preservation of C's unsafe pointer mutation freedom.
+
+## Representation differences
 
 Safe and intentional representation differences:
 

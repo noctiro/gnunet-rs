@@ -21,9 +21,8 @@ use gnunet_fs_codec::Compressor;
 use gnunet_types::AbsoluteTime;
 use std::{
     collections::BTreeSet,
-    fs::{self, File, OpenOptions},
+    fs::{self, File},
     io,
-    os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
     sync::{
         Arc,
@@ -31,6 +30,12 @@ use std::{
     },
     time::{SystemTime, UNIX_EPOCH},
 };
+#[cfg(unix)]
+const NATIVE_DIRECTORY_SYNC: gnunet_native::DirectorySync =
+    gnunet_native::DirectorySync::Synchronized;
+#[cfg(windows)]
+const NATIVE_DIRECTORY_SYNC: gnunet_native::DirectorySync =
+    gnunet_native::DirectorySync::Unavailable;
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 struct Temporary(PathBuf);
 impl Temporary {
@@ -126,7 +131,7 @@ fn interrupted_cancel_reconciles_real_original_link_without_replacing_foreign_na
     let task_path = temporary.0.join("task");
     let tree = temporary.0.join("tree");
     let final_path = tree.join("file.bin");
-    let temp_name = ".gnunet-fs-output-crash-fixture";
+    let temp_name = "00000001";
     let temp_path = tree.join(temp_name);
     let mut cache = Repository::open(temporary.0.join("cache"))?;
     let mut buffers = Buffers::new();
@@ -205,11 +210,10 @@ fn interrupted_cancel_reconciles_real_original_link_without_replacing_foreign_na
         state.append(Event::Phase(Phase::Running))?;
         state.append(Event::DirectoryVerified { id: root_id(root) })?;
     }
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(&temp_path)?;
+    let parent_path = temp_path.parent().ok_or("missing fixture parent")?;
+    let name = temp_path.file_name().ok_or("missing fixture leaf")?;
+    let native_parent = gnunet_native::filesystem::Directory::open(parent_path)?;
+    let mut file = native_parent.create_private_file(name)?;
     let original = FileIdentity::of(&file)?;
     lock(&task.session)?.append(Event::TempOwned {
         binding: binding.clone(),
@@ -335,7 +339,10 @@ fn interrupted_cancel_reconciles_real_original_link_without_replacing_foreign_na
             .get(&binding.id)
             .ok_or("missing reconciled child")?;
         assert_eq!(entry.committed, Some(original));
-        assert_eq!(entry.stage, CommitStage::Durable);
+        assert_eq!(
+            entry.stage,
+            CommitStage::FileSynchronized(NATIVE_DIRECTORY_SYNC)
+        );
         assert!(!entry.cleanup);
     }
     drop(task);

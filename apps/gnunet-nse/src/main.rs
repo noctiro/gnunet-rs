@@ -1,19 +1,17 @@
 //! Official installed NSE estimate command; no proof/key/service dependency.
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
 use std::{
     error::Error,
     io::{self, Write},
     process::ExitCode,
 };
 type Failure = Box<dyn Error>;
-#[cfg(unix)]
 #[derive(Debug)]
 struct SelectedFailure {
     original: Option<Failure>,
     logging: Option<io::Error>,
     code: u8,
 }
-#[cfg(unix)]
 impl std::fmt::Display for SelectedFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if let Some(error) = &self.original {
@@ -25,7 +23,6 @@ impl std::fmt::Display for SelectedFailure {
         Ok(())
     }
 }
-#[cfg(unix)]
 impl Error for SelectedFailure {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         self.original
@@ -37,7 +34,6 @@ fn main() -> ExitCode {
     match run() {
         Ok(code) => ExitCode::from(code),
         Err(error) => {
-            #[cfg(unix)]
             if let Some(selected) = error.downcast_ref::<SelectedFailure>() {
                 return ExitCode::from(selected.code);
             }
@@ -46,11 +42,6 @@ fn main() -> ExitCode {
         }
     }
 }
-#[cfg(not(unix))]
-fn run() -> Result<u8, Failure> {
-    Err("native NSE command requires Unix".into())
-}
-#[cfg(unix)]
 fn run() -> Result<u8, Failure> {
     use gnunet_program_host::{
         getopt::Options,
@@ -62,6 +53,12 @@ fn run() -> Result<u8, Failure> {
         shared_clock::SharedClock,
     };
     use std::sync::Arc;
+    #[expect(
+        unsafe_code,
+        reason = "Sole fresh-process client inheritance capture before competing native owners"
+    )]
+    // SAFETY: first startup action, before configuration, logger, runtime or workers.
+    let inherited = unsafe { gnunet_service_startup::ClientStartup::capture() }?;
     let clock = SharedClock::native(256)?;
     let config = gnunet_config::Configuration::create(
         Arc::new(gnunet_config::ProjectData::default()),
@@ -78,6 +75,13 @@ fn run() -> Result<u8, Failure> {
     let mut logger = Logger::new(b"gnunet-nse", std::process::id(), false)?;
     let prepared=program::prepare(config,Invocation{binary_name:b"gnunet-nse",help:Some(b"Show network size estimates from NSE service. Default: print first real estimate and disconnect. -m/--monitor: print continuous estimates until signal or optional finite configured monitor target. Values are statistical observations, not authenticated peer counts. No positional arguments."),select_default_filename:true,defaults:Defaults::Native},options,std::env::args_os(),&program::Environment::capture(),&mut NlsDisabled,&mut logger,&clock,&mut io::stdout().lock(),&mut io::stderr().lock());
     let reporter = Reporter::new(logger, clock.clone());
+    #[cfg(unix)]
+    if let Some(notice) = inherited.notice {
+        reporter.warning(
+            "nse.parent",
+            format_args!("NSE parent-control declaration: {notice:?}"),
+        );
+    }
     let mut failure_code = 2;
     let outcome: Result<u8, Failure> = (|| {
         let prepared = match prepared? {
@@ -109,6 +113,7 @@ fn run() -> Result<u8, Failure> {
                 settings,
                 monitor,
                 reporter.clone(),
+                inherited.parent,
             ))
             .map(|delivered| u8::from(!delivered))
     })();

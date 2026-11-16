@@ -14,14 +14,13 @@ use gnunet_types::AbsoluteTime;
 pub use inspect::{ExtractedObject, InspectionFailure, InspectionReport, inspect_with_metadata};
 pub use limits::Limits;
 pub use manual::{ManualLimits, ManualMetadata};
-pub use metadata::{MetadataSettings, NativeMetadataLimits};
+pub use metadata::{
+    MetadataSettings, NativeMetadataAuthorization, NativeMetadataConfiguration,
+    NativeMetadataLimits,
+};
 use std::{
     cell::{Cell, RefCell},
-    fs::{self, File},
-    os::unix::{
-        ffi::OsStrExt,
-        fs::{FileExt, MetadataExt},
-    },
+    fs::File,
     path::{Path, PathBuf},
 };
 use unicode_normalization::UnicodeNormalization;
@@ -119,28 +118,11 @@ impl<C: FnMut(Progress) -> Control> Context<C> {
         (self.control.borrow_mut())(progress)
     }
 }
-#[derive(Clone, Copy, Eq, PartialEq)]
-pub(crate) struct Stamp {
-    dev: u64,
-    ino: u64,
-    bytes: u64,
-    mtime: i64,
-    mn: i64,
-    ctime: i64,
-    cn: i64,
-}
-impl Stamp {
-    pub(crate) fn of(file: &File) -> Result<Self, Error> {
-        let m = file.metadata()?;
-        Ok(Self {
-            dev: m.dev(),
-            ino: m.ino(),
-            bytes: m.len(),
-            mtime: m.mtime(),
-            mn: m.mtime_nsec(),
-            ctime: m.ctime(),
-            cn: m.ctime_nsec(),
-        })
+pub(crate) fn descriptor_info(file: &File) -> Result<gnunet_native::filesystem::FileInfo, Error> {
+    use gnunet_native::filesystem::{EntryInfo, file_info};
+    match file_info(file)? {
+        EntryInfo::File(info) | EntryInfo::Directory(info) => Ok(info),
+        EntryInfo::Other => Err(Error::Binding),
     }
 }
 pub(crate) fn copy(bytes: &[u8]) -> Result<Vec<u8>, Error> {
@@ -281,7 +263,11 @@ impl<'a, C: FnMut(Progress) -> Control> Extractor<'a, C> {
         context: &'a Context<C>,
         formats_enabled: bool,
     ) -> Result<Self, Error> {
-        let basename = input.file_name().map_or(b"".as_slice(), OsStrExt::as_bytes);
+        let basename = input
+            .file_name()
+            .map(crate::input_tree::protocol_name)
+            .transpose()?
+            .unwrap_or_default();
         Ok(Self {
             context,
             policy,
@@ -371,7 +357,7 @@ impl<'a, C: FnMut(Progress) -> Control> Extractor<'a, C> {
         max_bytes: usize,
     ) -> Result<Object, Error> {
         self.context.check()?;
-        let before = Stamp::of(file)?;
+        let before = descriptor_info(file)?;
         let p = self.policy;
         let mut values = Vec::new();
         values
@@ -396,7 +382,9 @@ impl<'a, C: FnMut(Progress) -> Control> Extractor<'a, C> {
         {
             let name = relative
                 .file_name()
-                .map_or(self.root_name.as_slice(), |s| s.as_bytes());
+                .map(crate::input_tree::protocol_name)
+                .transpose()?
+                .unwrap_or(&self.root_name);
             Self::text(&mut values, 180, name, p)?;
         }
         if directory {
@@ -413,12 +401,13 @@ impl<'a, C: FnMut(Progress) -> Control> Extractor<'a, C> {
             if before.bytes > self.content_file_bytes {
                 return Err(Error::Limit);
             }
+            let reader = gnunet_native::filesystem::FileReader::from_file(file)?;
             let want = usize::try_from(before.bytes.min(p.max_probe_bytes as u64))
                 .map_err(|_| Error::Limit)?;
             let mut got = 0;
             while got < want {
                 self.context.check()?;
-                match file.read_at(&mut self.probe[got..want], got as u64) {
+                match reader.read_at(&mut self.probe[got..want], got as u64) {
                     Ok(0) => return Err(Error::SourceChanged),
                     Ok(n) => got += n,
                     Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
@@ -489,7 +478,7 @@ impl<'a, C: FnMut(Progress) -> Control> Extractor<'a, C> {
                 let mut n = 0;
                 while n < tag.len() {
                     self.context.check()?;
-                    match file.read_at(&mut tag[n..], before.bytes - 128 + n as u64) {
+                    match reader.read_at(&mut tag[n..], before.bytes - 128 + n as u64) {
                         Ok(0) => return Err(Error::SourceChanged),
                         Ok(k) => n += k,
                         Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
@@ -509,7 +498,7 @@ impl<'a, C: FnMut(Progress) -> Control> Extractor<'a, C> {
             }
         }
         self.context.check()?;
-        if Stamp::of(file)? != before {
+        if descriptor_info(file)? != before {
             return Err(Error::SourceChanged);
         }
         self.context.check()?;
@@ -857,7 +846,7 @@ pub fn file_keywords_with_metadata(
         return Err(Error::Policy);
     }
     context.check()?;
-    let original = Stamp::of(file)?;
+    let original = descriptor_info(file)?;
     let mut extractor = Extractor::new(
         filename,
         policy,
@@ -872,7 +861,7 @@ pub fn file_keywords_with_metadata(
         context.check()?;
         let result = terms(&object.wire, policy)?;
         context.check()?;
-        if Stamp::of(file)? != original {
+        if descriptor_info(file)? != original {
             return Err(Error::SourceChanged);
         }
         Ok(result)

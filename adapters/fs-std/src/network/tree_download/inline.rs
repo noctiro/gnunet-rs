@@ -18,7 +18,7 @@ impl BlockSink for InlineBlocks {
         bytes.extend_from_slice(node.block().bytes());
         self.0.try_reserve(1).map_err(|_| Error::Limit)?;
         self.0.push((node.block().key().query, bytes));
-        Ok(Insert::Created)
+        Ok(Insert::Created(crate::Retention::Volatile))
     }
 }
 impl BlockSource for InlineBlocks {

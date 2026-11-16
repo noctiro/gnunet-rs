@@ -1,6 +1,5 @@
 //! Standard GNUnet URI default-action PROGRAM, with one real configured child.
 #![deny(unsafe_code)]
-#[cfg(unix)]
 use gnunet_uri_host::{Dispatcher, Settings};
 use std::{
     error::Error,
@@ -8,13 +7,11 @@ use std::{
     process::ExitCode,
 };
 type Cause = Box<dyn Error>;
-#[cfg(unix)]
 struct SelectedFailure {
     original: Option<Cause>,
     report: Option<gnunet_uri_host::Report>,
     logging: Option<io::Error>,
 }
-#[cfg(unix)]
 impl std::fmt::Debug for SelectedFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("UriProgramFailure")
@@ -24,7 +21,6 @@ impl std::fmt::Debug for SelectedFailure {
             .finish()
     }
 }
-#[cfg(unix)]
 impl std::fmt::Display for SelectedFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "URI PROGRAM")?;
@@ -40,7 +36,6 @@ impl std::fmt::Display for SelectedFailure {
         Ok(())
     }
 }
-#[cfg(unix)]
 impl Error for SelectedFailure {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         self.original
@@ -48,13 +43,11 @@ impl Error for SelectedFailure {
             .or_else(|| self.logging.as_ref().map(|cause| cause as _))
     }
 }
-#[cfg(unix)]
 #[derive(Debug)]
 struct DispatchEnd {
     original: Option<gnunet_uri_host::DispatchFailure>,
     close: gnunet_uri_host::CloseReport,
 }
-#[cfg(unix)]
 impl std::fmt::Display for DispatchEnd {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
@@ -64,7 +57,6 @@ impl std::fmt::Display for DispatchEnd {
         )
     }
 }
-#[cfg(unix)]
 impl Error for DispatchEnd {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         self.original.as_ref().map(|e| e as _).or_else(|| {
@@ -80,10 +72,7 @@ fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(cause) => {
-            #[cfg(unix)]
             let selected = cause.is::<SelectedFailure>();
-            #[cfg(not(unix))]
-            let selected = false;
             if !selected {
                 let _diagnostic = writeln!(io::stderr().lock(), "gnunet-uri: {cause}");
             }
@@ -91,14 +80,9 @@ fn main() -> ExitCode {
         }
     }
 }
-#[cfg(not(unix))]
-fn run() -> Result<(), Cause> {
-    Err("native URI dispatch PROGRAM requires Unix".into())
-}
-#[cfg(unix)]
 #[expect(
     unsafe_code,
-    reason = "Unique initial inherited descriptor transfer in the fresh single-threaded executable before any logger, runtime or other resource owner"
+    reason = "Once-only native inheritance capture before logger, runtime or other resource owners"
 )]
 fn run() -> Result<(), Cause> {
     use gnunet_program_host::{
@@ -108,30 +92,17 @@ fn run() -> Result<(), Cause> {
         reporting::Reporter,
         shared_clock::SharedClock,
     };
-    use gnunet_service_startup::{InheritedMode, InheritedResources};
     use std::sync::Arc;
     // SAFETY: first operation of this fresh exec child, with no earlier fd/env
     // capture, thread, runtime, logger or competing descriptor ownership.
-    let captured = unsafe {
-        gnunet_service_startup::capture_from_environment(InheritedMode::CloseAfterConfiguredBind)?
-    };
-    match captured.inherited {
-        InheritedResources::CloseAfterBind(hold) => {
-            let offered = !hold.is_empty();
-            let released = hold.abort();
-            if offered {
-                return Err(format!("URI dispatcher has no listener; original offered descriptors retired: {released:?}").into());
-            }
-        }
-        InheritedResources::Listeners(_) => return Err("unexpected URI activation mode".into()),
-    }
+    let captured = unsafe { gnunet_service_startup::ClientStartup::capture()? };
     let clock = SharedClock::native(8)?;
     let config = gnunet_config::Configuration::create(
         Arc::new(gnunet_config::ProjectData::default()),
         Default::default(),
     )?;
     let mut logger = Logger::new(b"gnunet-uri", std::process::id(), false)?;
-    let help: &[u8] = b"Perform the configured default action for one gnunet:// URI. [uri] SUBSYSTEM selects executable and arguments with the shared official command tokenizer, without a shell. The complete original URI is appended as one argument; no automatic -- is inserted. Standard -c/-L/-l/-h/-v options select actual configuration and diagnostics.";
+    let help: &[u8] = b"Perform the configured default action for one gnunet:// URI. [uri] SUBSYSTEM selects executable and arguments with the shared configured-command tokenizer, without a shell. The complete original URI is appended as one argument; no automatic -- is inserted. Standard -c/-L/-l/-h/-v options select actual configuration and diagnostics.";
     let prepared = program::prepare(
         config,
         Invocation {
@@ -150,7 +121,8 @@ fn run() -> Result<(), Cause> {
         &mut io::stderr().lock(),
     );
     let reporter = Reporter::new(logger, clock.clone());
-    if let Some(notice) = captured.control_notice {
+    #[cfg(unix)]
+    if let Some(notice) = captured.notice {
         reporter.debug(
             "uri.parent.notice",
             format_args!("parent-control declaration: {notice:?}"),
@@ -183,7 +155,7 @@ fn run() -> Result<(), Cause> {
         runtime.block_on(async {
             let canonical: Arc<dyn gnunet_service_runtime::clock::RuntimeClock> = Arc::new(clock);
             let mut dispatcher =
-                Dispatcher::new(captured.parent_control, reporter.clone(), canonical, None)?;
+                Dispatcher::new(captured.parent, reporter.clone(), canonical, None)?;
             dispatcher.start(settings)?;
             let original = dispatcher.drive().await;
             let close = dispatcher.close();

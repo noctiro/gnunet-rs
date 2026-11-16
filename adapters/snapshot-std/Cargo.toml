@@ -8,13 +8,9 @@ license.workspace = true
 [dependencies]
 gnunet-crypto.workspace = true
 gnunet-types.workspace = true
-libc.workspace = true
-nix = { workspace = true, features = ["user"] }
+gnunet-native.workspace = true
 zeroize = { workspace = true, features = ["alloc"] }
 tokio = { workspace = true, features = ["sync"] }
-
-[target.'cfg(target_os = "macos")'.dependencies]
-gnunet-native.workspace = true
 
 [lints]
 workspace = true

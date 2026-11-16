@@ -11,11 +11,11 @@ impl Scratch {
     fn new() -> io::Result<Self> {
         let mut random = [0; 16];
         getrandom::fill(&mut random).map_err(|_| io::Error::other("entropy"))?;
-        let path = std::env::temp_dir().join(format!(
-            "gnunet-pils-identity-{:032x}",
-            u128::from_be_bytes(random)
-        ));
-        fs::create_dir(&path)?;
+        let base = fs::canonicalize(std::env::temp_dir())?;
+        let name = format!("gnunet-pils-identity-{:032x}", u128::from_be_bytes(random));
+        gnunet_native::filesystem::Directory::open(&base)?
+            .create_private_directory(std::ffi::OsStr::new(&name))?;
+        let path = base.join(name);
         Ok(Self(path))
     }
 }

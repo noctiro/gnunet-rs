@@ -103,6 +103,7 @@ impl ClockPort {
             return Err(epoch::ReplayRejected {
                 floor,
                 error: epoch::Failure {
+                    cleanup: None,
                     stage: epoch::Stage::BackendQuarantine,
                     outcome: epoch::Outcome::Unknown,
                     cause: std::io::Error::other(

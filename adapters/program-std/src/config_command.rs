@@ -14,7 +14,6 @@ use std::{
     ffi::{OsStr, OsString},
     fmt,
     io::{self, Write},
-    os::unix::ffi::OsStrExt,
 };
 
 /// Actual functional output and independent configuration/logging/output causes.
@@ -156,7 +155,10 @@ pub fn run_config_command_with_program(
         logger.setup_routed(
             b"gnunet-config",
             selection.level,
-            selection.file.map(|p| p.as_os_str().as_bytes()),
+            selection
+                .file
+                .map(|p| gnunet_native::os_bytes::encode(p.as_os_str()))
+                .as_deref(),
             &Environment::capture(),
             &Stamp::setup_now()?,
             stderr,

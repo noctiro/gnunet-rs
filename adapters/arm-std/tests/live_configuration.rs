@@ -1,4 +1,5 @@
 //! Live configuration samples preserve original MQ, stream and callback authority.
+#![cfg(unix)]
 #![expect(
     clippy::panic,
     reason = "Only test callbacks panic when an impossible or premature observation is delivered"

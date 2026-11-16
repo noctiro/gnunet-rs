@@ -1,4 +1,4 @@
-//! Real owned Unix peers for the one shared Resolver MQ and callback authority.
+//! Real owned native local peers for the one shared Resolver MQ and callback authority.
 #![expect(
     clippy::panic_in_result_fn,
     reason = "Fallible OS tests assert real original-connection and callback invariants"
@@ -11,45 +11,28 @@ use gnunet_resolver_broker::{
 };
 use gnunet_types::Duration as CoreDuration;
 use gnunet_wire::official::Frame;
+use std::sync::atomic::Ordering;
 use std::{
     error::Error,
     future::{Future, poll_fn},
     io,
-    path::{Path, PathBuf},
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
+    path::Path,
+    sync::Arc,
     task::Poll,
     time::Duration,
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::{UnixListener, UnixStream},
     time::{Instant, timeout},
 };
+#[path = "support/directory.rs"]
+mod directory;
+use directory::Directory as Dir;
+#[path = "support/local.rs"]
+mod local;
+use local::Listener as LocalListener;
+use local::Stream as LocalStream;
 type Result<T = ()> = std::result::Result<T, Box<dyn Error + Send + Sync>>;
-static NEXT: AtomicU64 = AtomicU64::new(0);
-struct Dir(PathBuf);
-impl Dir {
-    fn new() -> io::Result<Self> {
-        let p = std::env::temp_dir().join(format!(
-            "rb-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::create_dir(&p)?;
-        Ok(Self(p))
-    }
-    fn socket(&self, n: &str) -> PathBuf {
-        self.0.join(n)
-    }
-}
-impl Drop for Dir {
-    fn drop(&mut self) {
-        drop(std::fs::remove_dir_all(&self.0));
-    }
-}
 fn runtime() -> io::Result<tokio::runtime::Runtime> {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -67,7 +50,7 @@ fn cfg(path: &Path) -> Result<Configuration> {
     c.set_value(
         b"resolver",
         b"UNIXPATH",
-        Some(path.as_os_str().as_encoded_bytes()),
+        Some(&gnunet_native::os_bytes::encode(path.as_os_str())),
     )?;
     Ok(c)
 }
@@ -84,7 +67,7 @@ fn setup<const R: usize, const N: usize>(
         Arc::new(SystemClock),
     )?)
 }
-async fn frame(s: &mut UnixStream) -> Result<Vec<u8>> {
+async fn frame(s: &mut LocalStream) -> Result<Vec<u8>> {
     let mut h = [0; 4];
     s.read_exact(&mut h).await?;
     let n = usize::from(u16::from_be_bytes([h[0], h[1]]));
@@ -155,7 +138,7 @@ async fn next<const R: usize, const N: usize>(
 fn cloned_contexts_share_one_fifo_mq_and_end_advances_original_tail() -> Result {
     runtime()?.block_on(async {
         let dir = Dir::new()?;
-        let listener = UnixListener::bind(dir.socket("a"))?;
+        let listener = LocalListener::bind(dir.0.join("a")).await?;
         let peer = tokio::spawn(async move {
             let (mut s, _) = listener.accept().await?;
             let a = frame(&mut s).await?;
@@ -191,7 +174,7 @@ fn cloned_contexts_share_one_fifo_mq_and_end_advances_original_tail() -> Result 
             assert_eq!(timeout(Duration::from_secs(2), s.read(&mut [0])).await??, 0);
             Ok::<_, Box<dyn Error + Send + Sync>>(())
         });
-        let (ctx, mut driver) = setup::<4, 64>(LiveConfiguration::new(cfg(&dir.socket("a"))?))?;
+        let (ctx, mut driver) = setup::<4, 64>(LiveConfiguration::new(cfg(&dir.0.join("a"))?))?;
         let cloned = ctx.clone();
         let mut first = ctx.ip_get(b"first", Family::Any, CoreDuration(1_000_000))?;
         let mut second = cloned.ip_get(b"second", Family::Any, CoreDuration(1_000_000))?;
@@ -218,7 +201,7 @@ fn cloned_contexts_share_one_fifo_mq_and_end_advances_original_tail() -> Result 
 fn transmitted_cancel_drains_original_end_without_private_connection_or_callback() -> Result {
     runtime()?.block_on(async {
         let dir = Dir::new()?;
-        let listener = UnixListener::bind(dir.socket("a"))?;
+        let listener = LocalListener::bind(dir.0.join("a")).await?;
         let peer = tokio::spawn(async move {
             let (mut s, _) = listener.accept().await?;
             let a = frame(&mut s).await?;
@@ -240,7 +223,7 @@ fn transmitted_cancel_drains_original_end_without_private_connection_or_callback
             assert_eq!(timeout(Duration::from_secs(2), s.read(&mut [0])).await??, 0);
             Ok::<_, Box<dyn Error + Send + Sync>>(())
         });
-        let (ctx, mut driver) = setup::<4, 64>(LiveConfiguration::new(cfg(&dir.socket("a"))?))?;
+        let (ctx, mut driver) = setup::<4, 64>(LiveConfiguration::new(cfg(&dir.0.join("a"))?))?;
         let mut first = ctx.ip_get(b"cancelled", Family::Any, CoreDuration(1_000_000))?;
         let mut second = ctx.ip_get(b"kept", Family::Any, CoreDuration(1_000_000))?;
         assert_eq!(
@@ -265,7 +248,7 @@ fn callback_return_lease_blocks_next_effect_but_allows_cancellation_then_safe_po
 {
     runtime()?.block_on(async {
         let dir = Dir::new()?;
-        let listener = UnixListener::bind(dir.socket("a"))?;
+        let listener = LocalListener::bind(dir.0.join("a")).await?;
         let peer = tokio::spawn(async move {
             let (mut s, _) = listener.accept().await?;
             let a = frame(&mut s).await?;
@@ -282,7 +265,7 @@ fn callback_return_lease_blocks_next_effect_but_allows_cancellation_then_safe_po
             assert_eq!(timeout(Duration::from_secs(2), s.read(&mut [0])).await??, 0);
             Ok::<_, Box<dyn Error + Send + Sync>>(())
         });
-        let (ctx, mut driver) = setup::<2, 64>(LiveConfiguration::new(cfg(&dir.socket("a"))?))?;
+        let (ctx, mut driver) = setup::<2, 64>(LiveConfiguration::new(cfg(&dir.0.join("a"))?))?;
         let mut query = ctx.hostname_get("192.0.2.9".parse()?, true, CoreDuration(1_000_000))?;
         let token = query.token();
         let mut pending = Box::pin(query.next());
@@ -387,7 +370,7 @@ fn expired_then_canceled_unsent_envelopes_retain_exact_mq_ownership_with_bounded
 {
     runtime()?.block_on(async {
         let dir = Dir::new()?;
-        let path = dir.socket("late");
+        let path = dir.0.join("late");
         let (ctx, mut driver) = broker::<4, 64>(
             LiveConfiguration::new(cfg(&path)?),
             Limits {
@@ -419,7 +402,7 @@ fn expired_then_canceled_unsent_envelopes_retain_exact_mq_ownership_with_bounded
             ))
         ));
         canceled.cancel()?;
-        let listener = UnixListener::bind(&path)?;
+        let listener = LocalListener::bind(&path).await?;
         let peer = tokio::spawn(async move {
             let (mut s, _) = listener.accept().await?;
             let first = frame(&mut s).await?;
@@ -489,7 +472,7 @@ fn tcp_resolver_own_numeric_lookup_uses_shared_core_without_self_deadlock() -> R
 fn existing_mq_admission_owns_frame_before_immediate_cancel_or_another_drive() -> Result {
     runtime()?.block_on(async {
         let dir = Dir::new()?;
-        let listener = UnixListener::bind(dir.socket("inline"))?;
+        let listener = LocalListener::bind(dir.0.join("inline")).await?;
         let peer = tokio::spawn(async move {
             let (mut s, _) = listener.accept().await?;
             for expected in [b"warm".as_slice(), b"instant-cancel", b"kept"] {
@@ -501,7 +484,7 @@ fn existing_mq_admission_owns_frame_before_immediate_cancel_or_another_drive() -
             assert_eq!(timeout(Duration::from_secs(2), s.read(&mut [0])).await??, 0);
             Ok::<_, Box<dyn Error + Send + Sync>>(())
         });
-        let (ctx, mut driver) = setup::<4, 64>(LiveConfiguration::new(cfg(&dir.socket("inline"))?))?;
+        let (ctx, mut driver) = setup::<4, 64>(LiveConfiguration::new(cfg(&dir.0.join("inline"))?))?;
         let mut warm = ctx.ip_get(b"warm", Family::Any, CoreDuration(1_000_000))?;
         assert_eq!(next(&mut driver, &mut warm).await?, Value::Complete(Completion::End));
         assert_eq!(driver.queued_frames()?, 0);
@@ -529,7 +512,7 @@ fn callback_stack_survives_source_clock_backwards_before_other_due_timeout() -> 
         let dir = Dir::new()?;
         let clock = Arc::new(SourceClock::frozen(5_000_000, 8)?);
         let (ctx, mut driver) = broker::<4, 64>(
-            LiveConfiguration::new(cfg(&dir.socket("never"))?),
+            LiveConfiguration::new(cfg(&dir.0.join("never"))?),
             Limits::default(),
             profile()?,
             clock.clone(),
@@ -569,7 +552,7 @@ fn logical_clock_revision_wakes_unbounded_drive_and_timeout_keeps_original_deadl
         let dir = Dir::new()?;
         let clock = Arc::new(SourceClock::frozen(1_000_000, 8)?);
         let (ctx, mut driver) = broker::<3, 64>(
-            LiveConfiguration::new(cfg(&dir.socket("absent"))?),
+            LiveConfiguration::new(cfg(&dir.0.join("absent"))?),
             Limits::default(),
             profile()?,
             clock.clone(),
@@ -599,10 +582,10 @@ fn logical_clock_revision_wakes_unbounded_drive_and_timeout_keeps_original_deadl
 fn client_tcp_success_retains_dns_drain_until_actual_end_and_ignores_later_addresses() -> Result {
     runtime()?.block_on(async {
         let dir = Dir::new()?;
-        let resolver = UnixListener::bind(dir.socket("resolver"))?;
+        let resolver = LocalListener::bind(dir.0.join("resolver")).await?;
         let service = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await?;
         let port = service.local_addr()?.port();
-        let (mut control, mut peer_control) = UnixStream::pair()?;
+        let (mut control, mut peer_control) = tokio::io::duplex(1);
         let peer = tokio::spawn(async move {
             let (mut s, _) = resolver.accept().await?;
             let bytes = frame(&mut s).await?;
@@ -634,7 +617,7 @@ fn client_tcp_success_retains_dns_drain_until_actual_end_and_ignores_later_addre
             Ok::<_, Box<dyn Error + Send + Sync>>(())
         });
         let (ctx, mut driver) =
-            setup::<4, 64>(LiveConfiguration::new(cfg(&dir.socket("resolver"))?))?;
+            setup::<4, 64>(LiveConfiguration::new(cfg(&dir.0.join("resolver"))?))?;
         let mut c = Configuration::default();
         c.set_value(b"owned", b"HOSTNAME", Some(b"owned-service"))?;
         c.set_value(b"owned", b"PORT", Some(port.to_string().as_bytes()))?;
@@ -712,9 +695,9 @@ fn client_tcp_success_retains_dns_drain_until_actual_end_and_ignores_later_addre
 fn selected_configuration_changes_only_next_mq_while_old_unix_identity_remains_live() -> Result {
     runtime()?.block_on(async {
         let dir=Dir::new()?;
-        let old_path=dir.socket("old-live");let new_path=dir.socket("new-live");
-        let old_listener=UnixListener::bind(&old_path)?;let new_listener=UnixListener::bind(&new_path)?;
-        let old_store=LiveConfiguration::new(cfg(&dir.socket("absent"))?);
+        let old_path=dir.0.join("old-live");let new_path=dir.0.join("new-live");
+        let old_listener=LocalListener::bind(&old_path).await?;let new_listener=LocalListener::bind(&new_path).await?;
+        let old_store=LiveConfiguration::new(cfg(&dir.0.join("absent"))?);
         let new_store=LiveConfiguration::new(cfg(&new_path)?);
         let (ctx,mut driver)=setup::<4,64>(old_store.clone())?;
         let mut first=ctx.ip_get(b"first",Family::Any,CoreDuration(1_000_000))?;
@@ -818,9 +801,9 @@ fn stale_foreign_capacity_and_clock_failure_drop_do_not_alias_callback_authority
 fn maximum_65535_frame_reaches_shared_mq_and_rejected_names_preserve_admission() -> Result {
     runtime()?.block_on(async {
         let dir = Dir::new()?;
-        let listener = UnixListener::bind(dir.socket("maximum"))?;
+        let listener = LocalListener::bind(dir.0.join("maximum")).await?;
         let (ctx, mut driver) = broker::<2, 65518>(
-            LiveConfiguration::new(cfg(&dir.socket("maximum"))?),
+            LiveConfiguration::new(cfg(&dir.0.join("maximum"))?),
             Limits::default(),
             profile()?,
             Arc::new(SystemClock),

@@ -5,11 +5,13 @@
     reason = "Fallible native tests assert actual mutation certainty and original reply bytes"
 )]
 use super::{Submission, execute_controlled};
+use crate::local_peer::{Listener, Temporary};
 use crate::network::{Error, TimeLimit};
 use gnunet_datastore_host::{
     Client, Instance, Interruption, Limits, Outcome, ProtocolClient, ProtocolLimits,
     ReservationSlot, Slot,
 };
+use gnunet_service_runtime::local::Stream;
 use gnunet_types::{AbsoluteTime, Duration as LogicalDuration, Error as ProtocolError};
 use gnunet_wire::official::datastore::{Data, Request, Response, Status};
 use std::{
@@ -17,35 +19,28 @@ use std::{
     path::PathBuf,
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, Ordering},
     },
     time::Duration,
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::{UnixListener, UnixStream},
     time::{sleep, timeout},
 };
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 const WAIT: Duration = Duration::from_secs(3);
 const KEY: [u8; 64] = [0x37; 64];
 const VALUE: &[u8] = b"opaque datastore payload";
-struct Socket(PathBuf);
-impl Socket {
-    fn bind() -> io::Result<(Self, UnixListener)> {
-        static NEXT: AtomicU64 = AtomicU64::new(1);
-        let path = std::env::temp_dir().join(format!(
-            "gnunet-put-control-{}-{}.sock",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        let listener = UnixListener::bind(&path)?;
-        Ok((Self(path), listener))
-    }
+struct Socket {
+    path: PathBuf,
+    _root: Temporary,
 }
-impl Drop for Socket {
-    fn drop(&mut self) {
-        let _cleanup = std::fs::remove_file(&self.0);
+impl Socket {
+    async fn bind() -> TestResult<(Self, Listener)> {
+        let root = Temporary::new()?;
+        let path = root.0.join("store.sock");
+        let listener = Listener::bind(&path).await?;
+        Ok((Self { path, _root: root }, listener))
     }
 }
 fn runtime() -> io::Result<tokio::runtime::Runtime> {
@@ -71,7 +66,7 @@ fn client<'id, 's, 'b>(
     )?;
     Client::new(
         pure,
-        gnunet_client_host::EndpointSource::unix(socket.0.clone()),
+        gnunet_client_host::EndpointSource::unix(socket.path.clone()),
         Limits {
             reply_frames: 1,
             reply_bytes: 65535,
@@ -96,9 +91,9 @@ fn request() -> Request<'static> {
 fn time(client: &Client<'_, '_, '_>) -> Result<TimeLimit, Error> {
     let clock = client.clock();
     let target = AbsoluteTime::from_micros(clock.sample()?.now.as_micros() + 300_000_000);
-    TimeLimit::new(clock, target)
+    TimeLimit::new(clock, target, None)
 }
-async fn received(stream: &mut UnixStream) -> TestResult {
+async fn received(stream: &mut Stream) -> TestResult {
     let mut header = [0; 4];
     stream.read_exact(&mut header).await?;
     let length = usize::from(u16::from_be_bytes([header[0], header[1]]));
@@ -126,7 +121,7 @@ async fn received(stream: &mut UnixStream) -> TestResult {
     assert_eq!(data.value, VALUE);
     Ok(())
 }
-async fn closed(stream: &mut UnixStream) -> TestResult {
+async fn closed(stream: &mut Stream) -> TestResult {
     let mut extra = [0];
     assert_eq!(stream.read(&mut extra).await?, 0);
     Ok(())
@@ -135,7 +130,7 @@ async fn closed(stream: &mut UnixStream) -> TestResult {
 fn cancel_before_submit_is_known_unsent_and_quiet_written_cancel_is_unknown_without_replay()
 -> TestResult {
     runtime()?.block_on(async {
-        let (socket, listener) = Socket::bind()?;
+        let (socket, listener) = Socket::bind().await?;
         {
             let mut id = Instance::new();
             let mut wire = vec![0; 65535];
@@ -211,7 +206,7 @@ fn cancel_before_submit_is_known_unsent_and_quiet_written_cancel_is_unknown_with
 #[test]
 fn a_real_status_after_cancellation_retains_acceptance_and_original_interruption() -> TestResult {
     runtime()?.block_on(async {
-        let (socket,listener)=Socket::bind()?;
+        let (socket,listener)=Socket::bind().await?;
         let seen=Arc::new(AtomicBool::new(false));let first=seen.clone();
         let cancelled=Arc::new(AtomicBool::new(false));let wanted=cancelled.clone();
         let response=Response::Status(Status {code:1,min_expiration:AbsoluteTime::from_micros(99),message:Some(b"accepted after interruption\0".as_slice())});

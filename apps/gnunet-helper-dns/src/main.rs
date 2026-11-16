@@ -1,4 +1,4 @@
-//! Actual Linux Rust privileged DNS interception helper; no C helper wrapper.
+//! Native Rust privileged DNS interception helper; no C helper wrapper.
 #![forbid(unsafe_code)]
 use std::{
     error::Error,
@@ -14,11 +14,11 @@ fn main() -> ExitCode {
         }
     }
 }
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "freebsd")))]
 fn run() -> Result<(), Box<dyn Error>> {
-    Err("official DNS interception helper platform is Linux".into())
+    Err("DNS helper interception backend is unavailable on this platform".into())
 }
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 fn run() -> Result<(), Box<dyn Error>> {
     let args = std::env::args_os().skip(1).take(7).collect::<Vec<_>>();
     let args = args

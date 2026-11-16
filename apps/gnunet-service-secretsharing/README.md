@@ -1,12 +1,22 @@
 # Ordinary SECRETSHARING service
 
-`gnunet-service-secretsharing` uses the standard SERVICE configuration and
--c/-L/-l lifecycle, inherited activation/parent owners, fresh executable daemon
-split, selected privileges, Unix/TCP listeners, Logger, Clock4096, Resolver,
-signals and explicit independent cleanup. Defaults match fixed C's
-secretsharing.conf: normal SERVICE_OPTION_NONE/Immediate shutdown,
-UNIX_MATCH_UID=YES and UNIX_MATCH_GID=YES. Standard configured TCP ACLs and Unix
-credentials apply before a client is admitted.
+`gnunet-service-secretsharing -c service.conf` runs the official IPC endpoint
+using original PILS and CONSENSUS sources.
+
+## Startup and configuration
+
+The shared [native SERVICE driver](../../adapters/program-std/README.md#service-startup)
+provides standard options, selected diagnostics, configured process identity,
+listeners, original parent control and bounded readiness submission. Unix
+prepares inherited/TCP listeners before privilege changes, then completes local
+endpoints under the configured identity. Windows verifies the process token,
+imports activation and selects managed console detachment or standalone re-exec.
+
+Missing Unix credential settings default to UID=YES/GID=YES on Unix and NO/NO
+on Windows. Explicit Unix credential checks remain unsupported on Windows;
+endpoint ACLs retain native policy. Immediate shutdown is the default.
+
+## Operations and ownership
 
 The actual `gnunet-secretsharing-host::Server` composes standard781 with the
 installed original-share decrypt owner. READY is printed only after actual
@@ -30,6 +40,8 @@ paths cover both request kinds. The PILS source is retired and checked
 idle before zeroizing783 secure queue admission; no Consensus MQ is started for
 this singleton. This does not establish multi-peer DKG or legacy-peer identity
 compatibility.
+
+## Resource policy
 
 The `[secretsharing-service-rust]` resource profile has MAX_CLIENTS16,
 MAX_OPERATIONS8, OPERATION_BYTES32 MiB, TOTAL_RETAINED_BYTES512 MiB, FRAME_BYTES

@@ -477,31 +477,8 @@ impl History {
 #[cfg(test)]
 mod identity_tests {
     use super::*;
+    use crate::test_support::Directory;
     use gnunet_crypto::EddsaPrivateKey;
-    use std::{
-        os::unix::fs::DirBuilderExt,
-        path::PathBuf,
-        sync::atomic::{AtomicU64, Ordering},
-    };
-
-    static NEXT: AtomicU64 = AtomicU64::new(0);
-    struct Directory(PathBuf);
-    impl Directory {
-        fn new() -> Result<Self, std::io::Error> {
-            let path = std::env::temp_dir().join(format!(
-                "msg-history-{}-{}",
-                std::process::id(),
-                NEXT.fetch_add(1, Ordering::Relaxed)
-            ));
-            std::fs::DirBuilder::new().mode(0o700).create(&path)?;
-            Ok(Self(path))
-        }
-    }
-    impl Drop for Directory {
-        fn drop(&mut self) {
-            let _removed = std::fs::remove_dir_all(&self.0);
-        }
-    }
 
     // Actual owned storage/worker receipts. There is no simulated network or
     // claim that these test-owned keys establish a live PILS source.

@@ -1,5 +1,4 @@
 //! Bounded normal GNS business-card HTTP consumer and real renderer ownership.
-#![cfg(unix)]
 #![forbid(unsafe_code)]
 mod http;
 /// Fixed-template renderer with original child wait and cleanup ownership.

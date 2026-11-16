@@ -1,7 +1,8 @@
 //! Local-only application composition. No peer job or backend is constructed.
 use crate::{
-    foreground::{Diagnostics, Failures, Ready, Stage},
-    identity::{self, Dependencies},
+    foreground::{Diagnostics, Failures, Stage},
+    identity::{self, Dependencies, IdentityUpdate},
+    readiness::Ready,
     settings::Settings,
 };
 use gnunet_cadet_host::server::{Progress, Server};
@@ -52,8 +53,12 @@ pub(super) async fn run<'p>(
 ) -> Result<(), Box<dyn Error>> {
     let reporter = dependencies.reporter.clone();
     let mut diagnostics = Diagnostics::new(reporter.clone());
-    if let Err(error) = ready.announce(*identity.peer().as_bytes(), None) {
-        failures.record(Stage::Output, Box::new(error));
+    let mut paused = false;
+    if let Err(error) = ready
+        .announce(*identity.peer().as_bytes(), None, &mut dependencies.signals)
+        .await
+    {
+        failures.record(Stage::Output, error);
     }
     while failures.is_empty() {
         let mut stopping = None;
@@ -77,6 +82,10 @@ pub(super) async fn run<'p>(
                 // Process controls cannot be starved by always-ready app IPC.
                 if let Poll::Ready(result) = dependencies.signals.poll(cx) {
                     stopping = Some(result);
+                    return Poll::Ready(());
+                }
+                if let Some(cause) = dependencies.observer_recovery.poll_expired(cx) {
+                    failures.record(Stage::Identity, cause);
                     return Poll::Ready(());
                 }
                 dependencies.statistics.observe(&server.statistics());
@@ -104,8 +113,9 @@ pub(super) async fn run<'p>(
                     stopping = Some(Ok(()));
                     return Poll::Ready(());
                 }
-                if let Poll::Ready(result) =
-                    server.poll(cx, listeners, None, &mut |event| diagnostics.observe(event))
+                if !paused
+                    && let Poll::Ready(result) =
+                        server.poll(cx, listeners, None, &mut |event| diagnostics.observe(event))
                 {
                     native_result = Some(result);
                 }
@@ -131,22 +141,34 @@ pub(super) async fn run<'p>(
             }
             break;
         }
-        if let Some(result) = pils_result
-            && let Some(observed) = dependencies.observe_identity_update(result, identity, failures)
-        {
-            if observed.peer() != identity.peer() {
-                let changed = apply_identity(
-                    server,
-                    *observed.peer().as_bytes(),
-                    settings.channels,
-                    &reporter,
-                );
-                if let Err(error) = changed {
-                    failures.record(Stage::Identity, error);
+        if let Some(result) = pils_result {
+            match dependencies.observe_identity_update(result, identity, failures) {
+                IdentityUpdate::Ready(observed) => {
+                    if paused || observed.peer() != identity.peer() {
+                        let changed = apply_identity(
+                            server,
+                            *observed.peer().as_bytes(),
+                            settings.channels,
+                            &reporter,
+                        );
+                        if let Err(error) = changed {
+                            failures.record(Stage::Identity, error);
+                        }
+                    }
+                    if failures.is_empty() {
+                        dependencies.identity_recovered(observed)?;
+                        identity = observed;
+                        paused = false;
+                    }
                 }
-            }
-            if failures.is_empty() {
-                identity = observed;
+                IdentityUpdate::Waiting => {
+                    // No peer provider exists in this composition. Retire only
+                    // its never-started remote opens; preserve local pairs/MQs.
+                    server.retire_identity_channels()?;
+                    finish(server, settings.channels, &reporter)?;
+                    paused = true;
+                }
+                IdentityUpdate::Activity => {}
             }
         }
         if let Some(Err(error)) = resolver_result {

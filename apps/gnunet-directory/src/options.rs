@@ -5,7 +5,7 @@ use gnunet_program_host::{
     getopt::Options,
     helpers::{self, Target},
 };
-use std::{ffi::OsString, os::unix::ffi::OsStringExt, path::PathBuf, time::Duration};
+use std::{path::PathBuf, time::Duration};
 
 pub(super) struct Arguments {
     timeout: Target<u64>,
@@ -37,7 +37,7 @@ impl Arguments {
             if name.is_empty() || name.contains(&0) {
                 return Err("invalid directory input filename".into());
             }
-            files.push(PathBuf::from(OsString::from_vec(name.clone())));
+            files.push(gnunet_program_host::program::native_path(name)?.into_owned());
         }
         let number = |key: &[u8], default: usize| -> Result<usize, Failure> {
             let value = config

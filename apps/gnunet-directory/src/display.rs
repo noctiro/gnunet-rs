@@ -8,7 +8,6 @@ use gnunet_fs::{
 };
 use std::{
     io::{self, Write},
-    os::unix::ffi::OsStrExt,
     path::Path,
 };
 
@@ -173,7 +172,13 @@ pub(super) async fn begin(
     facts: &mut Facts,
 ) -> Result<(), Failure> {
     emit(out, b"Directory file ", guard, facts).await?;
-    quoted(out, path.as_os_str().as_bytes(), guard, facts).await?;
+    quoted(
+        out,
+        &gnunet_native::os_bytes::encode(path.as_os_str()),
+        guard,
+        facts,
+    )
+    .await?;
     emit(
         out,
         b" (local syntax only; no source authentication):\n",

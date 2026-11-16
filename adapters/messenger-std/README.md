@@ -1,8 +1,14 @@
 # Caller-driven MESSENGER SERVICE
 
+Service, signing, relay and committed-history owners share one implementation
+for Linux, macOS, Windows and FreeBSD. Native connections and the snapshot backend
+supply platform I/O; protocol and source-retirement logic stay in this crate.
+
 `gnunet-messenger-service-host` implements the application daemon over the
 existing official IPC codec and `Core::Mode::Service`. It is distinct from the
 higher-level `gnunet-messenger-host` application client.
+
+## Construction and profiles
 
 `Server::new` takes caller-owned CADET/PILS Instance brands and fixed CADET
 port/channel metadata, explicit Core/native limits, SERVICE ACL/Unix access,
@@ -16,6 +22,8 @@ producer-layout profiles. The PILS client verifies nonempty announcements
 under only that selected mode. Conditional `ReferenceDeterministic` is explicit,
 with no fallback after failed verification. Current signing authority, physical
 source epochs and historical provenance remain separate observations.
+
+## Service operations
 
 Implemented production paths:
 
@@ -96,24 +104,56 @@ Implemented production paths:
   CADET message bound64348 is enforced; no private fragmentation/truncation is
   invented when C's preferred padding rounding would exceed that carrier.
 
+## Source retirement
+
 Physical loss never replays an old application packet on a new MQ/channel. Accepting the normal C client's reconnect requests does not by itself restore
 logical room intents in the separate Rust high-level client. The intent
-recovery implementation is documented in that API and normal command package. Open logical listening ports can be reannounced by the CADET client. Healthy same-MQ PILS identity changes retain original app/CADET owners. The
-identity owner fences fresh signing, settles original admitted signatures and
-retires only unadmitted drafts before atomically changing Core's signer leases. Admitted signatures retain their exact original Identity, operation, frame and
-deadlines. Same-PID refreshes do not repeat identity changes. Physical PILS epoch
-replacement or source loss still stops the original signing owner.
+recovery implementation is documented in that API and normal command package.
+Open logical listening ports can be reannounced by the CADET client.
+Batch MQ loss consumes Core observations between source retirements, so the
+event queue need not hold every lost tunnel at once. Reconnect metadata is
+reserved before removing the original source or tunnel. Whole-write observations
+remain recorded independently of a later retirement failure.
+
+The [transport owner](src/server/transport.rs) retains each original Source
+until its admitted native output has settled. Revoked or expired unwritten
+channel payloads are removed through the SDK's exact queue proof and restore
+their send reservation; `OutputLost` reports `exposed: Some(false)`. Other
+channels keep their original MQ. An exposed prefix drains only on its original
+channel and stream, under the original native deadline checked before each I/O.
+Expiry of that prefix or an internal frame physically retires the shared MQ;
+its actual loss/exposure report precedes source cleanup. No old output is
+retargeted to a replacement channel or counted as a remote acknowledgement.
+
+## Identity recovery
+
+Healthy same-MQ PILS identity changes fence fresh signing while original
+admitted signatures drain with their identity, frame and deadlines intact.
+Physical connection loss cancels unfinished native signing operations before
+the retained client can reconnect. Already verified signatures finish under
+their original author. Unadmitted drafts and cancelled operations retain their
+Core bindings through separately staged failure, room update and retirement;
+queue pressure cannot discard them or repeat a completed failure transition.
+The fixed signature pool also bounds this cleanup.
+
+Replacement authority requires a signed identity from a strictly newer epoch
+of the same native PILS client and a newer identity revision. Socket attachment
+alone grants no authority. Repeated losses preserve the first failure and
+recovery deadline; protocol, clock and resource failures remain terminal.
+`local_peer()` returns no signing authority during rotation or recovery.
+Application MQs, committed frames and CADET owners retain their original
+cursors and deadlines. Same-PID refreshes do not repeat Core identity changes.
 
 Open rooms track local PEER/MISS commits under fixed parent bounds. PEER(new) precedes MISS for previously announced own identities; public
 remote PEER messages cannot extend local signer provenance. Already encoded
 application replies and CADET output retain their bytes. Local ENTRY remains a
 local-room selection; remote doors retain their selected identity and channel. An old CADET port does not prove that a new PID is reachable; normal CADET
-identity recovery requires separate implementation and qualification. No-clock shutdown retires every app, CADET and PILS physical owner before Core
+identity recovery requires separate remote-peer qualification. No-clock shutdown retires every app, CADET and PILS physical owner before Core
 source cleanup, preserves independent errors and does not claim remote drain.
 
-## owned history and explicit producer layouts
+## Owned history and producer layouts
 
-The fresh history extension implements `history::History::open`, exact
+The history owner provides `history::History::open`, exact
 `Server::install_history`, a single explicit shared snapshot worker, bounded
 microbatch cuts, and durable receipt gating. See the core
 [archive contract](../../crates/gnunet-messenger-core/ARCHIVE.md). `close_all` first stops app/CADET/PILS physical owners without sampling the
@@ -139,24 +179,16 @@ room/message/signer overrides and current relay/room declarations are bounded. A
 is repacked for the explicitly configured recipient decoder. Raw C endpoints
 have no profile-negotiation message, so deployment policy must supply the facts.
 
-Prior runtime receipts retain
-their original exact scope. Application recipient/group decryption and the
-separate M5 high-level client's mixed-layout decryption remain CLIENT
-responsibilities. Its independent `ClientLayout` and bounded `Profiles` API is
-implemented in that package. This SERVICE also selects app SEND body layout
-from its bound OPEN principal/exact signed-message policy before real
-Core signature admission; it never substitutes the current daemon's native body
-layout for every app producer. No daemon imports member private keys or fabricates the
-missing official AUTHORIZATION MAC. This remains an external-CADET/PILS daemon,
-not a complete independent GNUnet node or a full-function acceptance claim.
 
-remote CADET channel destruction revokes new tunnel sends, INFO,
+
+Remote CADET channel destruction revokes new tunnel sends, INFO,
 bootstrap and entry-readiness work while retaining already delivered DATA in
 its original room/Source. That DATA keeps its original byte cursor and
 Receive.until across history preparation/worker commit. It is processed through
 the existing verification/semantic path only after the frozen cut permits it,
 and local release waits for history_ready. A gone channel receives no
-new receive_done/ACK. Only then is its original Source retired; other shared
+new receive_done/ACK. The original Source retires after that input and any
+admitted output settle; other shared
 MQ channels and credit events continue to progress. Original admitted native
 suffixes, Written/exposure observations and history receipts are not
 relabelled as remote acknowledgement or replayed.

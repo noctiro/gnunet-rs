@@ -9,7 +9,8 @@ license.workspace = true
 default = []
 resolver-broker = ["dep:gnunet-resolver-broker", "runtime", "service-runtime"]
 runtime = ["dep:tokio"]
-service-runtime = ["dep:gnunet-service-runtime"]
+binary-io = ["runtime", "dep:zeroize"]
+service-runtime = ["runtime", "dep:gnunet-service-runtime", "dep:gnunet-service-startup"]
 
 [dependencies]
 libc = { workspace = true, features = ["std"] }
@@ -17,9 +18,22 @@ getrandom.workspace = true
 gnunet-config.workspace = true
 gnunet-crypto.workspace = true
 gnunet-types.workspace = true
+gnunet-native.workspace = true
 gnunet-resolver-broker = { workspace = true, optional = true }
 gnunet-service-runtime = { workspace = true, optional = true }
-tokio = { workspace = true, optional = true, features = ["rt", "time"] }
+gnunet-service-startup = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true, features = ["rt", "time", "sync"] }
+zeroize = { workspace = true, optional = true, features = ["alloc"] }
 
 [lints]
 workspace = true
+
+[[test]]
+name = "absolute_calendar"
+path = "tests/absolute_calendar.rs"
+harness = false
+
+[[test]]
+name = "windows_logging"
+path = "tests/windows_logging.rs"
+harness = false

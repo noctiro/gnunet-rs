@@ -12,18 +12,18 @@ use std::{
     error::Error,
     ffi::OsStr,
     io::{self, Write},
-    os::unix::ffi::OsStrExt,
     path::Path,
 };
 
 fn row(out: &mut impl Write, value: &serde_json::Value) -> io::Result<()> {
     serde_json::to_writer(&mut *out, value).map_err(io::Error::other)?;
-    writeln!(out)
+    writeln!(out)?;
+    out.flush()
 }
 
 pub(super) fn publish(
     args: &[impl AsRef<OsStr>],
-    out: &mut impl Write,
+    out: &mut super::Output<'_, impl Write>,
 ) -> Result<(), Box<dyn Error>> {
     super::publish::run(
         args,
@@ -36,7 +36,7 @@ pub(super) fn publish(
 }
 pub(super) fn publish_indexed(
     args: &[impl AsRef<OsStr>],
-    out: &mut impl Write,
+    out: &mut super::Output<'_, impl Write>,
 ) -> Result<(), Box<dyn Error>> {
     super::publish::run(
         args,
@@ -50,12 +50,16 @@ pub(super) fn publish_indexed(
 
 pub(super) fn fetch(
     args: &[impl AsRef<OsStr>],
-    out: &mut impl Write,
+    out: &mut super::Output<'_, impl Write>,
 ) -> Result<(), Box<dyn Error>> {
     let interval = duration(args.get(3))?;
     let source = EndpointSource::unix(Path::new(args[0].as_ref()).to_path_buf());
+    out.interval(interval)?;
     let deadline = target(&source, interval)?;
-    let (content, transfer) = match Uri::parse(args[1].as_ref().as_bytes(), UriLimits::default())? {
+    let (content, transfer) = match Uri::parse(
+        crate::argument::wire_bytes(args[1].as_ref())?,
+        UriLimits::default(),
+    )? {
         Uri::Content(content) => (content, DownloadOptions::new(deadline)),
         Uri::Location(location) => (
             location.content(),
@@ -75,6 +79,7 @@ pub(super) fn fetch(
     tokio::runtime::Builder::new_current_thread().enable_all().build()?.block_on(async {
         match output.download_tree(name, source, content, &mut Buffers::new(), None, TreeDownloadOptions::new(transfer), |_| Control::Continue).await {
             Ok(done) => {
+                out.cleanup()?;
                 row(out, &serde_json::json!({
                     "event":"fs_tree_download_complete", "files":done.progress.files_committed,
                     "directories":done.progress.directories_verified, "bytes":done.progress.file_bytes,
@@ -83,8 +88,9 @@ pub(super) fn fetch(
                 Ok(())
             }
             Err(error) => {
+                out.cleanup()?;
                 let text = error.path.to_str();
-                let bytes = text.is_none().then_some(error.path.as_os_str().as_bytes());
+                let bytes = text.is_none().then(|| crate::argument::native_bytes(error.path.as_os_str()));
                 let _output = row(out, &serde_json::json!({
                     "event":"fs_tree_download_failed", "path":text, "path_bytes":bytes,
                     "root_created":error.progress.root_created,

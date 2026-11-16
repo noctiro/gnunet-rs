@@ -1,8 +1,9 @@
-//! Real retained Unix MQ recovery after a known queue's numeric refusal.
+//! Real retained native MQ recovery after a known queue's numeric refusal.
 #![expect(
     clippy::panic_in_result_fn,
     reason = "Original wire/owner assertions use fallible native setup"
 )]
+mod support;
 use gnunet_crypto::{EddsaPrivateKey, Entropy};
 use gnunet_service_runtime::connection::Connection;
 use gnunet_transport::{
@@ -14,7 +15,7 @@ use gnunet_types::Error;
 use std::{cell::Cell, future::poll_fn, rc::Rc, time::Duration};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::UnixStream,
+    net::TcpStream,
 };
 struct Key(EddsaPrivateKey);
 impl Signer for Key {
@@ -64,7 +65,7 @@ fn queue(peer: PeerId, delta: u64, update: bool) -> Vec<u8> {
     }
     b
 }
-async fn read(stream: &mut UnixStream) -> Result<Vec<u8>, std::io::Error> {
+async fn read(stream: &mut TcpStream) -> Result<Vec<u8>, std::io::Error> {
     let mut h = [0; 4];
     stream.read_exact(&mut h).await?;
     let n = usize::from(u16::from_be_bytes([h[0], h[1]]));
@@ -76,7 +77,7 @@ async fn read(stream: &mut UnixStream) -> Result<Vec<u8>, std::io::Error> {
     stream.read_exact(&mut b[4..]).await?;
     Ok(b)
 }
-async fn sent(stream: &mut UnixStream, b: &[u8]) -> Result<(), std::io::Error> {
+async fn sent(stream: &mut TcpStream, b: &[u8]) -> Result<(), std::io::Error> {
     let mut a = frame(1210, 52);
     a[4..8].copy_from_slice(&1u32.to_be_bytes());
     a[8..16].copy_from_slice(&b[8..16]);
@@ -84,7 +85,7 @@ async fn sent(stream: &mut UnixStream, b: &[u8]) -> Result<(), std::io::Error> {
     a[20..].copy_from_slice(&b[16..48]);
     stream.write_all(&a).await
 }
-async fn next_send(stream: &mut UnixStream) -> Result<Vec<u8>, std::io::Error> {
+async fn next_send(stream: &mut TcpStream) -> Result<Vec<u8>, std::io::Error> {
     loop {
         let b = read(stream).await?;
         if kind(&b) == 1209 {
@@ -116,10 +117,10 @@ async fn numeric_refusal_keeps_original_mq_other_peer_and_later_valid_update_liv
     let a = Key(EddsaPrivateKey::from_seed([5; 32]));
     let b = Key(EddsaPrivateKey::from_seed([7; 32]));
     let mut server = Server::new(Engine::new(key.identity(), Limits::default())?, 2, 262140)?;
-    let (cs, mut comm) = UnixStream::pair()?;
-    let comm_id = server.admit(Connection::from_unix(cs))?;
-    let (ss, mut core) = UnixStream::pair()?;
-    server.admit(Connection::from_unix(ss))?;
+    let (cs, mut comm) = support::pair().await?;
+    let comm_id = server.admit(Connection::from_tcp(cs))?;
+    let (ss, mut core) = support::pair().await?;
+    server.admit(Connection::from_tcp(ss))?;
     let refused = Rc::new(Cell::new(0));
     let observed = refused.clone();
     let expected_owner = comm_id.clone();

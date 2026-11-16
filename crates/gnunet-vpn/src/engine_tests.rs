@@ -341,11 +341,20 @@ fn borrowed_queries_never_acquire_owned_cleanup_and_release_keeps_presence_uncla
     );
     // Actual original query quiescence is a separate modeled provider receipt.
     engine.retire_routing(pending)?;
+    let original = tun;
+    let tun = engine.rebind_tun_same_interface(original)?;
+    assert_ne!(original, tun);
+    assert_eq!(engine.route_state(original), Err(Error::StaleGeneration));
     assert_eq!(engine.route_state(tun)?, RouteState::BorrowedUnverified);
     assert_eq!(
         engine.route_cleanup_request(tun).err(),
         Some(Error::PermissionDenied)
     );
+    let verification = engine.routing_request(tun)?.routing;
+    engine.routing_borrowed_queued(verification)?;
+    engine.route_borrowed_verified(verification)?;
+    assert!(engine.tun_ready(tun)?);
+    engine.tun_lost(tun, Error::Closed)?;
     engine.release_borrowed_routes(tun)?;
     assert_eq!(engine.route_state(tun)?, RouteState::BorrowedReleased);
     assert_eq!(

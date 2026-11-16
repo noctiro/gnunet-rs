@@ -1,7 +1,7 @@
 # Actual native EXIT runtime adapter
 
 This package implements a callable production adapter over the existing
-CADET CLIENT, verified TUN/utun owner and literal-resolver UDP sockets. It does
+CADET CLIENT, verified TUN/utun/Wintun owner and literal-resolver UDP sockets. It does
 not create a detached task/thread, C helper/process wrapper, private protocol,
 route, address configuration, advertisement or discovery result.
 
@@ -9,7 +9,8 @@ Driver::new(engine, fresh_cadet, Option<OwnedTun>, bindings, resolver, limits,
 entropy) consumes native owners and fixed resources. The foreground owns
 the CADET Instance/PortSlot/ChannelSlot vectors outside the borrowed Client,
 avoiding self references. The TUN descriptor must already be genuinely verified
-by gnunet-tun-host; this adapter registers it on the current shared Tokio reactor. DNS-only EXIT may supply None and requires no TUN. A non-DNS binding without an
+by gnunet-tun-host; this adapter registers it on the current shared Tokio reactor.
+Windows uses the same packet/admin path through the [Wintun reactor](../tun-std/WINDOWS.md). DNS-only EXIT may supply None and requires no TUN. A non-DNS binding without an
 device is refused. Fresh/idle CADET ownership is required; no old pending
 byte cursor or logical operation is adopted from another driver.
 
@@ -75,14 +76,20 @@ out. Driver validates channels*inner_frames <= this capacity before IO, preventi
 a circular wait where every packed outer packet consumes only part of the table. No private field is added to GNUnet wire and existing single-frame behavior stays.
 
 TUN output uses exactly one gnunet-tun-host whole-packet queue. Real WriteId and
-Epoch are mapped to the original Engine Tun/Write. Written means the full
-framed syscall succeeded. Unsent is accepted only from a true native zero-byte
-retirement or a never-admitted driver request. A positive short write really
+Epoch are mapped to the original Engine Tun/Write. Written means a complete
+device write or Wintun ring submission; it does not prove delivery. Unsent is
+accepted only from a true native zero-byte retirement or a never-admitted driver request. A positive short write really
 closes the old descriptor and reports OutcomeUnknown through tun_lost; no suffix
 is sent as a new packet. Received normalized raw IP keeps its original verified
 epoch through bounded backpressure. Explicit packet drops are observable and
 never become successful forwarding/receive_done. After TUN loss, Internet/service
 bindings are disabled and actually withdrawn; DNS can continue independently.
+`Driver::replace_tun` accepts an explicitly prepared replacement after old source
+retirement and any helper reap. Refusal returns the original supplied source.
+The caller verifies addresses/routes/DAD before admission. A new core TUN token
+reenables non-DNS bindings while preserving CADET owners, DNS work, old-flow
+cleanup and original deadlines. Old TUN packets and administrative mutations are
+not replayed.
 
 DNS jobs have a fixed maximum number of fresh owned UDP sockets. Every job keeps
 its original Dns token, immutable query/id, exact literal server and original

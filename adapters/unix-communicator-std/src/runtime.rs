@@ -1,14 +1,11 @@
 use crate::native::{self, Address, OwnedDatagram};
-use gnunet_client_host::{
-    EndpointSource,
-    channel::{Channel, ConnectionStep},
-};
+use gnunet_client_host::{EndpointSource, channel::Channel};
 use gnunet_service_runtime::{
     clock::{ClockSubscription, RuntimeClock},
-    framing::{Accounting, Budget, Class, Limits as FrameLimits, OwnedFrame, ReadStep},
+    framing::{Accounting, Budget, Class, Limits as FrameLimits, OwnedFrame},
 };
 use gnunet_types::Error as Protocol;
-use gnunet_wire::official::communicator::{Characteristics, Queue as WireQueue, Request, Response};
+use gnunet_wire::official::communicator::{Queue as WireQueue, Request};
 use std::{
     cell::Cell,
     collections::VecDeque,
@@ -22,6 +19,9 @@ use std::{
 };
 use tokio::time::{Instant, Sleep};
 use zeroize::Zeroizing;
+mod gate;
+mod identity;
+mod transport;
 /// Stable caller-owned allocation domain. Reusing a bounded runtime slot cannot
 /// make an old epoch/write/flow token belong to a new communicator allocation.
 #[derive(Default)]
@@ -171,6 +171,22 @@ pub enum Fault {
     Deadline,
     /// Original PILS MQ was lost or closed; no fresh identity was fabricated.
     IdentityLost,
+    /// Actual fatal PILS loss, retaining its native/protocol/resource cause.
+    IdentitySource {
+        /// Native observer epoch serial, for diagnostics only.
+        epoch: u64,
+        /// Original cause; a protocol/resource refusal is never a reconnect.
+        cause: gnunet_pils_host::client::LossCause,
+    },
+    /// Recovery failed under original bounds; both causes remain available.
+    IdentityRecovery {
+        /// First actually lost observer epoch.
+        epoch: u64,
+        /// Original connection failure, not overwritten by retries.
+        cause: gnunet_pils_host::client::ConnectionLoss,
+        /// Actual independent deadline, clock, protocol or native failure.
+        terminal: Box<Fault>,
+    },
     /// Actual original TRANSPORT EOF.
     TransportLost,
     /// Positive short datagram, which must never be suffixed/replayed.
@@ -203,7 +219,24 @@ impl fmt::Display for Fault {
         write!(f, "UNIX communicator: {self:?}")
     }
 }
-impl std::error::Error for Fault {}
+impl std::error::Error for Fault {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Protocol(error) => Some(error),
+            Self::Client(error) => Some(error),
+            Self::Io(error) => Some(error),
+            Self::IdentityRecovery { terminal, .. } => Some(terminal.as_ref()),
+            Self::IdentitySource { cause, .. } => match cause {
+                gnunet_pils_host::client::LossCause::Io(error) => Some(error),
+                gnunet_pils_host::client::LossCause::Setup(error) => Some(error),
+                gnunet_pils_host::client::LossCause::Protocol(error)
+                | gnunet_pils_host::client::LossCause::Resource(error) => Some(error),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+}
 /// Actual counts without plaintext payloads or filesystem address diagnostics.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Statistics {
@@ -277,6 +310,18 @@ pub enum Event<'id> {
         peer: [u8; 32],
         /// Actual public PILS HELLO signature coverage.
         coverage: gnunet_hello::SignatureCoverage,
+    },
+    /// An actual lost observer paused business IO without changing MQ or socket.
+    IdentityPaused {
+        /// Lost native observer epoch; no replacement authority.
+        epoch: u64,
+    },
+    /// A signed same-client successor restored public sender-claim admission.
+    IdentityResumed {
+        /// Verified successor native observer epoch.
+        epoch: u64,
+        /// Actual current public sender claim; datagrams remain unauthenticated.
+        peer: [u8; 32],
     },
     /// Real native queue metadata advertised, not dial/auth.
     Queue {
@@ -459,7 +504,11 @@ impl fmt::Display for Error {
         write!(f, "{}; cleanup={:?}", self.cause, self.cleanup)
     }
 }
-impl std::error::Error for Error {}
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.cause)
+    }
+}
 impl From<Fault> for Error {
     fn from(cause: Fault) -> Self {
         Self {
@@ -496,6 +545,12 @@ impl Bound {
                 .ok_or(Protocol::Overflow)?
                 .min(parent.hard),
         })
+    }
+    fn intersect(self, other: Self) -> Self {
+        Self {
+            until: self.until.min(other.until),
+            hard: self.hard.min(other.hard),
+        }
     }
     fn expired(self, now: Option<u64>) -> bool {
         Instant::now() >= self.hard || now.is_some_and(|n| n >= self.until)
@@ -578,20 +633,6 @@ struct Input {
     packet: Zeroizing<Vec<u8>>,
     bound: Bound,
 }
-fn transport_io(error: &io::Error) -> bool {
-    if gnunet_client_host::resolution::PortError::from_io(error).is_some() {
-        return false;
-    }
-    matches!(
-        error.kind(),
-        io::ErrorKind::BrokenPipe
-            | io::ErrorKind::ConnectionAborted
-            | io::ErrorKind::ConnectionReset
-            | io::ErrorKind::NotConnected
-            | io::ErrorKind::UnexpectedEof
-            | io::ErrorKind::WriteZero
-    )
-}
 fn bytes(n: usize) -> Result<Vec<u8>, Fault> {
     let mut v = Vec::new();
     v.try_reserve_exact(n).map_err(|_| Protocol::Capacity)?;
@@ -614,6 +655,7 @@ pub struct Runtime<'id> {
     socket_epoch: SocketEpoch<'id>,
     socket: Option<OwnedDatagram>,
     transport: Channel<Write<'id>>,
+    transport_gate: Arc<gate::Gate>,
     pils: gnunet_pils_host::client::Client<'id, 1>,
     clock: Arc<dyn RuntimeClock>,
     subscription: Option<Box<dyn ClockSubscription>>,
@@ -623,8 +665,7 @@ pub struct Runtime<'id> {
     startup: Bound,
     mtu: usize,
     uri: Vec<u8>,
-    peer: Option<[u8; 32]>,
-    identity_expiration: Option<u64>,
+    identity: identity::Owner<'id>,
     epoch: Option<Epoch<'id>>,
     next_epoch: u64,
     next_write: u64,
@@ -741,7 +782,9 @@ impl<'id> Runtime<'id> {
             .try_reserve_exact(limits.output_frames)
             .map_err(|_| Protocol::Capacity)?;
         let buffer = Zeroizing::new(bytes(cap)?);
-        let transport = Channel::new(
+        let transport_gate = Arc::new(gate::Gate::new(parent.intersect(startup), clock.clone()));
+        let connector_gate = transport_gate.clone();
+        let transport = Channel::new_guarded(
             transport_source,
             FrameLimits {
                 frame_bytes: 65535,
@@ -753,6 +796,12 @@ impl<'id> Runtime<'id> {
                 accounting: Accounting::Retained,
                 io_slice_bytes: limits.io_slice,
             },
+            Arc::new(move || {
+                connector_gate
+                    .check()
+                    .map(|_| ())
+                    .map_err(std::io::Error::other)
+            }),
         )?;
         let pils = gnunet_pils_host::client::Client::new(
             pils_instance,
@@ -771,13 +820,16 @@ impl<'id> Runtime<'id> {
         )?;
         // This is the first socket/device path operation in construction. If it
         // fails, native::Failure preserves independent cleanup in its Display.
+        transport_gate.check()?;
         let socket = OwnedDatagram::bind(address, limits.socket_buffer, limits.socket_buffer)
             .map_err(|e| Fault::Io(io::Error::other(e)))?;
+        transport_gate.check()?;
         Ok(Self {
             scope,
             socket_epoch: SocketEpoch { scope },
             socket: Some(socket),
             transport,
+            transport_gate,
             pils,
             clock,
             subscription: Some(subscription),
@@ -787,8 +839,7 @@ impl<'id> Runtime<'id> {
             startup,
             mtu,
             uri,
-            peer: None,
-            identity_expiration: None,
+            identity: identity::Owner::new(),
             epoch: None,
             next_epoch: 0,
             next_write: 0,
@@ -832,11 +883,11 @@ impl<'id> Runtime<'id> {
     }
     /// Ready only after actual PILS identity and whole registration/address writes.
     pub fn ready(&self) -> bool {
-        !self.closed && self.peer.is_some() && self.registered && self.address_written
+        !self.closed && self.identity.peer().is_some() && self.registered && self.address_written
     }
     /// Last actual public identity; datagram coverage remains unauthenticated.
     pub fn peer(&self) -> Option<[u8; 32]> {
-        self.peer
+        self.identity.peer()
     }
     fn operation(&self, now: u64) -> Result<Bound, Fault> {
         Bound::new(now, self.limits.operation, self.parent)
@@ -1011,99 +1062,6 @@ impl<'id> Runtime<'id> {
         }
         Ok(false)
     }
-    fn retire_transport(
-        &mut self,
-        observe: &mut impl FnMut(Event<'id>),
-    ) -> (usize, usize, usize, usize) {
-        let outputs = self.outputs.len();
-        let exposed = self.outputs.iter().filter(|o| o.bytes != 0).count();
-        let incoming = self.debts.iter().flatten().count();
-        let mut sends = 0;
-        for output in &self.outputs {
-            observe(Event::OutputRetired {
-                write: output.id,
-                bytes: output.bytes,
-            });
-        }
-        for debt in self.debts.iter_mut().filter_map(Option::take) {
-            observe(Event::IncomingRetired {
-                epoch: self.epoch,
-                flow_id: debt.flow,
-                peer: debt.peer,
-                written: debt.written,
-            });
-        }
-        for slot in &mut self.queues {
-            let Some(queue) = slot.as_mut() else {
-                continue;
-            };
-            let failed = queue.failed_send();
-            if queue.retire_send(self.epoch, self.socket_epoch, observe) {
-                sends += 1;
-                // poll_send is one atomic nonblocking syscall: Pending owns no
-                // in-flight native write. This cancels only the original intent;
-                // actual Whole/Failed/Unknown facts remain separate below.
-            }
-            // A failed native destination is not live metadata to reannounce
-            // after MQ replacement, even if its original DOWN was not written.
-            if failed {
-                *slot = None;
-                self.statistics.queues -= 1;
-                continue;
-            }
-            queue.granted = false;
-            queue.announced = false;
-        }
-        if let Some(input) = self.input.take() {
-            observe(Event::InputRetired {
-                epoch: self.epoch,
-                socket: self.socket_epoch,
-                bytes: input.packet.len(),
-            });
-        }
-        self.statistics.transport_failures = self
-            .statistics
-            .transport_failures
-            .saturating_add(incoming as u64);
-        self.outputs.clear();
-        self.rx = None;
-        self.epoch = None;
-        self.registered = false;
-        self.address_written = false;
-        self.started = false;
-        self.restoring = false;
-        self.restore_fence = 0;
-        self.whole_write = 0;
-        (outputs, exposed, incoming, sends)
-    }
-    fn transport_lost(
-        &mut self,
-        cause: Option<io::Error>,
-        observe: &mut impl FnMut(Event<'id>),
-    ) -> Result<(), Fault> {
-        let epoch = self.epoch.ok_or(Protocol::Stale)?;
-        let (input_bytes, held_input) = self.transport.framing().map_or((0, false), |f| {
-            (f.read_progress_bytes(), f.frame().is_some())
-        });
-        // Physical retirement precedes all callback/original-byte retirement.
-        // Native socket, identity, clock, queue addresses/idle and parent bounds
-        // are untouched. Channel retains its original source and retry owner.
-        self.transport.detach();
-        let (outputs, exposed, incoming, sends) = self.retire_transport(observe);
-        let retry_after = self.transport.schedule_retry()?;
-        observe(Event::TransportLost {
-            epoch,
-            cause,
-            input_bytes,
-            held_input,
-            outputs,
-            exposed,
-            incoming,
-            sends,
-            retry_after,
-        });
-        Ok(())
-    }
     fn clock(&mut self, cx: &mut Context<'_>) -> Result<Option<u64>, Fault> {
         let sub = self.subscription.as_mut().ok_or(Protocol::Closed)?;
         match sub.poll_changed(cx, self.revision) {
@@ -1143,6 +1101,9 @@ impl<'id> Runtime<'id> {
                 }
             }
         }
+        if let Some(bound) = self.identity.bound() {
+            target = target.min(bound.hard);
+        }
         if let Some(rx) = self.pils_rx {
             target = target.min(rx.hard);
         }
@@ -1167,27 +1128,39 @@ impl<'id> Runtime<'id> {
         alarm.as_mut().reset(target);
         let _ready = alarm.as_mut().poll(cx);
     }
+    fn work_bound(&self) -> Bound {
+        let parent = if self.ever_ready {
+            self.parent
+        } else {
+            self.parent.intersect(self.startup)
+        };
+        let mut bound = self
+            .outputs
+            .iter()
+            .map(|output| output.bound)
+            .chain(self.debts.iter().flatten().map(|debt| debt.bound))
+            .chain(
+                self.queues
+                    .iter()
+                    .flatten()
+                    .filter_map(|queue| queue.send.as_ref().map(|send| send.bound)),
+            )
+            .chain(self.input.as_ref().map(|input| input.bound))
+            .chain(self.rx)
+            .chain(self.pils_rx)
+            .chain(self.identity.bound())
+            .fold(parent, Bound::intersect);
+        if let Some(expiration) = self.identity.expiration() {
+            bound.until = bound.until.min(expiration);
+        }
+        bound
+    }
     fn expire(
         &mut self,
         now: Option<u64>,
         observe: &mut impl FnMut(Event<'id>),
     ) -> Result<bool, Fault> {
-        if self.pils_rx.is_some_and(|b| b.expired(now))
-            || self.rx.is_some_and(|b| b.expired(now))
-            || self.parent.expired(now)
-            || (!self.ever_ready && self.startup.expired(now))
-            || self
-                .identity_expiration
-                .is_some_and(|e| now.is_some_and(|n| n >= e))
-            || self.outputs.iter().any(|o| o.bound.expired(now))
-            || self.debts.iter().flatten().any(|d| d.bound.expired(now))
-            || self.input.as_ref().is_some_and(|i| i.bound.expired(now))
-            || self
-                .queues
-                .iter()
-                .flatten()
-                .any(|q| q.send.as_ref().is_some_and(|s| s.bound.expired(now)))
-        {
+        if self.work_bound().expired(now) {
             return Err(Fault::Deadline);
         }
         for index in 0..self.queues.len() {
@@ -1225,10 +1198,34 @@ impl<'id> Runtime<'id> {
         observe: &mut impl FnMut(Event<'id>),
     ) -> Poll<Result<(), Fault>> {
         use gnunet_pils_host::client::Progress as P;
-        let result = {
-            let mut future = std::pin::pin!(self.pils.drive(None));
-            future.as_mut().poll(cx)
-        };
+        let original = self.work_bound();
+        let mut refused = None;
+        let result = self.pils.poll_guarded(cx, None, &mut || {
+            let checked = (|| {
+                if original.expired(None) {
+                    return Err(Fault::Deadline);
+                }
+                let sample = self.clock.sample();
+                if original.expired(None) {
+                    return Err(Fault::Deadline);
+                }
+                let now = sample?.now.as_micros();
+                if original.expired(Some(now)) {
+                    return Err(Fault::Deadline);
+                }
+                Ok(())
+            })();
+            match checked {
+                Ok(()) => Ok(()),
+                Err(error) => {
+                    refused = Some(error);
+                    Err(Protocol::Deadline.into())
+                }
+            }
+        });
+        if let Some(error) = refused {
+            return Poll::Ready(Err(error));
+        }
         match result {
             Poll::Pending => Poll::Pending,
             Poll::Ready(Err(e)) => Poll::Ready(Err(e.into())),
@@ -1242,12 +1239,17 @@ impl<'id> Runtime<'id> {
                 // callbacks contain no local PID. Their actual MQ/socket remain
                 // the same. Original SEND packets already captured their sender;
                 // do not rewrite, requeue or retire those bytes on a new PID.
-                self.peer = Some(peer);
-                self.identity_expiration = Some(identity.expiration().as_micros());
+                let resumed = self.identity.observe(identity, now)?;
                 observe(Event::Identity {
                     peer,
                     coverage: identity.coverage(),
                 });
+                if resumed {
+                    observe(Event::IdentityResumed {
+                        epoch: identity.epoch().value(),
+                        peer,
+                    });
+                }
                 Poll::Ready(Ok(()))
             }
             Poll::Ready(Ok(P::Activity { read_bytes, .. })) => {
@@ -1260,368 +1262,57 @@ impl<'id> Runtime<'id> {
                 self.pils_rx = None;
                 Poll::Ready(Ok(()))
             }
-            Poll::Ready(Ok(P::Lost { .. } | P::Closed)) => Poll::Ready(Err(Fault::IdentityLost)),
+            Poll::Ready(Ok(P::Lost {
+                epoch,
+                cause,
+                report,
+            })) => {
+                self.pils_rx = None;
+                if report.retained() != 0 || report.feeds().next().is_some() || !self.pils.is_idle()
+                {
+                    return Poll::Ready(Err(Fault::IdentitySource {
+                        epoch: epoch.value(),
+                        cause,
+                    }));
+                }
+                let cause = match cause.into_connection_loss() {
+                    Ok(cause) => cause,
+                    Err(cause) => {
+                        return Poll::Ready(Err(Fault::IdentitySource {
+                            epoch: epoch.value(),
+                            cause,
+                        }));
+                    }
+                };
+                let parent = if self.ever_ready {
+                    self.parent
+                } else {
+                    self.parent.intersect(self.startup)
+                };
+                let bound = match self.identity.bound() {
+                    Some(bound) => bound,
+                    None => Bound::new(now, Duration::from_secs(30), parent)?,
+                };
+                self.identity.pause(epoch, cause, bound)?;
+                if self.epoch.is_none() {
+                    self.transport.cancel_connect();
+                }
+                observe(Event::IdentityPaused {
+                    epoch: epoch.value(),
+                });
+                Poll::Ready(Ok(()))
+            }
+            Poll::Ready(Ok(P::Connected(epoch))) => {
+                self.identity.connected(epoch)?;
+                Poll::Ready(Ok(()))
+            }
+            Poll::Ready(Ok(P::Closed)) => Poll::Ready(Err(Fault::IdentityLost)),
             Poll::Ready(Ok(P::Unavailable(e))) => Poll::Ready(Err(e.into())),
             Poll::Ready(Ok(P::ConnectRetry { error, .. })) => {
                 observe(Event::ConnectRetry(error));
                 Poll::Ready(Ok(()))
             }
             Poll::Ready(Ok(_)) => Poll::Ready(Ok(())),
-        }
-    }
-    fn poll_connect(
-        &mut self,
-        cx: &mut Context<'_>,
-        observe: &mut impl FnMut(Event<'id>),
-    ) -> Poll<Result<(), Fault>> {
-        if self.epoch.is_some() {
-            return Poll::Pending;
-        }
-        match self.transport.poll_connect(cx) {
-            Poll::Pending => Poll::Pending,
-            Poll::Ready(Err(e)) => Poll::Ready(Err(e.into())),
-            Poll::Ready(Ok(ConnectionStep::Attached)) => {
-                let serial = self.next_epoch.checked_add(1).ok_or(Protocol::Overflow)?;
-                let epoch = Epoch {
-                    scope: self.scope,
-                    serial,
-                };
-                self.next_epoch = serial;
-                self.epoch = Some(epoch);
-                self.restoring = true;
-                self.restore_fence = 0;
-                self.whole_write = 0;
-                observe(Event::Attached(epoch));
-                Poll::Ready(Ok(()))
-            }
-            Poll::Ready(Ok(ConnectionStep::Retry { error, .. })) => {
-                observe(Event::ConnectRetry(error));
-                Poll::Ready(Ok(()))
-            }
-            Poll::Ready(Ok(ConnectionStep::Unavailable(e))) => Poll::Ready(Err(e.into())),
-        }
-    }
-    fn setup(&mut self, now: u64, observe: &mut impl FnMut(Event<'id>)) -> Result<bool, Fault> {
-        if !self.started && self.epoch.is_some() && self.peer.is_some() {
-            let a = encode(Request::Register {
-                characteristics: Characteristics::Reliable,
-                can_burst: false,
-                prefix: b"unix",
-            })?;
-            let address = self.next_address.checked_add(1).ok_or(Protocol::Overflow)?;
-            let b = encode(Request::AddAddress {
-                id: address,
-                validity: u64::MAX,
-                network: 1,
-                address: &self.uri,
-            })?;
-            let bound = self.operation(now)?;
-            self.enqueue(a, Role::Register, bound, observe)?;
-            self.enqueue(b, Role::Address, bound, observe)?;
-            self.next_address = address;
-            self.started = true;
-            return Ok(true);
-        }
-        Ok(false)
-    }
-    fn poll_write(
-        &mut self,
-        cx: &mut Context<'_>,
-        observe: &mut impl FnMut(Event<'id>),
-    ) -> Poll<Result<(), Fault>> {
-        if self.outputs.is_empty() {
-            return Poll::Pending;
-        }
-        match self
-            .transport
-            .framing_mut()
-            .ok_or(Protocol::NotReady)?
-            .poll_write(cx)
-        {
-            Poll::Pending => Poll::Pending,
-            Poll::Ready(Err(e)) if transport_io(&e) => {
-                self.transport_lost(Some(e), observe)?;
-                Poll::Ready(Ok(()))
-            }
-            Poll::Ready(Err(e)) => Poll::Ready(Err(e.into())),
-            Poll::Ready(Ok(w)) => {
-                let out = self.outputs.front_mut().ok_or(Protocol::Stale)?;
-                if out.id != w.origin {
-                    return Poll::Ready(Err(Protocol::Stale.into()));
-                }
-                out.bytes = out.bytes.checked_add(w.bytes).ok_or(Protocol::Overflow)?;
-                if let Role::SendResult(id) = out.role {
-                    let send = self
-                        .queues
-                        .iter_mut()
-                        .flatten()
-                        .find(|q| q.id == id)
-                        .and_then(|q| q.send.as_mut())
-                        .ok_or(Protocol::Stale)?;
-                    send.ack_bytes = send
-                        .ack_bytes
-                        .checked_add(w.bytes)
-                        .ok_or(Protocol::Overflow)?;
-                    if w.complete {
-                        send.ack_written = true;
-                    }
-                }
-                observe(Event::Written {
-                    write: w.origin,
-                    bytes: w.bytes,
-                    complete: w.complete,
-                });
-                if w.complete {
-                    let out = self.outputs.pop_front().ok_or(Protocol::Stale)?;
-                    self.whole_write = out.id.serial;
-                    match out.role {
-                        Role::Register => self.registered = true,
-                        Role::Address => {
-                            self.address_written = true;
-                            if self.registered {
-                                self.ever_ready = true;
-                                self.transport.reset_backoff();
-                            }
-                        }
-                        Role::QueueSetup(id) => {
-                            let q = self
-                                .queues
-                                .iter_mut()
-                                .flatten()
-                                .find(|q| q.id == id)
-                                .ok_or(Protocol::Stale)?;
-                            if Some(q.source) != self.epoch.map(|epoch| epoch.serial) {
-                                return Poll::Ready(Err(Protocol::Stale.into()));
-                            }
-                            if q.send.is_some() || q.announced {
-                                return Poll::Ready(Err(Protocol::Conflict.into()));
-                            }
-                            q.announced = true;
-                            q.granted = true;
-                        }
-                        Role::Incoming(flow) => {
-                            let debt = self
-                                .debts
-                                .iter_mut()
-                                .flatten()
-                                .find(|d| d.flow == flow)
-                                .ok_or(Protocol::Stale)?;
-                            debt.written = true;
-                            self.statistics.incoming_written =
-                                self.statistics.incoming_written.saturating_add(1)
-                        }
-                        Role::SendAck(id) => {
-                            let q = self
-                                .queues
-                                .iter_mut()
-                                .flatten()
-                                .find(|q| q.id == id)
-                                .ok_or(Protocol::Stale)?;
-                            q.send = None;
-                            q.granted = true
-                        }
-                        Role::SendDown(id) => {
-                            let index = self
-                                .queues
-                                .iter()
-                                .position(|q| q.as_ref().is_some_and(|q| q.id == id))
-                                .ok_or(Protocol::Stale)?;
-                            let q = self.queues[index].as_mut().ok_or(Protocol::Stale)?;
-                            if !q.failed_send() {
-                                return Poll::Ready(Err(Protocol::Conflict.into()));
-                            }
-                            q.retire_send(self.epoch, self.socket_epoch, observe);
-                            self.queues[index] = None;
-                            self.statistics.queues -= 1;
-                        }
-                        Role::Control | Role::QueueDown | Role::SendResult(_) => {}
-                    }
-                }
-                Poll::Ready(Ok(()))
-            }
-        }
-    }
-    fn dispatch(&mut self, now: u64, observe: &mut impl FnMut(Event<'id>)) -> Result<bool, Fault> {
-        if !self.registered {
-            return Ok(false);
-        }
-        // A held complete RX remains on this original MQ while capacity-bound;
-        // writes and existing callbacks continue to drain independently.
-        let f = self.transport.framing().ok_or(Protocol::NotReady)?;
-        let Some(frame) = f.frame() else {
-            return Ok(false);
-        };
-        let response = Response::decode(frame)?;
-        if !matches!(response, Response::Received(..)) && !self.room(3, 131070) {
-            return Ok(false);
-        }
-        match response {
-            Response::Create(request, peer, address) => {
-                let request_id = request;
-                let remote_peer = peer;
-                let existing = gnunet_unix_communicator::Address::decode(address)
-                    .and_then(|v| Address::new(v.path()).map_err(|_| Protocol::InvalidInput));
-                let found = existing.as_ref().ok().and_then(|a| {
-                    self.queues.iter().position(|q| {
-                        q.as_ref()
-                            .is_some_and(|q| q.peer == remote_peer && q.address == *a)
-                    })
-                });
-                if found.is_some_and(|index| {
-                    self.queues[index].as_ref().is_some_and(Queue::failed_send)
-                }) {
-                    // Keep this actual CREATE and its original RX deadline
-                    // until ACK/DOWN drains. It must not revive the old QID.
-                    return Ok(false);
-                }
-                let room = self.queues.iter().any(Option::is_none);
-                // Address is already owned before releasing the frame. No false
-                // connection existence/authentication follows from local create.
-                self.transport
-                    .framing_mut()
-                    .ok_or(Protocol::NotReady)?
-                    .release_frame();
-                self.rx = None;
-                let accepted = if let Some(index) = found {
-                    if self.queues[index].as_ref().ok_or(Protocol::Stale)?.source
-                        != self.epoch.ok_or(Protocol::NotReady)?.serial
-                    {
-                        self.announce_queue(index, now, observe)?;
-                    }
-                    true
-                } else if room {
-                    match existing {
-                        Ok(a) => {
-                            self.queue_new(a, remote_peer, false, now, observe)?;
-                            true
-                        }
-                        Err(_) => false,
-                    }
-                } else {
-                    false
-                };
-                self.enqueue(
-                    encode(Request::Created(request_id, accepted))?,
-                    Role::Control,
-                    self.operation(now)?,
-                    observe,
-                )?;
-                return Ok(true);
-            }
-            Response::Send(id, message_id, peer, message) => {
-                let Some(index) = self.queues.iter().position(|q| {
-                    q.as_ref().is_some_and(|q| {
-                        q.id == id
-                            && q.peer == peer
-                            && q.announced
-                            && !q.failed_send()
-                            && Some(q.source) == self.epoch.map(|epoch| epoch.serial)
-                    })
-                }) else {
-                    // A SEND may already be in flight when its original queue
-                    // expires. Official API reports GNUNET_NO, without inventing
-                    // a network write or binding this id to a new address.
-                    let rejected = encode(Request::Sent {
-                        message_id,
-                        queue: id,
-                        peer,
-                        status: 0,
-                    })?;
-                    let bound = self.rx.unwrap_or(self.operation(now)?);
-                    self.transport
-                        .framing_mut()
-                        .ok_or(Protocol::NotReady)?
-                        .release_frame();
-                    self.rx = None;
-                    self.enqueue(rejected, Role::Control, bound, observe)?;
-                    return Ok(true);
-                };
-                let q = self.queues[index].as_ref().ok_or(Protocol::Stale)?;
-                if !q.granted || q.send.is_some() || message.len() > self.mtu {
-                    return Err(Protocol::Malformed.into());
-                }
-                let mut packet = Zeroizing::new(bytes(gnunet_unix_communicator::encoded_len(
-                    message, self.mtu,
-                )?)?);
-                gnunet_unix_communicator::encode(
-                    self.peer.ok_or(Protocol::NotReady)?,
-                    message,
-                    self.mtu,
-                    &mut packet,
-                )?;
-                let send = Send {
-                    outcome: SendOutcome::Unsent,
-                    ack_bytes: 0,
-                    ack_written: false,
-                    message: message_id,
-                    packet,
-                    bound: self.operation(now)?,
-                    retry: None,
-                    status: None,
-                };
-                let q = self.queues[index].as_mut().ok_or(Protocol::Stale)?;
-                q.send = Some(send);
-                q.granted = false;
-            }
-            Response::Received(flow, peer) => {
-                let index = self
-                    .debts
-                    .iter()
-                    .position(|d| {
-                        d.as_ref()
-                            .is_some_and(|d| d.flow == flow && d.peer == peer && d.written)
-                    })
-                    .ok_or(Protocol::Stale)?;
-                self.debts[index] = None;
-                self.statistics.incoming_callbacks =
-                    self.statistics.incoming_callbacks.saturating_add(1);
-                observe(Event::Received {
-                    epoch: self.epoch.ok_or(Protocol::NotReady)?,
-                    flow_id: flow,
-                    peer,
-                });
-            }
-            Response::Backchannel(..) | Response::Burst(..) | Response::Unknown(_) => {
-                observe(Event::UnsupportedCommand);
-            }
-        }
-        self.transport
-            .framing_mut()
-            .ok_or(Protocol::NotReady)?
-            .release_frame();
-        self.rx = None;
-        Ok(true)
-    }
-    fn poll_read(
-        &mut self,
-        cx: &mut Context<'_>,
-        now: u64,
-        observe: &mut impl FnMut(Event<'id>),
-    ) -> Poll<Result<(), Fault>> {
-        if self.epoch.is_none() || !self.registered {
-            return Poll::Pending;
-        }
-        let f = self.transport.framing_mut().ok_or(Protocol::NotReady)?;
-        if f.frame().is_some() {
-            return Poll::Pending;
-        }
-        match f.poll_read(cx) {
-            Poll::Pending => Poll::Pending,
-            Poll::Ready(Err(e)) if transport_io(&e) => {
-                self.transport_lost(Some(e), observe)?;
-                Poll::Ready(Ok(()))
-            }
-            Poll::Ready(Err(e)) => Poll::Ready(Err(e.into())),
-            Poll::Ready(Ok(ReadStep::Eof)) => {
-                self.transport_lost(None, observe)?;
-                Poll::Ready(Ok(()))
-            }
-            Poll::Ready(Ok(ReadStep::Progress { bytes, .. })) => {
-                if bytes != 0 && self.rx.is_none() {
-                    self.rx = Some(self.operation(now)?);
-                }
-                Poll::Ready(Ok(()))
-            }
         }
     }
     fn poll_send(
@@ -1894,7 +1585,28 @@ impl<'id> Runtime<'id> {
         if expired {
             return Poll::Ready(Ok(Progress::Activity));
         }
-        let Some(now) = self.clock(cx)? else {
+        let original = self.work_bound();
+        let paused = self.identity.paused();
+        if !paused {
+            let result = self.transport.poll_clock(cx);
+            // A Pending/error return can still have spent the original native
+            // lifetime inside its clock subscription or sample provider.
+            if original.expired(None) {
+                return Poll::Ready(Err(Fault::Deadline));
+            }
+            match result {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(Err(e)) => return Poll::Ready(Err(e.into())),
+                Poll::Ready(Ok(())) => {}
+            }
+        }
+        // Sample canonical time after all TRANSPORT clock providers. Never use
+        // a pre-provider sample to admit or extend business work.
+        let sample = self.clock(cx);
+        if original.expired(None) {
+            return Poll::Ready(Err(Fault::Deadline));
+        }
+        let Some(now) = sample? else {
             return Poll::Pending;
         };
         let expired = self.expire(Some(now), observe)?;
@@ -1902,25 +1614,36 @@ impl<'id> Runtime<'id> {
         if expired {
             return Poll::Ready(Ok(Progress::Activity));
         }
-        match self.transport.poll_clock(cx) {
-            Poll::Pending => return Poll::Pending,
-            Poll::Ready(Err(e)) => return Poll::Ready(Err(e.into())),
-            Poll::Ready(Ok(())) => {}
-        }
         if !self.bound_announced {
             self.bound_announced = true;
             observe(Event::Bound(self.socket_epoch));
             return Poll::Ready(Ok(Progress::Activity));
         }
-        if self.setup(now, observe)?
-            || self.incoming(now, observe)?
-            || self.send_results(now, observe)?
-            || self.dispatch(now, observe)?
+        if !paused
+            && (self.setup(now, observe)?
+                || self.incoming(now, observe)?
+                || self.send_results(now, observe)?
+                || self.dispatch(now, observe)?)
         {
             return Poll::Ready(Ok(Progress::Activity));
         }
+        // Pending IO classes do not admit new domain work. Their original
+        // minimum remains valid for this turn without rescanning every queue.
+        let mut now = now;
+        let mut resample = true;
         for offset in 0..7 {
             let index = (self.cursor + offset) % 7;
+            if paused && index != 0 {
+                continue;
+            }
+            // Only PILS and CLIENT connect enter clock/config/Resolver ports.
+            // Resample after them; native nonblocking classes need only the
+            // independent hard check and the still-current canonical sample.
+            if resample {
+                now = gate::check(original, self.clock.as_ref())?;
+            } else if original.expired(Some(now)) {
+                return Poll::Ready(Err(Fault::Deadline));
+            }
             let result = match index {
                 0 => self.poll_pils(cx, now, observe),
                 1 => self.poll_connect(cx, observe),
@@ -1939,6 +1662,7 @@ impl<'id> Runtime<'id> {
                 result?;
                 return Poll::Ready(Ok(Progress::Activity));
             }
+            resample = index <= 1;
         }
         if let Some(target) = wait {
             let timer = self
@@ -1961,7 +1685,16 @@ impl<'id> Runtime<'id> {
     ) -> Poll<Result<Progress, Error>> {
         match self.step(cx, wait, observe) {
             Poll::Ready(Err(cause)) => {
+                let first = self.identity.close();
                 let cleanup = self.close(observe);
+                let cause = match first {
+                    Some(first) => Fault::IdentityRecovery {
+                        epoch: first.epoch,
+                        cause: first.cause,
+                        terminal: Box::new(cause),
+                    },
+                    None => cause,
+                };
                 Poll::Ready(Err(Error {
                     cause,
                     cleanup: Some(cleanup),
@@ -1995,7 +1728,7 @@ impl<'id> Runtime<'id> {
         self.alarm = None;
         self.wait = None;
         self.epoch = None;
-        self.peer = None;
+        self.identity.close();
         self.statistics.queues = 0;
         self.closed = true;
         observe(Event::Closed {

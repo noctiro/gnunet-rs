@@ -234,6 +234,15 @@ impl Engine {
                 .any(|q| remaining(q) && q.valid_until > now);
         self.refresh_outputs(peer, routes, live)
     }
+
+    // Liveness expiry revokes route authority before this check. Keep the CORE
+    // notification and existing FC/credit debts together until they all fit.
+    pub(super) fn refresh_fits(&self, peer: PeerId) -> Result<bool, Error> {
+        let virtual_live = self.dv_bridge.has_peer(peer, self.last_monotonic);
+        let routes = virtual_live || self.routes.iter().any(|q| q.description.peer == peer);
+        let live = self.payload_route_live(peer, self.last_monotonic);
+        Ok(self.output_room(self.refresh_outputs(peer, routes, live)?))
+    }
 }
 
 #[cfg(test)]

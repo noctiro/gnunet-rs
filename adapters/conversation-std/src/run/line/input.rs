@@ -81,6 +81,7 @@ impl<'s, 'p, 'c, 'slots> State<'s, 'p, 'c, 'slots> {
             if !self.io.release_frame() {
                 return Err(Fault::Conflict.into());
             }
+            self.reconcile_cancelled()?;
             if !self.pending_allowed()? {
                 return Err(Fault::Cancelled.into());
             }
@@ -136,11 +137,10 @@ impl<'s, 'p, 'c, 'slots> State<'s, 'p, 'c, 'slots> {
         };
         let id = pending.effect;
         let current = self.session.core().ok_or(Fault::NotReady)?.identity();
-        if !self
-            .session
-            .core()
-            .ok_or(Fault::NotReady)?
-            .effect_io_allowed(id, &current, self.origin.now()?)?
+        let core = self.session.core().ok_or(Fault::NotReady)?;
+        let now = self.origin.now()?;
+        if !core.effect_io_allowed(id, &current, now)?
+            && !(pending.written > 0 && core.effect_drain_allowed(id, &current, now)?)
         {
             return Err(Fault::Cancelled.into());
         }

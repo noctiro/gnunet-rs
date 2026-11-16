@@ -60,6 +60,7 @@ pub(super) struct Settings {
     pub(super) listeners: usize,
     pub(super) addresses: usize,
     pub(super) frames: usize,
+    #[cfg(unix)]
     pub(super) helper: PathBuf,
     pub(super) abi: ArmAbi,
     pub(super) shutdown_grace: Duration,
@@ -71,19 +72,7 @@ impl Settings {
         let d = reactor::Limits::default();
         let services = number(c, b"MAX_SERVICES", d.services)?;
         let clients = number(c, b"MAX_CLIENTS", d.clients)?;
-        let mut process = d.process;
-        process.launch.max_children = number(c, b"MAX_CHILDREN", services)?;
-        process.launch.max_command_bytes =
-            number(c, b"MAX_COMMAND_BYTES", process.launch.max_command_bytes)?;
-        process.launch.max_arguments = number(c, b"MAX_ARGUMENTS", process.launch.max_arguments)?;
-        process.launch.max_environment_bytes = number(
-            c,
-            b"MAX_ENVIRONMENT_BYTES",
-            process.launch.max_environment_bytes,
-        )?;
-        process.max_descriptors = number(c, b"MAX_DESCRIPTORS", process.max_descriptors)?;
-        process.max_auxiliary_bytes =
-            number(c, b"MAX_AUXILIARY_BYTES", process.max_auxiliary_bytes)?;
+        let process = platform::process(c, services)?;
         let native = reactor::Limits {
             clients,
             services,
@@ -115,13 +104,6 @@ impl Settings {
             || addresses > 1024
             || frames == 0
             || frames > 65536
-            || process.launch.max_children == 0
-            || process.launch.max_children > services
-            || process.launch.max_command_bytes == 0
-            || process.launch.max_arguments == 0
-            || process.launch.max_environment_bytes == 0
-            || process.max_descriptors == 0
-            || process.max_auxiliary_bytes == 0
         {
             return Err("invalid finite ARM resource profile".into());
         }
@@ -136,7 +118,8 @@ impl Settings {
                     target_os = "macos",
                     target_os = "freebsd",
                     target_os = "openbsd",
-                    target_os = "netbsd"
+                    target_os = "netbsd",
+                    target_os = "windows"
                 )
             )) =>
             {
@@ -144,20 +127,8 @@ impl Settings {
             }
             None => return Err("select explicit validated [arm-rust] ABI for this platform".into()),
         };
-        let helper = if c.have_value(b"arm-rust", b"SPAWN_HELPER") {
-            c.get_filename(b"arm-rust", b"SPAWN_HELPER", &ProcessEnvironment)?
-        } else {
-            let executable = std::env::current_exe()?;
-            let sibling = executable
-                .parent()
-                .ok_or("ARM executable has no directory")?
-                .join("gnunet-arm-spawn-helper");
-            if sibling.is_file() {
-                sibling
-            } else {
-                ProjectData::default().libexec_binary_path(b"gnunet-arm-spawn-helper")?
-            }
-        };
+        #[cfg(unix)]
+        let helper = platform::helper(c)?;
         let shutdown_grace = duration(c, b"SHUTDOWN_GRACE", Duration::from_secs(5))?;
         let kill_grace = duration(c, b"KILL_GRACE", Duration::from_secs(5))?;
         let whole = shutdown_grace
@@ -170,7 +141,7 @@ impl Settings {
             native,
             registry: registry::Limits {
                 services,
-                command_bytes: process.launch.max_command_bytes,
+                command_bytes: platform::command_bytes(process),
                 substitutions: number(c, b"MAX_SUBSTITUTIONS", 65535)?,
             },
             options: service_options(c, b"arm", ShutdownMode::Immediate)?,
@@ -181,6 +152,7 @@ impl Settings {
             listeners,
             addresses,
             frames,
+            #[cfg(unix)]
             helper,
             abi,
             shutdown_grace,
@@ -192,3 +164,12 @@ impl Settings {
         })
     }
 }
+
+#[cfg(unix)]
+mod unix;
+#[cfg(unix)]
+use unix as platform;
+#[cfg(windows)]
+mod windows;
+#[cfg(windows)]
+use windows as platform;

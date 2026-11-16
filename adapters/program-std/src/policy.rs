@@ -1,4 +1,4 @@
-//! Exact source integer levels and native POSIX BRE callsite policy.
+//! Source integer levels and platform BRE callsite policy.
 use crate::native::{Regex, RegexCompileFailure};
 /// Original bit-valued error type, including unknown combinations.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -274,10 +274,7 @@ impl Policy {
                     let regex = |value: &[u8]| -> std::io::Result<Option<Regex>> {
                         match Regex::new(if value.is_empty() { b".*" } else { value }) {
                             Ok(regex) => Ok(Some(regex)),
-                            Err(RegexCompileFailure::InvalidPattern(status)) => {
-                                debug_assert_ne!(status, 0);
-                                Ok(None)
-                            }
+                            Err(RegexCompileFailure::InvalidPattern) => Ok(None),
                             Err(RegexCompileFailure::Boundary(error)) => Err(error),
                         }
                     };

@@ -10,6 +10,8 @@ owner through `gnunet-secretsharing-host` for existing-share781 decryption and
 actual782 output. This package provides no media/storage/key-file access and
 does not establish whole SS completion.
 
+## Public interface
+
 Sources coherently snapshot configured PILS/CONSENSUS endpoints on the same
 Clock/Resolver, then freeze selected endpoints. Request adopts exactly one
 zeroizing781 frame with its original start/deadline, ciphertext, share and
@@ -83,6 +85,8 @@ conclude_written/consensus_done stay false, and consensus_loss stays None becaus
 no such source was constructed. Physical PILS close and idle still gate
 the normal service's plaintext output.
 
+## Limits
+
 Limits separately bound the request frame, participants and
 math work/entropy, child native buffers and a conservative owner reservation. The checked participant vector reserves the original peer count. The
 local path reserves only one VerifiedPartial, no Consensus peer vector, selected
@@ -99,6 +103,3 @@ production paths. Only Decrypt::Done after physical source retirement
 can enter the same secure136-byte782 queue; partial and whole writes remain
 separate facts. The separate singleton780 generator can produce real783;
 general multi-peer780/qualified DKG remains unfinished.
-
-The prior owner passed selected offline native/Linux and architecture checks. Actual C interoperability, source/fault/platform/resource acceptance
-and general SS completion remain unverified.

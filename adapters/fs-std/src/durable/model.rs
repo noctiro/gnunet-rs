@@ -10,7 +10,6 @@ use std::{
     collections::BTreeMap,
     ffi::OsString,
     fmt,
-    os::unix::ffi::OsStrExt,
     path::{Path, PathBuf},
 };
 
@@ -80,7 +79,7 @@ pub struct Manifest {
     pub relative: PathBuf,
     /// Caller-selected root interpretation and, for files, exact original range.
     pub mode: RootMode,
-    /// Complete numeric policy; decoded transfer.deadline is zero.
+    /// Persisted policy; deadline is zero and the process-local native bound is absent.
     pub options: TreeDownloadOptions,
 }
 impl Manifest {
@@ -99,7 +98,13 @@ impl Manifest {
         }
         validate_path(&self.relative, false)?;
         if matches!(self.mode, RootMode::File { .. }) {
-            validate_name(self.relative.as_os_str().as_bytes())?;
+            if crate::output::components(&self.relative)
+                .map_err(|_| ModelError::Format)?
+                .len()
+                != 1
+            {
+                return Err(ModelError::Format);
+            }
             if self.relative.file_name() == Some(std::ffi::OsStr::new(crate::OWNER_MARKER_NAME)) {
                 return Err(ModelError::Binding);
             }
@@ -177,7 +182,7 @@ pub struct TempFact {
     pub parent: FileIdentity,
     /// Exact exclusive temporary inode.
     pub identity: FileIdentity,
-    /// Exact single-component native temporary name.
+    /// Exact native temporary name: eight ASCII digits beginning with zero.
     pub name: OsString,
 }
 /// Only an index into the original Store: no duplicate large proof body is owned.
@@ -274,12 +279,14 @@ pub enum Event<'a> {
         /// Original stable driver entry identifier.
         id: [u8; 64],
     },
-    /// Actual original no-clobber link and durability barriers completed.
+    /// Original no-clobber link and file-data synchronization completed.
     FileCommitted {
         /// Original stable driver entry identifier.
         id: [u8; 64],
         /// Actual originally observed inode.
         identity: FileIdentity,
+        /// Actual native directory-barrier observation.
+        directory_sync: crate::DirectorySync,
     },
     /// Independent exact temporary cleanup disposition and actual commit stage.
     Cleanup {
@@ -355,7 +362,7 @@ impl State {
         let mut entries = BTreeMap::new();
         let mut path_index = BTreeMap::new();
         path_index.insert(
-            gnunet_crypto::hash512(binding.path.as_os_str().as_bytes()),
+            gnunet_crypto::hash512(&gnunet_native::os_bytes::encode(binding.path.as_os_str())),
             binding.id,
         );
         entries.insert(binding.id, EntryState::new(binding));
@@ -440,7 +447,7 @@ impl State {
                 if binding.kind != Kind::File {
                     return Err(ModelError::Transition);
                 }
-                validate_name(temporary.name.as_bytes())?;
+                validate_temporary_name(&temporary.name)?;
                 let parent = if binding.parent.is_none() {
                     self.root
                 } else {
@@ -465,7 +472,7 @@ impl State {
                     return Err(ModelError::Transition);
                 }
             }
-            Event::FileCommitted { id, identity } => {
+            Event::FileCommitted { id, identity, .. } => {
                 let e = self.file(id)?;
                 if !e.intent
                     || e.temporary.as_ref().is_none_or(|t| t.identity != *identity)
@@ -480,7 +487,7 @@ impl State {
                     || (e.cleanup && !*success)
                     || stage_rank(*stage) < stage_rank(e.stage)
                     || (*stage != CommitStage::NotLinked && !e.intent)
-                    || (*stage == CommitStage::Durable && e.committed.is_none())
+                    || (stage.is_committed() && (e.committed.is_none() || *stage != e.stage))
                 {
                     return Err(ModelError::Transition);
                 }
@@ -540,9 +547,7 @@ impl State {
                         || self.entries.values().any(|e| match e.binding.kind {
                             Kind::Directory => e.created.is_none() || !e.verified,
                             Kind::File => {
-                                e.committed.is_none()
-                                    || !e.cleanup
-                                    || e.stage != CommitStage::Durable
+                                e.committed.is_none() || !e.cleanup || !e.stage.is_committed()
                             }
                         }) =>
                 {
@@ -605,10 +610,14 @@ impl State {
             Event::CommitIntent { id } => {
                 self.get_mut(&id)?.intent = true;
             }
-            Event::FileCommitted { id, identity } => {
+            Event::FileCommitted {
+                id,
+                identity,
+                directory_sync,
+            } => {
                 let e = self.get_mut(&id)?;
                 e.committed = Some(identity);
-                e.stage = CommitStage::Durable;
+                e.stage = CommitStage::FileSynchronized(directory_sync);
             }
             Event::Cleanup { id, success, stage } => {
                 let e = self.get_mut(&id)?;
@@ -697,14 +706,16 @@ impl State {
                 .is_none_or(|n| n > self.manifest.options.max_total_bytes)
             || self
                 .path_bytes
-                .checked_add(b.path.as_os_str().as_bytes().len())
+                .checked_add(gnunet_native::os_bytes::encode(b.path.as_os_str()).len())
                 .is_none_or(|n| n > self.manifest.options.max_path_bytes)
         {
             return Err(ModelError::Limit);
         }
         if self
             .path_index
-            .contains_key(&gnunet_crypto::hash512(b.path.as_os_str().as_bytes()))
+            .contains_key(&gnunet_crypto::hash512(&gnunet_native::os_bytes::encode(
+                b.path.as_os_str(),
+            )))
         {
             return Err(ModelError::Binding);
         }
@@ -713,10 +724,12 @@ impl State {
     fn admit(&mut self, b: EntryBinding) -> Result<&mut EntryState, ModelError> {
         let id = b.id;
         if !self.entries.contains_key(&id) {
-            self.path_bytes += b.path.as_os_str().as_bytes().len();
+            self.path_bytes += gnunet_native::os_bytes::encode(b.path.as_os_str()).len();
             self.scheduled_bytes += u128::from(b.content.size);
-            self.path_index
-                .insert(gnunet_crypto::hash512(b.path.as_os_str().as_bytes()), id);
+            self.path_index.insert(
+                gnunet_crypto::hash512(&gnunet_native::os_bytes::encode(b.path.as_os_str())),
+                id,
+            );
             self.entries.insert(id, EntryState::new(b));
         }
         self.get_mut(&id)
@@ -726,23 +739,18 @@ fn stage_rank(stage: CommitStage) -> u8 {
     match stage {
         CommitStage::NotLinked => 0,
         CommitStage::LinkedUnknown => 1,
-        CommitStage::Durable => 2,
+        CommitStage::FileSynchronized(_) => 2,
     }
 }
-pub(super) fn validate_name(bytes: &[u8]) -> Result<(), ModelError> {
-    if bytes.is_empty()
-        || bytes.len() > 4096
-        || bytes == b"."
-        || bytes == b".."
-        || bytes.iter().any(|b| matches!(b, 0 | b'/' | b'\\'))
-        || (bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':')
-    {
-        return Err(ModelError::Format);
+pub(super) fn validate_temporary_name(name: &std::ffi::OsStr) -> Result<(), ModelError> {
+    if crate::output::temporary_name_valid(name) {
+        Ok(())
+    } else {
+        Err(ModelError::Format)
     }
-    Ok(())
 }
 pub(super) fn validate_path(path: &Path, empty: bool) -> Result<(), ModelError> {
-    let bytes = path.as_os_str().as_bytes();
+    let bytes = gnunet_native::os_bytes::encode(path.as_os_str());
     if bytes.is_empty() {
         return if empty {
             Ok(())
@@ -753,13 +761,9 @@ pub(super) fn validate_path(path: &Path, empty: bool) -> Result<(), ModelError> 
     if bytes.len() > 4096 {
         return Err(ModelError::Limit);
     }
-    let mut count = 0;
-    for part in bytes.split(|b| *b == b'/') {
-        validate_name(part)?;
-        count += 1;
-        if count > 128 {
-            return Err(ModelError::Limit);
-        }
-    }
+    crate::output::components(path).map_err(|error| match error {
+        crate::Error::Limit => ModelError::Limit,
+        _ => ModelError::Format,
+    })?;
     Ok(())
 }

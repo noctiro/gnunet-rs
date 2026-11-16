@@ -146,6 +146,17 @@ impl<'a, E: crypto::Entropy, const N: usize> Api<'a, E, N> {
     fn progress_state(&mut self) -> Option<Progress<'a>> {
         let event = self.core.pop_event()?;
         self.wake_domain();
+        // Admission initially records Ready, before Core classifies ciphertext
+        // as AwaitingEpoch. Arm crypto from the actual transition, not an early
+        // notification-time scan that can miss every later steady-state send.
+        if matches!(
+            event,
+            Event::MessageChanged(_, _, domain::MessagePhase::AwaitingEpoch)
+                | Event::KeyChanged(..)
+                | Event::EpochChanged(..)
+        ) {
+            self.reset_decryption();
+        }
         if let Event::OperationChanged(operation, phase) = event
             && matches!(
                 phase,
@@ -472,7 +483,6 @@ impl<'a, E: crypto::Entropy, const N: usize> Api<'a, E, N> {
                 }
             }
             held.applied = true;
-            self.reset_decryption();
             self.wake_domain();
         }
         match self.core.advance(self.rooms[index].room, now) {
@@ -611,11 +621,15 @@ impl<'a, E: crypto::Entropy, const N: usize> Api<'a, E, N> {
                 cx.waker().wake_by_ref();
                 return Ok(None);
             }
+            let admitted = self.next_native;
             self.drive_domain(now)?;
             // Jobs/key transitions may introduce an earlier timer this turn.
             let logical = self.logical_target()?;
             self.clock.poll_logical(cx, logical).map_err(Error::Clock)?;
-            if self.local_runnable()? {
+            // Native was polled before domain work. A newly submitted frame
+            // still needs its first enqueue/write poll even when domain scans
+            // are exhausted and no unrelated socket/timer becomes ready.
+            if self.next_native != admitted || self.local_runnable()? {
                 cx.waker().wake_by_ref();
             }
             if let Some(cause) = self.expired(Some(now)) {

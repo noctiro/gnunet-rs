@@ -5,10 +5,12 @@
 )]
 use super::*;
 use crate::BlockSource;
+use crate::local_peer::{Listener, Temporary};
 use gnunet_fs::{
     Content,
     content::{BLOCK_BYTES, NodeRef},
 };
+use gnunet_service_runtime::local::Stream;
 use gnunet_wire::official::{AbsoluteTime, datastore::Status as NativeStatus};
 use std::{
     fs,
@@ -16,38 +18,21 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, Ordering},
     },
     time::Duration,
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::{UnixListener, UnixStream},
     time::{sleep, timeout},
 };
 type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 const WAIT: Duration = Duration::from_secs(5);
-struct Temporary(PathBuf);
 impl Temporary {
-    fn new() -> io::Result<Self> {
-        static NEXT: AtomicU64 = AtomicU64::new(1);
-        let path = std::env::temp_dir().join(format!(
-            "gnunet-pt-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        fs::create_dir(&path)?;
-        Ok(Self(path))
-    }
-    fn bind(&self) -> io::Result<(PathBuf, UnixListener)> {
+    async fn bind(&self) -> TestResult<(PathBuf, Listener)> {
         let path = self.0.join("native.sock");
-        let listener = UnixListener::bind(&path)?;
+        let listener = Listener::bind(&path).await?;
         Ok((path, listener))
-    }
-}
-impl Drop for Temporary {
-    fn drop(&mut self) {
-        let _cleanup = fs::remove_dir_all(&self.0);
     }
 }
 fn runtime() -> io::Result<tokio::runtime::Runtime> {
@@ -108,7 +93,7 @@ fn source(path: &Path) -> TestResult<(EndpointSource, AbsoluteTime)> {
     );
     Ok((source, deadline))
 }
-async fn frame(stream: &mut UnixStream) -> TestResult<Vec<u8>> {
+async fn frame(stream: &mut Stream) -> TestResult<Vec<u8>> {
     let mut header = [0; 4];
     stream.read_exact(&mut header).await?;
     let n = usize::from(u16::from_be_bytes([header[0], header[1]]));
@@ -148,12 +133,12 @@ fn acknowledgement() -> TestResult<Vec<u8>> {
     wire.truncate(used);
     Ok(wire)
 }
-async fn closed(stream: &mut UnixStream) -> TestResult {
+async fn closed(stream: &mut Stream) -> TestResult {
     let mut extra = [0];
     assert_eq!(stream.read(&mut extra).await?, 0);
     Ok(())
 }
-async fn no_connection(listener: &UnixListener) -> TestResult {
+async fn no_connection(listener: &Listener) -> TestResult {
     assert!(
         timeout(Duration::from_millis(40), listener.accept())
             .await
@@ -164,7 +149,7 @@ async fn no_connection(listener: &UnixListener) -> TestResult {
 async fn acknowledged(
     task: &mut Task,
     path: &Path,
-    listener: &UnixListener,
+    listener: &Listener,
     count: usize,
     pause: bool,
 ) -> TestResult<(Outcome, Vec<Vec<u8>>)> {
@@ -228,7 +213,7 @@ fn object(root: &Path, hash: [u8; 64]) -> PathBuf {
 fn original_ack_prefix_survives_reopen_source_removal_and_repeated_weighted_blocks() -> TestResult {
     runtime()?.block_on(async {
         let temp = Temporary::new()?;
-        let (path, listener) = temp.bind()?;
+        let (path, listener) = temp.bind().await?;
         let (mut task, plaintext, original) = prepared(&temp)?;
         let expected_content = content(&task)?;
         let expected_uri = Uri::Content(expected_content);
@@ -305,7 +290,7 @@ fn original_ack_prefix_survives_reopen_source_removal_and_repeated_weighted_bloc
 fn a_fully_written_unacknowledged_put_remains_unknown_after_reopen_and_cancel() -> TestResult {
     runtime()?.block_on(async {
         let temp = Temporary::new()?;
-        let (path, listener) = temp.bind()?;
+        let (path, listener) = temp.bind().await?;
         let (mut task, _, _) = prepared(&temp)?;
         let first = task.manifest().plan.puts[0];
         let policy = task.manifest().blocks;
@@ -397,7 +382,7 @@ fn a_fully_written_unacknowledged_put_remains_unknown_after_reopen_and_cancel() 
 fn changed_spool_payload_prevents_new_puts_and_keeps_the_original_ack_prefix() -> TestResult {
     runtime()?.block_on(async {
         let temp = Temporary::new()?;
-        let (path, listener) = temp.bind()?;
+        let (path, listener) = temp.bind().await?;
         let (mut task, _, original) = prepared(&temp)?;
         let hash = task.manifest().plan.puts[0].payload.hash;
         let (paused, frames) = acknowledged(&mut task, &path, &listener, 1, true).await?;

@@ -12,7 +12,6 @@ use std::{
     fmt,
     future::{Future, poll_fn},
     io::{self, Write},
-    os::unix::ffi::OsStrExt,
     path::PathBuf,
     pin::Pin,
     task::{Context, Poll},
@@ -71,7 +70,7 @@ impl Settings {
             match option {
                 "--identity-socket" if identity.is_none() => identity = Some(PathBuf::from(value)),
                 "--ego" if action == Action::PurgeZone && ego.is_none() => {
-                    let raw = value.as_os_str().as_bytes();
+                    let raw = crate::argument::wire_bytes(value)?;
                     if raw.is_empty()
                         || raw.len() > identity::Limits::default().name_bytes
                         || raw.contains(&0)
@@ -98,7 +97,8 @@ impl Settings {
         }
         let identity = identity.ok_or("required --identity-socket UNIXPATH")?;
         for path in [socket.as_os_str(), identity.as_os_str()] {
-            if path.is_empty() || path.as_bytes().len() > 4096 || path.as_bytes().contains(&0) {
+            let path = crate::argument::wire_bytes(path)?;
+            if path.is_empty() || path.len() > 4096 || path.contains(&0) {
                 return Err("invalid bounded service socket path".into());
             }
         }

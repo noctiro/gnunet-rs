@@ -6,6 +6,14 @@ use std::{
     task::{Context, Poll},
     time::{Duration, Instant},
 };
+fn known(identity: PilsIdentity<'_>) -> Known {
+    Known {
+        peer: *identity.peer().as_bytes(),
+        epoch: identity.epoch().value(),
+        revision: identity.revision(),
+        expiration: identity.expiration().as_micros(),
+    }
+}
 
 pub(super) fn current<'p>(
     pils: &pils::Client<'p, 1>,
@@ -24,7 +32,7 @@ pub(super) fn current<'p>(
 impl<'s, 'p, 'c, 'slots> State<'s, 'p, 'c, 'slots> {
     pub(super) fn poll_identity(&mut self, cx: &mut Context<'_>) -> Result<bool, Error> {
         self.refresh()?;
-        if self.session.core().is_some() {
+        if !self.session.waiting() && self.session.core().is_some() {
             current(&self.pils, self.session.observed())?;
         }
         // Preserve the actual input until its public identity observation can
@@ -34,7 +42,7 @@ impl<'s, 'p, 'c, 'slots> State<'s, 'p, 'c, 'slots> {
         }
         let control = &self.control;
         let clock = &self.sources.clock;
-        let required = self.session.core().is_some();
+        let required = self.session.observed().is_some();
         let mut guard = || {
             control
                 .check(clock.as_ref(), required)
@@ -70,7 +78,7 @@ impl<'s, 'p, 'c, 'slots> State<'s, 'p, 'c, 'slots> {
                 }
                 let unchanged = self
                     .session
-                    .observed()
+                    .previous()
                     .is_some_and(|old| old.expiration() == identity.expiration());
                 if !unchanged {
                     self.ttl = if expires == u64::MAX {
@@ -86,33 +94,26 @@ impl<'s, 'p, 'c, 'slots> State<'s, 'p, 'c, 'slots> {
                         })
                     };
                 }
-                let known = Known {
-                    peer: *identity.peer().as_bytes(),
-                    epoch: identity.epoch().value(),
-                    revision: identity.revision(),
-                    expiration: expires,
-                };
-                let previous = self.session.observed().map(|old| Known {
-                    peer: *old.peer().as_bytes(),
-                    epoch: old.epoch().value(),
-                    revision: old.revision(),
-                    expiration: old.expiration().as_micros(),
-                });
+                let next = known(identity);
+                let previous = self.session.observed().map(known);
                 let now = if self.session.core().is_none() {
                     self.now()?
                 } else {
                     self.last_now
                 };
                 let change = self.session.observe(identity, self.limits.core, now)?;
-                self.control.known(previous, known)?;
+                self.control.known(previous, next)?;
                 if change != Observation::Refresh {
-                    self.report.identity = Some((known.peer, known.epoch));
+                    self.report.identity = Some((next.peer, next.epoch));
                     self.events.emit(LocalEvent::Identity {
-                        peer: known.peer,
-                        epoch: known.epoch,
+                        peer: next.peer,
+                        epoch: next.epoch,
                     })?;
                 }
+                self.refresh()?;
                 self.control.check(self.sources.clock.as_ref(), true)?;
+                self.recovery = None;
+                self.refresh()?;
                 self.account()?;
                 self.mark();
                 Ok(true)
@@ -130,6 +131,30 @@ impl<'s, 'p, 'c, 'slots> State<'s, 'p, 'c, 'slots> {
                 }
                 Ok(true)
             }
+            pils::Progress::Lost {
+                epoch,
+                cause,
+                report,
+            } if cause.is_connection_loss()
+                && report.feeds().next().is_none()
+                && report.retained() == 0 =>
+            {
+                let previous = self.session.observed().map(known);
+                self.session.pause(epoch)?;
+                self.control.pause_identity(previous)?;
+                // No unattached connector may retain a captured pre-loss gate.
+                // An attached CADET source and all byte cursors stay untouched.
+                self.cadet.cancel_connect();
+                self.pils_input = None;
+                if self.recovery.is_none() {
+                    self.recovery = Some(self.origin.after(self.limits.startup)?);
+                }
+                let loss = cause.into_connection_loss().map_err(Error::Pils)?;
+                self.report.first_pils_loss.get_or_insert(loss);
+                self.refresh()?;
+                self.mark();
+                Ok(true)
+            }
             pils::Progress::Lost { cause, .. } => Err(Error::Pils(cause)),
             pils::Progress::ConnectRetry { error, .. } => {
                 self.report.first_pils_retry.get_or_insert(error);
@@ -139,8 +164,10 @@ impl<'s, 'p, 'c, 'slots> State<'s, 'p, 'c, 'slots> {
             pils::Progress::Closed => Err(Fault::Closed.into()),
             pils::Progress::WaitDeadline => {
                 self.refresh()?;
-                self.control
-                    .check(self.sources.clock.as_ref(), self.session.core().is_some())?;
+                self.control.check(
+                    self.sources.clock.as_ref(),
+                    self.session.observed().is_some(),
+                )?;
                 Ok(false)
             }
         }

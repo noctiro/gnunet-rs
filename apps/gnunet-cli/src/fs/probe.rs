@@ -1,41 +1,36 @@
 //! Explicit actual native range observation; no download output or cache.
+use super::entropy::OsEntropy;
 use super::service::{duration, target};
 use gnunet::{
-    crypto::Entropy,
     fs::{Limits as UriLimits, Uri},
     fs_host::{
         Buffers, Control,
         ipc::EndpointSource,
         network::{self, DownloadOptions, probe},
     },
-    types::Error as ProtocolError,
 };
 use serde_json::json;
 use std::{
     error::Error,
     ffi::OsStr,
-    fs::File,
-    io::{self, Read, Write},
-    os::unix::ffi::OsStrExt,
+    io::{self, Write},
     path::Path,
 };
 
-struct EntropySource(File);
-impl Entropy for EntropySource {
-    fn fill(&mut self, output: &mut [u8]) -> Result<(), ProtocolError> {
-        self.0
-            .read_exact(output)
-            .map_err(|_| ProtocolError::Entropy)
-    }
-}
-
-pub(super) fn run(args: &[impl AsRef<OsStr>], out: &mut impl Write) -> Result<(), Box<dyn Error>> {
+pub(super) fn run(
+    args: &[impl AsRef<OsStr>],
+    out: &mut super::Output<'_, impl Write>,
+) -> Result<(), Box<dyn Error>> {
     let interval = match args.get(2) {
         Some(_) => duration(args.get(2))?,
         None => 5_000_000,
     };
-    let uri = Uri::parse(args[1].as_ref().as_bytes(), UriLimits::default())?;
+    let uri = Uri::parse(
+        crate::argument::wire_bytes(args[1].as_ref())?,
+        UriLimits::default(),
+    )?;
     let source = EndpointSource::unix(Path::new(args[0].as_ref()).to_path_buf());
+    out.interval(interval)?;
     let deadline = target(&source, interval)?;
     let (content, transfer) = match uri {
         Uri::Content(content) => (content, DownloadOptions::new(deadline)),
@@ -51,7 +46,7 @@ pub(super) fn run(args: &[impl AsRef<OsStr>], out: &mut impl Write) -> Result<()
             .to_str()
             .ok_or("leaf ordinal must be UTF-8 digits")?
             .parse::<u64>()?,
-        None => probe::sample_leaf(content, &mut EntropySource(File::open("/dev/urandom")?))?,
+        None => probe::sample_leaf(content, &mut OsEntropy)?,
     };
     let observed = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -63,6 +58,7 @@ pub(super) fn run(args: &[impl AsRef<OsStr>], out: &mut impl Write) -> Result<()
             probe::Options::from(transfer),
             |_| Control::Continue,
         ));
+    out.cleanup()?;
     let row = match &observed {
         Ok(actual) => {
             let progress = actual.progress();
@@ -88,6 +84,7 @@ pub(super) fn run(args: &[impl AsRef<OsStr>], out: &mut impl Write) -> Result<()
     };
     serde_json::to_writer(&mut *out, &row).map_err(io::Error::other)?;
     writeln!(out)?;
+    out.flush()?;
     observed
         .map(|_| ())
         .map_err(|failure| Box::new(failure) as Box<dyn Error>)

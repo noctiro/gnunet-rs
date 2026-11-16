@@ -4,6 +4,9 @@ use super::*;
 #[cfg(test)]
 mod profile_tests;
 #[cfg(test)]
+mod recovery_tests;
+mod retirement;
+#[cfg(test)]
 mod rotation_tests;
 impl<'c, 'slots, 'p, E: Entropy, const O: usize> Server<'c, 'slots, 'p, E, O> {
     pub(super) fn signing_work(&mut self) -> Result<bool, Error> {
@@ -81,10 +84,13 @@ impl<'c, 'slots, 'p, E: Entropy, const O: usize> Server<'c, 'slots, 'p, E, O> {
                 .ok_or(Fault::Overflow)?;
             self.signs[index] = Some(Sign {
                 room,
+                kind,
                 binding,
-                peer,
-                frame: OwnedBytes::new(bytes),
-                phase: SignPhase::Draft,
+                state: SignState::Crypto(Signing {
+                    peer,
+                    frame: OwnedBytes::new(bytes),
+                    phase: SignPhase::Draft,
+                }),
                 until,
                 hard,
             });
@@ -101,14 +107,21 @@ impl<'c, 'slots, 'p, E: Entropy, const O: usize> Server<'c, 'slots, 'p, E, O> {
             let Some(s) = self.signs[i].as_ref() else {
                 continue;
             };
-            let (binding, room, phase) = (s.binding, s.room, s.phase);
+            if matches!(s.state, SignState::Retiring { .. }) {
+                if self.apply_retired_signature(i, observe)? {
+                    return Ok(true);
+                }
+                continue;
+            }
+            let signing = s.crypto()?;
+            let (binding, room, phase) = (s.binding, s.room, signing.phase);
             match phase {
                 SignPhase::Pending(_) | SignPhase::Cancelling(_) => continue,
                 SignPhase::Draft => {
                     let Some(identity) = self.active_identity() else {
                         continue;
                     };
-                    if identity.peer().as_bytes() != &s.peer
+                    if identity.peer().as_bytes() != &signing.peer
                         || self.pils.identity().is_none_or(|actual| {
                             actual.epoch() != identity.epoch() || actual.peer() != identity.peer()
                         })
@@ -118,17 +131,20 @@ impl<'c, 'slots, 'p, E: Entropy, const O: usize> Server<'c, 'slots, 'p, E, O> {
                     let payload = core::crypto::signature::signing_payload(binding.message())
                         .map_err(core::Error::from)?;
                     let operation = self.pils.sign(&payload, pc::KeyTarget::Exact(identity))?;
-                    self.signs[i].as_mut().ok_or(Fault::Stale)?.phase =
-                        SignPhase::Pending(OriginalSign {
-                            operation,
-                            identity,
-                        });
+                    self.signs[i]
+                        .as_mut()
+                        .ok_or(Fault::Stale)?
+                        .crypto_mut()?
+                        .phase = SignPhase::Pending(OriginalSign {
+                        operation,
+                        identity,
+                    });
                     observe(Event::SignAdmitted {
                         operation: operation.value(),
                     });
                 }
                 SignPhase::Verified(original) => {
-                    let input = match OwnedBytes::copy_from(s.frame.expose()) {
+                    let input = match OwnedBytes::copy_from(signing.frame.expose()) {
                         Ok(input) => input,
                         Err(error) => {
                             let error = Error::from(error);
@@ -145,8 +161,11 @@ impl<'c, 'slots, 'p, E: Entropy, const O: usize> Server<'c, 'slots, 'p, E, O> {
                         self.last_now,
                     ) {
                         Ok(()) => {
-                            self.signs[i].as_mut().ok_or(Fault::Stale)?.phase =
-                                SignPhase::PreparedCore(original)
+                            self.signs[i]
+                                .as_mut()
+                                .ok_or(Fault::Stale)?
+                                .crypto_mut()?
+                                .phase = SignPhase::PreparedCore(original)
                         }
                         Err(rejected) => {
                             let error = Error::Core(rejected.error);
@@ -173,8 +192,11 @@ impl<'c, 'slots, 'p, E: Entropy, const O: usize> Server<'c, 'slots, 'p, E, O> {
                     };
                     // Commit is a real fact before any later hook, graph
                     // advancement or delivery admission can fail or block.
-                    self.signs[i].as_mut().ok_or(Fault::Stale)?.phase =
-                        SignPhase::Committed { original, hash };
+                    self.signs[i]
+                        .as_mut()
+                        .ok_or(Fault::Stale)?
+                        .crypto_mut()?
+                        .phase = SignPhase::Committed { original, hash };
                     self.room_control_finished(binding.operation(), true)?;
                 }
                 SignPhase::Committed { original, hash } => {
@@ -210,17 +232,23 @@ impl<'c, 'slots, 'p, E: Entropy, const O: usize> Server<'c, 'slots, 'p, E, O> {
                 continue;
             };
             if now >= s.hard {
-                return Err(Fault::Deadline.into());
+                return Err(self.identity_timeout());
+            }
+            if matches!(s.state, SignState::Retiring { .. }) {
+                continue;
             }
             let locally_finished = if now >= s.until {
-                match s.phase {
+                match s.crypto()?.phase {
                     SignPhase::PreparedCore(_) | SignPhase::Committed { .. } => {
                         return Err(Fault::Deadline.into());
                     }
                     SignPhase::Pending(original) => {
                         self.pils.cancel(original.operation)?;
-                        self.signs[i].as_mut().ok_or(Fault::Stale)?.phase =
-                            SignPhase::Cancelling(original);
+                        self.signs[i]
+                            .as_mut()
+                            .ok_or(Fault::Stale)?
+                            .crypto_mut()?
+                            .phase = SignPhase::Cancelling(original);
                         return Ok(true);
                     }
                     SignPhase::Draft | SignPhase::Verified(_) => true,
@@ -232,11 +260,12 @@ impl<'c, 'slots, 'p, E: Entropy, const O: usize> Server<'c, 'slots, 'p, E, O> {
                 false
             };
             if locally_finished {
-                let sign = self.signs[i].take().ok_or(Fault::Stale)?;
-                self.core
-                    .provider_failed(sign.binding, Fault::Deadline.into())?;
-                self.room_control_finished(sign.binding.operation(), false)?;
-                self.core.retire_operation(sign.binding.operation())?;
+                let sign = self.signs[i].as_mut().ok_or(Fault::Stale)?;
+                sign.state = SignState::Retiring {
+                    original: sign.original(),
+                    reason: Fault::Deadline,
+                    stage: SignRetirement::Core,
+                };
                 return Ok(true);
             }
         }
@@ -248,7 +277,7 @@ impl<'c, 'slots, 'p, E: Entropy, const O: usize> Server<'c, 'slots, 'p, E, O> {
         observe: &mut impl FnMut(Event),
     ) -> Poll<Result<Progress, Error>> {
         if self.signing_expiry()?
-            || self.identity_step(observe)?
+            || self.identity_step()?
             || (!self.history_frozen() && self.apply_signature(observe)?)
             || self.signing_work()?
         {
@@ -287,14 +316,13 @@ impl<'c, 'slots, 'p, E: Entropy, const O: usize> Server<'c, 'slots, 'p, E, O> {
                 let operation = completion.operation();
                 let Some(i) = self.signs.iter().position(|s| {
                     s.as_ref().is_some_and(|s| {
-                        s.phase
-                            .original()
+                        s.original()
                             .is_some_and(|original| original.operation == operation)
                     })
                 }) else {
                     return Ok(());
                 };
-                let sign = self.signs[i].as_mut().ok_or(Fault::Stale)?;
+                let sign = self.signs[i].as_mut().ok_or(Fault::Stale)?.crypto_mut()?;
                 if matches!(sign.phase, SignPhase::Cancelling(_)) {
                     return Ok(());
                 }
@@ -332,11 +360,11 @@ impl<'c, 'slots, 'p, E: Entropy, const O: usize> Server<'c, 'slots, 'p, E, O> {
                             operation: operation.value(),
                             reason,
                         });
-                        let sign = self.signs[i].take().ok_or(Fault::Stale)?;
-                        self.core
-                            .provider_failed(sign.binding, Fault::Authentication.into())?;
-                        self.room_control_finished(sign.binding.operation(), false)?;
-                        self.core.retire_operation(sign.binding.operation())?;
+                        self.signs[i].as_mut().ok_or(Fault::Stale)?.state = SignState::Retiring {
+                            original: Some(original),
+                            reason: Fault::Authentication,
+                            stage: SignRetirement::Core,
+                        };
                     }
                     _ => return Err(Fault::Conflict.into()),
                 }
@@ -344,10 +372,23 @@ impl<'c, 'slots, 'p, E: Entropy, const O: usize> Server<'c, 'slots, 'p, E, O> {
             pils::Progress::Written(w) => observe(Event::SignWritten {
                 operation: w.operation.value(),
             }),
-            pils::Progress::Lost { cause, .. } => {
-                self.retire_pils();
+            pils::Progress::Lost {
+                epoch,
+                cause,
+                report,
+            } => {
                 observe(Event::DependencyLost { pils: true });
-                return Err(Error::PilsLost(cause));
+                if report.feeds().next().is_some() {
+                    self.retire_pils();
+                    return Err(Fault::StaleGeneration.into());
+                }
+                match cause.into_connection_loss() {
+                    Ok(first) => self.recover_pils(epoch, first)?,
+                    Err(cause) => {
+                        self.retire_pils();
+                        return Err(Error::PilsLost(cause));
+                    }
+                }
             }
             pils::Progress::Unavailable(e) => {
                 self.retire_pils();

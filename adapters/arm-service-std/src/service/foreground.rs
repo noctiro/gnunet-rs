@@ -1,10 +1,11 @@
 //! Actual Owner/reactor/native composition. No fixture or placeholder port.
 use super::{
-    Failure, Failures, Unreaped, control::Control, reporting::Reports, settings::Settings,
-    usage::Usage,
+    Failure, Failures, Unreaped, control::Control, readiness::Readiness, reporting::Reports,
+    settings::Settings, usage::Usage,
 };
 use crate::{
     listeners::ManagedListeners,
+    process::{self, ChildRegistry, EnvironmentSnapshot},
     reactor::{self, Activity, Driver, State},
     registry::Registry,
 };
@@ -12,15 +13,11 @@ use gnunet_arm_core::wire::{ServiceInfo, ServiceStatus};
 use gnunet_arm_service_core as core;
 use gnunet_config::{Configuration, ProcessEnvironment};
 use gnunet_program_host::{policy::Level, shared_clock::SharedClock};
-use gnunet_service_runtime::{
-    BoundListeners,
-    clock::RuntimeClock,
-    process::{ChildRegistry, EnvironmentSnapshot},
-};
-use gnunet_service_startup::{ParentControl, daemon::ChildReady};
+use gnunet_service_runtime::{BoundListeners, clock::RuntimeClock};
+use gnunet_service_startup::ControlReceiver;
 use std::{
     future::{Future, poll_fn},
-    io::{self, Write},
+    io,
     sync::Arc,
     task::Poll,
     time::Duration,
@@ -64,12 +61,12 @@ impl Bounds {
 }
 pub(super) struct Inputs<'a, 'route, 'log> {
     pub(super) bound: BoundListeners,
-    pub(super) parent: Option<ParentControl>,
+    pub(super) parent: Option<ControlReceiver>,
     pub(super) settings: &'a Settings,
     pub(super) config: &'a Configuration,
     pub(super) clock: &'a SharedClock,
     pub(super) reports: &'a Reports<'route, 'log>,
-    pub(super) ready: &'a mut ChildReady,
+    pub(super) ready: &'a mut dyn Readiness,
 }
 pub(super) async fn run(input: Inputs<'_, '_, '_>) -> Result<(), Failure> {
     let Inputs {
@@ -81,8 +78,8 @@ pub(super) async fn run(input: Inputs<'_, '_, '_>) -> Result<(), Failure> {
         reports,
         ready,
     } = input;
-    let mut children = ChildRegistry::new(settings.native.process.launch.max_children)?;
-    children.prepare()?;
+    let mut children = ChildRegistry::new(process::child_capacity(settings.native.process))?;
+    process::prepare(&mut children)?;
     // The actual original SIGCHLD port is installed before registry enumeration.
     let mut usage = if let Some(path) = &settings.resource {
         match Usage::open(path) {
@@ -189,7 +186,9 @@ pub(super) async fn run(input: Inputs<'_, '_, '_>) -> Result<(), Failure> {
     )
     .map_err(reactor::Error::from)?;
     let mut managed = ManagedListeners::new(settings.listeners);
-    managed.bind_registry(config, &registry, &ProcessEnvironment, settings.addresses)?;
+    managed
+        .bind_registry(config, &registry, &ProcessEnvironment, settings.addresses)
+        .await?;
     for failure in managed.failures() {
         reports.warning(
             "arm.listener",
@@ -198,7 +197,14 @@ pub(super) async fn run(input: Inputs<'_, '_, '_>) -> Result<(), Failure> {
     }
     let mut state = State::new(bound, settings.native)?;
     state.set_unix_access(settings.access)?;
+    #[cfg(unix)]
     let environment = bounded_environment(settings.native.process.launch.max_environment_bytes)?;
+    #[cfg(windows)]
+    let environment = EnvironmentSnapshot::from_values(
+        std::env::vars_os(),
+        std::env::current_dir()?,
+        settings.native.process.native,
+    )?;
     let source: Arc<dyn RuntimeClock> = Arc::new(clock.clone());
     let mut subscription = source.subscribe()?;
     let mut revision = source.sample()?.revision;
@@ -206,21 +212,19 @@ pub(super) async fn run(input: Inputs<'_, '_, '_>) -> Result<(), Failure> {
     let mut control = Control::new(parent)?;
     let mut bounds = Bounds::new();
     let mut started = false;
+    let mut announced = false;
     // Pre-reserve original child capabilities for both TERM and KILL passes. No
     // fallible child-list allocation occurs after an actual termination request.
     let mut originals = Vec::new();
-    originals.try_reserve_exact(settings.native.process.launch.max_children)?;
+    originals.try_reserve_exact(process::child_capacity(settings.native.process))?;
+    let mut retained = Vec::new();
+    retained.try_reserve_exact(settings.native.services)?;
     let mut cleanup = Vec::new();
     cleanup.try_reserve_exact(
-        settings
-            .native
-            .process
-            .launch
-            .max_children
+        process::child_capacity(settings.native.process)
             .saturating_mul(3)
             .saturating_add(16),
     )?;
-    let managed_count = managed.len();
     let outcome = {
         let mut driver = Driver::new(
             &mut owner,
@@ -228,9 +232,22 @@ pub(super) async fn run(input: Inputs<'_, '_, '_>) -> Result<(), Failure> {
             &mut managed,
             &mut children,
             &mut state,
-            config,
-            &settings.helper,
-            &environment,
+            {
+                #[cfg(unix)]
+                {
+                    process::LaunchContext {
+                        config,
+                        helper: &settings.helper,
+                        environment: &environment,
+                    }
+                }
+                #[cfg(windows)]
+                {
+                    process::LaunchContext {
+                        environment: &environment,
+                    }
+                }
+            },
             &settings.options,
             &mut rows,
             &mut time,
@@ -307,6 +324,28 @@ pub(super) async fn run(input: Inputs<'_, '_, '_>) -> Result<(), Failure> {
                         format_args!("ARM native reactor: {diagnostic:?}"),
                     )
                 }
+                if !started
+                    && driver.phase() == core::Phase::Serving
+                    && !matches!(&result, Poll::Ready(Err(_)))
+                {
+                    if !announced {
+                        announced = true;
+                        reports.message(
+                            Level::INFO,
+                            "arm.ready",
+                            format_args!("ARM service started"),
+                        );
+                    }
+                    if reports.failed() {
+                        cx.waker().wake_by_ref();
+                        return Poll::Ready(Ok(Activity::Progress));
+                    }
+                    match ready.poll_ready(cx) {
+                        Poll::Ready(Ok(())) => started = true,
+                        Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
+                        Poll::Pending => {}
+                    }
+                }
                 match result {
                     Poll::Ready(r) => Poll::Ready(r.map_err(|e| Box::new(e) as Failure)),
                     Poll::Pending if local => Poll::Ready(Ok(Activity::Progress)),
@@ -317,33 +356,12 @@ pub(super) async fn run(input: Inputs<'_, '_, '_>) -> Result<(), Failure> {
             match selected {
                 Err(error) => break Err(error),
                 Ok(Activity::Closed) => break Ok(()),
-                Ok(Activity::Progress) => {
-                    if !started && driver.phase() == core::Phase::Serving {
-                        reports.message(Level::INFO,"arm.ready",format_args!("ARM configured control/managed listeners and actual startup attempts settled"));
-                        if reports.failed() {
-                            driver.shutdown();
-                            if let Err(error) = bounds.start(settings) {
-                                break Err(error);
-                            }
-                            deadline = if killed { bounds.kill } else { bounds.term };
-                            continue;
-                        }
-                        let output = {
-                            let mut out = io::stdout().lock();
-                            writeln!(out,"READY arm wire=0.29.1 services={} managed-listeners={} child-readiness=not-claimed",registry.services().len(),managed_count).and_then(|()|out.flush()).and_then(|()|ready.ready())
-                        };
-                        if let Err(error) = output {
-                            break Err(Box::new(error) as Failure);
-                        }
-                        started = true;
-                    }
-                }
+                Ok(Activity::Progress) => {}
             }
         }
     };
     // All real IO owners are retired independently of clock health. Normal
     // Closed was reached only by actual child/listener/timer acknowledgments.
-    let counters = state.counters();
     if let Some(event) = state.take_resource_event()
         && let Err(error) = record(
             &mut usage,
@@ -355,8 +373,7 @@ pub(super) async fn run(input: Inputs<'_, '_, '_>) -> Result<(), Failure> {
     {
         cleanup.push(error)
     }
-    let normal = owner.phase() == core::Phase::Closed;
-    let retired = state.retire_io();
+    let _retired = state.retire_io();
     drop(managed);
     if children.pending_children() != 0 {
         if let Err(e) = bounds.start(settings) {
@@ -366,7 +383,7 @@ pub(super) async fn run(input: Inputs<'_, '_, '_>) -> Result<(), Failure> {
         originals.extend(children.children().cloned());
         for child in &originals {
             if children.owns(child)
-                && let Err(error) = children.signal_native(child, libc::SIGTERM)
+                && let Err(error) = process::force_stop(&mut children, child)
             {
                 cleanup.push(Box::new(error) as Failure)
             }
@@ -386,7 +403,7 @@ pub(super) async fn run(input: Inputs<'_, '_, '_>) -> Result<(), Failure> {
             originals.extend(children.children().cloned());
             for child in &originals {
                 if children.owns(child)
-                    && let Err(error) = children.signal_native(child, libc::SIGKILL)
+                    && let Err(error) = process::kill(&mut children, child)
                 {
                     cleanup.push(Box::new(error) as Failure)
                 }
@@ -408,18 +425,22 @@ pub(super) async fn run(input: Inputs<'_, '_, '_>) -> Result<(), Failure> {
     if let Err(error) = usage.finish() {
         cleanup.push(Box::new(error))
     }
-    // Persisted stop-request sockets close here, after actual normal draining.
-    drop(state);
     let remaining = children.pending_children();
-    let output = {
-        let mut out = io::stdout().lock();
-        writeln!(out,"STOPPED arm normal-core-closed={normal} counters={counters:?} retired={retired:?} unreaped={remaining}").and_then(|()|out.flush())
-    };
-    if let Err(error) = output {
-        cleanup.push(Box::new(error))
-    }
     if remaining != 0 {
-        return Err(Box::new(Unreaped::new(children, outcome.err(), cleanup)));
+        // The backing was reserved before admission. No scoped core token escapes;
+        // original provider/control owners follow the same native registry.
+        state.retain_native(&children, &mut retained);
+    }
+    // Persisted requester sockets close after the actual normal drain. Pending
+    // native dependents have moved into the recoverable debt above.
+    drop(state);
+    if remaining != 0 {
+        return Err(Box::new(Unreaped::new(
+            children,
+            retained,
+            outcome.err(),
+            cleanup,
+        )));
     }
     if cleanup.is_empty() {
         outcome
@@ -515,6 +536,7 @@ async fn collect(
     .await;
 }
 
+#[cfg(unix)]
 fn bounded_environment(maximum: usize) -> Result<EnvironmentSnapshot, Failure> {
     use std::os::unix::ffi::OsStrExt;
     let mut total = 0usize;

@@ -18,9 +18,7 @@ use gnunet_datastore_host::{Client, Instance, ProtocolClient, ReservationSlot, S
 use gnunet_fs::{Content, content::Layout, directory as dir};
 use gnunet_types::Error as ProtocolError;
 use std::{
-    ffi::OsStr,
     fs::File,
-    os::unix::ffi::OsStrExt,
     path::{Path, PathBuf},
 };
 
@@ -37,7 +35,7 @@ impl Failed {
         let cause = cause.into();
         let mut path = path.to_path_buf();
         if let TreePublishCause::Source(SourceError::Entry { name, .. }) = &cause {
-            path.push(OsStr::from_bytes(name));
+            path.push(name);
         }
         Box::new(Self {
             path,
@@ -86,9 +84,9 @@ struct Runner<'a, C> {
     time: TimeLimit,
 }
 fn hash_source(hash: &mut Hash512State, path: &Path, stamp: Stamp) {
-    let bytes = path.as_os_str().as_bytes();
+    let bytes = gnunet_native::os_bytes::encode(path.as_os_str());
     hash.update(&(bytes.len() as u64).to_be_bytes());
-    hash.update(bytes);
+    hash.update(&bytes);
     stamp.hash(hash);
 }
 fn fresh<'id, 'slots, 'buffers>(
@@ -550,7 +548,7 @@ impl<C: for<'event> FnMut(TreeEvent<'event>) -> Control> Runner<'_, C> {
             ));
         }
         let mut hash = Hash512State::new();
-        hash.update(b"gnunet-rs native tree source v1\0");
+        hash.update(b"gnunet-rs native tree source v2\0");
         hash_source(&mut hash, &root_path, root.stamp);
         let mut frames = Vec::new();
         frames
@@ -579,8 +577,8 @@ impl<C: for<'event> FnMut(TreeEvent<'event>) -> Control> Runner<'_, C> {
             let index = frames[last].next;
             frames[last].next += 1;
             let name = &frames[last].source.names[index];
-            let child = path.join(OsStr::from_bytes(&name.bytes));
-            if child.as_os_str().as_bytes().len() > limits.max_path_bytes {
+            let child = path.join(&name.native);
+            if child.as_os_str().as_encoded_bytes().len() > limits.max_path_bytes {
                 return Err(Failed::at(
                     &child,
                     TreePublishCause::Limit(TreeBudget::Path),
@@ -648,7 +646,7 @@ impl<C: for<'event> FnMut(TreeEvent<'event>) -> Control> Runner<'_, C> {
             .map_err(|e| Failed::at(&path, e))?;
         let root = self.frame(file, path, None, None)?;
         let mut hash = Hash512State::new();
-        hash.update(b"gnunet-rs native tree source v1\0");
+        hash.update(b"gnunet-rs native tree source v2\0");
         hash_source(&mut hash, &root.path, root.source.stamp);
         let mut frames = Vec::new();
         frames
@@ -660,8 +658,8 @@ impl<C: for<'event> FnMut(TreeEvent<'event>) -> Control> Runner<'_, C> {
             if frames[last].next < frames[last].source.names.len() {
                 let index = frames[last].next;
                 let name = &frames[last].source.names[index];
-                let path = frames[last].path.join(OsStr::from_bytes(&name.bytes));
-                if path.as_os_str().as_bytes().len() > self.options.limits.max_path_bytes {
+                let path = frames[last].path.join(&name.native);
+                if path.as_os_str().as_encoded_bytes().len() > self.options.limits.max_path_bytes {
                     return Err(Failed::at(&path, TreePublishCause::Limit(TreeBudget::Path)));
                 }
                 if frames.len() > self.options.limits.max_depth {
@@ -846,7 +844,7 @@ impl Buffers {
         &mut self,
         input: &InputDir,
         source: EndpointSource,
-        options: TreePublishOptions,
+        mut options: TreePublishOptions,
         control: impl for<'event> FnMut(TreeEvent<'event>) -> Control,
         indexed: Option<(&Path, EndpointSource)>,
     ) -> Result<StoredTree, Box<TreePublishFailure>> {
@@ -857,12 +855,16 @@ impl Buffers {
             {
                 return Err(ProtocolError::InvalidInput.into());
             }
+            let time = TimeLimit::new(
+                source.clock(),
+                options.publish.deadline,
+                options.publish.native_deadline,
+            )?;
             let wire = allocation(options.protocol.max_frame_bytes)?;
             let root = metadata(&[dir::MIME_ITEM], options.limits.max_metadata_bytes)?;
             if root.len() > options.limits.max_retained_metadata_bytes {
                 return Err(TreePublishCause::Limit(TreeBudget::Metadata));
             }
-            let time = TimeLimit::new(source.clock(), options.publish.deadline)?;
             Ok((wire, root, time))
         })();
         let (wire, root_metadata, time) = initial.map_err(|cause| {
@@ -876,6 +878,7 @@ impl Buffers {
                 cause,
             })
         })?;
+        options.publish.native_deadline = time.native_deadline();
         let mut runner = Runner {
             buffers: self,
             source,

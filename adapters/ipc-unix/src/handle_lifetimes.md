@@ -4,6 +4,8 @@ The real public driver uniquely borrows its owner during callback dispatch.
 The restricted context can queue/cancel operations; destruction stays outside
 that callback. Frame and selector views are borrowed only for the callback.
 
+## Callback ownership
+
 Keeping owned copies and queuing through the restricted context compiles.
 Owner<'owner> destruction remains available outside its callback. The controls below
 only type-check; no peer is created and no network operation is executed.
@@ -48,6 +50,8 @@ pub fn owner_destroy_outside_callback<'owner>(owner: &mut Owner<'owner>) -> Resu
 }
 # let _controls = (owned_copy_and_restricted_queue, owner_destroy_outside_callback);
 ```
+
+## Rejected operations
 
 The restricted callback context has no destroy operation (E0599).
 

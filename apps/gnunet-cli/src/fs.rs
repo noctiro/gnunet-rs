@@ -1,10 +1,14 @@
 //! Local file repository commands over the official FS content/directory core.
+mod entropy;
 mod extract;
 mod index_list;
 mod jobs;
 mod metadata_options;
 mod namespace;
+mod output;
 mod pack;
+use output::Output;
+pub(crate) use output::{native, selected};
 mod probe;
 mod probe_task;
 mod publication;
@@ -16,6 +20,7 @@ mod search_export;
 mod search_probe;
 mod search_task;
 mod service;
+mod stop;
 mod task;
 mod tree;
 mod unindex;
@@ -28,18 +33,48 @@ use std::{
     error::Error,
     ffi::OsStr,
     io::{self, Write},
-    os::unix::ffi::OsStrExt,
     path::Path,
 };
 
+fn create_private_directory(path: &Path) -> io::Result<()> {
+    let name = path.file_name().ok_or(io::ErrorKind::InvalidInput)?;
+    let parent = path
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    gnunet_native::filesystem::Directory::open(parent)?.create_private_directory(name)?;
+    Ok(())
+}
+
+fn file_identity(identity: gnunet::fs_host::FileIdentity) -> serde_json::Value {
+    use gnunet::fs_host::FileIdentityParts;
+    match identity.parts() {
+        FileIdentityParts::Unix { device, inode } => {
+            serde_json::json!({"platform":"unix", "device":device, "inode":inode})
+        }
+        FileIdentityParts::Windows { volume, id } => {
+            serde_json::json!({"platform":"windows", "volume":volume, "file_id":publication::hex(&id)})
+        }
+    }
+}
+
 fn content(raw: &impl AsRef<OsStr>) -> Result<Content, Box<dyn Error>> {
-    match Uri::parse(raw.as_ref().as_bytes(), gnunet::fs::Limits::default())? {
+    match Uri::parse(
+        crate::argument::wire_bytes(raw.as_ref())?,
+        gnunet::fs::Limits::default(),
+    )? {
         Uri::Content(value) => Ok(value),
         Uri::Location(value) => Ok(value.content()),
         _ => Err("local FS read requires a resolved CHK or LOC URI".into()),
     }
 }
 pub(crate) fn run(args: &[impl AsRef<OsStr>], out: &mut impl Write) -> Result<(), Box<dyn Error>> {
+    execute(args, &mut Output::new(out, Default::default()))
+}
+fn execute(
+    args: &[impl AsRef<OsStr>],
+    out: &mut Output<'_, impl Write>,
+) -> Result<(), Box<dyn Error>> {
     let action = args
         .first()
         .map(|arg| {
@@ -106,7 +141,7 @@ pub(crate) fn run(args: &[impl AsRef<OsStr>], out: &mut impl Write) -> Result<()
             )?;
             writeln!(
                 out,
-                "fs unindex-task-run <fs-socket> <datastore-socket> <task> [timeout-seconds]"
+                "fs unindex-task-run <fs-socket> <datastore-socket> <task> [timeout-seconds] [metadata-options]"
             )?;
             writeln!(out, "fs unindex-task-status <task>")?;
             writeln!(out, "fs unindex-task-cancel <task>")?;
@@ -326,9 +361,7 @@ pub(crate) fn run(args: &[impl AsRef<OsStr>], out: &mut impl Write) -> Result<()
         Some("extract") if args.len() >= 2 => extract::run(&args[1..], out)?,
         Some("list-indexed") if (2..=4).contains(&args.len()) => index_list::run(&args[1..], out)?,
         Some("unindex-task-create") if args.len() >= 3 => unindex_task::create(&args[1..], out)?,
-        Some("unindex-task-run") if (4..=5).contains(&args.len()) => {
-            unindex_task::run(&args[1..], out)?
-        }
+        Some("unindex-task-run") if args.len() >= 4 => unindex_task::run(&args[1..], out)?,
         Some("unindex-task-status") if args.len() == 2 => unindex_task::status(&args[1..], out)?,
         Some("unindex-task-cancel") if args.len() == 2 => unindex_task::cancel(&args[1..], out)?,
         Some("unindex-task-restart") if args.len() == 2 => unindex_task::restart(&args[1..], out)?,

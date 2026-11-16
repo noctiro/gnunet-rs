@@ -19,15 +19,10 @@ use std::{
     fmt,
     future::{Future, poll_fn},
     io::{self, Write},
-    os::unix::ffi::OsStrExt,
     path::Path,
-    task::Poll,
     time::Duration,
 };
-use tokio::{
-    signal::unix::{SignalKind, signal},
-    time::Instant,
-};
+use tokio::time::Instant;
 fn row(out: &mut impl Write, value: &Value) -> io::Result<()> {
     serde_json::to_writer(&mut *out, value).map_err(io::Error::other)?;
     writeln!(out)?;
@@ -48,7 +43,7 @@ fn status_value(s: Status) -> Value {
         "explicitly_abandoned_uncertain":s.abandoned_uncertain,"original_not_submitted":s.not_submitted,"source_hash_bound":s.source_bound,"keywords_bound":s.keywords_bound,"completed_keyword_selections":s.completed_keywords})
 }
 fn history(task: &Task, event: &str) -> Value {
-    json!({"event":event,"task_id_hex":hex(task.task_id()),"filename_bytes":task.manifest().filename.as_os_str().as_bytes(),
+    json!({"event":event,"task_id_hex":hex(task.task_id()),"filename_bytes":crate::argument::native_bytes(task.manifest().filename.as_os_str()),
         "max_operations":task.manifest().max_operations,"extra_keyword_bytes":task.manifest().extra_keywords,
         "metadata_selection":format!("{:?}",task.manifest().metadata),"status":status_value(task.status()),
         "scope":"private original task history; no fresh source authentication, current store absence or remote deletion claim"})
@@ -77,7 +72,7 @@ fn create_arguments<T: AsRef<OsStr>>(args: &[T]) -> Result<CreateArguments<'_>, 
     let mut i = 0;
     while i < args.len() {
         let value = args[i].as_ref();
-        let raw = value.as_bytes();
+        let raw = value.as_encoded_bytes();
         if !literal && raw == b"--" {
             literal = true;
             i += 1;
@@ -93,7 +88,7 @@ fn create_arguments<T: AsRef<OsStr>>(args: &[T]) -> Result<CreateArguments<'_>, 
                 .ok_or("unindex task option requires a value")?
                 .as_ref();
             if raw == b"--keywords" {
-                add_keywords(value.as_bytes(), &mut words)?;
+                add_keywords(crate::argument::wire_bytes(value)?, &mut words)?;
             } else {
                 if max_operations {
                     return Err("--max-operations may be specified only once".into());
@@ -130,7 +125,7 @@ fn create_arguments<T: AsRef<OsStr>>(args: &[T]) -> Result<CreateArguments<'_>, 
 }
 pub(super) fn create(
     args: &[impl AsRef<OsStr>],
-    out: &mut impl Write,
+    out: &mut super::Output<'_, impl Write>,
 ) -> Result<(), Box<dyn Error>> {
     let selected = create_arguments(args)?;
     let metadata = selected.metadata.select()?;
@@ -170,7 +165,7 @@ mod create_tests {
 }
 pub(super) fn status(
     args: &[impl AsRef<OsStr>],
-    out: &mut impl Write,
+    out: &mut super::Output<'_, impl Write>,
 ) -> Result<(), Box<dyn Error>> {
     let task = Task::open(args[0].as_ref(), open_limits())?;
     row(out, &history(&task, "fs_unindex_task_status"))?;
@@ -178,7 +173,7 @@ pub(super) fn status(
 }
 pub(super) fn cancel(
     args: &[impl AsRef<OsStr>],
-    out: &mut impl Write,
+    out: &mut super::Output<'_, impl Write>,
 ) -> Result<(), Box<dyn Error>> {
     let mut task = Task::open(args[0].as_ref(), open_limits())?;
     task.cancel()?;
@@ -187,7 +182,7 @@ pub(super) fn cancel(
 }
 pub(super) fn restart(
     args: &[impl AsRef<OsStr>],
-    out: &mut impl Write,
+    out: &mut super::Output<'_, impl Write>,
 ) -> Result<(), Box<dyn Error>> {
     let mut task = Task::open(args[0].as_ref(), open_limits())?;
     let old = task.status().pending;
@@ -239,17 +234,94 @@ impl Error for Failure {
             .or_else(|| self.output.as_ref().map(|e| e as _))
     }
 }
-pub(super) fn run(args: &[impl AsRef<OsStr>], out: &mut impl Write) -> Result<(), Box<dyn Error>> {
-    let interval = duration(args.get(3))?;
+struct RunArguments<'a> {
+    fs: &'a OsStr,
+    datastore: &'a OsStr,
+    task: &'a OsStr,
+    interval: u64,
+    metadata: gnunet::fs_host::extraction::MetadataSettings,
+}
+fn run_arguments<T: AsRef<OsStr>>(args: &[T]) -> Result<RunArguments<'_>, Box<dyn Error>> {
+    let mut metadata = metadata_options::Arguments::default();
+    let mut positional = Vec::with_capacity(4);
+    let mut literal = false;
+    let mut at = 0;
+    while at < args.len() {
+        let value = args[at].as_ref();
+        if !literal && value == OsStr::new("--") {
+            literal = true;
+            at += 1;
+            continue;
+        }
+        if !literal && metadata.consume(args, &mut at, false)? {
+            continue;
+        }
+        if !literal && value.as_encoded_bytes().starts_with(b"-") {
+            return Err("unknown unindex-task-run option".into());
+        }
+        if positional.len() == 4 {
+            return Err(
+                "unindex-task-run requires FS socket, DATASTORE socket, task and optional timeout"
+                    .into(),
+            );
+        }
+        positional.push(value);
+        at += 1;
+    }
+    if positional.len() < 3 {
+        return Err("unindex-task-run requires FS socket, DATASTORE socket and task".into());
+    }
+    Ok(RunArguments {
+        fs: positional[0],
+        datastore: positional[1],
+        task: positional[2],
+        interval: duration(positional.get(3))?,
+        metadata: metadata.select()?,
+    })
+}
+#[cfg(test)]
+mod run_tests {
+    use super::*;
+    #[test]
+    fn current_metadata_options_and_literal_task_paths_are_preserved() -> Result<(), Box<dyn Error>>
+    {
+        let selected =
+            run_arguments(&["fs.sock", "store.sock", "task", "300", "--extractors", "-"])?;
+        if selected.interval != 300_000_000
+            || selected.metadata.format_extraction_enabled()
+            || !selected.metadata.automatic_keywords_enabled()
+        {
+            return Err("resume metadata flags or timeout changed".into());
+        }
+        let literal = run_arguments(&["--", "-fs", "-ds", "-task"])?;
+        if literal.fs != OsStr::new("-fs") || literal.task != OsStr::new("-task") {
+            return Err("literal resume paths changed".into());
+        }
+        if run_arguments(&["fs", "ds", "task", "--meta", "title:changed"]).is_ok() {
+            return Err("resume accepted reconstructed manual annotations".into());
+        }
+        Ok(())
+    }
+}
+pub(super) fn run(
+    args: &[impl AsRef<OsStr>],
+    out: &mut super::Output<'_, impl Write>,
+) -> Result<(), Box<dyn Error>> {
+    let selected = run_arguments(args)?;
+    let interval = selected.interval;
     let hard = Instant::now()
         .checked_add(Duration::from_micros(interval))
         .ok_or("unindex-task native deadline overflow")?;
-    let mut task = Task::open(args[2].as_ref(), open_limits())?;
-    let fs = EndpointSource::unix(Path::new(args[0].as_ref()).to_path_buf());
-    let ds = EndpointSource::unix_with_clock(Path::new(args[1].as_ref()).to_path_buf(), fs.clock());
+    out.deadline(hard);
+    let mut task = Task::open(selected.task, open_limits())?;
+    task.authorize_metadata_from(&selected.metadata)?;
+    let fs = EndpointSource::unix(Path::new(selected.fs).to_path_buf());
+    let ds =
+        EndpointSource::unix_with_clock(Path::new(selected.datastore).to_path_buf(), fs.clock());
+    out.interval(interval)?;
     let deadline = target(&fs, interval)?;
     tokio::runtime::Builder::new_current_thread().enable_all().build()?.block_on(async {
-        let mut interrupt=signal(SignalKind::interrupt())?;let mut terminate=signal(SignalKind::terminate())?;
+        let mut signals=super::stop::StopEvents::new()?;
         let stop=Cell::new(false);let mut signal_error=None;
         let mut identity=gnunet::datastore_host::Instance::new();let mut wire=Vec::new();wire.try_reserve_exact(65535)?;wire.resize(65535,0);
         let mut slots=[gnunet::datastore_host::Slot::new(&mut wire)];let mut reservations=[];
@@ -257,12 +329,9 @@ pub(super) fn run(args: &[impl AsRef<OsStr>], out: &mut impl Write) -> Result<()
         let original={
             let mut actual=std::pin::pin!(task.run(&mut buffers,fs,store,deadline,hard,|_|if stop.get(){Control::Pause}else{Control::Continue}));
             poll_fn(|cx| {
-                if !stop.get() {
-                    for signals in [&mut interrupt,&mut terminate] {
-                        if let Poll::Ready(value)=signals.poll_recv(cx) {
-                            stop.set(true);if value.is_none() && signal_error.is_none() {signal_error=Some(io::Error::new(io::ErrorKind::UnexpectedEof,"unindex task signal source closed"));}break;
-                        }
-                    }
+                if !stop.get() && signals.poll(cx) {
+                    stop.set(true);
+                    signal_error=signals.take_failure();
                 }
                 // Keep polling the same owner through original cancellation and
                 // actual physical cleanup; never replace a partially driven job.
@@ -276,6 +345,7 @@ pub(super) fn run(args: &[impl AsRef<OsStr>], out: &mut impl Write) -> Result<()
         let value=json!({"event":if original.is_ok(){"fs_unindex_task_complete"}else{"fs_unindex_task_stopped"},"status":status_value(status),"native":actual.map(native),
             "cause":original.as_ref().err().map(ToString::to_string),"original_typed_failures":original.as_ref().err().map(|e|format!("{e:?}")),
             "pause_requested":stop.get(),"signal_error":signal_error.as_ref().map(ToString::to_string)});
+        out.cleanup()?;
         let output=row(out,&value).err();
         if original.is_err() || signal_error.is_some() || output.is_some() {return Err(Box::new(Failure {original,signal:signal_error,output}) as Box<dyn Error>);}
         Ok(())

@@ -208,6 +208,7 @@ impl Task {
                 }
             }
             options.transfer.deadline = AbsoluteTime::from_micros(0);
+            options.transfer.native_deadline = None;
             let mut uri = vec![0; root.encoded_len().map_err(crate::Error::from)?];
             root.encode(&mut uri).map_err(crate::Error::from)?;
             let manifest = Manifest {
@@ -280,6 +281,11 @@ impl Task {
     /// Original random task identity used for output ownership markers.
     pub fn task_id(&self) -> Result<[u8; 32], Cause> {
         Ok(*lock(&self.session)?.store.task_id())
+    }
+    /// Actual WAL root/parent naming barrier, separate from file synchronization
+    /// and output publication. This neither performs I/O nor refreshes authority.
+    pub fn storage_directory_sync(&self) -> Result<Option<crate::DirectorySync>, Cause> {
+        Ok(lock(&self.session)?.store.directory_sync())
     }
     /// Inspect historical state cheaply without reopening files or sockets.
     pub fn status(&self) -> Result<Status, Cause> {
@@ -385,7 +391,12 @@ impl Task {
         mut control: impl FnMut(TaskProgress) -> TaskControl,
     ) -> Result<Outcome, Box<Failure>> {
         let started = tokio::time::Instant::now();
-        let setup = (|| -> Result<(Manifest, gnunet_fs::Content), Cause> {
+        let setup = (|| -> Result<(Manifest, gnunet_fs::Content, tokio::time::Instant), Cause> {
+            let native_deadline =
+                crate::network::TimeLimit::admit(source.clock(), deadline, started, None)
+                    .map_err(crate::Error::from)?
+                    .native_deadline()
+                    .ok_or_else(|| crate::Error::from(gnunet_types::Error::InvalidInput))?;
             if self.output.is_none() {
                 return Err(Cause::State("attach the task output before running"));
             }
@@ -411,13 +422,14 @@ impl Task {
             session.revalidated = 0;
             session.new_files = 0;
             session.file = None;
-            Ok((manifest, content))
+            Ok((manifest, content, native_deadline))
         })();
-        let (manifest, content) =
+        let (manifest, content, native_deadline) =
             setup.map_err(|cause| self.fail(cause, TreeDownloadProgress::default(), None))?;
         let guard = RunGuard(&self.session);
         let mut options = manifest.options;
         options.transfer.deadline = deadline;
+        options.transfer.native_deadline = Some(native_deadline);
         let session = &self.session;
         let controlled = |progress| {
             let snapshot = match lock(session) {
@@ -463,7 +475,7 @@ impl Task {
                 staging,
                 manifest: &manifest,
                 source,
-                started,
+                native_deadline,
                 deadline,
             }
             .run(buffers, cache, controlled)
@@ -775,7 +787,7 @@ impl Task {
                     lock(session)?.append(Event::Cleanup {
                         id,
                         success: true,
-                        stage: crate::CommitStage::Durable,
+                        stage: entry.stage,
                     })?;
                     continue;
                 }
@@ -827,9 +839,13 @@ impl Task {
                         output_progress.files_committed += 1;
                         output_progress.file_bytes += u128::from(entry.binding.content.size);
                         lock(session)?.revalidated += 1;
-                        if let Err(cause) =
-                            lock(session)?.append(Event::FileCommitted { id, identity })
-                        {
+                        if let Err(cause) = lock(session)?.append(Event::FileCommitted {
+                            id,
+                            identity,
+                            directory_sync: verified.read.directory_sync.ok_or(Cause::State(
+                                "native revalidation lacks its directory observation",
+                            ))?,
+                        }) {
                             return Err(Cause::Committed(Box::new(super::CommitFailure {
                                 identity,
                                 receipt: verified.read,
@@ -845,7 +861,7 @@ impl Task {
                             lock(session)?.append(Event::Cleanup {
                                 id,
                                 success: true,
-                                stage: crate::CommitStage::Durable,
+                                stage: super::native_stage(verified.read.directory_sync)?,
                             })
                         })();
                         if let Err(cause) = cleaned {

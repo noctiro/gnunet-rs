@@ -3,7 +3,6 @@ use std::{
     io::{self, Write},
     process::ExitCode,
 };
-#[cfg(unix)]
 #[expect(
     unsafe_code,
     reason = "Once-only fresh-exec SERVICE entry adopts inherited descriptors before runtime or threads"
@@ -23,12 +22,4 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
-}
-#[cfg(not(unix))]
-fn main() -> ExitCode {
-    let _written = writeln!(
-        io::stderr().lock(),
-        "REGEX SERVICE requires the supported Unix native profile"
-    );
-    ExitCode::FAILURE
 }

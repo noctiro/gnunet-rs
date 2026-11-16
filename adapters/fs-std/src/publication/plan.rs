@@ -271,7 +271,7 @@ impl Plan {
         };
         match &self.artifact {
             Artifact::File(_) => {}
-            Artifact::IndexedFile { source, .. } => add(source.path.len())?,
+            Artifact::IndexedFile { source, .. } => add(source.path.as_os_str().len())?,
             Artifact::Tree(tree) => {
                 add(tree
                     .objects
@@ -287,7 +287,7 @@ impl Plan {
                     add(object.path.len())?;
                 }
                 for source in &tree.sources {
-                    add(source.path.len())?;
+                    add(source.path.as_os_str().len())?;
                 }
             }
             Artifact::Keywords {

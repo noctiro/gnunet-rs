@@ -24,7 +24,8 @@ pub enum Argument<'a> {
     Unsigned(u64),
     /// Source signed scalar.
     Signed(i64),
-    /// Captured actual syscall errno, formatted under the consumer's active locale.
+    /// Captured original IO error. Consumers retain its POSIX, Win32 or typed
+    /// error domain when formatting; numeric codes are not interchangeable.
     Error(&'a std::io::Error),
     /// A nested source gettext operand, translated before the outer format.
     Translated {

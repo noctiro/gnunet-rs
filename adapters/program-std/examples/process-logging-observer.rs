@@ -4,10 +4,7 @@ use gnunet_program_host::{
     policy::Level,
     process_stderr::ProcessStderr,
 };
-use std::{
-    io::{self, Write},
-    os::unix::ffi::OsStrExt,
-};
+use std::io::{self, Write};
 fn main() -> io::Result<()> {
     let mut args = std::env::args_os().skip(1);
     let path = args
@@ -25,12 +22,15 @@ fn main() -> io::Result<()> {
     if closed {
         #[expect(
             unsafe_code,
-            reason = "This dedicated witness exclusively owns process fd2 and deliberately tests initial closed-stderr handling before creating a writer"
+            reason = "This fresh witness receives a live inherited CRT fd2 from its harness and exclusively closes it before creating any writer"
         )]
-        // SAFETY: closing an integer descriptor is valid, and no borrowed stderr writer exists.
+        // SAFETY: the harness supplied live fd2; this is its unique close and no stderr writer exists.
         let status = unsafe { libc::close(2) };
         if status < 0 {
+            #[cfg(unix)]
             return Err(io::Error::last_os_error());
+            #[cfg(windows)]
+            return Err(gnunet_native::CrtError::last("_close"));
         }
     }
     let mut logger = Logger::new(b"owned", std::process::id(), true)?;
@@ -39,7 +39,7 @@ fn main() -> io::Result<()> {
     logger.setup_routed(
         b"owned",
         Some(b"DEBUG"),
-        Some(path.as_os_str().as_bytes()),
+        Some(&gnunet_native::os_bytes::encode(&path)),
         &Environment::default(),
         &stamp,
         &mut io::stderr(),

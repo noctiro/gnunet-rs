@@ -1,6 +1,6 @@
 # Actual HOSTLIST native composition
 
-This implements the active pinned GNUnet v0.29.1 HOSTLIST roles over Rust-owned HTTP/TLS sockets, native CORE/PEERSTORE/STATISTICS clients, and one explicit qualified snapshot worker. Public production provenance is in the handoff's `public-source-inputs.json`; pin `346358e26d4dcc2dc4f51bef5d52dca29c7d8165`. There is no production libgnunet FFI and no C daemon/helper wrapper.
+This implements the active pinned GNUnet v0.29.1 HOSTLIST roles over Rust-owned HTTP/TLS sockets, native CORE/PEERSTORE/STATISTICS clients, and one explicit qualified snapshot worker. The protocol baseline is `346358e26d4dcc2dc4f51bef5d52dca29c7d8165`; external qualification follows the [compatibility contract](../../spec/gnunet/compatibility.md).
 
 ## Callable ownership
 
@@ -38,9 +38,7 @@ The STATISTICS MQ receives bounded coalesced absolute local counter snapshots. Q
 
 `Durable::recover(actual_store, actual_loaded, core, body_cap, entry_cap)` checks the original Namespace::Hostlist Store/Loaded generation pair before any worker starts. Existing marked generation0/missing canonical history and positive-generation empty bodies are refused. A truly new root synchronously commits its legal initial URL/quality/retry business snapshot under the same writer lease, checks the namespace/generation1 receipt, then starts exactly one worker. No await/cancellation split can publish READY before this initial commit. The Loaded diagnostic preserves the original loaded generation and separately reports an initial committed generation; worker admission is never fabricated for the synchronous bootstrap. It parses bounded URL/quality/retry history, validates URL grammar, rejects credential-bearing history, and restores no live download, verification result, CORE/HTTP epoch or operation. Actual single-worker Job/expected generation/Committed receipt match before `saved` changes. First unknown/failed persistence latches write admission; original cause and temporary cleanup errors remain available. The final created-directory bit is retained. Other snapshot namespaces retain their separately owned recovery guards.
 
-## Limitations
-
-Native mixed-C interoperability, bootstrap effectiveness, HTTP proxy/TLS behavior, persistence recovery under faults and full-node integration remain unproved. No stopped DHT, UDP crypto/collision or GNS recovery implementation was accessed or resumed.
+## HTTP foundation and profile
 
 The mature HTTP transport is the independent gnunet-http-host foundation, with GET/HEAD and bounded SOAP POST and no HOSTLIST/NAT business dependency. This component retains a thin original Fetch/Job GET adapter with its official1000-byte URI cap. Public HTTP serving reuses the foundation native byte/expiry guards. NAT uses the provider independently; SOAP POST never automatically redirects or replays. Request owner queueing, dispatch invocation, stream-write attempts, TLS plaintext acceptance, native socket bytes and complete HTTP response remain distinct facts. No one of them is a whole-write or remote-processing ACK. HTTP/2, non-UTF8/zone-id URL extensions rejected by url2.5.8, and exotic undocumented libcurl proxy-URI override behavior are outside the selected explicit HTTP/1/configured-proxy profile. Local FQDN discovery and qualified filesystem startup use the existing native startup ports; their OS calls are not falsely claimed canceled by an async network timer.
 

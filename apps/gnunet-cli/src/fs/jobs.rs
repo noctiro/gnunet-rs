@@ -17,7 +17,6 @@ use std::{
     ffi::OsStr,
     future::{Future, poll_fn},
     io::{self, Write},
-    os::unix::ffi::OsStrExt,
     path::Path,
 };
 
@@ -37,11 +36,11 @@ fn kind(kind: Kind) -> &'static str {
 }
 fn directory(dir: &Directory) -> Value {
     let id = dir.identity();
-    json!({"path":dir.path().to_str(),"path_bytes":dir.path().as_os_str().as_bytes(),"device":id.device,"inode":id.inode})
+    json!({"path":dir.path().to_str(),"path_bytes":crate::argument::native_bytes(dir.path().as_os_str()),"identity":super::file_identity(id)})
 }
 pub(super) fn create(
     args: &[impl AsRef<OsStr>],
-    out: &mut impl Write,
+    out: &mut super::Output<'_, impl Write>,
 ) -> Result<(), Box<dyn Error>> {
     let catalog = Catalog::create(args[0].as_ref(), Default::default())?;
     row(
@@ -50,7 +49,10 @@ pub(super) fn create(
     )?;
     Ok(())
 }
-pub(super) fn add(args: &[impl AsRef<OsStr>], out: &mut impl Write) -> Result<(), Box<dyn Error>> {
+pub(super) fn add(
+    args: &[impl AsRef<OsStr>],
+    out: &mut super::Output<'_, impl Write>,
+) -> Result<(), Box<dyn Error>> {
     let typed = match args[1].as_ref().to_str() {
         Some("download") => Kind::Download,
         Some("search") => Kind::Search,
@@ -127,7 +129,10 @@ pub(super) fn add(args: &[impl AsRef<OsStr>], out: &mut impl Write) -> Result<()
     )?;
     Ok(())
 }
-pub(super) fn list(args: &[impl AsRef<OsStr>], out: &mut impl Write) -> Result<(), Box<dyn Error>> {
+pub(super) fn list(
+    args: &[impl AsRef<OsStr>],
+    out: &mut super::Output<'_, impl Write>,
+) -> Result<(), Box<dyn Error>> {
     let catalog = Catalog::open(args[0].as_ref(), Default::default())?;
     for record in catalog.entries() {
         let r = record.registration;
@@ -140,7 +145,7 @@ pub(super) fn list(args: &[impl AsRef<OsStr>], out: &mut impl Write) -> Result<(
 }
 pub(super) fn enable(
     args: &[impl AsRef<OsStr>],
-    out: &mut impl Write,
+    out: &mut super::Output<'_, impl Write>,
 ) -> Result<(), Box<dyn Error>> {
     let index = args[1]
         .as_ref()
@@ -449,7 +454,10 @@ fn event(event: &Event) -> Value {
         }
     }
 }
-pub(super) fn run(args: &[impl AsRef<OsStr>], out: &mut impl Write) -> Result<(), Box<dyn Error>> {
+pub(super) fn run(
+    args: &[impl AsRef<OsStr>],
+    out: &mut super::Output<'_, impl Write>,
+) -> Result<(), Box<dyn Error>> {
     let interval = match args.get(3) {
         Some(value) => duration(Some(value))?,
         None => 60_000_000,
@@ -473,6 +481,7 @@ pub(super) fn run(args: &[impl AsRef<OsStr>], out: &mut impl Write) -> Result<()
             .checked_add(interval)
             .ok_or("worker deadline overflow")?,
     );
+    out.interval(interval)?;
     let ds = EndpointSource::unix_with_clock(Path::new(args[2].as_ref()).to_path_buf(), clock);
     let sources = jobs::Sources::new(fs, ds)?;
     let mut worker = Worker::new(
@@ -486,15 +495,15 @@ pub(super) fn run(args: &[impl AsRef<OsStr>], out: &mut impl Write) -> Result<()
         },
     )?;
     tokio::runtime::Builder::new_current_thread().enable_all().build()?.block_on(async {
+        let mut signals=super::stop::StopEvents::new()?;
+        let result=async {
         let stop=worker.stop_handle();
-        let mut interrupt=tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
-        let mut terminate=tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
         let mut output_error=None;let mut coordinator_error=None;
         loop {
             let actual={
                 let mut next=std::pin::pin!(worker.next());
                 poll_fn(|cx|{
-                    if interrupt.poll_recv(cx).is_ready() || terminate.poll_recv(cx).is_ready(){stop.request();}
+                    if signals.poll(cx){stop.request();}
                     next.as_mut().poll(cx)
                 }).await
             };
@@ -506,10 +515,13 @@ pub(super) fn run(args: &[impl AsRef<OsStr>], out: &mut impl Write) -> Result<()
                 Err(error)=>{coordinator_error=Some(error);break;},
             }
         }
+        out.cleanup()?;
         let stats=worker.stats();
-        if output_error.is_none(){row(out,&json!({"event":"fs_jobs_stopped","stats":{"dispatched":stats.dispatched,"started":stats.started,"settled":stats.settled,"not_started":stats.not_started,"skipped":stats.skipped,"max_active":stats.max_active},"cause":coordinator_error.as_ref().map(ToString::to_string)}))?;}
+        if output_error.is_none(){row(out,&json!({"event":"fs_jobs_stopped","stats":{"dispatched":stats.dispatched,"started":stats.started,"settled":stats.settled,"not_started":stats.not_started,"skipped":stats.skipped,"max_active":stats.max_active},"cause":coordinator_error.as_ref().map(ToString::to_string),"stop_error":signals.failure().map(ToString::to_string)}))?;}
         if let Some(error)=coordinator_error{return Err(Box::new(error) as Box<dyn Error>);}
         if let Some(error)=output_error{return Err(Box::new(error) as Box<dyn Error>);}
         Ok(())
+        }.await;
+        signals.finish(result)
     })
 }

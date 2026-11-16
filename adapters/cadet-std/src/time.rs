@@ -52,15 +52,24 @@ impl Timebase {
     /// never returns a fabricated absolute sample or a successful scheduling step.
     pub fn sample(&self) -> Result<Sample, Error> {
         let source = self.epoch.source.sample()?;
+        Ok(Sample {
+            monotonic: self.elapsed()?,
+            absolute: source.now,
+            revision: source.revision,
+        })
+    }
+    /// Read the original native scheduling epoch without consulting logical time.
+    /// This observation can settle already-closed sources; it grants no absolute
+    /// deadline, identity validity or authority to admit new wire operations.
+    ///
+    /// # Errors
+    /// Returns an error if native elapsed time regresses or exceeds its range.
+    pub fn elapsed(&self) -> Result<MonoInstant, Error> {
         let elapsed = Instant::now()
             .checked_duration_since(self.epoch.anchor)
             .ok_or(Error::TimeUncertain)?;
         let micros = u64::try_from(elapsed.as_micros()).map_err(|_| Error::Overflow)?;
-        Ok(Sample {
-            monotonic: MonoInstant(micros),
-            absolute: source.now,
-            revision: source.revision,
-        })
+        Ok(MonoInstant(micros))
     }
     /// Map the same original elapsed target to its fixed native anchor. This
     /// neither samples nor projects wall time, and cannot renew a target.
@@ -131,8 +140,10 @@ mod tests {
         check(timebase.same_epoch(&clone) && !timebase.same_epoch(&other))?;
         check(Arc::ptr_eq(&timebase.source(), &other.source()))?;
         let target = timebase.native_bound(MonoInstant(1_000))?;
+        let elapsed = timebase.elapsed()?;
         source.failure.store(true, Ordering::SeqCst);
         check(timebase.sample() == Err(Error::Unavailable))?;
+        check(timebase.elapsed()? >= elapsed && clone.elapsed()? >= elapsed)?;
         check(timebase.native_bound(MonoInstant(1_000))? == target)?;
         check(matches!(Timebase::new(source), Err(Error::Unavailable)))
     }

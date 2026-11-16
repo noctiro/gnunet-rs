@@ -756,6 +756,7 @@ dependencies = [
  "gnunet-program-host",
  "gnunet-resolver-broker",
  "gnunet-service-runtime",
+ "gnunet-service-startup",
  "gnunet-types",
  "gnunet-wire",
  "subtle",
@@ -788,6 +789,7 @@ dependencies = [
  "gnunet-arm-host",
  "gnunet-client-host",
  "gnunet-config",
+ "gnunet-native",
  "gnunet-program-host",
  "gnunet-resolver-broker",
  "gnunet-service-runtime",
@@ -811,6 +813,7 @@ dependencies = [
  "gnunet-client",
  "gnunet-client-host",
  "gnunet-config",
+ "gnunet-native",
  "gnunet-resolver-broker",
  "gnunet-service-runtime",
  "gnunet-service-startup",
@@ -842,7 +845,6 @@ dependencies = [
  "gnunet-service-runtime",
  "gnunet-service-startup",
  "libc",
- "nix",
  "socket2",
  "tokio",
 ]
@@ -867,6 +869,7 @@ version = "0.1.0"
 dependencies = [
  "gnunet-config",
  "gnunet-gnsrecord",
+ "gnunet-native",
  "gnunet-program-host",
  "gnunet-service-runtime",
  "nix",
@@ -893,6 +896,7 @@ dependencies = [
  "bytes",
  "gnunet-config",
  "gnunet-gnsrecord",
+ "gnunet-native",
  "gnunet-service-runtime",
  "gnunet-types",
  "http-body-util",
@@ -938,7 +942,6 @@ dependencies = [
  "gnunet-service-startup",
  "gnunet-types",
  "gnunet-wire",
- "nix",
  "tokio",
  "zeroize",
 ]
@@ -952,13 +955,13 @@ dependencies = [
  "gnunet-core-client-host",
  "gnunet-crypto",
  "gnunet-fs",
+ "gnunet-native",
  "gnunet-pils",
  "gnunet-pils-host",
  "gnunet-service-runtime",
  "gnunet-session-crypto",
  "gnunet-types",
  "gnunet-wire",
- "libc",
  "socket2",
  "tokio",
  "zeroize",
@@ -973,6 +976,7 @@ dependencies = [
  "gnunet-client-host",
  "gnunet-config",
  "gnunet-ipc-unix",
+ "gnunet-native",
  "gnunet-program-host",
  "gnunet-resolver-broker",
  "gnunet-service-runtime",
@@ -980,6 +984,7 @@ dependencies = [
  "gnunet-types",
  "nix",
  "serde_json",
+ "socket2",
  "tokio",
  "zeroize",
 ]
@@ -998,6 +1003,7 @@ name = "gnunet-client-host"
 version = "0.1.0"
 dependencies = [
  "gnunet-config",
+ "gnunet-native",
  "gnunet-resolver-broker",
  "gnunet-service-runtime",
  "gnunet-types",
@@ -1062,7 +1068,6 @@ dependencies = [
  "gnunet-udp-communicator-core",
  "gnunet-udp-communicator-host",
  "gnunet-wire",
- "nix",
  "socket2",
  "tokio",
 ]
@@ -1129,6 +1134,7 @@ version = "0.1.0"
 dependencies = [
  "gnunet-client-host",
  "gnunet-consensus",
+ "gnunet-native",
  "gnunet-pils",
  "gnunet-pils-host",
  "gnunet-service-runtime",
@@ -1154,9 +1160,11 @@ name = "gnunet-conversation-audio-host"
 version = "0.1.0"
 dependencies = [
  "getrandom 0.4.3",
+ "gnunet-native",
  "gnunet-types",
  "gnunet-wire",
  "libc",
+ "windows-sys 0.61.2",
  "zeroize",
 ]
 
@@ -1188,6 +1196,7 @@ dependencies = [
  "gnunet-identity",
  "gnunet-identity-client-host",
  "gnunet-idna",
+ "gnunet-native",
  "gnunet-pils",
  "gnunet-pils-host",
  "gnunet-program-host",
@@ -1207,6 +1216,7 @@ dependencies = [
  "gnunet-cadet-host",
  "gnunet-client-host",
  "gnunet-conversation",
+ "gnunet-identity",
  "gnunet-pils",
  "gnunet-pils-host",
  "gnunet-service-runtime",
@@ -1235,6 +1245,7 @@ dependencies = [
  "gnunet-client-host",
  "gnunet-config",
  "gnunet-core-client-host",
+ "gnunet-native",
  "gnunet-program-host",
  "gnunet-resolver-broker",
  "gnunet-service-runtime",
@@ -1334,6 +1345,7 @@ dependencies = [
  "gnunet-hello",
  "gnunet-hostlist",
  "gnunet-hostlist-host",
+ "gnunet-native",
  "gnunet-peerstore-client-host",
  "gnunet-program-host",
  "gnunet-resolver-broker",
@@ -1349,6 +1361,7 @@ name = "gnunet-daemon-pt"
 version = "0.1.0"
 dependencies = [
  "gnunet-config",
+ "gnunet-native",
  "gnunet-program-host",
  "gnunet-pt-host",
  "gnunet-service-startup",
@@ -1359,7 +1372,6 @@ dependencies = [
 name = "gnunet-daemon-topology"
 version = "0.1.0"
 dependencies = [
- "gnunet-client",
  "gnunet-client-host",
  "gnunet-config",
  "gnunet-core-client-host",
@@ -1400,13 +1412,13 @@ dependencies = [
  "gnunet-client-host",
  "gnunet-config",
  "gnunet-datastore-host",
+ "gnunet-native",
  "gnunet-program-host",
  "gnunet-resolver-broker",
  "gnunet-service-runtime",
  "gnunet-service-startup",
  "gnunet-types",
  "gnunet-wire",
- "nix",
  "tokio",
  "zeroize",
 ]
@@ -1421,10 +1433,10 @@ dependencies = [
  "gnunet-config",
  "gnunet-crypto",
  "gnunet-datastore",
+ "gnunet-native",
  "gnunet-service-runtime",
  "gnunet-types",
  "gnunet-wire",
- "nix",
  "tokio",
 ]
 
@@ -1480,7 +1492,6 @@ dependencies = [
  "gnunet-service-startup",
  "gnunet-types",
  "gnunet-wire",
- "nix",
  "tokio",
 ]
 
@@ -1503,7 +1514,6 @@ dependencies = [
  "gnunet-transport-application-host",
  "gnunet-types",
  "gnunet-wire",
- "libc",
  "socket2",
  "tokio",
 ]
@@ -1544,6 +1554,7 @@ dependencies = [
  "gnunet-config",
  "gnunet-fs",
  "gnunet-fs-codec",
+ "gnunet-native",
  "gnunet-program-host",
  "gnunet-service-runtime",
  "gnunet-service-startup",
@@ -1587,6 +1598,7 @@ name = "gnunet-dns-monitor"
 version = "0.1.0"
 dependencies = [
  "gnunet-dns-tools-host",
+ "gnunet-service-startup",
 ]
 
 [[package]]
@@ -1594,14 +1606,17 @@ name = "gnunet-dns-redirector"
 version = "0.1.0"
 dependencies = [
  "gnunet-dns-tools-host",
+ "gnunet-service-startup",
 ]
 
 [[package]]
 name = "gnunet-dns-service-host"
 version = "0.1.0"
 dependencies = [
+ "gnunet-crypto",
  "gnunet-dns-interception",
  "gnunet-dnsstub-host",
+ "gnunet-native",
  "gnunet-service-runtime",
  "gnunet-tun-host",
  "gnunet-types",
@@ -1617,13 +1632,13 @@ dependencies = [
 name = "gnunet-dns-tools-host"
 version = "0.1.0"
 dependencies = [
- "gnunet-client-host",
  "gnunet-config",
  "gnunet-dns",
  "gnunet-dns-client-host",
  "gnunet-program-host",
  "gnunet-resolver-broker",
  "gnunet-service-runtime",
+ "gnunet-service-startup",
  "tokio",
  "zeroize",
 ]
@@ -1640,7 +1655,6 @@ dependencies = [
  "gnunet-service-runtime",
  "gnunet-service-startup",
  "gnunet-types",
- "nix",
  "tokio",
 ]
 
@@ -1657,6 +1671,7 @@ dependencies = [
  "gnunet-gnsrecord",
  "gnunet-identity-client-host",
  "gnunet-idna",
+ "gnunet-native",
  "gnunet-service-runtime",
  "gnunet-types",
  "gnunet-vpn",
@@ -1678,6 +1693,7 @@ version = "0.1.0"
 dependencies = [
  "getrandom 0.4.3",
  "gnunet-dnsstub",
+ "gnunet-native",
  "gnunet-types",
  "socket2",
  "tokio",
@@ -1691,12 +1707,12 @@ dependencies = [
  "gnunet-config",
  "gnunet-crypto",
  "gnunet-gnsrecord",
+ "gnunet-native",
  "gnunet-program-host",
  "gnunet-service-runtime",
  "gnunet-service-startup",
  "gnunet-session-crypto",
  "gnunet-types",
- "libc",
  "tokio",
  "zeroize",
 ]
@@ -1733,7 +1749,7 @@ dependencies = [
 name = "gnunet-extractor-host"
 version = "0.1.0"
 dependencies = [
- "libc",
+ "gnunet-native",
 ]
 
 [[package]]
@@ -1772,6 +1788,7 @@ dependencies = [
  "gnunet-extractor-host",
  "gnunet-fs",
  "gnunet-fs-codec",
+ "gnunet-native",
  "gnunet-pils",
  "gnunet-pils-host",
  "gnunet-service-runtime",
@@ -1821,12 +1838,12 @@ dependencies = [
  "gnunet-gnsrecord-text",
  "gnunet-identity-client-host",
  "gnunet-idna",
+ "gnunet-native",
  "gnunet-program-host",
  "gnunet-resolver-broker",
  "gnunet-service-runtime",
  "gnunet-service-startup",
  "gnunet-types",
- "nix",
  "tokio",
  "zeroize",
 ]
@@ -1874,7 +1891,6 @@ dependencies = [
  "gnunet-service-runtime",
  "gnunet-service-startup",
  "gnunet-types",
- "nix",
  "tokio",
 ]
 
@@ -1917,10 +1933,14 @@ version = "0.1.0"
 dependencies = [
  "base64ct",
  "gnunet-config",
+ "gnunet-native",
  "gnunet-program-host",
+ "gnunet-service-runtime",
+ "gnunet-service-startup",
  "gnunet-types",
  "rcgen",
  "time",
+ "tokio",
  "zeroize",
 ]
 
@@ -1994,6 +2014,7 @@ name = "gnunet-hello-cli"
 version = "0.1.0"
 dependencies = [
  "gnunet-peer-tools-host",
+ "gnunet-service-startup",
 ]
 
 [[package]]
@@ -2126,10 +2147,12 @@ name = "gnunet-identity-host"
 version = "0.1.0"
 dependencies = [
  "gnunet-identity",
+ "gnunet-native",
  "gnunet-service-runtime",
  "gnunet-snapshot-host",
  "gnunet-types",
  "gnunet-wire",
+ "socket2",
  "tokio",
  "zeroize",
 ]
@@ -2148,6 +2171,7 @@ dependencies = [
  "gnunet-client",
  "gnunet-client-host",
  "gnunet-config",
+ "gnunet-native",
  "gnunet-resolver-broker",
  "gnunet-service-runtime",
  "gnunet-statistics",
@@ -2207,7 +2231,6 @@ dependencies = [
  "gnunet-service-runtime",
  "gnunet-service-startup",
  "gnunet-types",
- "nix",
  "tokio",
  "zeroize",
 ]
@@ -2286,9 +2309,11 @@ dependencies = [
  "gnunet-gnsrecord-text",
  "gnunet-idna",
  "gnunet-namecache-client-host",
+ "gnunet-native",
  "gnunet-program-host",
  "gnunet-resolver-broker",
  "gnunet-service-runtime",
+ "gnunet-service-startup",
  "tokio",
  "zeroize",
 ]
@@ -2299,6 +2324,7 @@ version = "0.1.0"
 dependencies = [
  "gnunet-client-host",
  "gnunet-namecache",
+ "gnunet-native",
  "gnunet-service-runtime",
  "gnunet-types",
  "gnunet-wire",
@@ -2348,10 +2374,12 @@ name = "gnunet-namestore-host"
 version = "0.1.0"
 dependencies = [
  "gnunet-namestore",
+ "gnunet-native",
  "gnunet-service-runtime",
  "gnunet-snapshot-host",
  "gnunet-types",
  "gnunet-wire",
+ "socket2",
  "tokio",
  "zeroize",
 ]
@@ -2371,6 +2399,7 @@ dependencies = [
  "gnunet-config",
  "gnunet-nat-test-host",
  "gnunet-program-host",
+ "gnunet-service-startup",
  "tokio",
 ]
 
@@ -2379,8 +2408,10 @@ name = "gnunet-nat-burst-host"
 version = "0.1.0"
 dependencies = [
  "gnunet-nat",
+ "gnunet-native",
  "gnunet-service-runtime",
  "gnunet-types",
+ "socket2",
  "tokio",
  "zeroize",
 ]
@@ -2392,6 +2423,7 @@ dependencies = [
  "gnunet-config",
  "gnunet-nat-test-host",
  "gnunet-program-host",
+ "gnunet-service-startup",
  "tokio",
 ]
 
@@ -2414,10 +2446,12 @@ version = "0.1.0"
 dependencies = [
  "gnunet-nat",
  "gnunet-native",
+ "gnunet-service-runtime",
  "gnunet-types",
  "gnunet-wire",
  "nix",
  "socket2",
+ "tokio",
 ]
 
 [[package]]
@@ -2429,6 +2463,7 @@ dependencies = [
  "gnunet-config",
  "gnunet-http-host",
  "gnunet-nat",
+ "gnunet-nat-helper-host",
  "gnunet-native",
  "gnunet-program-host",
  "gnunet-resolver-broker",
@@ -2445,11 +2480,7 @@ dependencies = [
 name = "gnunet-nat-server"
 version = "0.1.0"
 dependencies = [
- "gnunet-config",
  "gnunet-nat-host",
- "gnunet-program-host",
- "gnunet-service-startup",
- "tokio",
 ]
 
 [[package]]
@@ -2462,11 +2493,14 @@ dependencies = [
  "gnunet-nat",
  "gnunet-nat-client-host",
  "gnunet-nat-host",
+ "gnunet-native",
  "gnunet-program-host",
  "gnunet-resolver-broker",
  "gnunet-service-runtime",
+ "gnunet-service-startup",
  "gnunet-types",
  "gnunet-wire",
+ "socket2",
  "tokio",
 ]
 
@@ -2474,8 +2508,11 @@ dependencies = [
 name = "gnunet-native"
 version = "0.1.0"
 dependencies = [
+ "getrandom 0.4.3",
  "libc",
+ "nix",
  "windows-sys 0.61.2",
+ "zeroize",
 ]
 
 [[package]]
@@ -2498,6 +2535,7 @@ dependencies = [
  "gnunet-program-host",
  "gnunet-resolver-broker",
  "gnunet-service-runtime",
+ "gnunet-service-startup",
  "gnunet-types",
  "tokio",
 ]
@@ -2507,8 +2545,11 @@ name = "gnunet-nse-command"
 version = "0.1.0"
 dependencies = [
  "gnunet-config",
+ "gnunet-native",
  "gnunet-nse-client-host",
  "gnunet-program-host",
+ "gnunet-service-startup",
+ "gnunet-wire",
  "tokio",
 ]
 
@@ -2522,6 +2563,7 @@ dependencies = [
  "gnunet-config",
  "gnunet-core-client-host",
  "gnunet-crypto",
+ "gnunet-native",
  "gnunet-nse",
  "gnunet-pils",
  "gnunet-pils-host",
@@ -2569,6 +2611,7 @@ dependencies = [
  "gnunet-program-host",
  "gnunet-resolver-broker",
  "gnunet-service-runtime",
+ "gnunet-service-startup",
  "gnunet-types",
  "gnunet-wire",
  "tokio",
@@ -2600,11 +2643,11 @@ name = "gnunet-peerstore-host"
 version = "0.1.0"
 dependencies = [
  "getrandom 0.4.3",
+ "gnunet-native",
  "gnunet-peerstore",
  "gnunet-service-runtime",
  "gnunet-types",
  "gnunet-wire",
- "libc",
  "sha2",
  "tokio",
 ]
@@ -2626,6 +2669,7 @@ name = "gnunet-pils-cli"
 version = "0.1.0"
 dependencies = [
  "gnunet-peer-tools-host",
+ "gnunet-service-startup",
 ]
 
 [[package]]
@@ -2637,14 +2681,13 @@ dependencies = [
  "gnunet-config",
  "gnunet-crypto",
  "gnunet-hello",
+ "gnunet-native",
  "gnunet-pils",
  "gnunet-service-runtime",
  "gnunet-service-startup",
  "gnunet-session-crypto",
  "gnunet-types",
  "gnunet-wire",
- "libc",
- "nix",
  "serde_json",
  "tokio",
  "zeroize",
@@ -2657,11 +2700,14 @@ dependencies = [
  "getrandom 0.4.3",
  "gnunet-config",
  "gnunet-crypto",
+ "gnunet-native",
  "gnunet-resolver-broker",
  "gnunet-service-runtime",
+ "gnunet-service-startup",
  "gnunet-types",
  "libc",
  "tokio",
+ "zeroize",
 ]
 
 [[package]]
@@ -2682,6 +2728,7 @@ dependencies = [
  "gnunet-client",
  "gnunet-client-host",
  "gnunet-config",
+ "gnunet-crypto",
  "gnunet-dht-client-host",
  "gnunet-dns",
  "gnunet-dns-client-host",
@@ -2702,6 +2749,7 @@ name = "gnunet-qr-command"
 version = "0.1.0"
 dependencies = [
  "gnunet-config",
+ "gnunet-native",
  "gnunet-program-host",
  "gnunet-qr-host",
  "gnunet-service-runtime",
@@ -2715,8 +2763,8 @@ dependencies = [
 name = "gnunet-qr-host"
 version = "0.1.0"
 dependencies = [
+ "gnunet-native",
  "gnunet-types",
- "libc",
 ]
 
 [[package]]
@@ -2742,7 +2790,6 @@ dependencies = [
  "h3",
  "h3-quinn",
  "http",
- "libc",
  "quinn",
  "rcgen",
  "rustls",
@@ -2790,6 +2837,7 @@ dependencies = [
 name = "gnunet-reclaim-host"
 version = "0.1.0"
 dependencies = [
+ "getrandom 0.4.3",
  "gnunet-client",
  "gnunet-client-host",
  "gnunet-gns-client-host",
@@ -2901,7 +2949,6 @@ dependencies = [
  "gnunet-service-runtime",
  "gnunet-service-startup",
  "gnunet-types",
- "nix",
  "tokio",
  "zeroize",
 ]
@@ -2916,6 +2963,7 @@ dependencies = [
  "gnunet-dns",
  "gnunet-dnsstub-host",
  "gnunet-idna",
+ "gnunet-native",
  "gnunet-resolver-service-core",
  "gnunet-service-runtime",
  "gnunet-service-startup",
@@ -2972,6 +3020,7 @@ dependencies = [
  "gnunet-identity-client-host",
  "gnunet-json",
  "gnunet-namestore-client-host",
+ "gnunet-native",
  "gnunet-oidc-crypto-host",
  "gnunet-reclaim",
  "gnunet-reclaim-client-host",
@@ -2981,8 +3030,6 @@ dependencies = [
  "gnunet-snapshot-host",
  "gnunet-types",
  "gnunet-wire",
- "libc",
- "nix",
  "tokio",
  "zeroize",
 ]
@@ -2998,6 +3045,7 @@ dependencies = [
  "gnunet-identity-client-host",
  "gnunet-idna",
  "gnunet-namestore-client-host",
+ "gnunet-native",
  "gnunet-oidc-crypto-host",
  "gnunet-program-host",
  "gnunet-reclaim-client-host",
@@ -3006,7 +3054,6 @@ dependencies = [
  "gnunet-rest-host",
  "gnunet-service-runtime",
  "gnunet-service-startup",
- "libc",
  "nix",
  "tokio",
  "uzers",
@@ -3087,6 +3134,7 @@ dependencies = [
  "gnunet-resolver-broker",
  "gnunet-rps-client-host",
  "gnunet-service-runtime",
+ "gnunet-service-startup",
  "tokio",
 ]
 
@@ -3137,6 +3185,7 @@ dependencies = [
  "gnunet-resolver-broker",
  "gnunet-scalarproduct-client-host",
  "gnunet-service-runtime",
+ "gnunet-service-startup",
  "num-bigint",
  "tokio",
 ]
@@ -3178,6 +3227,7 @@ version = "0.1.0"
 dependencies = [
  "gnunet-config",
  "gnunet-crypto",
+ "gnunet-native",
  "gnunet-nse",
  "gnunet-nse-host",
  "gnunet-pils-host",
@@ -3185,7 +3235,6 @@ dependencies = [
  "gnunet-service-runtime",
  "gnunet-service-startup",
  "gnunet-types",
- "libc",
  "tokio",
 ]
 
@@ -3291,10 +3340,15 @@ dependencies = [
 name = "gnunet-service-arm"
 version = "0.1.0"
 dependencies = [
+ "gnunet-arm-core",
  "gnunet-arm-service-host",
  "gnunet-config",
+ "gnunet-native",
  "gnunet-program-host",
+ "gnunet-service-runtime",
  "gnunet-service-startup",
+ "socket2",
+ "tokio",
 ]
 
 [[package]]
@@ -3414,11 +3468,14 @@ dependencies = [
  "gnunet-config",
  "gnunet-dns-interception",
  "gnunet-dns-service-host",
+ "gnunet-dnsstub-host",
  "gnunet-ipc-unix",
+ "gnunet-native",
  "gnunet-program-host",
  "gnunet-resolver-broker",
  "gnunet-service-runtime",
  "gnunet-service-startup",
+ "gnunet-tun-host",
  "gnunet-types",
  "tokio",
 ]
@@ -3470,11 +3527,15 @@ dependencies = [
  "gnunet-config",
  "gnunet-identity",
  "gnunet-identity-host",
+ "gnunet-native",
  "gnunet-program-host",
  "gnunet-resolver-broker",
  "gnunet-service-runtime",
  "gnunet-service-startup",
+ "gnunet-wire",
+ "socket2",
  "tokio",
+ "zeroize",
 ]
 
 [[package]]
@@ -3503,6 +3564,7 @@ dependencies = [
  "gnunet-ipc-unix",
  "gnunet-namecache",
  "gnunet-namecache-host",
+ "gnunet-native",
  "gnunet-program-host",
  "gnunet-resolver-broker",
  "gnunet-service-runtime",
@@ -3529,22 +3591,14 @@ dependencies = [
 name = "gnunet-service-nat"
 version = "0.1.0"
 dependencies = [
- "gnunet-config",
  "gnunet-nat-host",
- "gnunet-program-host",
- "gnunet-service-startup",
- "tokio",
 ]
 
 [[package]]
 name = "gnunet-service-nat-auto"
 version = "0.1.0"
 dependencies = [
- "gnunet-config",
  "gnunet-nat-host",
- "gnunet-program-host",
- "gnunet-service-startup",
- "tokio",
 ]
 
 [[package]]
@@ -3779,6 +3833,7 @@ dependencies = [
  "gnunet-service-runtime",
  "libc",
  "nix",
+ "socket2",
  "tokio",
  "uzers",
 ]
@@ -3788,11 +3843,12 @@ name = "gnunet-service-statistics"
 version = "0.1.0"
 dependencies = [
  "gnunet",
+ "gnunet-native",
  "gnunet-program-host",
  "gnunet-service-runtime",
  "gnunet-service-startup",
  "libc",
- "nix",
+ "socket2",
  "tokio",
 ]
 
@@ -3971,8 +4027,6 @@ dependencies = [
  "gnunet-crypto",
  "gnunet-native",
  "gnunet-types",
- "libc",
- "nix",
  "tokio",
  "zeroize",
 ]
@@ -3990,6 +4044,7 @@ dependencies = [
 name = "gnunet-statistics-store"
 version = "0.1.0"
 dependencies = [
+ "gnunet-native",
  "gnunet-statistics",
  "gnunet-types",
  "gnunet-wire",
@@ -4039,7 +4094,6 @@ dependencies = [
  "gnunet-tcp-communicator-host",
  "gnunet-tcp-replay-host",
  "gnunet-types",
- "libc",
  "socket2",
  "tokio",
 ]
@@ -4049,10 +4103,10 @@ name = "gnunet-tcp-replay-host"
 version = "0.1.0"
 dependencies = [
  "gnunet-crypto",
+ "gnunet-native",
  "gnunet-snapshot-host",
  "gnunet-tcp-communicator-core",
  "gnunet-types",
- "libc",
  "zeroize",
 ]
 
@@ -4068,9 +4122,9 @@ name = "gnunet-testbed-host"
 version = "0.1.0"
 dependencies = [
  "gnunet-config",
+ "gnunet-native",
  "gnunet-testbed",
  "gnunet-types",
- "libc",
  "socket2",
  "zeroize",
 ]
@@ -4081,8 +4135,10 @@ version = "0.1.0"
 dependencies = [
  "gnunet-config",
  "gnunet-program-host",
+ "gnunet-service-startup",
  "gnunet-testbed-host",
  "gnunet-types",
+ "tokio",
 ]
 
 [[package]]
@@ -4216,12 +4272,12 @@ dependencies = [
  "getrandom 0.4.3",
  "gnunet-crypto",
  "gnunet-hello",
+ "gnunet-native",
  "gnunet-service-runtime",
  "gnunet-tcp-communicator-core",
  "gnunet-transport",
  "gnunet-types",
  "gnunet-wire",
- "libc",
  "socket2",
  "tokio",
  "zeroize",
@@ -4276,6 +4332,7 @@ dependencies = [
  "gnunet-hello",
  "gnunet-ipc-unix",
  "gnunet-nat-client-host",
+ "gnunet-native",
  "gnunet-peerstore-client-host",
  "gnunet-pils",
  "gnunet-pils-host",
@@ -4310,6 +4367,8 @@ dependencies = [
 name = "gnunet-tun-host"
 version = "0.1.0"
 dependencies = [
+ "gnunet-crypto",
+ "gnunet-native",
  "libc",
  "nix",
  "socket2",
@@ -4401,6 +4460,7 @@ name = "gnunet-uri-host"
 version = "0.1.0"
 dependencies = [
  "gnunet-config",
+ "gnunet-native",
  "gnunet-program-host",
  "gnunet-service-runtime",
  "gnunet-service-startup",
@@ -4423,6 +4483,7 @@ name = "gnunet-vpn-client-host"
 version = "0.1.0"
 dependencies = [
  "gnunet-client-host",
+ "gnunet-config",
  "gnunet-service-runtime",
  "gnunet-types",
  "gnunet-wire",
@@ -4457,6 +4518,7 @@ dependencies = [
  "gnunet-client-host",
  "gnunet-config",
  "gnunet-ipc-unix",
+ "gnunet-native",
  "gnunet-program-host",
  "gnunet-resolver-broker",
  "gnunet-service-runtime",

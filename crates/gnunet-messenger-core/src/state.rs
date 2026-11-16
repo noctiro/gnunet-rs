@@ -689,6 +689,8 @@ pub(crate) enum Job {
 pub(crate) struct OperationRow<'id> {
     /// Immutable original operation/source/member/message scope.
     pub binding: Binding<'id>,
+    /// Original signed body family, retained when signing becomes wire work.
+    pub signed_kind: Option<Kind>,
     /// Immutable original recipient for a real locally prepared PRIVATE send.
     pub recipient: Option<RecipientAttribution<'id>>,
     /// Original job value.

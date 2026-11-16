@@ -126,8 +126,9 @@ impl Control {
         self.gate.lock().map_err(|_| Fault::Unavailable)?.bounds = bounds;
         Ok(())
     }
-    /// Replace exactly the observation the Line currently owns. A new peer on
-    /// the same verified MQ is allowed; replacing a physical source is not.
+    /// Replace exactly the observation the Line currently owns. Physical source
+    /// replacement must first clear this gate on its actual loss, then obtain
+    /// a fresh branded observation through the same original PILS client.
     pub fn known(&self, previous: Option<Known>, value: Known) -> Result<(), Fault> {
         let mut g = self.gate.lock().map_err(|_| Fault::Unavailable)?;
         if g.known != previous || previous.is_some_and(|old| old.epoch != value.epoch) {
@@ -135,6 +136,18 @@ impl Control {
             return Err(Fault::StaleGeneration);
         }
         g.known = Some(value);
+        Ok(())
+    }
+    pub fn pause_identity(&self, previous: Option<Known>) -> Result<(), Fault> {
+        let mut g = self.gate.lock().map_err(|_| Fault::Unavailable)?;
+        if let Some(reason) = g.reason {
+            return Err(reason);
+        }
+        if g.known != previous {
+            g.reason = Some(Fault::StaleGeneration);
+            return Err(Fault::StaleGeneration);
+        }
+        g.known = None;
         Ok(())
     }
     pub fn check(&self, clock: &dyn RuntimeClock, require_known: bool) -> Result<u64, Fault> {

@@ -1,7 +1,7 @@
 //! Native local FS block storage and streaming file/directory operations.
 //! Protocol artifacts and authenticated tree ownership remain in gnunet-fs;
 //! this adapter supplies blocking filesystem I/O for a host worker or CLI.
-#![cfg(unix)]
+#![cfg(any(unix, windows))]
 #![forbid(unsafe_code)]
 
 mod directory;
@@ -14,13 +14,16 @@ pub mod extraction;
 mod files;
 #[cfg(feature = "server")]
 pub mod index;
-/// Descriptor-root source identity and bounded enumeration, independent of services.
-#[cfg(feature = "extraction")]
+mod input;
+/// Original-handle source roots and bounded enumeration, independent of services.
 pub mod input_tree;
 #[cfg(feature = "service")]
 pub mod ipc;
 #[cfg(feature = "network")]
 pub mod jobs;
+#[cfg(all(test, feature = "network"))]
+#[path = "../tests/support/local_peer.rs"]
+mod local_peer;
 #[cfg(feature = "network")]
 pub mod namespace;
 #[cfg(feature = "service")]
@@ -41,17 +44,21 @@ pub mod search;
 #[cfg(feature = "server")]
 pub mod server;
 mod store;
+#[cfg(feature = "service")]
+mod time_limit;
 pub use error::{Error, Result};
 pub use files::{Buffers, Control, Limits, Progress, Published, ReadFile, open_input};
 use gnunet_fs::content::{EncodedNode, NodeRef};
+pub use gnunet_native::DirectorySync;
+pub use gnunet_native::filesystem::{FileIdentity, FileIdentityParts};
 pub use output::{
-    ArtifactFailure, ArtifactReport, CommitStage, DirectoryStage, FileIdentity, OWNER_MARKER_NAME,
+    ArtifactFailure, ArtifactReport, CommitStage, DirectoryStage, OWNER_MARKER_NAME,
     ObservedFailure, OutputDir, OwnedDirectoryFailure, RevalidateFailure, RevalidateStage,
     RevalidatedFile,
 };
 #[cfg(feature = "service")]
 pub use output::{RevalidateRangeFailure, RevalidatedRange};
-pub use store::{Insert, Repository};
+pub use store::{Insert, Repository, Retention};
 
 /// Block retrieval port. Returned bytes remain untrusted until the file reader
 /// authenticates their actual size, query, AEAD tag and plaintext hash.

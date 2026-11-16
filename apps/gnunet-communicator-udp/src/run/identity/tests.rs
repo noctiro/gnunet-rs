@@ -1,11 +1,12 @@
 //! Real pure PILS observation branding and clock-independent native deadline.
+mod native;
 use super::*;
 use gnunet_pils::{
     HelloLimits, MasterKey, Profile, Service,
     client::{Client as Pure, Instance},
 };
 use gnunet_service_runtime::clock::SystemClock;
-use std::{fs, future::poll_fn, os::unix::fs::DirBuilderExt, path::PathBuf};
+use std::{fs, future::poll_fn, path::PathBuf};
 type Test = Result<(), Cause>;
 struct Scratch(PathBuf);
 impl Drop for Scratch {
@@ -20,7 +21,7 @@ fn original_observer_brand_and_expiry_are_required_even_with_equal_numeric_epoch
     let scratch = Scratch(
         std::env::temp_dir().join(format!("udp-identity-{:016x}", u64::from_be_bytes(nonce))),
     );
-    fs::DirBuilder::new().mode(0o700).create(&scratch.0)?;
+    gnunet_service_runtime::private_parents(&scratch.0.join(".identity"))?;
     let limits = HelloLimits {
         maximum_input_bytes: 4096,
         maximum_address_bytes: 1024,
@@ -59,6 +60,7 @@ fn original_observer_brand_and_expiry_are_required_even_with_equal_numeric_epoch
         peers: 2,
         clock: Arc::new(SystemClock),
         window: None,
+        first_loss: None,
     };
     let current = first.identity().ok_or(Error::NotReady)?;
     let foreign = other.identity().ok_or(Error::NotReady)?;

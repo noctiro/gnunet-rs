@@ -8,6 +8,8 @@ reactor, fair bounded original sessions, guards and independent cleanup. There
 is no spawned task/worker, extra Resolver, self RPC, replacement epoch, private
 wire or algorithm fallback.
 
+## Public interface
+
 The complete original IPC vector owns one Vec<Value>, then its selected core
 adopts it once. Role/total/partial input, duplicate keys and zero coefficients
 are checked before per-query crypto/dependency admission. Session-key leases
@@ -31,6 +33,8 @@ fair peer class has already run before a CONNECT or OPEN_PORT action first
 activates it, the containing future wakes for another poll. Later polls that
 only await the same connection report no progress; activation does not renew
 the original native write/setup deadline or complete any protocol effect.
+
+## Protocol profiles
 
 ECC's SETI application is SHA512(session), while Paillier's is raw session, as
 the two active C producers require. Both scalarproduct CADET ports are raw
@@ -60,6 +64,8 @@ i32 type. Whole local writes are not remote processing, Alice-result proof or
 durability. Bob records only his last local reply handoff. Native client
 status/MPI output remains a distinct original socket write.
 
+## Peer input and local completion
+
 An original multi-inner CADET packet retains its Delivery and byte offset. Processed means only a non-final inner was handled; receive_done is
 written only after the final inner. If a peer closes after the complete required
 reply was copied, local math can continue only through the explicit capability
@@ -73,6 +79,8 @@ source is polled, reopened or acknowledged afterwards. The raw cause remains
 independently in SessionReport.dependency_loss, alongside typed computation and
 client-write facts.
 
+## Deadlines and shutdown
+
 Native guards precede canonical sampling, follow it, and run before each reactor
 class. Whole/partial/unknown writes keep original identities. Clock-free physical
 retirement precedes effect/local-end draining. A computation failure closes old
@@ -80,6 +88,8 @@ dependency IO before final failure output and does not inherit retired-source
 partial timers. The original cause, dependency loss and cleanup cause stay
 separate. Every owner is attempted during shutdown; an undrained original debt
 immediately fences new admission. Drop uses the same physical close/drain path.
+
+## Limits
 
 `Profile::default_host_limits` derives coherent selected defaults before explicit
 configuration overrides. Default ECC retains its existing16-owner/65536-row,
@@ -95,9 +105,6 @@ capacities, server/owner/registry metadata and shared key reservation are deduct
 before session permits. These checked reservations are not measured RSS,
 allocator/OS memory or performance.
 
-Known fixed-reference Paillier source defects in multipart-column copying and
-local-versus-peer count are not reproduced; source-present Rust does not prove
-unrestricted reference interoperability. The prior default-ECC static receipts
-bind their recorded b07b baseline. This fresh shared-profile/local-retirement
-increment passed selected offline macOS/GNU Linux/no-system compiler and
-changed-graph architecture checks.
+The Rust Paillier path avoids the reference defects in multipart-column
+copying and local-versus-peer counts. See the [core contract](../../crates/gnunet-scalarproduct-paillier/README.md)
+for column and result semantics.

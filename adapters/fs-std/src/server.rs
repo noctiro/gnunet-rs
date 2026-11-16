@@ -384,7 +384,8 @@ pub struct Report {
     pub on_demand_cleanup_failures: u64,
     /// Actual authenticated peer replies queued to their original socket.
     pub peer_results: u64,
-    /// Original queued index registration/list/unindex jobs.
+    /// Parsed registration/unindex requests retained for worker submission.
+    /// This is not a count of queued jobs or completed filesystem mutations.
     pub index_operations: u64,
     /// Actual completed bounded physical index cleanup slices.
     pub maintenance_steps: u64,
@@ -993,6 +994,9 @@ impl<'id, 'slots, 'seen, S: StorePort, L: LocationSigner, R: PeerRouter>
         cx: &mut Context<'_>,
         observe: &mut impl FnMut(Event),
     ) -> Poll<()> {
+        if self.closing && self.maintenance.as_ref().is_some_and(|job| !job.admitted()) {
+            self.maintenance = None;
+        }
         if let Some(job) = &mut self.maintenance
             && let Poll::Ready(result) = job.poll(cx)
         {

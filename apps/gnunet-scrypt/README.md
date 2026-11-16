@@ -1,17 +1,60 @@
-# Ordinary `gnunet-scrypt`
+# gnunet-scrypt
 
-Package `gnunet-scrypt-command` supplies the ordinary offline utility. Its historical name is retained; it calls the existing exact NSE Argon2id13 primitive (t=3, 1024 KiB, p=1, output64), not a separate scrypt algorithm. It creates no NSE, PILS, CORE, network or background service.
+Offline GNUnet NSE proof mining on Linux, macOS, FreeBSD and Windows. The
+historical executable name is retained; the algorithm is GNUnet Argon2id13
+(t=3, 1024 KiB, p=1, 64-byte output).
 
-`gnunet-scrypt [-c CONFIG] [-k KEYFILE] [-o PROOFFILE] [-b BITS] [-t DURATION]` uses normal PROGRAM configuration/help/logging (`-c/-L/-l`). Missing `-k` selects `[PEER] PRIVATE_KEY`; missing `-o` selects `[NSE] PROOFFILE`. A zero/omitted `-b` selects `[NSE] WORKBITS`; 0..511 is accepted after selection. Configured zero disables mining and returns normally without a found-proof line or a proof replacement. The fixed C synopsis mentions a positional prooffile, but its handler ignores operands; this utility requires the actual `-o` option and rejects extra operands.
+## Usage and configuration
 
-`-t/--timeout` is the delay after each ten-candidate round, default zero, not a whole operation timeout. `FOREVER` waits after the first unfinished round until stop; signals/parent control/Logger failure and an optional whole bound still work. `--total-timeout DURATION` is a separate fixed canonical/native bound captured before synchronous key/store preparation; zero and FOREVER mean no whole limit. `--max-hashes COUNT` optionally stops after exactly that many completed hashes (zero is unbounded). Neither option refreshes on a hash, round, checkpoint, wake or delay. Each hash is followed by a cooperative runtime yield; the existing hash itself is synchronous and cannot be preempted.
+```sh
+gnunet-scrypt [-c CONFIG] [-k KEYFILE] [-o PROOFFILE] [-b BITS] [-t DURATION]
+```
 
-Existing key files are exactly one raw32 Ed25519 seed. The existing PILS initial-key loader validates regular files, owner/private permissions, links, symlinks and stable read metadata. An initially absent key is durably created using that loader's original private sibling/fence/sync/readback. A malformed, unreadable or disappearing existing key never authorizes replacement. Setup precedes runtime construction, with the already captured whole targets and original parent-control checks around each synchronous preparation step. Native signals during this pre-runtime setup retain their ordinary OS disposition; asynchronous signal handlers are installed before mining. The initial secret owner is erased before the runtime; only its direct Ed25519 public32 snapshot enters work. `MasterKey::initial_public_key()` is that explicitly named read-only projection; it is not the derived active PILS identity or an announcement authority. No key bytes are printed or logged.
+Standard PROGRAM supplies configuration, help and logging. Omitted `-k` selects
+`[PEER] PRIVATE_KEY`; omitted `-o` selects `[NSE] PROOFFILE`. Zero/omitted `-b`
+selects `[NSE] WORKBITS`; the selected range is 0–511. Configured zero disables
+mining without publishing a proof or printing a found-proof line. Extra operands
+are rejected.
 
-Proof files are exactly eight original bytes, with no header or marker. Enumeration and persistence use `u64::{from_ne_bytes,to_ne_bytes}`, matching the C utility's native raw8 representation. The hash input is those original8 bytes followed by the original public32 and existing `gnunet-nse-proof` salt. A missing proof starts at counter0; malformed/raw-short/raw-long/symlink inputs retain an error instead of silently resetting progress. The existing fenced `proof::Store` performs atomic replacement, file/parent sync and exact readback; simultaneous cooperating writers are refused. Persistent `.nse-lock` and, on key creation, `.pils-lock` are existing owner fences, not private key/proof artifact formats. Historical C writers do not cooperate with these Rust locks; the caller must exclude concurrent uncooperative path changes. The pre-existing store's private-root policy applies to selected output parents.
+`-t/--timeout` delays each unfinished ten-candidate round; it is not a whole
+operation timeout. Zero yields immediately; FOREVER waits until stop.
+`--total-timeout DURATION` fixes the whole-operation bound before key/store
+preparation; zero/FOREVER is unbounded. `--max-hashes COUNT` bounds completed
+hashes, with zero unbounded. Hashes, rounds, checkpoints and wakes never renew the
+whole bound. Each completed hash yields cooperatively.
 
-Every 1000 hashes, on a valid candidate, or after a stop/error with unsaved progress, the original current cursor is checkpointed. A signal/whole/hash-limit stop remains failure even when its checkpoint is durable. The independent final checkpoint cannot be skipped by the stop that caused it. A previous failed/Unknown commit is never retried, recovered as counter0, or replaced by a different value in this invocation. Original persistence stage/outcome and public counters remain in the failure report. The full native u64 range is finite: the last candidate MAX is actually verified, then either succeeds or reports exhaustion with MAX retained; it never wraps or copies C's MAX busy-loop defect.
+## Keys and proof files
 
-Every unfinished ten-candidate round reports the next cursor and hash count through the normal INFO logger before its selected delay. Logging contains only public progress and leaves stdout for the found-proof result. A logger failure follows the normal failure and final-checkpoint path.
+The shared PILS loader admits exact private raw32 Ed25519 seed files using native
+owner/access, link and stable-read checks. It may create an initially absent key
+through private staged publication. Malformed, unreadable or disappearing inputs
+do not authorize replacement. The initial secret owner is erased before mining;
+only its direct Ed25519 public32 snapshot enters the proof work.
 
-A found proof is committed before `Proof of work found: N!` is written. Positive stdout writes are counted before any later error; a partial output, sync failure, late signal or Logger error remains failure with the already observed proof/commit facts. There is no replay of the final output. File, entropy, stdio and crypto calls remain synchronous native boundaries, not claims of preemptible I/O or secure on-disk erasure.
+Proof artifacts contain exactly eight native-endian bytes, matching the C
+utility's raw8 representation. Hash input is those original8 bytes, the public32
+and the existing `gnunet-nse-proof` salt. Missing proof starts at counter0;
+malformed, symlinked or short/long proof files fail.
+
+The shared [proof store](../../adapters/nse-std/src/proof.rs) holds the original
+private namespace and cooperating-writer lock. Atomic replacement, file sync,
+readback and directory synchronization remain distinct observations. Windows
+reports the naming barrier as Unavailable; successful file publication does not
+imply power-loss durability of the directory entry. Historical C writers do not
+honor the Rust lock; callers exclude uncooperative namespace changes.
+
+## Cancellation and persistence
+
+Native stop subscriptions and parent control register before key/store setup and
+remain attached through mining. Native file, entropy, hash and stdio calls are
+synchronous; stop checks bracket these boundaries. Parent EOF alone is not stop.
+
+The current cursor is checkpointed every 1000 hashes, on a valid candidate and
+on stop/error with unsaved progress. Final checkpoint errors remain independent
+of the initiating failure. An uncertain publication is never blindly retried or
+reset to counter0. Counter MAX is verified once before exhaustion is reported.
+
+A found proof is committed before `Proof of work found: N!` is written. Partial
+stdout, a late stop, persistence or logger failure still makes the result fail
+while preserving actual progress and publication facts. Progress logging contains
+public counters; key bytes are not logged.

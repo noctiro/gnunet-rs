@@ -5,6 +5,8 @@ live original PILS signing owner. It opens the second CONSENSUS MQ with the
 original SID, midpoint, roster and final deadline. No client/identity epoch or
 phase target is silently renewed.
 
+## Contract
+
 Own production, remote validation and original source work alternate under
 finite units; PILS observation precedes them. Temporary borrowed context
 lets both validators use the same original keys/roster without copying the

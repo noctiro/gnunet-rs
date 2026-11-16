@@ -1,71 +1,37 @@
-//! One explicit selected Logger and first diagnostic failure, no global fd2.
+//! One shared selected Reporter, retained through actual worker retirement.
 use crate::Failure;
 use gnunet_peerstore_host::{
     server::{CloseCause, Event},
     worker::Completion,
 };
-use gnunet_program_host::{logging::Logger, policy::Level, service, shared_clock::SharedClock};
+use gnunet_program_host::{policy::Level, reporting::Reporter};
 use gnunet_service_runtime::accepted::SocketEvent;
-use std::{
-    cell::RefCell,
-    fmt, io,
-    task::{Context, Waker},
-};
-pub(crate) struct Reports<'route, 'log> {
-    logger: RefCell<&'route mut Logger<'log>>,
-    clock: &'route SharedClock,
-    failure: RefCell<Option<io::Error>>,
-    waker: RefCell<Option<Waker>>,
-}
-impl<'route, 'log> Reports<'route, 'log> {
-    pub(crate) fn new(logger: &'route mut Logger<'log>, clock: &'route SharedClock) -> Self {
-        Self {
-            logger: RefCell::new(logger),
-            clock,
-            failure: RefCell::new(None),
-            waker: RefCell::new(None),
-        }
+use std::{fmt, io, task::Context};
+pub(crate) struct Reports(Reporter);
+impl Reports {
+    pub(crate) fn new(reporter: Reporter) -> Self {
+        Self(reporter)
+    }
+    pub(crate) fn reporter(&self) -> &Reporter {
+        &self.0
     }
     pub(crate) fn register(&self, cx: &Context<'_>) {
-        let mut current = self.waker.borrow_mut();
-        if current
-            .as_ref()
-            .is_none_or(|old| !old.will_wake(cx.waker()))
-        {
-            *current = Some(cx.waker().clone());
-        }
+        self.0.register(cx);
     }
     pub(crate) fn failed(&self) -> bool {
-        self.failure.borrow().is_some()
+        self.0.failed()
     }
-    pub(crate) fn take_failure(&self) -> Option<io::Error> {
-        self.failure.borrow_mut().take()
-    }
-    /// Only before worker/native admission. Retain the real IO error and abort
-    /// startup; the running service leaves it latched until all original joins.
     pub(crate) fn startup_check(&self) -> Result<(), Failure> {
-        match self.take_failure() {
-            Some(error) => Err(Box::new(error)),
-            None => Ok(()),
+        if let Some(error) = self.0.take_error() {
+            return Err(error.into());
         }
+        if self.0.failed() {
+            return Err(io::Error::other("PEERSTORE selected logger already failed").into());
+        }
+        Ok(())
     }
     pub(crate) fn message(&self, level: Level, site: &'static str, message: fmt::Arguments<'_>) {
-        if self.failed() {
-            return;
-        }
-        let actual = self
-            .logger
-            .try_borrow_mut()
-            .map_err(|_| io::Error::other("PEERSTORE selected Logger already borrowed"))
-            .and_then(|mut logger| {
-                service::diagnostic(&mut logger, self.clock, site, level, message)
-            });
-        if let Err(error) = actual {
-            *self.failure.borrow_mut() = Some(error);
-            if let Some(waker) = self.waker.borrow().as_ref() {
-                waker.wake_by_ref();
-            }
-        }
+        self.0.message(level, site, message);
     }
     pub(crate) fn warning(&self, site: &'static str, message: fmt::Arguments<'_>) {
         self.message(Level::WARNING, site, message);

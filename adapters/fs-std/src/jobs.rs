@@ -327,7 +327,7 @@ pub struct Stats {
     /// Maximum simultaneously retained dispatch futures.
     pub max_active: usize,
 }
-type Resource = (u64, u64);
+type Resource = crate::FileIdentity;
 struct Finished {
     permit: Permit,
     entry: EntryId,
@@ -343,6 +343,7 @@ type Active = Pin<Box<dyn Future<Output = Finished>>>;
 pub struct Worker {
     catalog: Catalog,
     sources: Sources,
+    metadata_authorization: Option<crate::extraction::NativeMetadataAuthorization>,
     options: Options,
     queue: Queue,
     ids: HashMap<[u8; 32], EntryId>,
@@ -361,6 +362,16 @@ impl Drop for Worker {
     }
 }
 impl Worker {
+    /// Set current native metadata execution authority for future dispatches.
+    /// This capability is never stored in the catalog. Active task owners retain
+    /// their original capability; this setter does not revoke in-flight work.
+    pub fn set_native_metadata_authorization(
+        &mut self,
+        authorization: Option<crate::extraction::NativeMetadataAuthorization>,
+    ) {
+        self.metadata_authorization = authorization;
+    }
+
     /// Discover enabled registered tasks; no task, native socket or output is
     /// opened until it is dispatched. Catalog lock excludes another worker.
     pub fn new(catalog: Catalog, sources: Sources, options: Options) -> Result<Self, Error> {
@@ -394,6 +405,7 @@ impl Worker {
         Ok(Self {
             catalog,
             sources,
+            metadata_authorization: None,
             options,
             queue,
             ids,
@@ -433,10 +445,11 @@ impl Worker {
             return Ok(());
         }
         let key = record.registration.task_id;
-        let resource = record.registration.graph.as_ref().map(|dir| {
-            let id = dir.identity();
-            (id.device, id.inode)
-        });
+        let resource = record
+            .registration
+            .graph
+            .as_ref()
+            .map(catalog::Directory::identity);
         match self.queue.remove(key) {
             Ok(()) | Err(ProtocolError::NotFound) => {}
             Err(error) => return Err(error.into()),
@@ -478,10 +491,11 @@ impl Worker {
             let key = permit.key();
             let id = *self.ids.get(&key).ok_or(ProtocolError::Stale)?;
             let record = self.catalog.entry(id).ok_or(ProtocolError::Stale)?;
-            let resource = record.registration.graph.as_ref().map(|dir| {
-                let id = dir.identity();
-                (id.device, id.inode)
-            });
+            let resource = record
+                .registration
+                .graph
+                .as_ref()
+                .map(catalog::Directory::identity);
             if let Some(resource) = resource
                 && self.resources.contains(&resource)
             {
@@ -499,6 +513,7 @@ impl Worker {
                 .and_then(|fs| self.sources.datastore.duplicate().map(|ds| (fs, ds)));
             let stop = self.stop.clone();
             let storage = self.options.storage;
+            let metadata_authorization = self.metadata_authorization.clone();
             let dispatched = self
                 .stats
                 .dispatched
@@ -509,7 +524,10 @@ impl Worker {
             }
             self.active.push(Box::pin(async move {
                 let run = match pair {
-                    Ok((fs, ds)) => execute::run(registration, storage, fs, ds, stop).await,
+                    Ok((fs, ds)) => {
+                        execute::run(registration, storage, fs, ds, stop, metadata_authorization)
+                            .await
+                    }
                     Err(error) => execute::Run::Finished {
                         execution: Box::new(Execution::NotStarted(error.into())),
                         after: None,

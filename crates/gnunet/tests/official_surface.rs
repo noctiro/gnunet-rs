@@ -10,6 +10,23 @@ use gnunet::{
     wire,
 };
 
+// Compile the actual public paths: enabling an adapter dependency alone must
+// not leave its facade silently unavailable on another supported platform.
+#[cfg(all(
+    any(unix, windows),
+    feature = "official-consensus-server",
+    feature = "official-set-server",
+    feature = "official-seti-server",
+    feature = "official-setu-server"
+))]
+#[test]
+fn desktop_set_services_can_be_configured_through_the_public_facade() {
+    let _consensus = gnunet::consensus_host::ServerLimits::default();
+    let _set = gnunet::set_host::server::Limits::default();
+    let _seti = gnunet::seti_host::Limits::default();
+    let _setu = gnunet::setu_host::server::Limits::default();
+}
+
 #[test]
 fn default_sdk_exposes_official_wire_and_gns_records() -> Result<(), Error> {
     let mut output = [0; 64];

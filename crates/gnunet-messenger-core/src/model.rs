@@ -172,6 +172,29 @@ fn write_original<'id>(core: &mut Core<'id>, room: Room<'id>) -> Result<Binding<
 #[test]
 #[expect(
     clippy::panic_in_result_fn,
+    reason = "Public causal-fork metadata assertions"
+)]
+fn frontier_keeps_predecessor_and_epoch_on_the_same_branch() -> Result<(), Error> {
+    let mut instance = Instance::new();
+    let core = structural_core(&mut instance)?;
+    let mut room = RoomRow::new([1; 64], None, limits(), Profile::LITTLE_255)?;
+    let mut first = node(core.instance, 1, 0, 1, 1, 1)?;
+    first.epoch = [11; 64];
+    let first = room.insert_node(first).map_err(|r| r.error)?;
+    let mut concurrent = node(core.instance, 2, 0, 1, 1, 2)?;
+    concurrent.epoch = [22; 64];
+    let concurrent = room.insert_node(concurrent).map_err(|r| r.error)?;
+    room.update_frontier(first)?;
+    room.update_frontier(concurrent)?;
+    assert_eq!(room.frontier.len(), 2);
+    assert!(room.frontier.contains(&[1; 64]));
+    assert_eq!(room.last_message, [2; 64]);
+    assert_eq!(room.current_epoch, [22; 64]);
+    Ok(())
+}
+#[test]
+#[expect(
+    clippy::panic_in_result_fn,
     reason = "One public structural model asserts ownership and table invariants with fallible setup"
 )]
 fn bounded_original_state_model() -> Result<(), Error> {
@@ -302,18 +325,39 @@ fn bounded_original_state_model() -> Result<(), Error> {
     };
     core.on_notification(source, wire::Response::Open(notification_room), 20)?;
     core.retire_operation(open)?;
+    while core.pop_event().is_some() {}
+    let missing = core.request_missing(source, [42; 64], 20, 100)?;
+    assert_eq!(write_original(&mut core, room)?.operation(), missing);
     let close = core.close(source, 100)?;
     assert_eq!(write_original(&mut core, room)?.operation(), close);
-    assert!(core.retire_room_lease(source, close).is_err());
+    assert!(core.retire_room_lease(source, close, None).is_err());
     core.on_notification(source, wire::Response::Close(notification_room), 21)?;
-    assert!(core.retire_room_lease(other_source, close).is_err());
+    assert!(core.retire_room_lease(other_source, close, None).is_err());
+    let charged = core.charged_bytes();
+    // An unrelated whole-written GET is neither a LEAVE nor settled debt.
+    assert!(
+        core.retire_room_lease(source, close, Some(missing))
+            .is_err()
+    );
+    assert!(core.retire_room_lease(source, close, None).is_err());
+    assert!(core.check_source(source).is_ok());
+    assert_eq!(core.charged_bytes(), charged);
+    core.on_notification(
+        source,
+        wire::Response::Missing {
+            key: &[1; 64],
+            hash: &[42; 64],
+        },
+        22,
+    )?;
+    core.retire_operation(missing)?;
     let events = core.events.len();
-    core.retire_room_lease(source, close)?;
+    core.retire_room_lease(source, close, None)?;
     assert_eq!(core.events.len(), events);
     assert!(core.check_source(source).is_err());
     assert!(core.check_source(other_source).is_ok());
     assert_eq!(core.phase(other_room)?, RoomPhase::Detached);
-    core.retire_operation(close)?;
+    assert!(core.operation_phase(close).is_err());
     let mut public = [0x42; 36];
     public[..4].copy_from_slice(&wire::KeyType::Eddsa.value().to_be_bytes());
     core.configure_reopen(room, public)?;

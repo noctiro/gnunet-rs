@@ -6,6 +6,8 @@ and performs no allocation, file access or service operation. The source basis
 is official `meta_data.c`, `gnunet_fs_service.h` and `compress.c` at commit
 `346358e26d4dcc2dc4f51bef5d52dca29c7d8165`.
 
+## Parsing
+
 `decode` handles uncompressed bodies and complete zlib bodies through an explicit
 `Inflater`. `decode_uncompressed` selects no codec. The Rust provider is
 `gnunet-fs-codec::Inflate`, optionally exposed as `gnunet::fs_codec` by `fs-codec`.
@@ -31,6 +33,8 @@ present empty. Serialization canonicalizes plugin/MIME names to their bounded
 first C-string prefix and reports that normalization. Unknown type IDs remain
 open u32 values; unknown formats are invalid entries.
 
+## Semantic import
+
 `Set` is a caller-slot semantic import helper. Duplicate identity is type plus
 exact raw data before filename normalization, as in the pinned C source. It can
 enrich absent MIME or upgrade C_STRING to UTF8, while retaining the first plugin.
@@ -39,6 +43,8 @@ backslashes only before the first NUL, using explicit caller storage and bounded
 iteration. Repeated raw backslash filenames can therefore become two identical
 normalized entries; the API does not silently change that ordering of operations.
 No C linked list, mutable serialization cache or memory-management API is copied.
+
+## Encoding
 
 `plan` validates source records, prepares the reversed body and chooses a
 complete full or partial selection before `Plan::write` touches final output.
@@ -69,6 +75,8 @@ rejects null in the reference; no global null-equals-empty conversion is applied
 The default coded/plain/item limits are caller policies, not universal wire
 limits. The C BIO1MiB budget and compressed40MiB allocation guard are distinct
 from directory and UBLOCK embedding budgets.
+
+## Checks
 
 Rust tests exercise both wire forms with the provider, wrong lengths,
 checksums, truncation, trailing bytes, partial/recovery reports, output limits

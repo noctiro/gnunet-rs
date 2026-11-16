@@ -183,35 +183,11 @@ impl<'a> Scope<'a> {
     /// pending without overflow; listener capacity failure is explicit. A finite
     /// deadline already due when registered remains ready across clock rollback.
     pub fn delay_until(&self, target: AbsoluteTime) -> Result<Delay, Error> {
-        let subscription = self.clock.subscribe()?;
-        // GNUNET_SCHEDULER_add_at checks remaining time during registration
-        // and irrevocably queues an already-due finite task as ready.
-        let registered_ready = !target.is_never() && self.clock.sample()?.now >= target;
-        Ok(Delay::new(
-            self.clock.clone(),
-            target,
-            Some(subscription),
-            registered_ready,
-        ))
+        Delay::until(self.clock.clone(), target)
     }
     /// Source saturating logical now+relative, including explicit FOREVER.
     pub fn delay(&self, relative: RelativeTime) -> Result<Delay, Error> {
-        let subscription = self.clock.subscribe()?;
-        let now = self.clock.sample()?.now;
-        let target = if relative.is_forever() {
-            AbsoluteTime::NEVER
-        } else {
-            AbsoluteTime::from_micros(now.as_micros().saturating_add(relative.as_micros()))
-        };
-        // Relative ZERO enters the ready queue at this registration. A second
-        // source read could roll backwards and wrongly revoke that admission.
-        let registered_ready = relative == RelativeTime::ZERO && !target.is_never();
-        Ok(Delay::new(
-            self.clock.clone(),
-            target,
-            Some(subscription),
-            registered_ready,
-        ))
+        Delay::after(self.clock.clone(), relative)
     }
 }
 /// Persistent logical timer. Canceling its await drops no external request;
@@ -226,6 +202,45 @@ pub struct Delay {
     registered_ready: bool,
 }
 impl Delay {
+    /// Reserve a timer on this exact shared clock. A finite deadline already
+    /// due at registration stays ready across later clock rollback. Pending
+    /// timers rearm when testing skew or scheduled speedup changes the clock.
+    ///
+    /// # Errors
+    /// Returns actual clock/subscription failures, including listener capacity.
+    pub fn until(clock: SharedClock, target: AbsoluteTime) -> Result<Self, Error> {
+        let subscription = clock.subscribe()?;
+        let registered_ready = !target.is_never() && clock.sample()?.now >= target;
+        Ok(Self::new(
+            clock,
+            target,
+            Some(subscription),
+            registered_ready,
+        ))
+    }
+    /// Register a saturating logical now-plus-relative timer. FOREVER stays
+    /// pending; ZERO stays admitted as ready even if the clock rolls backward.
+    /// No scoped scheduler owner or independent clock is created.
+    ///
+    /// # Errors
+    /// Returns actual clock/subscription failures, including listener capacity.
+    pub fn after(clock: SharedClock, relative: RelativeTime) -> Result<Self, Error> {
+        let subscription = clock.subscribe()?;
+        let now = clock.sample()?.now;
+        let target = if relative.is_forever() {
+            AbsoluteTime::NEVER
+        } else {
+            AbsoluteTime::from_micros(now.as_micros().saturating_add(relative.as_micros()))
+        };
+        let registered_ready = relative == RelativeTime::ZERO && !target.is_never();
+        Ok(Self::new(
+            clock,
+            target,
+            Some(subscription),
+            registered_ready,
+        ))
+    }
+
     fn new(
         clock: SharedClock,
         target: AbsoluteTime,
@@ -549,28 +564,58 @@ impl Prepared {
         observer: Option<gnunet_config::diagnostic::BorrowedObserver<'_>>,
         task: impl for<'a> FnOnce(Main<'a>, Scope<'a>),
     ) -> Result<i32, Failure> {
-        let mut run = new_run(clock.clone(), capacity)?;
-        run.observer = observer;
-        run.speedup_attempt = true;
-        let tick = match clock.start_observed(self.main().config, observer) {
-            Ok(Start::Ready(ticket)) => Some(ticket),
-            Ok(Start::Disabled) | Err(Error::InvalidInput) => None,
-            Err(e) => return Err(e.into()),
-        };
-        run.tick = tick;
-        run.cleanup.set(tick);
-        let cleanup = Rc::clone(&run.cleanup);
-        let _stop = Stop {
-            clock: clock.clone(),
-            ticket: Rc::clone(&cleanup),
-            done: Rc::clone(&run.stop_done),
-            observer,
-        };
+        let (run, _stop) = speedup_run(clock, capacity, self.main().config, observer)?;
         resolver.connect(self.main().config.duplicate()?)?;
         task(self.main(), run.scope.clone());
         run.await?;
         Ok(1)
     }
+}
+
+fn speedup_run<'a>(
+    clock: SharedClock,
+    capacity: usize,
+    config: &gnunet_config::Configuration,
+    observer: Option<gnunet_config::diagnostic::BorrowedObserver<'a>>,
+) -> Result<(Run<'a>, Stop<'a>), Error> {
+    let mut run = new_run(clock.clone(), capacity)?;
+    run.observer = observer;
+    run.speedup_attempt = true;
+    let tick = match clock.start_observed(config, observer) {
+        Ok(Start::Ready(ticket)) => Some(ticket),
+        Ok(Start::Disabled) | Err(Error::InvalidInput) => None,
+        Err(e) => return Err(e),
+    };
+    run.tick = tick;
+    run.cleanup.set(tick);
+    let stop = Stop {
+        clock,
+        ticket: Rc::clone(&run.cleanup),
+        done: Rc::clone(&run.stop_done),
+        observer,
+    };
+    Ok((run, stop))
+}
+
+/// Run scoped tasks with the configured PROGRAM speedup policy. This is for
+/// entries that already own parsing, configuration and locale setup; it does
+/// not repeat those operations or implicitly acquire a Resolver. The original
+/// configuration transfers to initialization after speedup admission. All tasks
+/// and the exact pending speedup ticket retire on return, failure or cancellation.
+///
+/// # Errors
+/// Returns original clock/resource errors or the initialization error. Admitted
+/// futures are dropped on failure; external effects remain their owners' debt.
+pub async fn run_tasks_with_speedup<'a, E: From<Error>>(
+    clock: SharedClock,
+    capacity: usize,
+    config: gnunet_config::Configuration,
+    observer: Option<gnunet_config::diagnostic::BorrowedObserver<'a>>,
+    initialize: impl FnOnce(gnunet_config::Configuration, Scope<'a>) -> Result<(), E>,
+) -> Result<(), E> {
+    let (run, _stop) = speedup_run(clock, capacity, &config, observer)?;
+    initialize(config, run.scope.clone())?;
+    run.await.map_err(E::from)
 }
 
 fn new_run<'a>(clock: SharedClock, capacity: usize) -> Result<Run<'a>, Error> {

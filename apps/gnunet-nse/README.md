@@ -1,17 +1,39 @@
 # gnunet-nse
 
-Official installed command name `gnunet-nse` (Rust package `gnunet-nse-command` avoids the already existing pure NSE crate name). `-m, --monitor` monitors NSE estimates; default prints the first estimate and closes. Shared PROGRAM configuration/log/help/version options are retained; positional arguments are rejected.
+`gnunet-nse` prints the first estimate from the configured official NSE service.
+`-m/--monitor` continues until native stop or a configured finite monitor target.
+The Rust package is named `gnunet-nse-command` to distinguish the protocol crate.
 
-Output: server UTC timestamp, `#peers=2^logestimate`, `ld(#peers)=logestimate`, `stddev=deviation`, with six decimal places. NaN/inf are preserved as statistical observations, not a verified count. No PoW, private key or NSE daemon runs in this command. Original native source and output deadlines, partial cursors, finite backpressure, signals and shared Resolver/clock are owned by gnunet-nse-client-host.
+## Usage and configuration
 
-Local resource configuration example is in nse-client.conf. The default first-result budget is60s; -m monitors until signal unless MONITOR_TIMEOUT is explicitly configured. Every original source has finite INIT/partial/lifetime bounds. stdout is conventional synchronous stdio with one bounded original line; no inherited descriptor/status flags change. Synchronous write/flush OS duration remains an explicit blocking boundary, not a hard-cancellable network operation.
+```sh
+gnunet-nse -c gnunet.conf
+gnunet-nse -c gnunet.conf --monitor
+```
 
-Business, connection and Resolver diagnostics use the one PROGRAM-selected
-Logger and SharedClock, honoring `-L/-l`; estimate lines remain functional stdout. A selected-log failure wakes the original subscriber and stops it through actual
-source close and Resolver disconnect before returning. The first logging error
-is retained separately from the command and cleanup errors. A Resolver owner is
-established before task submission, so rejected or canceled scheduler tasks also
-retain their original disconnect error without a second cleanup attempt.
+Shared PROGRAM configuration, logging, help and version options apply; positional
+arguments are rejected. [nse-client.conf](nse-client.conf) documents local client
+budgets. The first-result budget defaults to 60 seconds. `[nse]` selects the
+actual local/TCP endpoint; this command performs no PoW or private-key work.
 
-Source presence and selected compiler checks do not establish native,
-model, crypto/PoW/key, recovery or official interoperability acceptance.
+Output contains the server UTC timestamp, `#peers=2^logestimate`,
+`ld(#peers)=logestimate` and deviation, with six decimal places. NaN/inf remain
+statistical observations rather than verified peer counts.
+
+## Native lifetime
+
+The command captures startup inheritance first and uses shared native parent and
+stop control on Unix and Windows. Its selected Logger and shared clock drive
+business/connection diagnostics; estimate lines remain stdout.
+
+A fixed-size output worker handles native text or exact redirected bytes.
+Network deadlines and stop observation remain live during output backpressure.
+PROGRAM cancellation retains the original write for independent bounded
+retirement, including actual transfer and flush/close errors. A deadline cannot
+force-cancel a blocked kernel call or roll back exposed bytes.
+
+Success requires a complete real estimate line. An explicit finite monitor target
+succeeds after complete output; incomplete output or runtime failure yields 1,
+and preparation errors yield 2. Source, output, logging and Resolver cleanup
+retain separate causes. See the [native API](../../adapters/nse-client-std/) for
+framing, retry, cancellation and resource contracts.

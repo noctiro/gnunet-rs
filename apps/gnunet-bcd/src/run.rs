@@ -2,17 +2,9 @@ use crate::{Failure, settings::Settings};
 use gnunet_bcd_host::{Event, Server, provider};
 use gnunet_program_host::{policy::Level, reporting::Reporter};
 use gnunet_service_runtime::clock::RuntimeClock;
-use gnunet_service_startup::{ControlReceiver, ParentControl};
-use std::{
-    future::poll_fn,
-    io,
-    sync::Arc,
-    task::{Context, Poll},
-};
-use tokio::{
-    net::TcpListener,
-    signal::unix::{Signal, SignalKind, signal},
-};
+use gnunet_service_startup::{ParentControl, StopSignals};
+use std::{future::poll_fn, sync::Arc, task::Poll};
+use tokio::net::TcpListener;
 #[derive(Debug)]
 struct Undrained(provider::Report);
 impl std::fmt::Display for Undrained {
@@ -25,61 +17,13 @@ impl std::error::Error for Undrained {
         self.0.cleanup_error.as_deref().map(|e| e as _)
     }
 }
-struct Signals {
-    parent: Option<ControlReceiver>,
-    interrupt: Signal,
-    terminate: Signal,
-}
-impl Signals {
-    fn new(parent: Option<ParentControl>) -> io::Result<Self> {
-        Ok(Self {
-            parent: parent
-                .map(|p| p.register().map_err(|e| e.error))
-                .transpose()?,
-            interrupt: signal(SignalKind::interrupt())?,
-            terminate: signal(SignalKind::terminate())?,
-        })
-    }
-    fn poll(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        if let Some(parent) = &mut self.parent {
-            match parent.poll_signal(cx) {
-                Poll::Ready(Ok(Some(n)))
-                    if i32::from(n) == libc_signal(false) || i32::from(n) == libc_signal(true) =>
-                {
-                    return Poll::Ready(Ok(()));
-                }
-                Poll::Ready(Ok(Some(_))) => cx.waker().wake_by_ref(),
-                Poll::Ready(Ok(None)) => self.parent = None,
-                Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
-                Poll::Pending => {}
-            }
-        }
-        for s in [&mut self.interrupt, &mut self.terminate] {
-            match s.poll_recv(cx) {
-                Poll::Ready(Some(())) => return Poll::Ready(Ok(())),
-                Poll::Ready(None) => {
-                    return Poll::Ready(Err(io::Error::other("original BCD signal stream ended")));
-                }
-                Poll::Pending => {}
-            }
-        }
-        Poll::Pending
-    }
-}
-fn libc_signal(term: bool) -> i32 {
-    if term {
-        SignalKind::terminate().as_raw_value()
-    } else {
-        SignalKind::interrupt().as_raw_value()
-    }
-}
 pub async fn run(
     settings: Settings,
     clock: Arc<dyn RuntimeClock>,
     reporter: Reporter,
     parent: Option<ParentControl>,
 ) -> Result<(), Failure> {
-    let mut signals = Signals::new(parent)?;
+    let mut signals = StopSignals::for_client(parent)?;
     // MHD's normal BCD entry explicitly requests dual stack. Do not depend on
     // a platform's IPV6_V6ONLY default, and never silently replace a selected
     // address after bind/listen failure.
@@ -116,7 +60,7 @@ pub async fn run(
                 server.request_shutdown();
             }
             if !server.is_stopped() {
-                match signals.poll(cx) {
+                match signals.poll_stop(cx) {
                     Poll::Ready(Ok(())) => server.request_shutdown(),
                     Poll::Ready(Err(e)) => {
                         failure.get_or_insert_with(|| Box::new(e));

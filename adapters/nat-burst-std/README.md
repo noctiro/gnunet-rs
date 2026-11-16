@@ -4,7 +4,7 @@
 
 The default noalloc `gnunet_nat::burst` module supplies the protocol computations: exact 12-byte `BurstSync` (u64 BE RTT, native enum32) and 36-byte `BurstMessage` (public peer32, native unsigned32 local port), explicit producer `Endian`, and the official finite RTT/difference rule. There is no GNUnet message header, RID, ACK, authentication, or wire cancellation. Both RTTs must be finite and differ by strictly less than 150ms; remote ready exactly 1 selects twice the local RTT, other raw values select four times it. Multiplication saturates in the pure rule, while the native owner rejects a delay that does not fit the original finite lifetime.
 
-## callable interface
+## Callable interface
 
 Create a stable caller `Instance`, retain a separately owned `Arc<tokio::net::UdpSocket>` for the already-bound, unconnected default socket, then call `Burst::new(instance, default_clone, Parameters, Limits, clock)`. Parameters freeze the remote IP/default port, initialized public peer bytes, both producer byte orders, original RTT/sync message, and absolute logical `until`. The pinned C default peer bytes are zero; callers can explicitly pass `[0; 32]`. Every Rust packet initializes all 36 bytes. No identity lookup, key, entropy, resolver, or provider is implicit.
 
@@ -28,16 +28,15 @@ The immutable native hard bound is computed once from the original logical deadl
 
 `end()` retains the original cause, distinguishing logical deadline, immutable hard bound, and initial send bound; I/O errors and unexpected positive byte counts are retained independently of cleanup. Rust socket destruction does not expose a close errno. End therefore reports retirement of owned handles without fabricating a kernel close ACK. A caller's separately owned default socket is never closed by this adapter.
 
-## Deliberate fixes and qualification
+## Wire compatibility
 
 The pinned utility uses a global socket list, a freed scan continuation, an escaped stack sockaddr, uninitialized peer bytes in scan packets, and an ineffective maximum-socket check. These internal defects are not part of the public wire contract. This implementation owns descriptors and addresses, initializes every byte, enforces the live cap, and checks the requested remote IP. The public datagram formats and synchronization arithmetic are preserved.
 
-One public framing/readiness/allocation model passed; it performs no socket,
-packet, native provider or crypto work and grants no traversal credit. Native admission
-anchors its hard bound before clock subscription/sampling; post-sample/default
-input and post-recv scan checks cannot revive an expired original socket. Actual interoperability, NAT traversal effectiveness and
-full-node integration remain unqualified. This utility is independent of the
-NAT registration/NATauto client and service. Selection is unauthenticated.
+Native admission anchors its hard bound before clock subscription/sampling;
+post-sample/default input and post-recv scan checks cannot revive an expired
+original socket. This utility is independent of the NAT registration and
+autoconfiguration client and service. Selection is unauthenticated. Open runtime
+coverage is tracked in the central [implementation status](../../IMPLEMENTATION_STATUS.md).
 
 ## Already-synchronized communicator entry
 
@@ -50,5 +49,13 @@ the caller's original `hard`, captured before canonical clock/preparation work. 
 
 `poll_native_guard` only retires expired native descriptors and registers their
 original alarms; it performs no socket read/send or canonical clock request. `into_end` consumes the owner and transfers its terminal cause and counters. An untransferred selection is dropped with its descriptor; callers use
-`take_selection` first when that exact socket must continue in the communicator. Default-socket reads remain exclusively in the original external dispatcher. These additions pass affected macOS/Linux strict library/binary checks and three
-architecture guards with the normal UDP composition.
+`take_selection` first when that exact socket must continue in the communicator.
+Default-socket reads remain exclusively in the original external dispatcher.
+
+## Native sockets
+
+The shared driver is available on Linux, macOS, FreeBSD and Windows. Newly bound
+Windows scan sockets use exclusive binding before admission and suppress UDP
+connection-reset receives on that original handle. The caller retains the
+default socket's binding and error-policy responsibility. Isolated datagram receive errors consume the bounded poll budget and
+remain separate from source loss, peer attribution and successful selection.

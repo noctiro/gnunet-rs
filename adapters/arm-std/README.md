@@ -1,76 +1,57 @@
 # GNUnet ARM client host
 
-This std adapter drives the existing borrowed official ARM client and monitor
-cores through persistent Unix/TCP streams. It uses the public CLIENT
-transport facade, preserves partial RX/TX and connection futures when a drive
-future is canceled, and retires original callback authority without replaying
-already queued wire requests. All eight public ARM operations have Rust
-entry points; `inventory.json` records concrete branch witnesses and remaining
-validation, rather than treating this as complete ARM daemon/CLI/testing support.
+The ARM host drives the borrowed ARM client and monitor cores through the shared
+[CLIENT transport](../client-std/README.md). Linux, macOS and FreeBSD use the Unix
+native backend; Windows uses its native socket, process and startup backends.
+GNUnet messages and operation state remain in the platform-independent cores.
 
-`ClientHost` owns its stream, RX/TX cursor and startup-signal read ends. `LocalLauncher` borrows a caller-owned `ChildRegistry`. Drop/cancel/disconnect of
-the host closes its own I/O and read ends while leaving that same registry and
-original PID wait authority with the caller. Callers must retain and drain the
-registry, and consume `take_reaped()` observations to release bounded metadata
-credits. No daemon is implicitly killed, no unbounded wait runs in Drop, and no
-background reaper or production `waitpid(-1)` exists.
+## Public interfaces
 
-Local start is explicit asynchronous Rust decomposition: request admission
-returns an ID, drive performs original pipe/config/command/spawn work, and
-callbacks use the core's original readability/EOF/60-second semantics. Actual
-helper creation is distinct from target exec success and service readiness. A
-missing helper yields setup failure; a created helper whose target has a
-missing interpreter exits 1 while the original public result remains Starting. The dedicated helper calls native execvp after restoring sampled SIGPIPE and
-closed/CLOEXEC stdio, without libgnunet FFI or private network protocol.
+- `ClientHost` drives control requests, connections and original callbacks.
+- `MonitorHost` owns an independent STATUS subscription.
+- `LocalLauncher` prepares and starts local ARM using a caller-owned
+  `ChildRegistry`; remote service requests continue through ordinary ARM IPC.
+- `Clock` subscribes to the caller-selected shared runtime clock.
 
-All private spawn source and destination descriptors are distinct live owners
-above fd 2. Per-call POSIX return codes are checked as 0 versus positive errno;
-only initialized file actions are destroyed. Original stdio and parent process
-environment/cwd/signal dispositions are not mutated by production launch. The
-small unsafe boundaries are scoped and document native ownership/ABI premises. The helper entrypoint is unsafe because its early fresh-exec stdio ownership
-contract cannot be established by a normal library call.
+See [API and ownership](API.md), [live configuration](LIVE_CONFIGURATION.md) and
+[native launch policy](PROCESS.md). The repository [architecture](../../ARCHITECTURE.md)
+defines the shared wire and native boundaries.
 
-`API.md` describes the current interface. Tools use an
-unchanged official v0.29.1 C source/build receipt and private peers/children. No
-system accounts, host configuration files, system service or public network are
-modified. These proofs are supporting client-host observations; global owner
-and daemon/testing completion remain pending.
+## Configuration and use
 
-The low-stdio matrix explicitly records a defined official C defect: unsigned
-`max_fd` combined with signed `target_fd=-1` wraps the source-relocation start to
-0; subsequent stdio mapping can replace readiness with /dev/null. Rust retains a
-nonblocking FIFO and restores inherited closed slots. The observed 62
-matches and 18 differences in 80 profiles are distinct assertions. See the
-source-bound final report for exact receipts and input versions.
+`ClientHost::connect` selects the endpoint from `[arm]` using normal CLIENT
+configuration. `connect_live` retains a shared configuration; `connect_unix`
+selects an explicit native local endpoint. Monitor construction follows the same
+selection rules. The [CLI](../../apps/gnunet-arm/README.md) is a normal consumer.
 
-Build/test through this workspace's pinned toolchain and lock. The standalone
-verifier uses a fresh external target and at most 2 jobs:
+Local launch reads `BINARY`, `PREFIX`, `OPTIONS`, `CONFIG` and the existing
+`TESTING` daemonization values. Unix launch takes the explicit fresh-exec helper
+path. Windows launch takes native limits and needs no helper executable.
+`with_environment` also takes an explicit environment/cwd snapshot and libexec
+cache for isolated embeddings.
 
-```sh
-python3 -B adapters/arm-std/tools/verify.py \
-  --source /absolute/pinned-gnunet \
-  --reference /absolute/normal-arm-build/build-result.json \
-  --output /absolute/fresh-proof-output
-```
+## Cancellation and resources
 
-The ignored test is a real 65-second owned-child lifecycle test, rather than an
-accelerated clock. The caller supplies helper installation/discovery and
-retains the registry after dropping the host. ECHILD immediately revokes a lost
-numeric PID entry and returns the error, without inventing a reap result
-or retrying that old PID. Full service/CLI/testing acceptance remains pending.
+Dropping a drive future preserves the original stream, partial RX/TX, retry and
+operation state. Canceling a callback does not retract an already queued remote
+request. Disconnect closes that owner's physical IPC and suppresses its callback
+authority without signaling a launched process.
 
-## Shared process and live configuration
+The launcher borrows the caller's registry; the caller retains original-process
+wait authority after dropping the host. Explicitly drain children and consume
+`take_reaped()` receipts to release bounded completion credits. Drop performs no
+termination, unbounded wait or background reaping.
 
-The launcher delegates to the single std process owner documented in
-[PROCESS.md](PROCESS.md). It retains independently bounded original-child
-wait/control authority and supports a filename distinct from argv0. The shared
-runtime owns readiness and native spawn; ARM contains no second implementation. `adapters/service-runtime/tools/process_verify.py` stages the complete workspace
-source and runs the original client matrix, generic native process pairs, finite
-source write seams and a deliberately broken descriptor-staging runtime control.
+Windows bootstrap drivers remain with the launcher when a callback is canceled
+or disconnected. `settle_startups` completes remaining handshakes without
+waiting for a live service to exit; `drain_children` also drives original kernel
+exit waits. Dropping the launcher closes unfinished bootstrap endpoints; retain
+it when admitted children still require startup progress.
 
-`connect_live` and `start_live` borrow a shared `LiveConfiguration`: new MQ creation
-samples TCP settings, each new Unix attempt samples its current Unix path, and
-local start samples configuration when the original effect begins. Replacing configuration leaves an active connection, retained attempt, queued
-bytes and admitted child unchanged. The additional source-bound verifier is
-`tools/live_verify.py`. The complete shared resolver broker and PROGRAM/daemon/
-testing/native utility obligations remain pending.
+## Native verification
+
+Unix C/descriptor fixtures live under `examples/*/unix.rs` and Unix-gated suites.
+The Windows `windows_client` executable exercises actual native child creation,
+path arguments, qualified readiness and cancellation ownership. Its Windows
+code must execute on a Windows runner; cross-compilation is not a native run.
+Source references and interoperability tools are described in [UPSTREAM.md](UPSTREAM.md).

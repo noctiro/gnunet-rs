@@ -1,11 +1,69 @@
-# PT business core (P1)
+# PT protocol core
 
-This is alloc-bounded protocol-translation business code plus default-noalloc packet/advertisement codecs, not a full native daemon yet. P2 will compose it with native DNS/VPN/CADET owners. It owns original interception sources/callbacks, sequential VPN allocations, fixed DNS transformation plans, signed DNS-exit advertisements, finite original DHT discovery tokens, CADET opening/credit/unique per-channel DNS IDs/send/reply phases, alternate-channel retry, bounded tables/bytes, expiration, and original callback queue/whole-write retirement. Empty or failed allocation drops the original callback. Source loss never reassigns an opaque service ID to reconnect.
+This crate implements GNUnet DNS translation and DNS-over-CADET state machines.
+Packet and advertisement codecs work without allocation; the `alloc` feature
+adds the bounded business owner. The [native host](../../adapters/pt-std/)
+connects it to DNS, VPN, DHT and CADET clients.
 
-Every answer/authority/additional record is scanned independently. IPv4 and IPv6 record widths are checked. Replacement keeps packet size and unknown bytes/compression intact, clamps the rewritten record's original TTL to floor(original VPN lease remaining seconds), and clears AD. Complete typed original/transformed question, owner and non-address RDATA comparisons reject compression aliases that would silently change another name. Existing RRSIG bytes remain unchanged: modified RRsets no longer validate their old signatures and PT does not assert DNSSEC validation/re-signing. Original input never mutates; failed output is unpublished. Queries/replies and source IDs retain original byte representations.
+## Public interfaces
 
-The advertising signature is verified using existing Rust EdDSA over official size48/purpose11/expiration/peer. CADET port is SHA512("exit-dns"), DHT key SHA512("dns"), type10, replication1, options1, empty xquery. There is no private discovery protocol. DHT GET is explicitly caller-owned and must return its original Discovery token/query/type. The host supplies the DHT binding. No static fake exit or host/GNS DNS substitute is accepted. Finite expiry, native hard bounds and original DHT/CADET operation receipts must be enforced by P2, not inferred from this pure core.
+- `packet` validates DNS packets and transforms selected A/AAAA records.
+- `exit` verifies signed advertisements and encodes CADET DNS messages 193/194.
+- `core::Core` retains original DNS callbacks, allocation jobs, discovery tokens,
+  channels, attempts, deadlines and reply-write obligations.
 
-application IP forwarding, address leases, TUN devices/routes/helpers and exit policy live in the already admitted VPN/EXIT service. PT's official Meson builds no PT-owned helper, and its active C daemon includes/calls DNS/VPN/CADET/DHT, not GNS. Native DNS interception service runtime remains an external dependency too. This P1 is not a claim that full PT/transparent host interception is runnable or interoperable-accepted.
+Create one caller-owned identity domain and configure explicit resource limits:
 
-No private key or stopped owner/directory was accessed.
+```rust
+use gnunet_pt::{Error, core::{Core, Instance, Limits}, packet::Families};
+
+fn main() -> Result<(), Error> {
+    let instance = Instance::new();
+    let _core = Core::new(&instance, Limits::default(), Families {
+        ipv4: true,
+        ipv6: true,
+    })?;
+    Ok(())
+}
+```
+
+An attachment represents an observed native DNS connection. Callers supply its
+packets and original finite deadlines, execute `Work` through the native ports
+and correlate completion using the returned opaque tokens. Source replacement
+retires old requests even when service IDs repeat.
+
+`Core::next_wakeup(now)` includes future request/discovery/exit deadlines and
+fixed channel-retry targets. Already due work remains available through
+`next_work`; an old target cannot hide a later wakeup. Prepared DNS decisions
+precede new allocation, channel or query work.
+
+## DNS translation
+
+POST scans answer, authority and additional sections. Each selected A/AAAA record
+requires an original same-family VPN allocation. Admission reserves both input
+and full reply capacity before exposing allocation work; refusal creates no job.
+Results fill reserved replacement slots. Final transformation runs once and
+validates all compression aliases before exposing an immutable answer. A failed
+allocation or invalid transformation drops the original callback.
+
+Rewritten native replies use zero TTLs, clear AD and preserve unrelated bytes.
+The pure `packet::rewrite` API instead clamps TTLs to the remaining VPN lease.
+Original input is immutable. Existing RRSIG bytes cannot authenticate changed
+RRsets. Queued output retains its memory until the original write or source loss.
+
+## DNS exit discovery
+
+Signed advertisements use official purpose 11 and bind expiration to the peer.
+Discovery uses SHA512("dns"), DHT block type 10, replication 1, options 1 and an
+empty extended query. CADET uses SHA512("exit-dns"). Each channel has unique DNS
+IDs, bounded attempts, response correlation and explicit send/receive credit.
+
+PRE admission reserves the original query plus one buffer large enough for both
+the encoded query and the configured maximum DNS reply. Query transmission,
+channel replacement and reply acceptance reuse this reservation. A valid reply
+needs no allocation or extra payload budget. The reservation is released only by
+the original reply write or DNS-source retirement; cancellation alone retains it.
+
+The host owns actual lookups, connections, native hard deadlines and cleanup.
+VPN/EXIT own address leases, forwarding, devices and routes. Protocol compatibility
+and release acceptance follow the [central contract](../../spec/gnunet/compatibility.md).

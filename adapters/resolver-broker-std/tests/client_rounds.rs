@@ -22,10 +22,13 @@ use std::{
 use support::{Dir, Result, cfg, runtime, setup};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::{TcpListener, UnixListener},
+    net::TcpListener,
     time::{Instant, timeout},
 };
 
+#[path = "support/local.rs"]
+mod local;
+use local::Listener as LocalListener;
 async fn connected<const R: usize, const N: usize>(
     driver: &mut Driver<R, N>,
     future: impl Future<Output = std::io::Result<Connection>>,
@@ -60,14 +63,14 @@ fn combined_endpoints_use_unix_on_even_rounds_tcp_on_odd_and_fallback_after_real
 -> Result {
     runtime()?.block_on(async {
         let dir = Dir::new()?;
-        let path = dir.socket("service");
-        let unix = UnixListener::bind(&path)?;
+        let path = dir.0.join("service");
+        let unix = LocalListener::bind(&path).await?;
         let tcp = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
         let mut service = Configuration::default();
         service.set_value(
             b"owned",
             b"UNIXPATH",
-            Some(path.as_os_str().as_encoded_bytes()),
+            Some(&gnunet_native::os_bytes::encode(path.as_os_str())),
         )?;
         service.set_value(b"owned", b"HOSTNAME", Some(b"127.0.0.1"))?;
         service.set_value(
@@ -104,7 +107,10 @@ fn combined_endpoints_use_unix_on_even_rounds_tcp_on_odd_and_fallback_after_real
             assert_eq!(context.pending_requests()?, 0);
         }
         drop(unix);
-        std::fs::remove_file(path)?;
+        assert!(
+            !path.exists(),
+            "original local listener path was not retired"
+        );
         let mut stream = connected(&mut driver, endpoint.attempt(2)).await?;
         stream.write_all(b"f").await?;
         let (mut peer, _) = timeout(Duration::from_secs(1), tcp.accept()).await??;
@@ -126,7 +132,7 @@ fn unreachable_valid_resolver_expires_the_original_five_second_client_lookup() -
         // A present UNIXPATH is source-admissible, even though its own listener
         // does not exist. Do not confuse this with no-handle admission failure.
         let (context, mut driver) =
-            setup::<4, 128>(LiveConfiguration::new(cfg(&dir.socket("missing"))?))?;
+            setup::<4, 128>(LiveConfiguration::new(cfg(&dir.0.join("missing"))?))?;
         let mut service = Configuration::default();
         service.set_value(b"owned", b"HOSTNAME", Some(b"unreachable-owned.invalid"))?;
         service.set_value(b"owned", b"PORT", Some(b"1"))?;

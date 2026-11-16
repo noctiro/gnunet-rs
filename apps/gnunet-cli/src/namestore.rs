@@ -19,7 +19,6 @@ use std::{
     ffi::{OsStr, OsString},
     future::{Future, poll_fn},
     io::{self, Write},
-    os::unix::ffi::OsStrExt,
     path::PathBuf,
     pin::Pin,
     task::Poll,
@@ -67,7 +66,7 @@ struct Command {
     limits: Limits,
 }
 fn bytes(value: &OsStr, maximum: usize, what: &str) -> Result<Vec<u8>> {
-    let value = value.as_bytes();
+    let value = crate::argument::wire_bytes(value)?;
     if value.len() > maximum || value.contains(&0) {
         return Err(format!("invalid {what}: embedded NUL or size above {maximum} bytes").into());
     }

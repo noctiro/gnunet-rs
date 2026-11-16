@@ -1,7 +1,7 @@
 //! Original TRANSPORT application1300/1301/1302 source. Hints are candidates,
 //! never address authentication, connection success or a service ACK.
 #![forbid(unsafe_code)]
-#![cfg(unix)]
+#![cfg(any(unix, windows))]
 mod budget;
 /// Actual public TRANSPORT monitor/link listing owner, separate from hints.
 pub mod observation;

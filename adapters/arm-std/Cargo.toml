@@ -18,6 +18,9 @@ gnunet-client-host.workspace = true
 gnunet-service-startup = { path = "../service-startup" }
 gnunet-service-runtime.workspace = true
 tokio = { workspace = true, features = ["rt", "net", "time", "io-util", "signal", "sync"] }
+gnunet-native.workspace = true
+
+[target.'cfg(unix)'.dev-dependencies]
 nix = { workspace = true, features = ["process", "signal"] }
 libc.workspace = true
 
@@ -25,6 +28,10 @@ libc.workspace = true
 gnunet-resolver-broker.workspace = true
 socket2.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
+
+[[test]]
+name = "windows_client"
+harness = false
 
 [lints]
 workspace = true

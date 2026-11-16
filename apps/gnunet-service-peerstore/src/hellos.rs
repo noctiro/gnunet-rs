@@ -11,7 +11,7 @@ pub(crate) fn import_hellos(
     wal: &mut Wal,
     path: &Path,
     maximum: usize,
-    reports: &Reports<'_, '_>,
+    reports: &Reports,
 ) -> Result<(), Failure> {
     let entries = match fs::read_dir(path) {
         Ok(e) => e,

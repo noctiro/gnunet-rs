@@ -20,10 +20,17 @@ fn ring<'a>(signed: &'a crypto::SignedRing) -> Message<'a> {
 
 #[test]
 fn identity_cut_keeps_each_incoming_rings_original_target() -> Result<(), Error> {
+    incoming_targets(false)
+}
+#[test]
+fn observer_replacement_keeps_each_incoming_rings_original_target() -> Result<(), Error> {
+    incoming_targets(true)
+}
+fn incoming_targets(replaced: bool) -> Result<(), Error> {
     for kind in [KeyType::Ecdsa, KeyType::Eddsa] {
         let mut instance = Instance::new();
         let a = Identity::new([1; 32], 1)?;
-        let b = Identity::new([2; 32], 1)?;
+        let b = Identity::new([2; 32], if replaced { 2 } else { 1 })?;
         let mut s = Session::new(&mut instance, a, Limits::default(), 10)?;
         let port = [9; 64];
         let source = Source::new(3)?;
@@ -41,7 +48,11 @@ fn identity_cut_keeps_each_incoming_rings_original_target() -> Result<(), Error>
         s.attach_port(source)?;
         s.complete_effect(open, Completion::Written, 10)?;
         let old = s.incoming(&a, source, source, [8; 32], 11)?;
-        s.rebind_identity(&a, b)?;
+        if replaced {
+            s.replace_identity_source(&a, b)?;
+        } else {
+            s.rebind_identity(&a, b)?;
+        }
         let new = s.incoming(&b, source, source, [8; 32], 12)?;
         let key = caller(kind)?;
         let for_a = crypto::SignedRing::sign(&key, &port, a.peer(), 500)?;
@@ -61,21 +72,33 @@ fn identity_cut_keeps_each_incoming_rings_original_target() -> Result<(), Error>
         check(s.cid(old)? != s.cid(new)?)?;
         // Returning to A does not change a channel that was accepted under B.
         let awaiting_b = s.incoming(&b, source, source, [8; 32], 15)?;
-        s.rebind_identity(&b, a)?;
+        let returned = Identity::new(*a.peer(), if replaced { 3 } else { 1 })?;
+        if replaced {
+            s.replace_identity_source(&b, returned)?;
+        } else {
+            s.rebind_identity(&b, returned)?;
+        }
         check(matches!(
-            s.receive(&a, awaiting_b, source, 0, ring(&for_a), 16, 100),
+            s.receive(&returned, awaiting_b, source, 0, ring(&for_a), 16, 100),
             Err(Error::Authentication)
         ))?;
-        s.receive(&a, awaiting_b, source, 0, ring(&for_b), 16, 100)?;
+        s.receive(&returned, awaiting_b, source, 0, ring(&for_b), 16, 100)?;
     }
     Ok(())
 }
 
 #[test]
 fn identity_cut_keeps_original_admitted_open_ring_bytes_and_bounds() -> Result<(), Error> {
+    pending_ring(false)
+}
+#[test]
+fn observer_replacement_keeps_original_admitted_open_ring_bytes_and_bounds() -> Result<(), Error> {
+    pending_ring(true)
+}
+fn pending_ring(replaced: bool) -> Result<(), Error> {
     let mut instance = Instance::new();
     let a = Identity::new([1; 32], 1)?;
-    let b = Identity::new([2; 32], 1)?;
+    let b = Identity::new([2; 32], if replaced { 2 } else { 1 })?;
     let mut s = Session::new(&mut instance, a, Limits::default(), 10)?;
     let key = caller(KeyType::Eddsa)?;
     let target = [8; 32];
@@ -106,7 +129,11 @@ fn identity_cut_keeps_original_admitted_open_ring_bytes_and_bounds() -> Result<(
             _ => None,
         })
         .ok_or(Error::NotReady)?;
-    s.rebind_identity(&a, b)?;
+    if replaced {
+        s.replace_identity_source(&a, b)?;
+    } else {
+        s.rebind_identity(&a, b)?;
+    }
     check(s.pending_effects() == 2 && s.call(call)?.opening)?;
     let original_open = s.effect().ok_or(Error::NotReady)?;
     check(
@@ -148,10 +175,18 @@ fn physical_source_replacement_or_closing_cannot_rebind() -> Result<(), Error> {
         Err(Error::StaleGeneration)
     ))?;
     check(s.identity() == a && s.pending_effects() == 0)?;
+    check(matches!(
+        s.replace_identity_source(&a, Identity::new([2; 32], 1)?),
+        Err(Error::StaleGeneration)
+    ))?;
     s.cancel(Error::Cancelled, 11)?;
     let pending = s.pending_effects();
     check(matches!(
         s.rebind_identity(&a, Identity::new([2; 32], 1)?),
+        Err(Error::Closed)
+    ))?;
+    check(matches!(
+        s.replace_identity_source(&a, Identity::new([2; 32], 2)?),
         Err(Error::Closed)
     ))?;
     check(s.identity() == a && s.pending_effects() == pending)

@@ -1,6 +1,6 @@
 //! Real native advertisements, persistent mandatory matches and source reauthentication.
 //! Local Rust peers; this is not original-C or P2P acceptance.
-#![cfg(all(unix, feature = "service"))]
+#![cfg(all(any(unix, windows), feature = "service"))]
 #![expect(
     clippy::panic_in_result_fn,
     reason = "Fallible task tests assert genuine advertisements, history and refusal boundaries"
@@ -18,43 +18,24 @@ use gnunet_fs_host::{
 use gnunet_types::{AbsoluteTime, Error as ProtocolError};
 use gnunet_wire::official::fs::{BlockType, ClientPut, Request, Response};
 use std::{
-    fs, io,
-    path::PathBuf,
+    io,
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, Ordering},
     },
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::Duration,
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::{UnixListener, UnixStream},
     time::{sleep, timeout},
 };
+#[path = "support/local_peer.rs"]
+mod local_peer;
+use gnunet_service_runtime::local::Stream;
+use local_peer::{Listener, Temporary};
+
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 const WAIT: Duration = Duration::from_secs(5);
-struct Temporary(PathBuf);
-impl Temporary {
-    fn new() -> io::Result<Self> {
-        static NEXT: AtomicU64 = AtomicU64::new(1);
-        let stamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(io::Error::other)?
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "gnunet-persistent-search-{}-{stamp}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        fs::create_dir(&path)?;
-        Ok(Self(path))
-    }
-}
-impl Drop for Temporary {
-    fn drop(&mut self) {
-        let _cleanup = fs::remove_dir_all(&self.0);
-    }
-}
 fn runtime() -> io::Result<tokio::runtime::Runtime> {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -76,7 +57,7 @@ fn deadline(source: &ipc::EndpointSource) -> Result<AbsoluteTime, ProtocolError>
         source.clock().sample()?.now.as_micros() + 4_000_000,
     ))
 }
-async fn search_query(stream: &mut UnixStream) -> TestResult<[u8; 64]> {
+async fn search_query(stream: &mut Stream) -> TestResult<[u8; 64]> {
     let mut header = [0; 4];
     stream.read_exact(&mut header).await?;
     let length = usize::from(u16::from_be_bytes([header[0], header[1]]));
@@ -93,7 +74,7 @@ async fn search_query(stream: &mut UnixStream) -> TestResult<[u8; 64]> {
     assert_eq!(search.options, 1);
     Ok(search.query)
 }
-async fn reply(stream: &mut UnixStream, wire: &[u8], expiration: AbsoluteTime) -> TestResult {
+async fn reply(stream: &mut Stream, wire: &[u8], expiration: AbsoluteTime) -> TestResult {
     let response = Response::Put(ClientPut {
         block_type: BlockType::UBLOCK,
         expiration,
@@ -107,16 +88,12 @@ async fn reply(stream: &mut UnixStream, wire: &[u8], expiration: AbsoluteTime) -
     stream.write_all(&frame).await?;
     Ok(())
 }
-async fn closed(stream: &mut UnixStream) -> TestResult {
+async fn closed(stream: &mut Stream) -> TestResult {
     let mut end = [0];
     assert_eq!(stream.read(&mut end).await?, 0);
     Ok(())
 }
-async fn pair(
-    listener: &UnixListener,
-    a: [u8; 64],
-    b: [u8; 64],
-) -> TestResult<(UnixStream, UnixStream)> {
+async fn pair(listener: &Listener, a: [u8; 64], b: [u8; 64]) -> TestResult<(Stream, Stream)> {
     let (mut first, _) = listener.accept().await?;
     let first_query = search_query(&mut first).await?;
     let (mut second, _) = listener.accept().await?;
@@ -180,7 +157,7 @@ fn namespace(
 fn required_keyword_pending_match_survives_reopen_and_duplicate_hit_adds_no_raw_record()
 -> TestResult {
     runtime()?.block_on(async {
-        let temporary=Temporary::new()?;let socket=temporary.0.join("fs.sock");let listener=UnixListener::bind(&socket)?;
+        let temporary=Temporary::new()?;let socket=temporary.0.join("fs.sock");let listener=Listener::bind(&socket).await?;
         let source=ipc::EndpointSource::unix(socket.clone());let policy=options(&source)?;
         let terms=[Keyword::new(b"required-a",true)?,Keyword::new(b"required-b",true)?];
         let query=Uri::Keywords(Keywords::new(&terms)?);
@@ -244,7 +221,7 @@ fn required_keyword_pending_match_survives_reopen_and_duplicate_hit_adds_no_raw_
 fn expired_sks_history_replays_without_endpoint_and_fresh_crc_cannot_forge_ciphertext() -> TestResult
 {
     runtime()?.block_on(async {
-        let temporary=Temporary::new()?;let socket=temporary.0.join("fs.sock");let listener=UnixListener::bind(&socket)?;
+        let temporary=Temporary::new()?;let socket=temporary.0.join("fs.sock");let listener=Listener::bind(&socket).await?;
         let source=ipc::EndpointSource::unix(socket.clone());let policy=options(&source)?;
         let secret=EdkeySecret::from_seed([0x58;32]);let namespace_key=secret.public_key();
         let query=Uri::Namespace(Namespace::new(EddsaPublicKey::from_bytes(namespace_key),b"root")?);
@@ -322,7 +299,7 @@ fn expired_sks_history_replays_without_endpoint_and_fresh_crc_cannot_forge_ciphe
 fn dropping_a_live_task_closes_its_original_mq_without_recording_a_settled_pause() -> TestResult {
     runtime()?.block_on(async {
         let temporary=Temporary::new()?;
-        let socket=temporary.0.join("quiet.sock");let listener=UnixListener::bind(&socket)?;
+        let socket=temporary.0.join("quiet.sock");let listener=Listener::bind(&socket).await?;
         let source=ipc::EndpointSource::unix(socket);
         let terms=[Keyword::new(b"drop-original",true)?];
         let query=Uri::Keywords(Keywords::new(&terms)?);

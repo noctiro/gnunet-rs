@@ -6,10 +6,8 @@ use std::{
     cell::Cell,
     error::Error,
     ffi::{OsStr, OsString},
-    fs::File,
     future::{Future, poll_fn},
-    io::{self, Read, Write},
-    os::unix::ffi::OsStrExt,
+    io::{self, Write},
     path::PathBuf,
     rc::Rc,
     task::Poll,
@@ -44,7 +42,7 @@ fn text(s: &OsStr) -> Result<&str> {
         .ok_or_else(|| "DID options/JSON/identifier must be UTF-8".into())
 }
 fn copy(value: &OsStr, maximum: usize) -> Result<Zeroizing<Vec<u8>>> {
-    let bytes = value.as_bytes();
+    let bytes = crate::argument::wire_bytes(value)?;
     if bytes.len() > maximum || bytes.contains(&0) {
         return Err("DID input exceeds its byte bound or contains NUL".into());
     }
@@ -188,35 +186,19 @@ impl<W: Write> Output<'_, W> {
         Ok(())
     }
 }
-// Explicit lazy OS entropy: opened only if real IDENTITY lookup missed and the
-// caller requested automatic creation. No existing/new identity file is opened.
+// Entropy is requested only when automatic ego creation actually needs a key.
 struct OsEntropy {
-    device: Option<File>,
     failure: Option<io::Error>,
 }
 impl Entropy for OsEntropy {
     fn fill(&mut self, out: &mut [u8]) -> std::result::Result<(), Fault> {
-        if self.device.is_none() {
-            match File::open("/dev/urandom") {
-                Ok(file) => self.device = Some(file),
-                Err(error) => {
-                    out.fill(0);
-                    self.failure = Some(error);
-                    return Err(Fault::EntropyUnavailable);
-                }
+        match gnunet_native::entropy::fill(out) {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                self.failure.get_or_insert(error);
+                Err(Fault::EntropyUnavailable)
             }
         }
-        let result = self
-            .device
-            .as_mut()
-            .ok_or(Fault::EntropyUnavailable)?
-            .read_exact(out);
-        if let Err(error) = result {
-            out.fill(0);
-            self.failure = Some(error);
-            return Err(Fault::EntropyUnavailable);
-        }
-        Ok(())
     }
 }
 fn did_text(did: host::did::Did) -> Result<String> {
@@ -296,10 +278,7 @@ async fn run_command(command: Command, out: &mut impl Write) -> Result<()> {
         command.limits,
     )?;
     let deadline = client.deadline(command.timeout)?;
-    let mut entropy = OsEntropy {
-        device: None,
-        failure: None,
-    };
+    let mut entropy = OsEntropy { failure: None };
     let mut output = Output {
         writer: out,
         remaining: command.output_bytes,

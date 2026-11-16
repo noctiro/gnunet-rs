@@ -1,10 +1,9 @@
 //! Persisted monotime reservations are explicit disk work, separate from native
 //! signing/CORE polling. A Range is a non-Clone, checked in-memory reservation;
 //! creating it requires its entire high-water to be durably committed first.
-#[cfg(unix)]
 mod disk;
-#[cfg(unix)]
 pub use disk::{Error, Outcome, Stage, Store};
+pub use gnunet_native::DirectorySync;
 use gnunet_types::Error as ProtocolError;
 use std::sync::{
     Arc,
@@ -13,8 +12,7 @@ use std::sync::{
 /// Explicit per-open reservation domain. All remaining ranges retain the actual
 /// writer fence and share an in-memory issued frontier; this is never global.
 pub(super) struct Lease {
-    #[cfg(unix)]
-    pub(super) guard: std::fs::File,
+    pub(super) guard: gnunet_native::filesystem::ExclusiveFile,
     pub(super) issued: AtomicU64,
 }
 
@@ -26,8 +24,16 @@ pub struct Range {
     next: u64,
     left: u64,
     lease: Option<Arc<Lease>>,
+    directory_sync: DirectorySync,
 }
 impl Range {
+    /// Actual directory naming observation of this committed reservation.
+    /// Windows uses a post-replacement file metadata flush and reports
+    /// Unavailable for the distinct directory barrier.
+    #[must_use]
+    pub const fn directory_sync(&self) -> DirectorySync {
+        self.directory_sync
+    }
     /// Exact local public peer whose durable state reserved this range.
     #[must_use]
     pub const fn local(&self) -> [u8; 32] {
@@ -79,6 +85,7 @@ impl std::fmt::Debug for Range {
         f.debug_struct("Range")
             .field("local", &self.local)
             .field("remaining", &self.left)
+            .field("directory_sync", &self.directory_sync)
             .finish()
     }
 }

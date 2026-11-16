@@ -37,7 +37,9 @@ pub fn native_profile() -> Result<Profile, Fault> {
     } else {
         Endian::Big
     };
-    if cfg!(target_os = "linux") {
+    if cfg!(windows) {
+        Ok(Profile::windows(endian))
+    } else if cfg!(target_os = "linux") {
         Ok(Profile::linux(endian))
     } else if cfg!(target_os = "macos") {
         Ok(Profile::darwin(endian))
@@ -487,6 +489,38 @@ impl Server {
             observe(Event::Discovery(e))
         });
         self.manager_stopped = true;
+    }
+    /// Drain original helper wait results after [`Self::abort`], without a
+    /// canonical clock, Resolver or new network work. Each child keeps its
+    /// original retirement bound; unknown retirement remains in the report.
+    pub fn poll_retirement(
+        &mut self,
+        cx: &mut Context<'_>,
+        observe: &mut impl FnMut(Event),
+    ) -> Poll<Result<Report, Failure>> {
+        if self.shutdown != Some(ShutdownMode::Immediate) || !self.manager_stopped {
+            return Poll::Ready(Err(Fault::NotReady.into()));
+        }
+        let mut advanced = false;
+        self.manager.poll_native(cx, &mut |event| {
+            advanced = true;
+            if matches!(
+                &event,
+                crate::manager::Event::Failed { .. } | crate::manager::Event::MappingUnknown { .. }
+            ) {
+                self.report.failures = self.report.failures.saturating_add(1);
+            }
+            observe(Event::Discovery(event));
+        })?;
+        let report = self.report();
+        if report.pending == 0 {
+            Poll::Ready(Ok(report))
+        } else {
+            if advanced {
+                cx.waker().wake_by_ref();
+            }
+            Poll::Pending
+        }
     }
     fn enqueue(
         &mut self,

@@ -1,7 +1,6 @@
 //! Dedicated never-evicted public TCP replay floors on the actual qualified
 //! snapshot Store and one explicitly owned bounded Worker. No keys, ciphertext,
 //! nonce disk protocol, C store, implicit retry or private IPC is involved.
-#![cfg(unix)]
 #![forbid(unsafe_code)]
 mod format;
 /// V2 public frontier image and actual original bootstrap barrier.
@@ -22,6 +21,15 @@ use std::{
     sync::Arc,
     task::{Context, Poll},
 };
+/// Native naming-barrier observations; these fields grant no catalog, replay
+/// floor, remote durability or epoch authority.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Synchronization {
+    /// Most recent successful exact frontier inspection.
+    pub frontier: gnunet_native::DirectorySync,
+    /// Most recent successful snapshot load/commit.
+    pub snapshot: gnunet_native::DirectorySync,
+}
 /// Dedicated namespace, never the T1 generation or DV watermark directory.
 pub const NAMESPACE: Namespace = Namespace::TransportTcp;
 /// Persisted public installation identity. Only actual initialized/recovered
@@ -128,6 +136,7 @@ impl Token {
     }
 }
 struct Authority {
+    synchronization: Cell<Synchronization>,
     id: LedgerId,
     local: EddsaPublicKey,
     generation: Cell<u64>,
@@ -265,6 +274,13 @@ pub struct CatalogLease {
     authority: Rc<Authority>,
 }
 impl CatalogLease {
+    /// Last actual native barrier observations. These remain diagnostic facts
+    /// when a later operation is pending or failed; they grant no readiness.
+    #[must_use]
+    pub fn synchronization(&self) -> Synchronization {
+        self.authority.synchronization.get()
+    }
+
     /// Require the original durable source to remain known and active.
     pub fn validate(&self) -> Result<(), Error> {
         if !self.authority.ready.get() {
@@ -455,6 +471,13 @@ pub struct Ledger {
     first: Option<Arc<Failure>>,
 }
 impl Ledger {
+    /// Last actual native barrier observations. These remain diagnostic facts
+    /// when a later operation is pending or failed; they grant no readiness.
+    #[must_use]
+    pub fn synchronization(&self) -> Synchronization {
+        self.authority.synchronization.get()
+    }
+
     /// Open only an explicitly selected qualified Rust directory. Existing empty
     /// marked directories without an image are refused, not initialized anew.
     /// A brand-new directory's random public identity is returned as authority
@@ -469,11 +492,12 @@ impl Ledger {
         // Actual original min0 intent is durable before any ledger marker or
         // directory can be created. It proves pre-Unbound bootstrap, unlike
         // created_this_process or a missing canonical image by itself.
-        let intent = pairing::inspect(frontier).map_err(|error| Failure {
+        let inspected = pairing::inspect(frontier).map_err(|error| Failure {
             stage: "frontier-intent",
             uncertain: false,
             cause: Cause::Io(error),
         })?;
+        let intent = inspected.image;
         if intent.local != local {
             return Err(fault("frontier-local", Error::Authentication, false).into());
         }
@@ -485,6 +509,7 @@ impl Ledger {
             },
         )
         .map_err(|e| storage("open", Arc::new(e)))?;
+        let snapshot_sync = loaded.directory_sync();
         let generation = loaded.generation();
         if loaded.namespace() != NAMESPACE {
             return Err(fault("namespace", Error::Authentication, false).into());
@@ -495,10 +520,7 @@ impl Ledger {
                 return Err(fault("missing-initialization", Error::Authentication, false).into());
             }
             let id = intent.ledger;
-            let mut records = Vec::new();
-            records
-                .try_reserve_exact(limits.records)
-                .map_err(|_| fault("catalog-capacity", Error::Capacity, false))?;
+            let records = Vec::new();
             let id = LedgerId(id);
             let body = format::encode(id, local, &records, None, false)
                 .map_err(|e| fault("initialize-image", e, false))?;
@@ -523,6 +545,10 @@ impl Ledger {
         })?;
         let mut ledger = Self {
             authority: Rc::new(Authority {
+                synchronization: Cell::new(Synchronization {
+                    frontier: inspected.directory_sync,
+                    snapshot: snapshot_sync,
+                }),
                 id,
                 local,
                 generation: Cell::new(generation),
@@ -666,13 +692,17 @@ impl Ledger {
             true,
         )
         .map_err(|e| fault("pair-image", e, false))?;
-        pairing::barrier(path, self.authority.id.0, self.authority.local, generation).map_err(
-            |e| Failure {
-                stage: "pair-frontier-barrier",
-                uncertain: false,
-                cause: Cause::Io(e),
-            },
-        )?;
+        let frontier_sync =
+            pairing::barrier(path, self.authority.id.0, self.authority.local, generation).map_err(
+                |e| Failure {
+                    stage: "pair-frontier-barrier",
+                    uncertain: false,
+                    cause: Cause::Io(e),
+                },
+            )?;
+        let mut synchronization = self.authority.synchronization.get();
+        synchronization.frontier = frontier_sync;
+        self.authority.synchronization.set(synchronization);
         let job = self
             .worker
             .as_mut()
@@ -750,6 +780,19 @@ impl Ledger {
             Some(record),
             true,
         )?;
+        if position.is_err() && self.records.len() == self.records.capacity() {
+            // Reserve before admitting filesystem debt: installing its eventual
+            // committed row must not allocate or fail after publication.
+            let capacity = self
+                .records
+                .capacity()
+                .saturating_mul(2)
+                .max(4)
+                .min(self.maximum);
+            self.records
+                .try_reserve_exact(capacity - self.records.len())
+                .map_err(|_| Error::Capacity)?;
+        }
         let job = self
             .worker
             .as_mut()
@@ -858,6 +901,9 @@ impl Ledger {
             self.authority.bound.set(true);
         }
         self.initialized = true;
+        let mut synchronization = self.authority.synchronization.get();
+        synchronization.snapshot = committed.directory_sync();
+        self.authority.synchronization.set(synchronization);
         self.authority.generation.set(committed.generation());
         if self.closing || pending.cancelled {
             return Poll::Ready(Progress::Retired {

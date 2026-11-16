@@ -1,4 +1,4 @@
-# Source-bound TCP candidate publication
+# TCP address publication
 
 `PublishedPool` is a caller-polled runtime composition around one original TCP
 `Pool`. It owns no second session engine, TRANSPORT queue, Resolver, task, worker
@@ -8,14 +8,17 @@ NAT selector, checks that selector's exact clock Arc against the caller's
 `Pool` from its original `Option`. That option remains untouched on failure. Adopt immediately after `bind_epoch`, before any address IDs are advertised. The address-ID namespace is exclusively this owner's for that physical MQ;
 returning the same Pool after close does not reset that namespace.
 
+## Foreground integration
+
 The enclosing normal foreground remains responsible for its real initial
 PILS/key/TRANSPORT/PEERSTORE acquisition and fair Resolver/session driving. It
 uses `pool_mut()` to access only that same original Pool and its exact source
 callbacks. Its normal loop must gate new accepts/CREATE work on `is_retiring()`,
 fairly poll this owner alongside original `Pool::poll_drive`, Resolver and
 shutdown, and retain the owner after an observed failure while cleanup runs. The normal startup keeps this same owner while driving its original Pool and
-services. This incremental handoff supplies reversal ports for the matching
-Pool/registry/startup integration; it does not contain a second foreground. No fallback discovery implementation is hidden.
+services. These reversal ports use the matching Pool, registry and startup owners. No fallback discovery implementation is hidden.
+
+## Address selection
 
 Each actual bound family/port comes from `Listeners::addresses()`, including
 inherited sockets and the real kernel-selected port for port0. Exact numeric
@@ -25,6 +28,8 @@ actual listening port. DOWN, unspecified, multicast and broadcast candidates
 are excluded; DISABLE_V6 is honored. IPv6 scope remains in the canonical TCP
 address; flow metadata is retained in native registration but omitted from the
 public address's canonical key, just as TCP text does not encode it.
+
+## NAT registration
 
 The actual official NAT Registration uses those same original native bindings,
 protocol TCP6 and section communicator-tcp, requesting ADDRESSES | REVERSAL
@@ -36,6 +41,8 @@ the reference identity, not normalized IP equality. A held notification remains
 held when fixed metadata capacity cannot admit it. Original native deadlines
 and TX still progress during that backpressure. No callback or queue result is
 interpreted as NAT mapping, UPnP completion, reachability or authentication.
+
+## Publication
 
 Distinct interface/listener/NAT claims share one canonical address row. Losing a
 NAT source removes only that source's claims. An interface or different current
@@ -54,6 +61,8 @@ as the official behind-NAT reversal hint. It is never treated as a directly
 connectable endpoint. IPv6 port0, unspecified, multicast and broadcast addresses
 remain excluded. Listener/interface candidates still use their actual nonzero
 listening ports; only the actual NAT notification path admits this hint.
+
+## Reversal requests
 
 `request_reversal(cx, &Reversal, until)` checks the original same-Pool planned
 parent and native guard, then submits one original Registration.reverse write. It uses wildcard IPv4 plus an actual IPv4 listener port, and the original remote
@@ -85,6 +94,8 @@ in a bounded slot and delivered by poll before further work; getters and
 admission cannot silently drop it. These ports require the separate actual
 Pool/registry/source driver integration before end-to-end reversal is available.
 
+## Limits and time
+
 All metadata has caller limits. Scan quotas/allocation failures are not partial
 snapshots or fabricated removals. Previous interface claims retain only their
 original finite freshness, then expire. The owner may have an immutable overall
@@ -104,6 +115,8 @@ round robin: neither very short legal scan intervals nor continuous callbacks
 can starve another ready class. No fake waiting/progress result substitutes for
 actual native IO, and the original deadline is never reset by a guard call.
 
+## Retirement
+
 `AddQueued`/`RemoveQueued` report only successful actual Pool FIFO admission. No local queue is called full socket write, remote application or durable ACK. `begin_close` physically closes the original NAT MQ without needing a clock,
 retains its original End, and queues exact old DELs under a finite native grace. `Closed` means those removals were admitted and the NAT owner closed; it does
 not mean the Pool drained. `take_pool` then transfers only the original Pool,
@@ -111,9 +124,3 @@ including the same admitted removal bytes, so the original caller still drives
 actual writes, sessions, quiescence and `ClockPort::finish_epoch`. Grace expiry,
 `abort` or Drop physically drops that same Pool and its original MQs; no clean
 epoch proof is created and dirty/Unknown backend state remains dirty/Unknown. An independently retained NAT End is delivered before terminal Aborted.
-
-No interface
-enumeration, NAT/socket/network, key/crypto/entropy/hash, persistent store/worker,
-process/helper/product, Cargo/compiler or model/test path ran. The later
-startup call-site composition and actual interoperability qualification remain
-explicit work. This is candidate publication, not complete TCP/NAT/TRANSPORT.

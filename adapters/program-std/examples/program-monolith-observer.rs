@@ -13,13 +13,13 @@ mod actual {
         runtime::Scope,
         shared_clock::SharedClock,
     };
-    use gnunet_resolver_broker::{Context, FamilyProfile, Limits, LiveConfiguration};
-    use gnunet_service_runtime::{Activation, BoundListeners};
+    use gnunet_resolver_broker::{Context, Limits, LiveConfiguration};
+    use gnunet_service_runtime::BoundListeners;
+    use gnunet_service_runtime::LocalListenerAccess;
     use std::{
         cell::{Cell, RefCell},
         future::poll_fn,
         io::{self, Write},
-        os::unix::fs::FileTypeExt,
         path::PathBuf,
         rc::Rc,
         sync::Arc,
@@ -40,7 +40,15 @@ mod actual {
         output.flush()
     }
     fn live(path: &std::path::Path) -> bool {
-        std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_socket())
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::FileTypeExt;
+            std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_socket())
+        }
+        #[cfg(windows)]
+        {
+            gnunet_native::local_path::is_socket(path).unwrap_or(false)
+        }
     }
     struct Stop {
         value: Cell<bool>,
@@ -137,14 +145,14 @@ mod actual {
         config.set_value(
             b"owned-service",
             b"UNIXPATH",
-            Some(path.as_os_str().as_encoded_bytes()),
+            Some(&gnunet_native::os_bytes::encode(path.as_os_str())),
         )?;
         config.set_value(b"owned-service", b"PORT", Some(b"0"))?;
         config.set_value(b"owned-service", b"BINDTO", Some(b"127.0.0.1"))?;
         let (context, driver) = gnunet_resolver_broker::broker::<8, 1024>(
             LiveConfiguration::new(Configuration::default()),
             Limits::default(),
-            FamilyProfile::new(libc::AF_INET, libc::AF_INET6)?,
+            gnunet_resolver_broker::native_profile()?,
             Arc::new(clock.clone()),
         )
         .map_err(Failure::Broker)?;
@@ -212,10 +220,10 @@ mod actual {
             // handling. Fresh owned path binds synchronously within this async call; no
             // input callback has run and no unrelated file creator/thread exists here.
             let listeners = rt
-                .block_on(BoundListeners::bind(
+                .block_on(BoundListeners::bind_configured(
                     configuration,
                     b"owned-service",
-                    Activation::default(),
+                    LocalListenerAccess::Owner,
                 ))
                 .map_err(|error| io::Error::other(error.to_string()))?;
             if listeners.listeners().len() != 1 || !listeners.failures().is_empty() {

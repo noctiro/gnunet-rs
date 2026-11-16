@@ -24,12 +24,21 @@ impl AfProfile {
     pub const LINUX: Self = Self { ipv4: 2, ipv6: 10 };
     /// Darwin AF values, including the pinned macOS C producer.
     pub const DARWIN: Self = Self { ipv4: 2, ipv6: 30 };
-    /// Current Linux/Darwin native profile. Other platforms should supply their
-    /// actual constants explicitly, rather than silently guessing peer fields.
+    /// FreeBSD AF values.
+    pub const FREEBSD: Self = Self { ipv4: 2, ipv6: 28 };
+    /// Windows Winsock AF values.
+    pub const WINDOWS: Self = Self { ipv4: 2, ipv6: 23 };
+    /// Native Linux, Apple, FreeBSD or Windows profile. Other targets, including
+    /// embedded cores, use the Linux reference profile; another native C ABI
+    /// requires an explicit profile. This never discovers a remote peer's ABI.
     #[must_use]
     pub const fn native() -> Self {
         if cfg!(target_vendor = "apple") {
             Self::DARWIN
+        } else if cfg!(target_os = "freebsd") {
+            Self::FREEBSD
+        } else if cfg!(target_os = "windows") {
+            Self::WINDOWS
         } else {
             Self::LINUX
         }

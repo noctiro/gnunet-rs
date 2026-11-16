@@ -1,4 +1,4 @@
-//! One actual Unix IPC model, with real AF_UNSPEC allocation failure because no
+//! One actual native local IPC model, with real AF_UNSPEC allocation failure because no
 //! TUN/route was attached. No TUN qualification, exit or VPN data-path is faked.
 #![expect(
     clippy::panic_in_result_fn,
@@ -7,6 +7,7 @@
 use gnunet_service_runtime::{
     clock::{ClockSample, ClockSubscription, RuntimeClock},
     credentials::UnixAccess,
+    local::{Listener as UnixListener, Stream as UnixStream},
     service::{Listener, ServiceOptions},
 };
 use gnunet_types::Error as Fault;
@@ -27,7 +28,6 @@ use std::{
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::{UnixListener, UnixStream},
     time::Instant,
 };
 struct Clock {
@@ -90,8 +90,7 @@ fn bounded_capacity_original_rids_and_clock_loss_after_partial_write()
         .build()?;
     runtime.block_on(async {
         let nonce = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
-        let dir =
-            std::path::PathBuf::from(format!("/tmp/gvpn-ipc-{}-{nonce:x}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("gvpn-ipc-{}-{nonce:x}", std::process::id()));
         std::fs::create_dir(&dir)?;
         let path = dir.join("a");
         let listener = UnixListener::bind(&path)?;

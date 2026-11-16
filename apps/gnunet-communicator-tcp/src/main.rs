@@ -1,6 +1,10 @@
 //! Normal configuration-only TCP communicator over the original actual pool.
 #![deny(unsafe_code)]
+mod control;
+mod early;
+mod identity;
 mod settings;
+use control::shutdown;
 mod statistics;
 use gnunet_program_host::{
     getopt::Options,
@@ -10,10 +14,7 @@ use gnunet_program_host::{
     shared_clock::SharedClock,
 };
 use gnunet_service_runtime::{Activation, accepted::SocketEvent};
-use gnunet_service_startup::{
-    ControlNotice, GroupsProfile, InheritedMode, InheritedResources, ParentControl,
-    apply_privileges, configured_user, resolve_user,
-};
+use gnunet_service_startup::ParentControl;
 use gnunet_tcp_communicator_runtime::{
     listeners::{Listeners, PreparedListeners},
     settings::Settings as NetworkSettings,
@@ -78,20 +79,7 @@ fn prepare(
     )
 }
 fn run() -> Result<ExitCode, Failure> {
-    #[expect(
-        unsafe_code,
-        reason = "Fresh process exclusively adopts inherited descriptors before runtime, account lookup, key or state preparation"
-    )]
-    // SAFETY: first initialization operation, before competing descriptor
-    // owners, tasks, runtime, NSS or any key/state operation exist.
-    let captured =
-        unsafe { gnunet_service_startup::capture_from_environment(InheritedMode::AdoptListeners)? };
-    let activation = match captured.inherited {
-        InheritedResources::Listeners(activation) => activation,
-        InheritedResources::CloseAfterBind(_) => {
-            return Err("TCP received the wrong inherited startup route".into());
-        }
-    };
+    let captured = early::capture()?;
     let clock = SharedClock::native(256)?;
     let mut logger = Logger::new(b"gnunet-communicator-tcp", std::process::id(), false)?;
     let prepared = match prepare(&clock, &mut logger)? {
@@ -105,11 +93,17 @@ fn run() -> Result<ExitCode, Failure> {
         }
     };
     let reporter = Reporter::new(logger, clock.clone());
+    #[cfg(unix)]
+    if let Some(notice) = &captured.notice {
+        reporter.warning(
+            "tcp.parent.notice",
+            format_args!("TCP parent-control declaration: {notice:?}"),
+        );
+    }
     let result = execute(
         prepared,
-        activation,
-        captured.parent_control,
-        captured.control_notice,
+        captured.activation,
+        captured.parent,
         &reporter,
         &clock,
     );
@@ -143,7 +137,6 @@ fn execute(
     prepared: program::Prepared,
     activation: Activation,
     parent: Option<ParentControl>,
-    notice: Option<ControlNotice>,
     reporter: &Reporter,
     clock: &SharedClock,
 ) -> Result<(), Failure> {
@@ -152,12 +145,6 @@ fn execute(
         return Err("TCP communicator accepts no positional arguments".into());
     }
     clock.testing_skew(main.config)?;
-    if let Some(notice) = notice {
-        reporter.warning(
-            "tcp.parent.notice",
-            format_args!("TCP parent-control declaration: {notice:?}"),
-        );
-    }
     if reporter.failed() {
         return Ok(());
     }
@@ -191,52 +178,6 @@ struct Startup {
     parent: Option<ParentControl>,
 }
 
-fn shutdown(
-    reporter: Reporter,
-    parent: Option<ParentControl>,
-) -> io::Result<impl Future<Output = io::Result<()>>> {
-    let interrupt_kind = tokio::signal::unix::SignalKind::interrupt();
-    let terminate_kind = tokio::signal::unix::SignalKind::terminate();
-    let mut interrupt = tokio::signal::unix::signal(interrupt_kind)?;
-    let mut terminate = tokio::signal::unix::signal(terminate_kind)?;
-    let mut control = parent
-        .map(|control| control.register().map_err(|error| error.error))
-        .transpose()?;
-    Ok(std::future::poll_fn(move |cx| {
-        reporter.register(cx);
-        if reporter.failed() {
-            return Poll::Ready(Ok(()));
-        }
-        if let Some(parent) = &mut control {
-            match parent.poll_signal(cx) {
-                Poll::Ready(Ok(Some(signal)))
-                    if i32::from(signal) == interrupt_kind.as_raw_value()
-                        || i32::from(signal) == terminate_kind.as_raw_value() =>
-                {
-                    return Poll::Ready(Ok(()));
-                }
-                Poll::Ready(Ok(Some(signal))) => {
-                    reporter.debug(
-                        "tcp.parent.signal",
-                        format_args!("TCP ignored parent signal {signal}"),
-                    );
-                    if reporter.failed() {
-                        return Poll::Ready(Ok(()));
-                    }
-                    cx.waker().wake_by_ref();
-                }
-                Poll::Ready(Ok(None)) => control = None,
-                Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
-                Poll::Pending => {}
-            }
-        }
-        if interrupt.poll_recv(cx).is_ready() || terminate.poll_recv(cx).is_ready() {
-            Poll::Ready(Ok(()))
-        } else {
-            Poll::Pending
-        }
-    }))
-}
 async fn serve(
     prepared: program::Prepared,
     startup: Startup,
@@ -305,33 +246,10 @@ async fn serve(
     }
     // The same actual descriptors are all bound before changing identity. No
     // key/frontier operation or peer protocol admission precedes this boundary.
-    let user = (|| -> Result<_, Failure> {
-        configured_user(&config, b"communicator-tcp")?
-            .map(|name| resolve_user(&name))
-            .transpose()
-            .map_err(|error| Box::new(error) as Failure)
-    })();
-    let user = match user {
-        Ok(user) => user,
+    match identity::apply(&config, shutdown.as_mut(), reporter).await {
+        Ok(true) => {}
+        Ok(false) => return retire_services(services, None),
         Err(error) => return retire_services(services, Some(error)),
-    };
-    match stop_requested(shutdown.as_mut(), reporter).await {
-        Ok(true) => return retire_services(services, None),
-        Err(error) => return retire_services(services, Some(Box::new(error))),
-        Ok(false) => {}
-    }
-    let privileges = match apply_privileges(user.as_ref(), GroupsProfile::WithInitgroups) {
-        Ok(applied) => applied,
-        Err(error) => return retire_services(services, Some(Box::new(error))),
-    };
-    if user.is_some() {
-        reporter.debug(
-            "tcp.identity.applied",
-            format_args!("TCP configured process identity: {privileges:?}"),
-        );
-    }
-    if reporter.failed() {
-        return retire_services(services, None);
     }
     let mut context = services.context();
     let stop = std::rc::Rc::new(std::cell::Cell::new(false));

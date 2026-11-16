@@ -1,4 +1,4 @@
-# Rust SETU foreground
+# SETU service
 
 Run `gnunet-service-setu -c official.conf`. This binary composes the independent
 Rust SETU core/native server and the existing Rust CADET CLIENT adapter. Its
@@ -7,18 +7,19 @@ network task. Sets are bounded in-memory data, lost when their owning applicatio
 MQ or process is retired. All application operations use the official active
 GNUnet v0.29.1 IPC and CADET union frames.
 
-Startup uses the shared standard SERVICE `-c/-d/-h/-L/-l/-v` selection and
-configuration loader, including its default-file and logging environment
-policy. Early startup uniquely adopts original listeners and parent-control FDs. The daemon split happens while single-threaded, before account lookup, Tokio,
-listener path guards or any SETU/CADET owner. The parent releases its FD
-copies and waits on its original status pipe; the child refreshes the selected
-Logger PID and never fabricates a successful daemon startup.
+## Startup and configuration
 
-Original inherited/TCP listeners are prepared before configured `USERNAME` is
-applied. Newly created Unix endpoints are finished under the target identity with
-the configured UID/GID filesystem policy; existing parents/inodes are not
-reassigned. Actual accepted Unix credentials are still checked by the existing
-server. This preserves privileged prebinding without opening a duplicate listener.
+The shared [native SERVICE driver](../../adapters/program-std/README.md#service-startup)
+provides standard `-c/-d/-h/-L/-l/-v` options, configuration loading, selected
+logging, process identity, listeners and original-parent control/readiness.
+Unix prepares inherited/TCP listeners before privilege changes, then completes
+new local endpoints under the selected identity. Windows verifies the configured
+process token, materializes native activation and selects managed console
+detachment or qualified standalone re-exec. Explicit Unix UID/GID checks remain
+unsupported on Windows; native endpoint ACLs retain their separate policy.
+The same foreground owns protocol work and physical cleanup on every platform.
+Readiness submission has a finite wait that observes logging and stop requests;
+an admitted startup status cannot be replaced after cancellation or failure.
 
 The fixed official C SERVICE_MAIN uses the internal service name `set` with
 OPTION_NONE, while its installed `setu.conf.in` exposes `[setu]` listeners and the
@@ -85,8 +86,8 @@ disconnected and physically dropped even when its disconnect reports an error. O
 separate; early constructor errors also run the original Resolver's RAII cleanup. No queued frame, timeout or Drop is treated as a peer result or shutdown receipt.
 
 `READY setu wire=0.29.1 listeners=bound sets=memory` is flushed after the actual
-local listeners and Server exist, then the original daemon `ChildReady` is
-notified once. It asserts no remote CADET attachment, peer identity, completed
+local listeners and Server exist, then the original parent readiness capability
+is signaled once. It asserts no remote CADET attachment, peer identity, completed
 union or application receipt. `STOPPED setu local=...` contains the local
 post-close counters; independent errors and bounded original diagnostics use the
 selected Logger. A failed selected Logger wakes the original task, fences further

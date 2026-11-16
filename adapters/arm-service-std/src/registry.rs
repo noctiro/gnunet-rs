@@ -1,12 +1,7 @@
 //! Official ARM setup_service/run/start_process configuration decisions.
 use gnunet_arm_service_core::ServiceSpec;
 use gnunet_config::{BinaryPathCache, Configuration, Environment, ProjectData};
-use std::{
-    ffi::OsString,
-    fmt, fs,
-    os::unix::ffi::{OsStrExt, OsStringExt},
-    path::PathBuf,
-};
+use std::{ffi::OsString, fmt, fs, path::PathBuf};
 /// Explicit bounds on the std registry; refusal never omits a service as success.
 #[derive(Clone, Copy, Debug)]
 pub struct Limits {
@@ -35,6 +30,8 @@ pub enum Error {
     Capacity,
     /// ARM service category switches are invalid or select neither category.
     Categories,
+    /// Local command arguments have invalid native encoding.
+    Native(std::io::Error),
 }
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -42,10 +39,24 @@ impl fmt::Display for Error {
             Self::Configuration(e) => write!(f, "ARM configuration: {e}"),
             Self::Capacity => f.write_str("ARM registry capacity"),
             Self::Categories => f.write_str("ARM service categories are invalid or empty"),
+            Self::Native(error) => write!(f, "ARM native command: {error}"),
         }
     }
 }
-impl std::error::Error for Error {}
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Native(error) => Some(error),
+            Self::Configuration(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+impl From<std::io::Error> for Error {
+    fn from(error: std::io::Error) -> Self {
+        Self::Native(error)
+    }
+}
 impl From<gnunet_config::Error> for Error {
     fn from(e: gnunet_config::Error) -> Self {
         Self::Configuration(e)
@@ -56,6 +67,21 @@ impl From<gnunet_config::Error> for Error {
 pub enum Recipe {
     /// Raw official textual command; later native port must use official parser.
     Gnunet(Vec<u8>),
+    /// Native Windows paths remain literal arguments, separate from GNUnet
+    /// prefix/options fragments. Text is diagnostic/core metadata only.
+    #[cfg(windows)]
+    Native {
+        /// Bounded original command description; never reparsed for native paths.
+        text: Vec<u8>,
+        /// GNUnet command fragment before the binary.
+        prefix: Vec<u8>,
+        /// Literal native binary argument.
+        binary: OsString,
+        /// Literal fixed arguments such as the configuration filename.
+        arguments: Vec<OsString>,
+        /// GNUnet command fragment after the fixed arguments.
+        options: Vec<u8>,
+    },
     /// Source run_command_va(filename=prefix,argv0=binary,argv1=whole-options).
     Simple {
         /// Executable name, possibly empty (which later genuinely fails precheck).
@@ -67,11 +93,15 @@ pub enum Recipe {
     },
 }
 impl Recipe {
-    /// Borrow the core's opaque source-plan bytes; full enum stays in the host.
+    /// Borrow the core's opaque in-process source-plan bytes. SIMPLE uses the
+    /// native string's internal bytes without allocation; these are never
+    /// persisted, decoded or serialized as protocol text.
     pub fn core_bytes(&self) -> &[u8] {
         match self {
             Self::Gnunet(command) => command,
-            Self::Simple { filename, .. } => filename.as_bytes(),
+            #[cfg(windows)]
+            Self::Native { text, .. } => text,
+            Self::Simple { filename, .. } => filename.as_encoded_bytes(),
         }
     }
 }
@@ -255,9 +285,9 @@ impl Registry {
             let recipe = if simple {
                 let executable = config.expand_dollar(binary, env)?;
                 Recipe::Simple {
-                    filename: OsString::from_vec(local_prefix),
-                    argv0: OsString::from_vec(executable),
-                    options: OsString::from_vec(options),
+                    filename: gnunet_native::os_bytes::decode_owned(local_prefix)?,
+                    argv0: gnunet_native::os_bytes::decode_owned(executable)?,
+                    options: gnunet_native::os_bytes::decode_owned(options)?,
                 }
             } else {
                 let path = project.libexec_binary_path_with(binary, env, cache)?;
@@ -268,7 +298,7 @@ impl Registry {
                 }
                 join(
                     &mut command,
-                    path.as_os_str().as_bytes(),
+                    &gnunet_native::os_bytes::encode(path.as_os_str()),
                     limits.command_bytes,
                 )?;
                 let debug = match config.get_yesno(name, b"DEBUG") {
@@ -283,7 +313,7 @@ impl Registry {
                     join(&mut command, b" -c ", limits.command_bytes)?;
                     join(
                         &mut command,
-                        path.as_os_str().as_bytes(),
+                        &gnunet_native::os_bytes::encode(path.as_os_str()),
                         limits.command_bytes,
                     )?;
                 }
@@ -291,7 +321,28 @@ impl Registry {
                     join(&mut command, b" ", limits.command_bytes)?;
                     join(&mut command, &options, limits.command_bytes)?;
                 }
-                Recipe::Gnunet(command)
+                #[cfg(unix)]
+                {
+                    Recipe::Gnunet(command)
+                }
+                #[cfg(windows)]
+                {
+                    let mut arguments = Vec::new();
+                    if debug {
+                        arguments.extend(["-L".into(), "DEBUG".into()]);
+                    }
+                    if let Some(configuration) = &configuration {
+                        arguments.push("-c".into());
+                        arguments.push(configuration.as_os_str().to_owned());
+                    }
+                    Recipe::Native {
+                        text: command,
+                        prefix: local_prefix,
+                        binary: path.into_os_string(),
+                        arguments,
+                        options,
+                    }
+                }
             };
             let immediate = yes(config, name, b"IMMEDIATE_START");
             let bind = if immediate {

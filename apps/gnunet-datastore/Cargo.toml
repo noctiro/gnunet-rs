@@ -9,20 +9,22 @@ license.workspace = true
 name = "gnunet-datastore"
 path = "src/main.rs"
 
-[target.'cfg(unix)'.dependencies]
+[dependencies]
 gnunet-config.workspace = true
 gnunet-datastore-host.workspace = true
 gnunet-client-host.workspace = true
 gnunet-client.workspace = true
 gnunet-wire.workspace = true
 gnunet-types.workspace = true
-gnunet-program-host = { workspace = true, features = ["resolver-broker"] }
+gnunet-program-host = { workspace = true, features = ["resolver-broker", "binary-io"] }
 gnunet-resolver-broker.workspace = true
 gnunet-service-runtime.workspace = true
 gnunet-service-startup.workspace = true
 zeroize = { workspace = true, features = ["alloc"] }
-nix = { workspace = true, features = ["poll", "fs"] }
 tokio = { workspace = true, features = ["rt", "net", "time", "signal"] }
+
+[dev-dependencies]
+gnunet-native.workspace = true
 
 [lints]
 workspace = true

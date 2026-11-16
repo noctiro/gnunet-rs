@@ -1,10 +1,9 @@
-# Official Messenger bounded state core (M4)
+# Messenger state core
 
-This is alloc-backed state above the admitted M1/M2 codec and M3
-cryptography, pinned to GNUnet v0.29.1 commit
-`346358e26d4dcc2dc4f51bef5d52dca29c7d8165`. It is not a native service, daemon,
-transport, persistent history store or a claim that full Messenger/GNUnet has
-passed interoperability acceptance.
+`gnunet-messenger-core` implements bounded, caller-driven protocol state above
+the official message codec and Rust cryptography. The wire baseline is GNUnet
+v0.29.1 commit `346358e26d4dcc2dc4f51bef5d52dca29c7d8165`; the shared
+[compatibility policy](../../spec/gnunet/compatibility.md) defines reference scope.
 
 The default feature exports finite public types without allocation. `alloc`
 enables the bounded owner. No C ABI, FFI, hidden scheduler, file/socket I/O or
@@ -21,7 +20,23 @@ preserve terminal diagnostics without retaining live authority. Their local
 coordinates are not unique across instances and cannot reconstruct a handle or
 select an operation. Runtime owners continue to use the borrowed tokens.
 
-## state and ownership
+## Causal state and room shutdown
+
+The selected outgoing predecessor and its epoch come from the same accepted
+vertex. Concurrent frontier branches remain available for MERGE; selecting a
+predecessor from one branch with another branch's key snapshot is invalid.
+An authenticated vertex can complete its causal links while waiting for an
+epoch or key needed to interpret it. Membership, MAC verification and plaintext
+acceptance retain their separate checks.
+
+`lease.rs` owns client lease retirement and reopening. `retire_room_lease`
+requires the original whole-written CLOSE and its matching notification.
+An optional paired LEAVE must belong to that same source, retain its original
+signed kind and have an actual whole-write receipt. Retirement consumes these
+jobs without emitting a completion event for an unechoed LEAVE. Unrelated
+pending operations remain a refusal; other sources keep their ownership.
+
+## State and ownership
 
 `Core` retains fixed-capacity, generational rooms, original sources, member
 sessions, contacts, message/tombstone slots, epochs, groups, subscriptions,
@@ -53,14 +68,14 @@ facts separately; `source_stopped` updates this core's state only.
 One Core explicitly selects its producer `Profile`; it does not guess native
 endian fields or FILE NAME_MAX from content. The wire reset API requires
 `Response::decode(input, Profile)` and `encode(Profile, output)`. Only the IPC
-member-reset field is native order; ordinary network integers stay BE. M4 does
+member-reset field is native order; ordinary network integers stay BE. Core does
 not swap it again. Initial/reset MemberId requires a signed JOIN. A collision
 notification retains the old sender ID and stores the proposed new ID until the
 signed ID(new) transition; `prepare_assigned_identity` continues that work.
 
 ## Messages, contacts, permissions and history
 
-Admission structurally decodes immutable originals, computes their M3
+Admission structurally decodes immutable originals, computes their canonical
 hash and verifies the selected member or peer signature. Unknown signers
 consume only finite deferred storage and grant no rights. A bad first signature
 cannot poison a hash against a later valid signature. Same-hash incompatible
@@ -97,7 +112,7 @@ classification uses the original outer kind: encrypted PRIVATE/SECRET envelopes
 remain authenticated DAG vertices even when this client cannot decrypt them. Only successful AEAD plus inner-hash verification installs plaintext; no
 recipient failure blocks unrelated later public messages. TRANSCRIPT is accepted
 only for the matching own-sent original, same author lineage and intact
-hash linkage. M3 supplies all crypto; this crate implements no new primitive.
+hash linkage. The Messenger crypto module supplies the cryptographic operations.
 
 ## Epoch/group state and work
 
@@ -106,7 +121,7 @@ references defer completion. LEAVE must actually remove an existing parent-epoch
 member, avoiding the reference C absent-member undersized-allocation write. Announcement/group tables distinguish signed tentative confirmations from actual
 MAC-checked key holders. Confirmation replacement does not inflate unique counts. Only valid complete cohorts contained entirely in the next member set can
 ratchet a future key; a departing member who knew the old key prevents that
-ratchet. The minimal M3 opaque-key extension uses exact sizeof-NUL EPOCH/GROUP
+ratchet. Opaque key derivation uses exact sizeof-NUL EPOCH/GROUP
 salts and epoch64 then identifier32. It exposes no raw key getter/hash.
 
 key-provider jobs install only original results; ephemeral expiry and
@@ -149,7 +164,7 @@ A native client owner maps each original native epoch to the matching Source,
 feeds `on_notification`, drains `advance` while `has_work`, and handles work
 from `take_work`. Explicit bounded caller `SensitiveBuffer` scratch handles
 private/secret opening. The signer decodes Work::Sign.body and uses the actual
-IDENTITY/PILS owner and M3 encoding; `complete_signature` verifies its exact
+IDENTITY/PILS owner and Messenger encoding; `complete_signature` verifies its exact
 original result again. The native owner decodes an Encoding::Ipc work frame
 and submits its original Request; Encoding::PeerMessage is an official raw signed
 peer frame for the peer transport. Deadline expiry requires physical

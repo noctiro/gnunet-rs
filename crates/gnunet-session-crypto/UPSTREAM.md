@@ -3,11 +3,10 @@
 GNUnet v0.29.1, commit346358e26d4dcc2dc4f51bef5d52dca29c7d8165. Every formal
 runner input contains the hashes of all tracked C files, generated normal-build
 configuration/compile commands, reference receipt and normal libraries.
-The normal reference used during development links libsodium1.0.22; the runner
-records the reported version and fixed ABI widths, not an assumed host
-implementation. Its local fixtures use no DNS or network.
+The runner records dependency versions and ABI widths from the selected normal
+reference build. Its local fixtures use no DNS or network.
 
-| Source | Candidate boundary |
+| Source | Rust boundary |
 |---|---|
 | `src/lib/util/crypto_ecc.c`: key creation/public and raw/hashed/conversion ECDH | `exchange.rs` |
 | `src/lib/util/crypto_hpke.c`: labeled KEM0x0020, conversions, DeriveKeyPair, public codecs | `exchange.rs` |
@@ -80,8 +79,7 @@ lengths or NUL terminators:
 TCP material uses labels `gnunet-communicator-tcp-key`32,
 `gnunet-communicator-tcp-ctr`16 and `gnunet-communicator-hmac`64. AES256CTR is
 one persistent bidirectional-operation stream per direction; partial chunks
-retain stream position. MAC is standard SHA512 HMAC. Exact frame coverage and
-communicator handshake remain absent here.
+retain stream position. MAC is standard SHA512 HMAC. Frame coverage and communicator handshake belong to the TCP engine.
 
 UDP key32/IV12 expand the corresponding `gnunet-communicator-udp-key` / `...-iv`
 labels followed by serialBE32. KID extracts with salt serialBE32 and master as
@@ -89,25 +87,20 @@ IKM, then expands `gnunet-communicator-udp-kid`32. `...-cmac` expands64 bytes as
 a key-acknowledgement marker; this is not an AES-CMAC algorithm. The source UDP
 payload cipher is AES256-GCM with IV12, not CTR, and its entrance uses Elligator
 suite0x0022. The `gcm`/`udp` modules implement the nonce12/tag16 payload cipher
-and exact external prefix layouts; Elligator and the complete communicator
-remain pending. GCM uses empty AAD, with separate expected-KID routing and no
+and exact external prefix layouts. The `elligator` module supplies the
+0x0022 KEM. GCM uses empty AAD, with separate expected-KID routing and no
 fake identity/replay authority. The verifier compiles unchanged original UDP
 crypto functions against normal libraries; it does not execute a UDP peer.
 
-## unfinished surfaces
+## Protocol composition
 
-The complete226-function table is generated into the proof output; no entry is
-silently excluded because deprecated or not called by CORE. Remaining work
-includes Elligator HPKE KEM, broader public crypto APIs and complete protocol
-owners; the supported official X25519 Base/PSK context, nonce12 and seqNBO
-behavior lives in the separate `hpke` module documented in `HPKE.md`.
-Source-declared Auth modes still refuse, and the header exposes no Export operation.
-Remaining unrelated work includes other key-family serialization; Elligator0x0022;
-complete UDP identity/ACK/replay/rekey ownership; legacy generic
-AES+TwofishCFB; EDX25519 HD keys; RSA/FDH/blind signatures; Paillier; Clause
-Schnorr; EC dlog/MPI; CRC/hash distance/arithmetic/native-endian utilities;
-uniform RNG/permutation/timeflake; key files/identity setup; remaining raw/base
-signature wrappers and generic blindable serialization. Existing capability
-traits or related GNS functions are recorded as partial foundations where the
-complete public util API has not been mapped/tested. This is not full util,
-CORE, TRANSPORT, HPKE or GNUnet completion evidence.
+The [HPKE contract](HPKE.md) covers typed X25519 and Elligator Base/PSK contexts,
+nonce12 and sequence encoding. Source-declared Auth modes refuse, and the header
+exposes no Export operation.
+
+Replay windows, identity admission, ACKs, rekey and native I/O belong to the
+[CORE](../gnunet-core/README.md),
+[TCP](../gnunet-tcp-communicator-core/README.md) and
+[UDP](../gnunet-udp-communicator-core/README.md) engines. Broader utility crypto
+APIs belong to [gnunet-crypto](../gnunet-crypto/README.md); declaration discovery
+is separate from external capability qualification.

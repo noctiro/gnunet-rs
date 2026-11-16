@@ -133,6 +133,7 @@ impl<'a> Target<'a> {
                 final_name,
                 identity,
                 receipt,
+                directory_sync,
                 final_parent,
             } => {
                 check(temporary)?;
@@ -148,6 +149,7 @@ impl<'a> Target<'a> {
                 session.append(Event::FileCommitted {
                     id: binding.id,
                     identity,
+                    directory_sync,
                 })
             }
             OutputObservation::Cleanup {
@@ -269,7 +271,7 @@ impl driver::Target for Target<'_> {
         if let Some(known) = self.snapshot(&binding)? {
             if let Some(identity) = known.committed {
                 if let Some(temp) = known.temporary.as_ref().filter(|_| !known.cleanup) {
-                    self.clean(&binding, temp, CommitStage::Durable)?;
+                    self.clean(&binding, temp, known.stage)?;
                 }
                 return Ok(self
                     .confirmed(&binding, identity, buffers, cache, options.limits, control)?
@@ -295,6 +297,9 @@ impl driver::Target for Target<'_> {
                     if let Err(cause) = lock(self.state)?.append(Event::FileCommitted {
                         id: binding.id,
                         identity,
+                        directory_sync: verified.read.directory_sync.ok_or(Cause::State(
+                            "native revalidation lacks its directory observation",
+                        ))?,
                     }) {
                         return Err(Cause::Committed(Box::new(CommitFailure {
                             identity,
@@ -302,7 +307,11 @@ impl driver::Target for Target<'_> {
                             cause: Box::new(cause),
                         })));
                     }
-                    if let Err(cause) = self.clean(&binding, temp, CommitStage::Durable) {
+                    if let Err(cause) = self.clean(
+                        &binding,
+                        temp,
+                        super::native_stage(verified.read.directory_sync)?,
+                    ) {
                         return Err(Cause::Committed(Box::new(CommitFailure {
                             identity,
                             receipt: verified.read,
@@ -473,9 +482,7 @@ impl driver::Target for Target<'_> {
                     walk::Kind::File => e.committed,
                 }
                 .ok_or(Cause::State("output entry is incomplete"))?;
-                if e.binding.kind == walk::Kind::File
-                    && (!e.cleanup || e.stage != CommitStage::Durable)
-                {
+                if e.binding.kind == walk::Kind::File && (!e.cleanup || !e.stage.is_committed()) {
                     return Err(Cause::State(
                         "output cleanup or commit requires reconciliation",
                     ));

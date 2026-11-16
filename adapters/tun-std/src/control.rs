@@ -1,6 +1,6 @@
 //! Original caller-owned configuration intents; external reports never become
 //! native route/address ACKs. Every action is explicit and tied to one device.
-use crate::{Epoch, Info, OwnedTun, platform};
+use crate::{Epoch, Info, OwnedTun};
 use std::{
     io,
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
@@ -9,15 +9,28 @@ use tokio::time::Instant;
 /// One explicit administrative action. Address/netmask are separate atomic calls.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Action {
-    /// Set MTU using the native interface ioctl.
+    /// Set the shared native Unix link MTU.
+    #[cfg(unix)]
     Mtu(u32),
-    /// Toggle IFF_UP while retaining other observed flags.
+    /// Set exactly one native Windows IP family's MTU. Every family has its own
+    /// original effect and completion; a later failure cannot hide an earlier call.
+    #[cfg(windows)]
+    IpMtu {
+        /// Exact IP family whose native row is modified.
+        version: crate::Version,
+        /// Requested MTU in bytes.
+        bytes: u32,
+    },
+    /// Set native administrative up/down, without operational-readiness credit.
     LinkUp(bool),
-    /// Set primary IPv4 address via native ioctl.
+    /// Set the native IPv4 address. Windows creates an explicit /32 row and
+    /// records it as this owner's primary address for the later netmask action;
+    /// it does not remove preexisting addresses or replace an existing row.
     Ipv4Address(Ipv4Addr),
-    /// Set IPv4 netmask via native ioctl.
+    /// Set the native IPv4 netmask. Windows updates the last address actually
+    /// created by this owner; a snapshot cannot choose a different address.
     Ipv4Netmask(Ipv4Addr),
-    /// Assign an IPv6 address/prefix using the actual native interface ioctl.
+    /// Assign an IPv6 address/prefix using the actual native interface API.
     Ipv6Address {
         /// Exact address.
         address: Ipv6Addr,
@@ -37,11 +50,21 @@ pub enum Action {
     },
 }
 impl Action {
-    fn validate(&self) -> io::Result<()> {
+    pub(crate) fn validate(&self) -> io::Result<()> {
         match self {
-            Self::Mtu(n) if *n == 0 || *n > 65535 => Err(platform::invalid("invalid MTU")),
+            #[cfg(unix)]
+            Self::Mtu(n) if *n == 0 || *n > 65535 => Err(invalid("invalid MTU")),
+            #[cfg(windows)]
+            Self::IpMtu { bytes, .. } if *bytes == 0 || *bytes > 65535 => {
+                Err(invalid("invalid IP MTU"))
+            }
             Self::Ipv6Address { prefix, .. } if *prefix > 128 => {
-                Err(platform::invalid("invalid IPv6 prefix"))
+                Err(invalid("invalid IPv6 prefix"))
+            }
+            Self::Ipv4Netmask(mask)
+                if u32::from(*mask).leading_ones() != u32::from(*mask).count_ones() =>
+            {
+                Err(invalid("noncontiguous IPv4 netmask"))
             }
             Self::Route {
                 destination,
@@ -51,7 +74,24 @@ impl Action {
             } if usize::from(*prefix) > if destination.is_ipv4() { 32 } else { 128 }
                 || gateway.is_some_and(|g| g.is_ipv4() != destination.is_ipv4()) =>
             {
-                Err(platform::invalid("invalid route prefix/family"))
+                Err(invalid("invalid route prefix/family"))
+            }
+            Self::Route {
+                destination,
+                prefix,
+                ..
+            } => {
+                let canonical = match destination {
+                    IpAddr::V4(ip) => *prefix == 32 || u32::from(*ip) & (u32::MAX >> *prefix) == 0,
+                    IpAddr::V6(ip) => {
+                        *prefix == 128 || u128::from(*ip) & (u128::MAX >> *prefix) == 0
+                    }
+                };
+                if canonical {
+                    Ok(())
+                } else {
+                    Err(invalid("noncanonical route destination"))
+                }
             }
             _ => Ok(()),
         }
@@ -149,7 +189,7 @@ pub struct Reported {
     /// Caller-supplied outcome; retained even if late/source-lost.
     pub outcome: io::Result<()>,
 }
-/// Actual successful native ioctl completion only; not remote packet delivery.
+/// Actual successful native administrative completion; not remote delivery.
 #[derive(Debug)]
 pub struct NativeApplied {
     id: EffectId,
@@ -162,7 +202,7 @@ impl NativeApplied {
     pub const fn id(&self) -> &EffectId {
         &self.id
     }
-    /// Original action whose actual ioctl returned success.
+    /// Original action whose native call returned success.
     #[must_use]
     pub const fn action(&self) -> &Action {
         &self.action
@@ -180,6 +220,8 @@ pub struct ApplyFailure {
     /// Actual native errno or explicit stale/unsupported rejection.
     pub error: io::Error,
     /// A native configuration path was attempted; no success is implied.
+    /// Earlier steps may have changed the kernel. Do not infer rollback or
+    /// automatically replay the retained effect.
     pub attempted: bool,
 }
 impl std::fmt::Debug for ApplyFailure {
@@ -215,7 +257,7 @@ impl OwnedTun {
         self.next_effect = self
             .next_effect
             .checked_add(1)
-            .ok_or_else(|| platform::invalid("effect identity exhausted"))?;
+            .ok_or_else(|| invalid("effect identity exhausted"))?;
         Ok(Effect {
             id: EffectId {
                 epoch: self.epoch.clone(),
@@ -226,91 +268,12 @@ impl OwnedTun {
             until,
         })
     }
-    /// Execute one real interface ioctl, including IPv6 address assignment.
-    /// Route effects use NativeRoute for bounded correlated kernel ACK handling.
-    /// A successful address ioctl does not claim IPv6 DAD has completed.
-    pub fn apply(&mut self, effect: Effect) -> Result<NativeApplied, ApplyFailure> {
-        let fail = |effect, error, attempted| ApplyFailure {
-            effect,
-            error,
-            attempted,
-        };
-        if effect.id.epoch != self.epoch || !effect.current() {
-            return Err(fail(
-                effect,
-                io::Error::new(io::ErrorKind::TimedOut, "stale original TUN effect"),
-                false,
-            ));
-        }
-        if matches!(effect.action, Action::Route { .. }) {
-            return Err(fail(
-                effect,
-                io::Error::new(
-                    io::ErrorKind::Unsupported,
-                    "use NativeRoute for correlated kernel route ACKs",
-                ),
-                false,
-            ));
-        }
-        let checked = (|| {
-            let fd = self
-                .fd
-                .as_ref()
-                .ok_or_else(|| io::Error::new(io::ErrorKind::NotConnected, "TUN closed"))?;
-            let current = platform::verify(fd)?;
-            if current.name != self.info.name || current.index != self.info.index {
-                return Err(platform::invalid("original interface name/index changed"));
-            }
-            Ok(())
-        })();
-        if let Err(error) = checked {
-            return Err(fail(effect, error, false));
-        }
-        if let Err(error) = platform::apply(&self.info, &effect.action) {
-            return Err(fail(effect, error, true));
-        }
-        let timing = if Instant::now() >= effect.until {
-            Timing::Late
-        } else {
-            Timing::Timely
-        };
-        Ok(NativeApplied {
-            id: effect.id,
-            action: effect.action,
-            timing,
-        })
-    }
 }
 
-impl OwnedTun {
-    /// Begin one original bounded native interface-route request. Socket creation
-    /// and registration do not submit the change; poll/drive performs the write.
-    pub fn route(&mut self, effect: Effect) -> Result<crate::NativeRoute, ApplyFailure> {
-        if effect.id.epoch != self.epoch || !effect.current() {
-            return Err(ApplyFailure {
-                effect,
-                error: io::Error::new(io::ErrorKind::TimedOut, "stale original TUN route effect"),
-                attempted: false,
-            });
-        }
-        let checked = (|| {
-            let fd = self
-                .fd
-                .as_ref()
-                .ok_or_else(|| io::Error::new(io::ErrorKind::NotConnected, "TUN closed"))?;
-            let current = platform::verify(fd)?;
-            if current.name != self.info.name || current.index != self.info.index {
-                return Err(platform::invalid("original interface name/index changed"));
-            }
-            Ok(())
-        })();
-        if let Err(error) = checked {
-            return Err(ApplyFailure {
-                effect,
-                error,
-                attempted: false,
-            });
-        }
-        crate::NativeRoute::start(effect)
-    }
+fn invalid(message: &'static str) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidInput, message)
 }
+#[cfg(unix)]
+mod unix;
+#[cfg(windows)]
+mod windows;

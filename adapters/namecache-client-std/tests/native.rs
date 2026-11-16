@@ -1,19 +1,16 @@
-//! One controlled original-MQ model using existing public ciphertext/query
-//! fixtures only. No zone/private seed, key generation, decryption or C service.
-//! Source preparation did not execute this model or its signature verification.
-#![cfg(unix)]
+//! Native AF_UNIX lifecycle and validation using published ciphertext/query vectors.
 use gnunet_namecache_client_host::{
     Cancellation, Client, EndpointSource, Instance, Limits, LocalReason, LossCause, Outcome,
     Progress, Submission,
     clock::{RuntimeClock, SystemClock},
     ipc::{Request, Response},
 };
+use gnunet_service_runtime::local::{Listener, Stream};
 use gnunet_types::{AbsoluteTime, Error as Fault};
 use gnunet_wire::official::MessageHeader;
 use std::{error::Error, path::PathBuf, sync::Arc, time::Duration};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::{UnixListener, UnixStream},
     time::Instant,
 };
 type Failure = Box<dyn Error + Send + Sync>;
@@ -27,11 +24,13 @@ const EXPIRATION: AbsoluteTime = AbsoluteTime::from_micros(17_999_736_901_000_00
 struct Scratch(PathBuf);
 impl Scratch {
     fn new() -> Result<Self, Failure> {
-        let n = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!("gncc-{}-{n}", std::process::id()));
-        std::fs::create_dir(&path)?;
+        let mut nonce = [0; 16];
+        gnunet_native::entropy::fill(&mut nonce[..12])?;
+        let base = std::fs::canonicalize(std::env::temp_dir())?;
+        let name = format!("nc-{:024x}", u128::from_le_bytes(nonce));
+        gnunet_native::filesystem::Directory::open(&base)?
+            .create_private_directory(std::ffi::OsStr::new(&name))?;
+        let path = base.join(name);
         Ok(Self(path))
     }
 }
@@ -40,7 +39,7 @@ impl Drop for Scratch {
         let _cleanup = std::fs::remove_dir_all(&self.0);
     }
 }
-async fn frame(stream: &mut UnixStream) -> Result<Vec<u8>, Failure> {
+async fn frame(stream: &mut Stream) -> Result<Vec<u8>, Failure> {
     let mut header = [0; 4];
     stream.read_exact(&mut header).await?;
     let mut bytes = vec![0; MessageHeader::decode(&header)?.size()];
@@ -48,7 +47,7 @@ async fn frame(stream: &mut UnixStream) -> Result<Vec<u8>, Failure> {
     stream.read_exact(&mut bytes[4..]).await?;
     Ok(bytes)
 }
-async fn send(stream: &mut UnixStream, response: Response<'_>) -> Result<(), Failure> {
+async fn send(stream: &mut Stream, response: Response<'_>) -> Result<(), Failure> {
     let mut bytes = vec![0; response.encoded_len()?];
     response.encode(&mut bytes)?;
     for part in bytes.chunks(5) {
@@ -56,7 +55,7 @@ async fn send(stream: &mut UnixStream, response: Response<'_>) -> Result<(), Fai
     }
     Ok(())
 }
-async fn actor(listener: UnixListener) -> Result<(), Failure> {
+async fn actor(listener: Listener) -> Result<(), Failure> {
     let (mut stream, _) = listener.accept().await?;
     let first = frame(&mut stream).await?;
     let Request::Lookup { rid: lookup, query } = Request::decode(&first)? else {
@@ -175,7 +174,20 @@ async fn actor(listener: UnixListener) -> Result<(), Failure> {
 async fn model() -> Result<(), Failure> {
     let scratch = Scratch::new()?;
     let path = scratch.0.join("s");
-    let listener = UnixListener::bind(&path)?;
+    let prepared =
+        gnunet_service_runtime::local_listener::prepare(path.clone(), Default::default(), 128)
+            .await?;
+    let (socket, _owned_path, warnings) = prepared.into_parts();
+    if !warnings.is_empty() {
+        return Err(format!("native listener warnings: {warnings:?}").into());
+    }
+    #[cfg(unix)]
+    let listener = {
+        let owned: std::os::fd::OwnedFd = socket.into();
+        Listener::from_std(std::os::unix::net::UnixListener::from(owned))?
+    };
+    #[cfg(windows)]
+    let listener = Listener::from_bound_socket(socket)?;
     let actor = tokio::spawn(actor(listener));
     let clock: Arc<dyn RuntimeClock> = Arc::new(SystemClock);
     let domain = Instance::new();

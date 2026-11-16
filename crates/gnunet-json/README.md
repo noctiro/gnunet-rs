@@ -3,6 +3,8 @@
 Shared parser/value/erasure code extracted from the completed RECLAIM
 credential helper, reusable by REST without a credential/service dependency. Default no_std/noalloc; only existing gnunet-types and zeroize dependencies.
 
+## Public interface
+
 `Workspace::new(payload,tokens,nesting)` owns exclusive caller buffers. `parse`, `parse_with` and `parse_with_check` validate complete JSON and expose a
 borrowed Document only after finite byte/token/depth/work and semantic admission. The decoder/fill runs once. Its returned length is checked. The higher-ranked
 semantic check cannot return a borrowed Document; any fill/parse/check failure

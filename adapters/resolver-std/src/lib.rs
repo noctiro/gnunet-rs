@@ -4,6 +4,10 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 mod io;
+mod machine;
+pub use machine::MachineDiagnostic;
+pub use machine::MachineInputs;
+pub use machine::MachineSource;
 pub mod startup;
 pub mod storage;
 use gnunet_client::resolver::{FamilyProfile, Request};
@@ -427,10 +431,26 @@ impl<'a, 'i, I: Idna, const R: usize, const N: usize, const S: usize> Host<'a, '
         }
         Ok(rejected)
     }
-    /// Isolated embedding/test transport capability, never a resolver config key.
+    /// Register a native DNS endpoint, preserving its actual port and IPv6 scope.
+    /// This is an explicit host input, never a private resolver configuration key.
     pub fn add_dns_endpoint(&mut self, address: SocketAddr) -> Result<(), HostError> {
         self.source_started = true;
         self.stub.add_dns_sa(address)?;
+        Ok(())
+    }
+    /// Install an explicit single native/embedding search domain before client
+    /// admission. Existing file parsing, C-string prefix and source name bounds
+    /// stay in the pure core; no DNS/NSS lookup or retry timer is created.
+    ///
+    /// # Errors
+    /// Refuses changes after any admission or with pending effects, and retains
+    /// the original core staging/resource error without resetting existing state.
+    pub fn set_search_domain(&mut self, domain: Option<&[u8]>) -> Result<(), HostError> {
+        if self.stopped || self.report.admitted != 0 || self.core.effect_count() != 0 {
+            return Err(Error::Conflict.into());
+        }
+        self.source_started = true;
+        self.core.set_search(&mut self.stage, domain)?;
         Ok(())
     }
     /// Change future stub retry periods without resetting an existing due retry.
@@ -951,7 +971,9 @@ impl<'a, 'i, I: Idna, const R: usize, const N: usize, const S: usize> Host<'a, '
                         }
                         UdpEvent::Sent { result, .. } => Pulse::Sent(result.is_ok()),
                         UdpEvent::SocketOpened { .. } => Pulse::Opened,
-                        UdpEvent::ReceiveFailed { .. } => Pulse::ReadFailed,
+                        UdpEvent::ReceiveFailed { .. } | UdpEvent::ReceiveRejected { .. } => {
+                            Pulse::ReadFailed
+                        }
                         UdpEvent::Discarded { .. } => Pulse::Discarded,
                     });
                     Flow::Return
@@ -1104,64 +1126,6 @@ fn validate_native(
     }
     Ok(())
 }
-/// Read only the production literal paths once. Missing/read-failed files retain
-/// service startup with empty bytes and explicit diagnostics, as upstream does.
-pub struct MachineFiles {
-    /// Owned literal hosts-file bytes, or explicitly supplied embedding fixture bytes.
-    pub hosts: Vec<u8>,
-    /// Owned literal resolver-file bytes, retaining the exact native line syntax.
-    pub resolv: Vec<u8>,
-    /// Path-qualified actual read or resource failures; they are not successful loads.
-    pub diagnostics: Vec<(&'static str, stdio::Error)>,
-}
-impl MachineFiles {
-    /// Open only literal /etc/hosts and /etc/resolv.conf, with a caller-selected
-    /// byte ceiling for each file. Read/limit failures are explicit diagnostics
-    /// and supply empty bytes for that failed file, matching startup continuation.
-    pub fn production(maximum_file_bytes: usize) -> Self {
-        fn read(path: &str, maximum: usize) -> stdio::Result<Vec<u8>> {
-            use std::io::Read;
-            let mut file = std::fs::File::open(path)?;
-            let mut bytes = Vec::new();
-            let mut block = [0u8; 8192];
-            loop {
-                let count = file.read(&mut block)?;
-                if count == 0 {
-                    return Ok(bytes);
-                }
-                if count > maximum.saturating_sub(bytes.len()) {
-                    return Err(stdio::Error::new(
-                        stdio::ErrorKind::InvalidData,
-                        "machine file exceeds explicit host byte capacity",
-                    ));
-                }
-                bytes.try_reserve_exact(count).map_err(|_| {
-                    stdio::Error::new(
-                        stdio::ErrorKind::OutOfMemory,
-                        "machine-file allocation capacity",
-                    )
-                })?;
-                bytes.extend_from_slice(&block[..count]);
-            }
-        }
-        let mut diagnostics = Vec::new();
-        let mut load = |path: &'static str| match read(path, maximum_file_bytes) {
-            Ok(bytes) => bytes,
-            Err(error) => {
-                diagnostics.push((path, error));
-                Vec::new()
-            }
-        };
-        let hosts = load("/etc/hosts");
-        let resolv = load("/etc/resolv.conf");
-        Self {
-            hosts,
-            resolv,
-            diagnostics,
-        }
-    }
-}
-
 #[cfg(test)]
 mod accepted_stream_tests {
     #![expect(

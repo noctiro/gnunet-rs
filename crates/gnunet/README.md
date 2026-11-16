@@ -14,7 +14,7 @@ gnunet = { path = "../gnunet-rs/crates/gnunet", default-features = false }
 ```
 
 Add the required features to that dependency, for example
-`features = ["official-ipc"]` for the native STATISTICS IPC adapter on Unix.
+`features = ["official-ipc"]` for the native STATISTICS IPC adapter on Unix and Windows.
 Enabling a feature exposes its API; it does not start services or supply their
 configuration, sockets or runtime drivers.
 
@@ -26,7 +26,8 @@ configuration, sockets or runtime drivers.
 | Crypto/artifacts | `gnunet::crypto`, `gnunet::session_crypto`, `gnunet::hello`, `gnunet::gnscrypto` |
 | Pure engines | `gnunet::core`, `gnunet::transport`, `gnunet::tcp`, `gnunet::udp`, `gnunet::statistics` |
 | Service clients | `gnunet::clients`; individual native clients use their feature gates |
-| Native STATISTICS IPC | `gnunet::ipc` with `official-ipc` on Unix |
+| Native STATISTICS IPC | `gnunet::ipc` with `official-ipc` on Unix and Windows |
+| Native SET and CONSENSUS services | `gnunet::set_host`, `seti_host`, `setu_host` and `consensus_host` with their `official-*-server` features on Unix and Windows |
 
 The [library source](src/lib.rs) and [client exports](src/clients.rs) show the full
 module/feature mapping. Individual crates and adapters document operation-level
@@ -37,10 +38,15 @@ contracts.
 - Use the default API for caller-storage codecs and pure engines.
 - `alloc` and domain-specific allocation features enable owned state where offered.
 - Native features such as `official-ipc`, `official-pils-client` and
-  `official-dht-client` add their selected host adapters. Check platform gates;
-  native features do not imply universal OS support.
+  `official-dht-client` add their selected host adapters. Their module paths
+  and feature names are shared by Unix and Windows; each adapter documents
+  its native handle, device and library requirements.
 - Use the service executables in [apps/](../../apps/) when a process entry point
   is required. The facade itself does not launch a node stack.
+
+`official-unix-communicator` requires native Unix datagram sockets and remains
+Unix-only. Its `unix-communicator` packet codec is portable. TLS and OIDC features
+also require their native cryptography build prerequisites.
 
 ## Driving operations
 

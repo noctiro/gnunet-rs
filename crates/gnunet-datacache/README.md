@@ -5,6 +5,8 @@ contract of GNUnet v0.29.1, revision346358e26d4dcc2dc4f51bef5d52dca29c7d8165. DA
 wire, message registry, socket protocol or SERVICE. This crate invents none. Destroying its memory owner discards all content. It contains no DHT network
 owner, resolver/host recovery, native runtime, crypto or key-loading operation.
 
+## Public interface
+
 The default noalloc API defines borrowed Block/PathElement metadata, a compile-time
 replaceable Storage trait and Cache<S> facade. It uses existing absolute-microsecond
 and Error types. A caller can supply fixed-storage or other Rust backends;
@@ -52,6 +54,8 @@ library header describes circular successors/N. Heap get_closest uses an
 uninitialized N-sized array as2N entries and can write/read out of bounds. Its
 hash comparison is also host-word/endian-dependent, unlike SQL BLOB ordering. Those implementation defects and inconsistent internal limits are not copied. The Rust contract above is explicit; this is not a claim of byte-for-byte C
 plugin/ABI behavior or a new protocol compatibility mode.
+
+## Limits
 
 Memory preallocates stable value slots, a sorted key index, free-slot stack and
 quota-selection workspace. Query startup is logarithmic; reading matches and

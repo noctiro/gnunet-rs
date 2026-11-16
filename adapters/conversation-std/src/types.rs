@@ -295,9 +295,14 @@ pub struct LineReport {
     pub cleanup: Option<Error>,
     /// First actual pre-attachment PILS attempt failure, even if later recovered.
     pub first_pils_retry: Option<std::io::Error>,
+    /// First actual identity-observer connection loss, even if later recovered.
+    /// This does not attest to lost CADET channels or a remote hangup.
+    pub first_pils_loss: Option<gnunet_pils_host::client::ConnectionLoss>,
     /// First actual pre-attachment CADET attempt failure, even if later recovered.
     pub first_cadet_retry: Option<std::io::Error>,
-    /// Actual initial PILS identity/source, not ego caller identity.
+    /// First physical CADET MQ loss, even when the local Line recovered.
+    pub first_cadet_loss: Option<gnunet_cadet_host::LossCause>,
+    /// Latest verified PILS identity/source; existing calls retain their own context.
     pub identity: Option<([u8; 32], u64)>,
     /// Real call owner admissions.
     pub calls_started: u64,
@@ -350,6 +355,13 @@ pub struct Report {
 }
 /// Native observations without private key/audio Debug payloads.
 #[derive(Debug)]
+#[cfg_attr(
+    target_pointer_width = "64",
+    expect(
+        clippy::large_enum_variant,
+        reason = "Original terminal reports stay inline without allocating after physical retirement"
+    )
+)]
 pub enum Event {
     /// Standard socket acceptance/diagnostic event.
     Socket(SocketEvent),

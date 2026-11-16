@@ -1,4 +1,5 @@
 //! Actual local ARM IPC/process/readiness witnesses using the shared native port.
+#![cfg(unix)]
 #![expect(
     clippy::expect_used,
     reason = "Finite owned-resource fixtures require each actual setup/result"
@@ -310,9 +311,11 @@ fn actual_control_unix_test_list_fragment_cancel_unknown_and_malformed_eof() -> 
             &mut managed,
             &mut children.0,
             &mut state,
-            &c,
-            helper(),
-            &env,
+            gnunet_arm_service_host::process::LaunchContext {
+                config: &c,
+                helper: helper(),
+                environment: &env,
+            },
             &options,
             &mut rows,
             &mut clock,
@@ -384,9 +387,11 @@ fn actual_spawn_monitor_spelling_pipe_term_consuming_reap_and_original_argv0() -
             &mut managed,
             &mut children.0,
             &mut state,
-            &c,
-            helper(),
-            &env,
+            gnunet_arm_service_host::process::LaunchContext {
+                config: &c,
+                helper: helper(),
+                environment: &env,
+            },
             &options,
             &mut rows,
             &mut clock,
@@ -453,13 +458,23 @@ fn actual_two_listener_demand_preserves_kernel_queues_until_original_child_accep
         let mut managed = ManagedListeners::new(2);
         assert!(matches!(
             managed
-                .bind_address(0, Address::Unix(dir.0.join("service.sock")), 0o700)
+                .bind_address(
+                    0,
+                    Address::Unix(dir.0.join("service.sock")),
+                    gnunet_service_runtime::LocalListenerAccess::Owner
+                )
+                .await
                 .map_err(Error::Listener)?,
             gnunet_arm_service_host::listeners::BindOutcome::Bound { .. }
         ));
         assert!(matches!(
             managed
-                .bind_address(0, Address::Tcp("127.0.0.1:0".parse()?), 0o700)
+                .bind_address(
+                    0,
+                    Address::Tcp("127.0.0.1:0".parse()?),
+                    gnunet_service_runtime::LocalListenerAccess::Owner
+                )
+                .await
                 .map_err(Error::Listener)?,
             gnunet_arm_service_host::listeners::BindOutcome::Bound { .. }
         ));
@@ -481,9 +496,11 @@ fn actual_two_listener_demand_preserves_kernel_queues_until_original_child_accep
             &mut managed,
             &mut children.0,
             &mut state,
-            &c,
-            helper(),
-            &env,
+            gnunet_arm_service_host::process::LaunchContext {
+                config: &c,
+                helper: helper(),
+                environment: &env,
+            },
             &options,
             &mut rows,
             &mut clock,
@@ -556,9 +573,11 @@ fn admitted_child_and_lease_survive_clock_error_and_driver_reborrow() -> Test {
                 &mut managed,
                 &mut children.0,
                 &mut state,
-                &c,
-                helper(),
-                &env,
+                gnunet_arm_service_host::process::LaunchContext {
+                    config: &c,
+                    helper: helper(),
+                    environment: &env,
+                },
                 &options,
                 &mut rows,
                 &mut clock,
@@ -575,9 +594,11 @@ fn admitted_child_and_lease_survive_clock_error_and_driver_reborrow() -> Test {
             &mut managed,
             &mut children.0,
             &mut state,
-            &c,
-            helper(),
-            &env,
+            gnunet_arm_service_host::process::LaunchContext {
+                config: &c,
+                helper: helper(),
+                environment: &env,
+            },
             &options,
             &mut rows,
             &mut clock,
@@ -623,9 +644,11 @@ fn actual_host_child_capacity_refusal_has_no_ghost_and_does_not_block_original_t
             &mut managed,
             &mut children.0,
             &mut state,
-            &c,
-            helper(),
-            &env,
+            gnunet_arm_service_host::process::LaunchContext {
+                config: &c,
+                helper: helper(),
+                environment: &env,
+            },
             &options,
             &mut rows,
             &mut clock,
@@ -717,9 +740,11 @@ fn actual_nonzero_exit_restarts_at_idle_and_final_shutdown_cancels_the_original_
             &mut managed,
             &mut children.0,
             &mut state,
-            &c,
-            helper(),
-            &env,
+            gnunet_arm_service_host::process::LaunchContext {
+                config: &c,
+                helper: helper(),
+                environment: &env,
+            },
             &options,
             &mut rows,
             &mut clock,
@@ -764,9 +789,11 @@ fn empty_registry_driver_reborrow_rejects_foreign_owner_without_touching_origina
                 &mut managed,
                 &mut children.0,
                 &mut state,
-                &c,
-                helper(),
-                &env,
+                gnunet_arm_service_host::process::LaunchContext {
+                    config: &c,
+                    helper: helper(),
+                    environment: &env,
+                },
                 &options,
                 &mut rows,
                 &mut clock,
@@ -792,12 +819,14 @@ fn empty_registry_driver_reborrow_rejects_foreign_owner_without_touching_origina
                 &mut managed,
                 &mut children.0,
                 &mut state,
-                &c,
-                helper(),
-                &env,
+                gnunet_arm_service_host::process::LaunchContext {
+                    config: &c,
+                    helper: helper(),
+                    environment: &env
+                },
                 &options,
                 &mut rows,
-                &mut clock
+                &mut clock,
             ),
             Err(Error::Mapping)
         ));
@@ -807,9 +836,11 @@ fn empty_registry_driver_reborrow_rejects_foreign_owner_without_touching_origina
             &mut managed,
             &mut children.0,
             &mut state,
-            &c,
-            helper(),
-            &env,
+            gnunet_arm_service_host::process::LaunchContext {
+                config: &c,
+                helper: helper(),
+                environment: &env,
+            },
             &options,
             &mut rows,
             &mut clock,
@@ -854,9 +885,11 @@ fn late_control_admission_survives_real_child_drain_and_persisted_requester_clos
             &mut managed,
             &mut children.0,
             &mut state,
-            &c,
-            helper(),
-            &env,
+            gnunet_arm_service_host::process::LaunchContext {
+                config: &c,
+                helper: helper(),
+                environment: &env,
+            },
             &options,
             &mut rows,
             &mut clock,
@@ -948,9 +981,11 @@ fn expired_idle_restart_does_not_overtake_actual_fragmented_control_rx_or_nonemp
             &mut managed,
             &mut children.0,
             &mut state,
-            &c,
-            helper(),
-            &env,
+            gnunet_arm_service_host::process::LaunchContext {
+                config: &c,
+                helper: helper(),
+                environment: &env,
+            },
             &options,
             &mut rows,
             &mut clock,
@@ -1006,9 +1041,11 @@ fn actual_idle_registration_survives_backward_utc_and_uses_original_absolute_tar
             &mut managed,
             &mut children.0,
             &mut state,
-            &c,
-            helper(),
-            &env,
+            gnunet_arm_service_host::process::LaunchContext {
+                config: &c,
+                helper: helper(),
+                environment: &env,
+            },
             &options,
             &mut rows,
             &mut clock,
@@ -1079,7 +1116,12 @@ fn every_managed_unix_path_is_closed_before_any_actual_control_term_byte() -> Te
         for (index, name) in ["one.sock", "two.sock"].into_iter().enumerate() {
             assert!(matches!(
                 managed
-                    .bind_address(index, Address::Unix(dir.0.join(name)), 0o700)
+                    .bind_address(
+                        index,
+                        Address::Unix(dir.0.join(name)),
+                        gnunet_service_runtime::LocalListenerAccess::Owner
+                    )
+                    .await
                     .map_err(Error::Listener)?,
                 gnunet_arm_service_host::listeners::BindOutcome::Bound { .. }
             ));
@@ -1098,9 +1140,11 @@ fn every_managed_unix_path_is_closed_before_any_actual_control_term_byte() -> Te
             &mut managed,
             &mut children.0,
             &mut state,
-            &c,
-            helper(),
-            &env,
+            gnunet_arm_service_host::process::LaunchContext {
+                config: &c,
+                helper: helper(),
+                environment: &env,
+            },
             &options,
             &mut rows,
             &mut clock,
@@ -1160,9 +1204,11 @@ fn canceled_drive_retains_real_partial_list_tx_and_blocked_peer_does_not_block_o
             &mut managed,
             &mut children.0,
             &mut state,
-            &c,
-            helper(),
-            &env,
+            gnunet_arm_service_host::process::LaunchContext {
+                config: &c,
+                helper: helper(),
+                environment: &env,
+            },
             &options,
             &mut rows,
             &mut clock,
@@ -1197,9 +1243,11 @@ fn canceled_drive_retains_real_partial_list_tx_and_blocked_peer_does_not_block_o
             &mut managed,
             &mut children.0,
             &mut state,
-            &c,
-            helper(),
-            &env,
+            gnunet_arm_service_host::process::LaunchContext {
+                config: &c,
+                helper: helper(),
+                environment: &env,
+            },
             &options,
             &mut rows,
             &mut clock,
@@ -1265,12 +1313,14 @@ fn dedicated_registry_rejects_foreign_live_child_and_returns_foreign_actual_comp
                 &mut managed,
                 &mut children.0,
                 &mut state,
-                &c,
-                helper(),
-                &env,
+                gnunet_arm_service_host::process::LaunchContext {
+                    config: &c,
+                    helper: helper(),
+                    environment: &env
+                },
                 &options,
                 &mut rows,
-                &mut clock
+                &mut clock,
             ),
             Err(Error::Mapping)
         ));
@@ -1287,9 +1337,11 @@ fn dedicated_registry_rejects_foreign_live_child_and_returns_foreign_actual_comp
             &mut managed,
             &mut children.0,
             &mut state,
-            &c,
-            helper(),
-            &env,
+            gnunet_arm_service_host::process::LaunchContext {
+                config: &c,
+                helper: helper(),
+                environment: &env,
+            },
             &options,
             &mut rows,
             &mut clock,
@@ -1336,9 +1388,11 @@ fn ready_clients_and_each_stream_direction_progress_before_an_earlier_backlog_dr
             &mut managed,
             &mut children.0,
             &mut state,
-            &c,
-            helper(),
-            &env,
+            gnunet_arm_service_host::process::LaunchContext {
+                config: &c,
+                helper: helper(),
+                environment: &env,
+            },
             &options,
             &mut rows,
             &mut clock,
@@ -1402,7 +1456,12 @@ fn queued_managed_demand_progresses_while_control_input_remains_ready() -> Test 
         let mut managed = ManagedListeners::new(1);
         let path = dir.0.join("demand.sock");
         let _bound = managed
-            .bind_address(0, Address::Unix(path.clone()), 0o700)
+            .bind_address(
+                0,
+                Address::Unix(path.clone()),
+                gnunet_service_runtime::LocalListenerAccess::Owner,
+            )
+            .await
             .map_err(Error::Listener)?;
         owners!(
             registry, managed, scope, slots, clients, ls, bytes, frames, owner
@@ -1418,9 +1477,11 @@ fn queued_managed_demand_progresses_while_control_input_remains_ready() -> Test 
             &mut managed,
             &mut children.0,
             &mut state,
-            &c,
-            helper(),
-            &env,
+            gnunet_arm_service_host::process::LaunchContext {
+                config: &c,
+                helper: helper(),
+                environment: &env,
+            },
             &options,
             &mut rows,
             &mut clock,
@@ -1473,19 +1534,15 @@ fn persisted_self_stop_malformed_message_keeps_actual_socket_until_external_stat
         let mut rows = [row()];
         let mut clock = SystemClock;
         let options = ServiceOptions::default();
-        let mut driver = Driver::new(
-            &mut owner,
-            &registry,
-            &mut managed,
-            &mut children.0,
-            &mut state,
-            &c,
-            helper(),
-            &env,
-            &options,
-            &mut rows,
-            &mut clock,
-        )?;
+        let mut driver = Driver::new(&mut owner,
+&registry,
+&mut managed,
+&mut children.0,
+&mut state,
+gnunet_arm_service_host::process::LaunchContext { config: &c, helper: helper(), environment: &env },
+&options,
+&mut rows,
+&mut clock,)?;
         pump(&mut driver, |d| {
             d.phase() == Phase::Serving
                 && std::fs::read_to_string(dir.0.join("trace")).is_ok_and(|s| s.contains("ready=1"))
@@ -1515,7 +1572,15 @@ fn persisted_self_stop_malformed_message_keeps_actual_socket_until_external_stat
         let observed=tokio::time::timeout(Duration::from_millis(30),requester.read(&mut byte)).await;
         assert!(observed.is_err(),"persisted requester was physically closed during child drain: read={observed:?}, retained={retained}");
         assert_eq!(retained,1);
-        let mut driver=Driver::new(&mut owner,&registry,&mut managed,&mut children.0,&mut state,&c,helper(),&env,&options,&mut rows,&mut clock)?;
+        let mut driver=Driver::new(&mut owner,
+&registry,
+&mut managed,
+&mut children.0,
+&mut state,
+gnunet_arm_service_host::process::LaunchContext { config: &c, helper: helper(), environment: &env },
+&options,
+&mut rows,
+&mut clock,)?;
         assert_eq!(driver.counters().closed, 0);
         let (additional, mut additional_peer) = UnixStream::pair()?;
         assert!(driver.admit(

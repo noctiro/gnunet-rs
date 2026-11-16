@@ -21,7 +21,6 @@ gnunet-service-runtime.workspace = true
 gnunet-transport-application-host.workspace = true
 gnunet-types.workspace = true
 gnunet-wire.workspace = true
-libc.workspace = true
 socket2.workspace = true
 tokio = { workspace = true, features = ["rt", "net", "time"] }
 

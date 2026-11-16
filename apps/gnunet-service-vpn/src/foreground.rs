@@ -1,10 +1,8 @@
 //! Direct caller-driven SERVICE over the original native TUN/CADET/REGEX owners.
 use crate::{
-    Failure,
-    control::Signals,
-    discovery,
+    Failure, discovery,
     lifecycle::{self, Cleanup, Stage},
-    settings::{self, Settings, TunMode},
+    settings::{self, Settings},
 };
 use gnunet_cadet_host as cadet;
 use gnunet_client_host::{EndpointSource, LiveConfiguration};
@@ -16,17 +14,17 @@ use gnunet_service_runtime::{
     clock::RuntimeClock,
     service::{Listener, ShutdownMode},
 };
-use gnunet_service_startup::{ParentControl, daemon::ChildReady};
-use gnunet_tun_host as tun;
+use gnunet_service_startup::{ControlReceiver, StopSignals as Signals};
 use gnunet_vpn as core;
 use gnunet_vpn_host::{
-    coordinator::{Coordinator, Device, Event, Parts, Progress},
+    coordinator::{Coordinator, Event, Parts, Progress},
     server,
 };
+#[cfg(unix)]
+use std::os::fd::OwnedFd;
 use std::{
     future::{Future, poll_fn},
     io::{self, Write},
-    os::fd::OwnedFd,
     sync::Arc,
     task::Poll,
 };
@@ -36,10 +34,14 @@ struct Diagnostics {
     failed: bool,
     reports: Reporter,
     cleanup: Cleanup,
+    #[cfg(windows)]
+    recovery: crate::recovery::Controller,
 }
 impl Diagnostics {
     fn new(reports: Reporter, cleanup: Cleanup) -> Self {
         Self {
+            #[cfg(windows)]
+            recovery: crate::recovery::Controller::new(cleanup.clone()),
             backend: false,
             failed: false,
             reports,
@@ -57,12 +59,24 @@ impl Diagnostics {
                 self.reports.warning("vpn.cadet.lost",format_args!("VPN original CADET lost={report:?} cause={cause:?}; original payload replay=false"));
             },
             Event::BackendRetry{error,retry_after}=>self.reports.warning("vpn.cadet.retry",format_args!("VPN actual CADET connection failed={error}; retry={retry_after:?}")),
-            Event::TunLost(loss)=>{
+            Event::TunLost(mut loss)=>{
+                #[cfg(windows)]
+                match self.recovery.offer(loss, &self.reports) {
+                    Ok(()) => return,
+                    Err(original) => loss = original,
+                }
                 self.failed=true;
+                loss.release_wintun_recovery();
                 self.reports.warning("vpn.tun.lost",format_args!("VPN actual original TUN loss={loss:?}"));
                 self.cleanup.retain(Stage::ObservedTun,Box::new(lifecycle::TunLoss(loss)));
             },
             Event::TunCoreLost(loss)=>self.reports.debug("vpn.tun.retired",format_args!("VPN original TUN scope retired={loss:?}")),
+            #[cfg(windows)]
+            Event::InterfaceRetired(scope)=>self.recovery.scope(scope, &self.reports),
+            #[cfg(windows)]
+            Event::RecoveryError(error)=>self.recovery.error(Box::new(error), &self.reports),
+            #[cfg(windows)]
+            Event::RecoveryControlFailed(error)=>self.recovery.error(Box::new(error), &self.reports),
             Event::PeerLost(loss)=>self.reports.debug("vpn.peer.retired",format_args!("VPN original peer retired={loss:?}")),
             Event::ControlFailed(error)=>{
                 self.failed=true;
@@ -210,6 +224,7 @@ fn core_error_unknown() -> Failure {
 impl Drop for Owners<'_, '_, '_, '_, '_, '_, '_> {
     fn drop(&mut self) {
         if !self.done {
+            self.vpn.defer_interface_cleanup();
             self.retire();
             self.reports.warning("vpn.cancelled",format_args!("VPN caller future dropped: original REGEX/IPC/CADET/TUN physical close attempted; actual independent causes/debt retained, downstream processing unclaimed"));
         }
@@ -220,98 +235,7 @@ fn target(duration: std::time::Duration) -> Result<Instant, Failure> {
         .checked_add(duration)
         .ok_or_else(|| "VPN native deadline overflow".into())
 }
-async fn open(
-    settings: &Settings,
-    inherited: Option<OwnedFd>,
-    cleanup: &Cleanup,
-) -> Result<Device, Failure> {
-    let limits = tun::Limits {
-        packet_bytes: settings.core.packet_bytes,
-    };
-    let device = match settings.mode {
-        TunMode::Preopened => {
-            let fd = inherited.ok_or(
-                "preopened mode requires GNUNET_VPN_TUN_FD exclusively transferred by the parent",
-            )?;
-            Device::borrow_existing(tun::AsyncTun::new(tun::OwnedTun::from_fd(fd, limits)?)?)
-        }
-        TunMode::Fresh => {
-            if inherited.is_some() {
-                return Err(
-                    "fresh mode refuses GNUNET_VPN_TUN_FD; choose explicit preopened mode".into(),
-                );
-            }
-            #[cfg(target_os = "linux")]
-            {
-                let ipv4 = settings
-                    .core
-                    .ipv4
-                    .map(|prefix| match prefix.interface {
-                        core::Address::V4(address) => {
-                            let mask = if prefix.bits == 0 {
-                                0
-                            } else {
-                                u32::MAX << (32 - prefix.bits)
-                            };
-                            Ok((address.into(), std::net::Ipv4Addr::from(mask)))
-                        }
-                        _ => Err(gnunet_types::Error::InvalidInput),
-                    })
-                    .transpose()?;
-                let ipv6 = settings
-                    .core
-                    .ipv6
-                    .map(|prefix| match prefix.interface {
-                        core::Address::V6(address) => Ok((address.into(), prefix.bits)),
-                        _ => Err(gnunet_types::Error::InvalidInput),
-                    })
-                    .transpose()?;
-                Device::start_helper(
-                    tun::helper::Options {
-                        executable: settings
-                            .helper
-                            .clone()
-                            .ok_or("fresh Linux helper path missing")?,
-                        interface: settings.ifname.clone(),
-                        ipv4,
-                        ipv6,
-                        mtu: settings.helper_mtu,
-                        until: target(settings.coordinator.control_timeout)?,
-                        partial_lifetime: settings.helper_partial,
-                    },
-                    limits,
-                )?
-            }
-            #[cfg(target_os = "macos")]
-            {
-                let unit = settings
-                    .ifname
-                    .strip_prefix("utun")
-                    .ok_or("macOS IFNAME must be utunN")?
-                    .parse()?;
-                Device::open_utun_unit(Some(unit), limits)?
-            }
-            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-            {
-                return Err("fresh native VPN TUN is implemented only for Linux and macOS".into());
-            }
-        }
-    };
-    if device.info().name != settings.ifname {
-        let observed = device.info().name.clone();
-        let mut io = device.into_io();
-        let loss = io.close();
-        if let Some(report) = io.reap_helper().await {
-            cleanup.helper(report);
-        }
-        return Err(Box::new(lifecycle::Qualification {
-            expected: settings.ifname.clone(),
-            observed,
-            loss,
-        }));
-    }
-    Ok(device)
-}
+
 enum Turn {
     Signal,
     Progress(Progress),
@@ -336,12 +260,15 @@ async fn turn(
         if reports.failed() {
             return Poll::Ready(Ok(Turn::Signal));
         }
-        if let Poll::Ready(signal) = signals.poll(cx) {
+        if let Poll::Ready(signal) = signals.poll_stop(cx) {
             return Poll::Ready(signal.map(|()| Turn::Signal).map_err(Into::into));
         }
         let guarded = vpn.poll_native_guard(cx, &mut |event| diagnostics.observe(event))?;
         if reports.failed() || diagnostics.failed {
             return Poll::Ready(Ok(Turn::Signal));
+        }
+        if until.is_some_and(|hard| Instant::now() >= hard) {
+            return Poll::Ready(Ok(Turn::Progress(Progress::WaitDeadline)));
         }
         let mut changed = guarded;
         changed |= match resolving.as_mut().poll(cx) {
@@ -387,6 +314,19 @@ async fn turn(
         if reports.failed() || diagnostics.failed {
             return Poll::Ready(Ok(Turn::Signal));
         }
+        #[cfg(windows)]
+        {
+            // Catch stop arriving during the preceding synchronous native calls
+            // before admitting another session on the retained adapter.
+            if let Poll::Ready(signal) = signals.poll_stop(cx) {
+                return Poll::Ready(signal.map(|()| Turn::Signal).map_err(Into::into));
+            }
+            match diagnostics.recovery.poll(cx, vpn, &reports) {
+                Poll::Ready(Ok(activity)) => changed |= activity,
+                Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
+                Poll::Pending => {}
+            }
+        }
         if duplicate_refusal {
             return Poll::Ready(Err(gnunet_types::Error::Capacity.into()));
         }
@@ -424,23 +364,26 @@ pub(super) struct Inputs<'a> {
     pub config: &'a Configuration,
     pub settings: &'a Settings,
     pub bound: &'a BoundListeners,
-    pub parent: Option<ParentControl>,
+    pub parent: Option<ControlReceiver>,
+    #[cfg(unix)]
     pub tun: Option<OwnedFd>,
     pub clock: Arc<dyn RuntimeClock>,
     pub reports: Reporter,
-    pub child: &'a mut ChildReady,
     pub cleanup: Cleanup,
 }
-pub(super) async fn run(input: Inputs<'_>) -> Result<(), Failure> {
+pub(super) async fn run(
+    input: Inputs<'_>,
+    ready: impl Future<Output = Result<(), Failure>>,
+) -> Result<(), Failure> {
     let Inputs {
         config,
         settings,
         bound,
         parent,
+        #[cfg(unix)]
         tun,
         clock,
         reports,
-        child,
         cleanup,
     } = input;
     let mut signals = Signals::new(parent)?;
@@ -513,7 +456,7 @@ pub(super) async fn run(input: Inputs<'_>) -> Result<(), Failure> {
     if reports.failed() {
         return Ok(());
     }
-    if let Some(stopped) = poll_fn(|cx| match signals.poll(cx) {
+    if let Some(stopped) = poll_fn(|cx| match signals.poll_stop(cx) {
         Poll::Ready(value) => Poll::Ready(Some(value)),
         Poll::Pending => Poll::Ready(None),
     })
@@ -522,7 +465,13 @@ pub(super) async fn run(input: Inputs<'_>) -> Result<(), Failure> {
         stopped?;
         return Err("VPN stopped before helper/device admission".into());
     }
-    let device = open(settings, tun, &cleanup).await?;
+    let device = crate::device::open(
+        settings,
+        #[cfg(unix)]
+        tun,
+        &cleanup,
+    )
+    .await?;
     let regex_domain = gnunet_regex_client_host::Instance::new();
     let mut diagnostics = Diagnostics::new(reports.clone(), cleanup.clone());
     let vpn = match Coordinator::new(
@@ -551,11 +500,18 @@ pub(super) async fn run(input: Inputs<'_>) -> Result<(), Failure> {
             if loss.close_error.is_some() {
                 cleanup.retain(Stage::ConstructionTun, Box::new(lifecycle::TunLoss(loss)));
             }
+            #[cfg(unix)]
             if let Some(report) = device.reap_helper().await {
                 cleanup.helper(report);
             }
             return Err(Box::new(rejected.error));
         }
+    };
+    #[cfg(windows)]
+    let vpn = {
+        let mut vpn = vpn;
+        vpn.enable_wintun_recovery()?;
+        vpn
     };
     let mut owners = Owners {
         vpn,
@@ -582,6 +538,7 @@ pub(super) async fn run(input: Inputs<'_>) -> Result<(), Failure> {
         // actual CADET attachment; neither allocation nor CreateQueued is ready.
         let mut turns=0u8;
         loop {
+            if Instant::now() >= startup { return Err("VPN original startup deadline before readiness".into()); }
             if reports.failed(){return Err("VPN selected diagnostic source failed before readiness".into())}
             if diagnostics.backend&&owners.vpn.tun_ready()? {break}
             match turn(&mut owners,&mut resolver,&mut signals,&[],Some(startup),&mut diagnostics).await? {
@@ -602,10 +559,12 @@ pub(super) async fn run(input: Inputs<'_>) -> Result<(), Failure> {
             let actual_name = &actual.name;
             let actual_index = actual.index;
             let mut output=io::stdout().lock();
-            writeln!(output,"READY vpn wire=0.29.1 tun={} index={} mode={:?} native-plan=observed packet-source={} cadet=attached configured-exits={} automatic-regex={} shared-packet-bytes={} runtime=current-thread remote-reachability=unasserted",actual_name,actual_index,settings.mode,if owners.vpn.uses_helper(){"helper-pipes"}else{"native-fd"},settings.exits.len(),if settings.regex.is_some(){"on-demand-client"}else{"disabled"},settings.backing_bytes)?;
+            writeln!(output,"READY vpn wire=0.29.1 tun={} index={} mode={:?} native-plan=observed packet-source={} cadet=attached configured-exits={} automatic-regex={} shared-packet-bytes={} runtime=current-thread remote-reachability=unasserted",actual_name,actual_index,settings.mode,if owners.vpn.uses_helper(){"helper-pipes"}else if cfg!(windows){"wintun-rings"}else{"native-fd"},settings.exits.len(),if settings.regex.is_some(){"on-demand-client"}else{"disabled"},settings.backing_bytes)?;
             output.flush()?;
         }
-        child.ready()?;
+        tokio::time::timeout_at(startup, gnunet_program_host::service::acknowledge_ready(
+            ready, &mut signals, &reports, settings.startup,
+        )).await.map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "VPN original startup readiness deadline"))??;
         let mut stopping=None;
         loop {
             match turn(&mut owners,&mut resolver,&mut signals,&listeners,stopping,&mut diagnostics).await? {
@@ -624,10 +583,13 @@ pub(super) async fn run(input: Inputs<'_>) -> Result<(), Failure> {
         }
         Ok::<(),Failure>(())
     }.await;
+    #[cfg(windows)]
+    diagnostics.recovery.finish();
     // No source error short-circuits another original physical close.
     owners.retire();
     // Actual SIGKILL/pipe closure does not stand in for original wait/reap.
     // This future remains owned until that native wait returns its real result.
+    #[cfg(unix)]
     if let Some(report) = owners.vpn.reap_helper().await {
         cleanup.helper(report);
     }

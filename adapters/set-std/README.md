@@ -4,11 +4,15 @@
 standard SERVICE client sockets and one original `gnunet-cadet-host::Client`. The foreground supplies the branded pure and native instances, canonical
 EndpointSource/RuntimeClock, configured listeners, service options and Unix ACL. It polls this owner directly; there are no hidden tasks, private RPCs or workers.
 
+## Public interface
+
 `Server::new(core, cadet, limits, options, unix)` retains those owners. `clock`, `report`, `poll`, cancellation-safe `drive`, `request_shutdown` and
 clock-free `shutdown` follow the ordinary native SERVICE pattern. `initialized`
 and `ready` mean the CADET MQ is attached; generic SET has no fixed global
 port. Each LISTEN creates its own standard application port. Readiness is
 not a SET processing receipt, remote acceptance, delivery or durability claim.
+
+## Wire and native ownership
 
 The pure core selects an explicit old SET native ABI. The host copies each
 already encoded immutable core response/peer frame unchanged to its original
@@ -26,6 +30,8 @@ completion refuses. No unconsumed old packet is relabeled as a new operation. Ad
 incoming channels and preserves accepted operation channels. Parallel operations
 with the same peer/application retain distinct branded channels and owner tokens.
 
+## Effects and buffers
+
 Every native frame has its original immutable EffectId, whole/partial exposure,
 fixed hard deadline and terminal disposition. Client close first retires
 its physical IO, then accounts original output, then detaches the pure client. Channel destruction/loss settles original pending and queued sends before
@@ -36,6 +42,8 @@ ClosePeer and listener aggregation share one physical retirement. Automatic desi
 them; a partial unidentifiable restored announcement requires retiring its actual
 MQ. Old exposed actions are never replayed. A later independent user operation
 can open a new channel; a transport reconnect cannot make the old one successful.
+
+## Limits and scheduling
 
 Configured clients/ports/channels and peer/output queues are finite and fallibly
 allocated. Output pressure retains the original unadmitted core action while the
@@ -77,6 +85,8 @@ pure quiescence. Cleanup errors remain observable.
 
 Pure controls do not establish generic SET peer interoperability or native
 service qualification. See the [release criteria](../../spec/gnunet/external/RELEASE.md).
+
+## Peer retirement
 
 A fully received DATA packet remains bound to its original adopted operation
 when a later CADET `Destroyed` event arrives. The host classifies those

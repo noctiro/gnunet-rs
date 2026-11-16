@@ -1,34 +1,38 @@
-# Ordinary CONVERSATION service source
+# Conversation service
 
-`gnunet-service-conversation` composes local IPC, per-Line call cores and
-original CADET/PILS sources. The conditional fixed C service uses option NONE
-and explicit Unix UID=NO/GID=YES; these defaults are retained. Ordinary early
-inherited descriptor capture, fresh-process daemon transition, USERNAME before
-Unix listener finish, socket binding, selected Logger/shared Clock,
-explicit Resolver, parent control and signals use the normal facilities.
+`gnunet-service-conversation -c service.conf` composes official local IPC,
+per-Line call state and original CADET/PILS sources. Each Line owns its caller
+frames and native source state. Caller ego keys and network peer identities
+remain distinct.
 
-Node-wide `[PILS] PROFILE` selects the native identity verifier. Optional `[conversation-service-rust] PILS_PROFILE` must agree with an explicit
-node choice. The default is `reference029`; `deterministic` and its
-`reference-deterministic` alias select the official conditional build. `lsd0014-text` remains an explicit, separate published derivation, without a
-verification fallback or official C build qualification. These settings do not
-change wire formats or grant replacement-MQ recovery. Healthy same-observer peer
-changes retain registered ports and original channels; their ringing signatures
-keep the local target captured when each incoming channel was admitted.
+## Startup and configuration
 
-READY means local IPC listeners and admission, not connected PILS/CADET,
-verified remote ringing, pickup, publication or sound-device readiness. Each
-Line owns private caller frames and native source state independently. The caller ego key is not the network peer identity. Exact original delivery,
-partial/whole writes and source identities reach the host/core, never a
-new remote ACK. Clock-free source retirement and independent cleanup precede
-STOPPED; undrained original debt forbids a successful stop claim.
+The shared [native SERVICE driver](../../adapters/program-std/README.md#service-startup)
+provides standard options, selected diagnostics, configured identity, listeners,
+original parent control and stop subscriptions. Unix uses privilege changes and
+fork detachment; Windows verifies the process token and uses native activation,
+managed console detachment or qualified standalone re-exec.
 
-[conversation-service-rust] configures global Lines/calls, per-Line core and
-CADET/PILS/HELLO resources, UTC uncertainty and original startup,
-first/partial/peer/ringing/write/close/shutdown bounds. The shared clock has4096
-finite waiter slots. Same-MQ calls retain their own original authorities;
-ordinary application logging never dumps private keys or audio data. Frame,
-queue and reservation quotas are not process RSS or throughput measurements.
+`[conversation]` selects the official listener and service options. Missing Unix
+credential settings default to UID=NO/GID=YES on Unix and NO/NO on Windows.
+Explicit Unix UID/GID checks remain unsupported on Windows; endpoint ACLs retain
+their native policy. Node-wide `[PILS] PROFILE` selects the identity-verification
+profile; an explicit local `PILS_PROFILE` assertion must agree.
 
-This service does not open sound devices, publish phone records or implement
-an implicit GNS caller: those belong to the ordinary client/media workflow. Complete unchanged-C peer interoperability, audio/device behavior and measured
-resource/performance qualification remain separate work.
+`[conversation-service-rust]` selects Lines/calls, per-Line core and
+CADET/PILS/HELLO resources, UTC uncertainty and finite startup, input, peer,
+ringing, write, close and shutdown bounds. The shared clock has 4096 waiter slots.
+
+## Readiness and ownership
+
+READY denotes listener and IPC admission. It does not promise verified remote
+ringing, pickup, publication or sound-device readiness. The original parent
+notification has a bounded wait that observes logging and native/parent stop.
+Partial/whole writes and source identities reach their original owners; local
+completion never manufactures a remote acknowledgement. Physical retirement
+and independent cleanup precede STOPPED. Undrained original debts prevent a
+successful stop claim.
+
+Sound devices, phone-record publication and GNS calling belong to the
+[client/media workflow](../gnunet-conversation/). The central
+[implementation status](../../IMPLEMENTATION_STATUS.md) tracks remaining profiles.

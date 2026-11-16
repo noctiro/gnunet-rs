@@ -3,6 +3,7 @@
     clippy::panic_in_result_fn,
     reason = "Finite native original-owner and wire assertions with fallible setup"
 )]
+mod support;
 use gnunet_crypto::{EddsaPrivateKey, Entropy};
 use gnunet_service_runtime::connection::Connection;
 use gnunet_transport::{
@@ -14,7 +15,7 @@ use gnunet_types::Error;
 use std::{cell::Cell, future::poll_fn, rc::Rc, time::Duration};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::UnixStream,
+    net::TcpStream,
 };
 struct Key(EddsaPrivateKey);
 impl Signer for Key {
@@ -50,7 +51,7 @@ fn frame(kind: u16, n: usize) -> Vec<u8> {
 fn kind(b: &[u8]) -> u16 {
     u16::from_be_bytes([b[2], b[3]])
 }
-async fn read(s: &mut UnixStream) -> Result<Vec<u8>, std::io::Error> {
+async fn read(s: &mut TcpStream) -> Result<Vec<u8>, std::io::Error> {
     let mut h = [0; 4];
     s.read_exact(&mut h).await?;
     let n = usize::from(u16::from_be_bytes([h[0], h[1]]));
@@ -62,7 +63,7 @@ async fn read(s: &mut UnixStream) -> Result<Vec<u8>, std::io::Error> {
     s.read_exact(&mut b[4..]).await?;
     Ok(b)
 }
-async fn next_send(s: &mut UnixStream) -> Result<Vec<u8>, std::io::Error> {
+async fn next_send(s: &mut TcpStream) -> Result<Vec<u8>, std::io::Error> {
     loop {
         let b = read(s).await?;
         if kind(&b) == 1209 {
@@ -91,7 +92,7 @@ fn send(peer: PeerId, n: usize) -> Vec<u8> {
     b[40..].copy_from_slice(&frame(0, n));
     b
 }
-async fn wait_token(s: &mut UnixStream, token: u64) -> Result<(), std::io::Error> {
+async fn wait_token(s: &mut TcpStream, token: u64) -> Result<(), std::io::Error> {
     loop {
         let b = read(s).await?;
         if kind(&b) == 1203 && b[8..16] == token.to_ne_bytes() {
@@ -105,12 +106,12 @@ async fn physical_core_eof_erases_its_remote_ack_authority_before_same_mq_replac
     let mut key = Key(EddsaPrivateKey::from_seed([3; 32]));
     let remote = Key(EddsaPrivateKey::from_seed([5; 32]));
     let mut server = Server::new(Engine::new(key.identity(), Limits::default())?, 3, 262140)?;
-    let (cs, mut comm) = UnixStream::pair()?;
-    server.admit(Connection::from_unix(cs))?;
-    let (as_, mut a) = UnixStream::pair()?;
-    server.admit(Connection::from_unix(as_))?;
-    let (bs, mut b) = UnixStream::pair()?;
-    server.admit(Connection::from_unix(bs))?;
+    let (cs, mut comm) = support::pair().await?;
+    server.admit(Connection::from_tcp(cs))?;
+    let (as_, mut a) = support::pair().await?;
+    server.admit(Connection::from_tcp(as_))?;
+    let (bs, mut b) = support::pair().await?;
+    server.admit(Connection::from_tcp(bs))?;
     let state = Rc::new(Cell::<Snapshot>::new(server.engine().snapshot()));
     let seen = state.clone();
     let work = async move {
@@ -206,10 +207,10 @@ async fn actual_late_local_callback_after_five_seconds_keeps_same_mq_and_require
     let mut key = Key(EddsaPrivateKey::from_seed([3; 32]));
     let remote = Key(EddsaPrivateKey::from_seed([5; 32]));
     let mut server = Server::new(Engine::new(key.identity(), Limits::default())?, 2, 262140)?;
-    let (cs, mut comm) = UnixStream::pair()?;
-    server.admit(Connection::from_unix(cs))?;
-    let (ss, mut core) = UnixStream::pair()?;
-    server.admit(Connection::from_unix(ss))?;
+    let (cs, mut comm) = support::pair().await?;
+    server.admit(Connection::from_tcp(cs))?;
+    let (ss, mut core) = support::pair().await?;
+    server.admit(Connection::from_tcp(ss))?;
     let state = Rc::new(Cell::new(server.engine().snapshot()));
     let seen = state.clone();
     let enabled = Rc::new(Cell::new(false));
@@ -391,7 +392,7 @@ impl Entropy for FallibleRandom {
     }
 }
 async fn add_remote(
-    comm: &mut UnixStream,
+    comm: &mut TcpStream,
     remote: &Key,
     qid: u32,
     token: u64,
@@ -442,7 +443,7 @@ fn flow(window: u64, sequence: u32) -> Vec<u8> {
 // Acknowledge every original local MID, validate permitted control frames, then
 // return the next data frame without relaxing its peer/body/offset assertions.
 async fn resource_payload(
-    comm: &mut UnixStream,
+    comm: &mut TcpStream,
     peers: [PeerId; 2],
     controls: &mut usize,
 ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
@@ -469,10 +470,10 @@ async fn accepted_flow_entropy_failure_keeps_shared_mq_and_other_peer_io_live()
     let a = Key(EddsaPrivateKey::from_seed([5; 32]));
     let b = Key(EddsaPrivateKey::from_seed([7; 32]));
     let mut server = Server::new(Engine::new(key.identity(), Limits::default())?, 2, 262140)?;
-    let (cs, mut comm) = UnixStream::pair()?;
-    server.admit(Connection::from_unix(cs))?;
-    let (ss, mut core) = UnixStream::pair()?;
-    server.admit(Connection::from_unix(ss))?;
+    let (cs, mut comm) = support::pair().await?;
+    server.admit(Connection::from_tcp(cs))?;
+    let (ss, mut core) = support::pair().await?;
+    server.admit(Connection::from_tcp(ss))?;
     let state = Rc::new(Cell::new(server.engine().snapshot()));
     let seen = state.clone();
     let fail = Rc::new(Cell::new(false));

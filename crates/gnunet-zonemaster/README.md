@@ -14,4 +14,4 @@ sealing uses the existing typed PKEY/EDKEY primitives and official block format.
 
 Relative lifetimes shorten the full-zone refresh window to duration/4, capped by the configured official four-hour default. Finite targets are never renewed by late signing or a clock adjustment; minimum delays avoid zero-TTL busy loops. Public pacing retains the prior set count and fifteen-minute per-record ceiling. Native submission describes an local API/write boundary and supplies no remote DHT storage receipt. Running workers retain ownership until their return or join.
 
-No new GNUnet wire format, IPC operation, C ABI or legacy compatibility path is introduced. Source authoring and formatting alone establish neither executed interoperability nor performance acceptance.
+No new GNUnet wire format, IPC operation, C ABI or legacy compatibility path is introduced.

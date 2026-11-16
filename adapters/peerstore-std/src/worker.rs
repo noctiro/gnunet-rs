@@ -67,6 +67,8 @@ impl Completion {
 /// Original final worker report, only available after real thread termination.
 #[derive(Debug)]
 pub struct Stopped {
+    /// Actual directory-barrier availability observed by this original WAL.
+    pub directory_sync: gnunet_native::DirectorySync,
     /// Original WAL uncertainty cause, independently retained.
     pub failure: Option<Failure>,
     /// Rows in the last known committed view; failure retains uncertainty.
@@ -177,6 +179,7 @@ impl Worker {
                     }
                 }
                 Stopped {
+                    directory_sync: wal.directory_sync(),
                     records: wal.records(),
                     sequence: wal.sequence(),
                     failure: wal.take_failure(),

@@ -411,16 +411,8 @@ impl Drop for ManualSubscription {
 fn endpoint() -> Result<Endpoint, Box<dyn std::error::Error>> {
     Ok(Endpoint::unix("/not-a-live-core-host-test-service".into())?)
 }
-fn pair() -> std::io::Result<(Connection, tokio::net::UnixStream)> {
-    let (a, b) = std::os::unix::net::UnixStream::pair()?;
-    a.set_nonblocking(true)?;
-    b.set_nonblocking(true)?;
-    Ok((
-        Connection::from_unix(tokio::net::UnixStream::from_std(a)?),
-        tokio::net::UnixStream::from_std(b)?,
-    ))
-}
-async fn frame(stream: &mut tokio::net::UnixStream) -> std::io::Result<Vec<u8>> {
+use crate::test_support::pair;
+async fn frame(stream: &mut tokio::net::TcpStream) -> std::io::Result<Vec<u8>> {
     let mut h = [0; 4];
     stream.read_exact(&mut h).await?;
     let size = usize::from(u16::from_be_bytes([h[0], h[1]]));
@@ -469,7 +461,7 @@ async fn actual_partial_app_frame_survives_canceled_drive_and_typed_loopback()
         },
         ServiceOptions::default(),
     )?;
-    let (connection, mut stream) = pair()?;
+    let (connection, mut stream) = pair().await?;
     host.attach_client(connection)?;
     let mut instance = Instance::new();
     let mut client = CoreClient::<4, 4>::new(&mut instance, ClassOrder::Little, 0, &[0])?;
@@ -571,7 +563,7 @@ async fn canonical_clock_rollback_preserves_monitor_target_and_errors_are_not_fo
 #[tokio::test(flavor = "current_thread")]
 async fn real_transport_fifo_reserves_receive_credit_when_data_capacity_is_full()
 -> Result<(), Box<dyn std::error::Error>> {
-    let (connection, mut stream) = pair()?;
+    let (connection, mut stream) = pair().await?;
     let mut link = Link::new(connection, 65535, 1, 1)?;
     link.control_reserve(4)?;
     let mut data = vec![0; 65535];

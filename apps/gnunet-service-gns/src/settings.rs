@@ -58,10 +58,10 @@ pub(super) struct Settings {
     pub dns: dns::DnsLimits,
     pub registry: registry::Limits,
     pub resolver: gnunet_resolver_broker::Limits,
-    pub resolv_conf: PathBuf,
+    pub resolv_conf: Option<PathBuf>,
     pub resolv_conf_bytes: usize,
-    pub protocols: PathBuf,
-    pub services: PathBuf,
+    pub protocols: Option<PathBuf>,
+    pub services: Option<PathBuf>,
     pub shutdown_grace: Duration,
 }
 impl Settings {
@@ -213,12 +213,11 @@ impl Settings {
                 core.queries.max(rd.max_queued_frames) + 1,
             )?,
         };
-        let path = |key: &[u8], default: &str| -> Result<PathBuf, Cause> {
-            Ok(if c.get(b"gns-rust", key).is_some() {
-                c.get_filename(b"gns-rust", key, &gnunet_config::ProcessEnvironment)?
-            } else {
-                PathBuf::from(default)
-            })
+        let path = |key: &[u8]| -> Result<Option<PathBuf>, Cause> {
+            c.get(b"gns-rust", key)
+                .map(|_| c.get_filename(b"gns-rust", key, &gnunet_config::ProcessEnvironment))
+                .transpose()
+                .map_err(Into::into)
         };
         let yes = |key: &[u8], default: bool| -> Result<bool, Cause> {
             Ok(c.get(b"gns", key)
@@ -229,7 +228,7 @@ impl Settings {
         Ok(Self {
             access: UnixAccess {
                 match_uid: yes(b"UNIX_MATCH_UID", false)?,
-                match_gid: yes(b"UNIX_MATCH_GID", true)?,
+                match_gid: yes(b"UNIX_MATCH_GID", cfg!(unix))?,
             },
             options: service_options(c, b"gns", ShutdownMode::Immediate)?,
             core,
@@ -250,11 +249,40 @@ impl Settings {
                 )?),
             },
             registry: registry::Limits::default(),
-            resolv_conf: path(b"RESOLV_CONF", "/etc/resolv.conf")?,
+            resolv_conf: path(b"RESOLV_CONF")?,
             resolv_conf_bytes: size(c, b"RESOLV_CONF_BYTES", 65536)?,
-            protocols: path(b"PROTOCOLS_FILE", "/etc/protocols")?,
-            services: path(b"SERVICES_FILE", "/etc/services")?,
+            protocols: path(b"PROTOCOLS_FILE")?,
+            services: path(b"SERVICES_FILE")?,
             shutdown_grace: Duration::from_micros(micros(c, b"SHUTDOWN_GRACE", 10_000_000)?),
         })
+    }
+}
+
+impl Settings {
+    pub(super) fn dns(
+        &self,
+        clock: std::sync::Arc<dyn gnunet_service_runtime::clock::RuntimeClock>,
+    ) -> Result<dns::RecursiveDns, dns::Error> {
+        if let Some(path) = &self.resolv_conf {
+            return dns::RecursiveDns::from_resolv_conf(
+                clock,
+                path,
+                self.resolv_conf_bytes,
+                self.dns,
+            );
+        }
+        #[cfg(unix)]
+        {
+            dns::RecursiveDns::from_resolv_conf(
+                clock,
+                std::path::Path::new("/etc/resolv.conf"),
+                self.resolv_conf_bytes,
+                self.dns,
+            )
+        }
+        #[cfg(windows)]
+        {
+            dns::RecursiveDns::from_native(clock, self.dns)
+        }
     }
 }

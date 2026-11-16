@@ -1,6 +1,55 @@
-//! Native initialization of an already accepted uniquely owned socket.
+//! Borrowed native socket initialization, listen-role and readiness observations.
 //! Borrowing never transfers ownership, accepts, closes or substitutes a socket.
 use std::{fmt, io};
+#[cfg(windows)]
+pub(crate) mod adapters;
+mod datagram;
+mod listener;
+mod readiness;
+#[cfg(windows)]
+pub use datagram::suppress_udp_connection_resets;
+pub use datagram::{
+    isolated_datagram_receive_error, isolated_datagram_send_error, socket_family_unavailable,
+};
+pub use listener::is_listener;
+#[cfg(target_os = "macos")]
+pub use listener::{DARWIN_SOCKET_INFO_BUFFER_BYTES, DARWIN_SOCKET_OPTIONS_OFFSET};
+pub use readiness::{SocketEvents, SocketInterest, socket_readiness};
+
+/// Executing platform's local sockaddr_un display bounds.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct UnixAddressLayout {
+    /// Size of the native family typedef, not the offset of sun_path.
+    pub family_bytes: usize,
+    /// Complete native sockaddr_un size, including any native header/padding.
+    pub sockaddr_bytes: usize,
+    /// Actual offset of sun_path, including native length/family header fields.
+    pub path_offset: usize,
+}
+/// Native sizes used by local diagnostic formatting, without opening a socket
+/// or claiming support for every platform's Unix-socket transport/credentials.
+#[must_use]
+pub const fn unix_address_layout() -> UnixAddressLayout {
+    #[cfg(unix)]
+    {
+        UnixAddressLayout {
+            family_bytes: size_of::<libc::sa_family_t>(),
+            sockaddr_bytes: size_of::<libc::sockaddr_un>(),
+            path_offset: std::mem::offset_of!(libc::sockaddr_un, sun_path),
+        }
+    }
+    #[cfg(windows)]
+    {
+        UnixAddressLayout {
+            family_bytes: size_of::<windows_sys::Win32::Networking::WinSock::ADDRESS_FAMILY>(),
+            sockaddr_bytes: size_of::<windows_sys::Win32::Networking::WinSock::SOCKADDR_UN>(),
+            path_offset: std::mem::offset_of!(
+                windows_sys::Win32::Networking::WinSock::SOCKADDR_UN,
+                sun_path
+            ),
+        }
+    }
+}
 
 /// A live borrowed native socket; it never grants ownership.
 #[cfg(unix)]
@@ -100,5 +149,52 @@ pub fn is_descriptor_limit(error: &io::Error) -> bool {
         error.raw_os_error()
             == Some(windows_sys::Win32::Foundation::ERROR_TOO_MANY_OPEN_FILES as i32)
             || error.raw_os_error() == Some(windows_sys::Win32::Networking::WinSock::WSAEMFILE)
+    }
+}
+
+/// Whether a socket-family probe failed because native system resources or
+/// access were refused, rather than because that family is unavailable.
+pub fn is_fatal_family_probe(error: &io::Error) -> bool {
+    if error.kind() == io::ErrorKind::PermissionDenied || is_descriptor_limit(error) {
+        return true;
+    }
+    #[cfg(unix)]
+    {
+        error
+            .raw_os_error()
+            .is_some_and(|code| [libc::ENOBUFS, libc::ENOMEM, libc::ENFILE].contains(&code))
+    }
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::{
+            Foundation::{ERROR_NOT_ENOUGH_MEMORY, ERROR_OUTOFMEMORY},
+            Networking::WinSock::WSAENOBUFS,
+        };
+        error.raw_os_error().is_some_and(|code| {
+            [
+                WSAENOBUFS,
+                ERROR_NOT_ENOUGH_MEMORY as i32,
+                ERROR_OUTOFMEMORY as i32,
+            ]
+            .contains(&code)
+        })
+    }
+}
+
+#[cfg(windows)]
+pub use datagram::send_datagram_from;
+
+/// Whether this original nonblocking Internet-stream connect needs completion
+/// observation. This neither retries connect nor establishes peer association.
+/// Winsock WSAEINPROGRESS describes a separate blocking operation, not this
+/// fresh socket's accepted asynchronous connect. See the [Winsock contract](https://learn.microsoft.com/en-us/windows/win32/api/winsock2/nf-winsock2-connect).
+pub fn connect_in_progress(error: &io::Error) -> bool {
+    #[cfg(unix)]
+    {
+        error.raw_os_error() == Some(libc::EINPROGRESS)
+    }
+    #[cfg(windows)]
+    {
+        error.raw_os_error() == Some(windows_sys::Win32::Networking::WinSock::WSAEWOULDBLOCK)
     }
 }

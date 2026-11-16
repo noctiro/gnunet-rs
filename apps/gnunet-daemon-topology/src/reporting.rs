@@ -99,6 +99,11 @@ impl Reports {
     pub(super) fn warning(&self, site: &'static str, args: fmt::Arguments<'_>) {
         self.0.reporter.warning(site, args);
     }
+    pub(super) fn error(&self, site: &'static str, args: fmt::Arguments<'_>) {
+        self.0
+            .reporter
+            .message(gnunet_program_host::policy::Level::ERROR, site, args);
+    }
     pub(super) fn debug(&self, site: &'static str, args: fmt::Arguments<'_>) {
         self.0.reporter.debug(site, args);
     }

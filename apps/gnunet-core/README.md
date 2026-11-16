@@ -1,17 +1,68 @@
-# Actual installed CORE CLI
+# GNUnet CORE CLI
 
-`gnunet-core -s [-c configuration]` shows the current CORE KX states and succeeds only after the genuine initial iteration marker. `gnunet-core -m` continuously observes updates; `-s -m` selects the same continuous behavior as the official tool. No positional argument or no selected operation is an error. Standard configuration/help/version/logging options use the existing shared GETOPT/PROGRAM implementation. This package is the production command, separate from the existing native probe example.
+`gnunet-core` displays connected-peer and key-exchange state from the configured
+CORE service. Linux, macOS, Windows and FreeBSD share the same monitor client,
+command phases, logging and output. Native startup capture and stop subscriptions
+remain outside the protocol state machine.
 
-The active pinned `src/cli/core/meson.build` installs this binary, and `gnunet-core.c` implements these two business operations through the public CORE monitor API. The current repository already has CORE monitor transport, so this package consumes `gnunet-core-client-host::Monitor` without changing CORE service, pure code or protocol. It sends only the four-byte monitor request, uses the configured CORE source fixed at operation admission, and receives original typed-epoch updates. No application INIT fields, RID, wire cancellation, snapshot END or connection is fabricated.
+## Build and use
 
-The foreground drives both its original shared Resolver and Monitor, fairly, inside one PROGRAM task. Original partial cursors survive dropped borrowed wait futures. Current-source checks precede every update or snapshot marker. A loss invalidates the current snapshot immediately; continuous mode may attach a new MQ and await its new initial snapshot. Old rows are output history, never a current-state cache. A new snapshot target is admitted only after the old source actually retired, while the original overall logical/native targets never renew. A single-snapshot request fails on loss before END, EOF, invalid input, unavailable source, deadline or output error. Canceling a snapshot before END is explicitly unsuccessful; continuous-mode SIGINT/SIGTERM is normal user cancellation. No old connection operation is replayed on a new epoch.
+```sh
+cargo build --locked -p gnunet-core-cli
+target/debug/gnunet-core -c /path/to/owned.conf -s
+target/debug/gnunet-core -c /path/to/owned.conf -m
+```
 
-All public KX states0 through12 have explicit labels, including rekey9 that the pinned C frontend formats as unknown; future state numbers remain visible instead of being discarded or interpreted as authentication. Actual raw numeric state accompanies each row. Public peer abbreviations reuse raw Base32 `peer_short`, not a private-key hash. Timeout is the original absolute value, with FOREVER retained and remaining time derived from the same process RuntimeClock. Display timestamps use the existing PROGRAM UTC Stamp formatter; output is C-style human-readable columns with explicit numeric state, not a new IPC protocol or byte-identical locale-dependent text requirement. A local service state is not independent peer/address authentication.
+Use `gnunet-core.exe` on Windows. `-s` prints the initial snapshot and exits only
+after its official end marker. `-m`, including `-s -m`, continues monitoring.
+`--help` lists PROGRAM options. Ordinary PROGRAM configuration, `-L/-l` logging,
+Resolver selection and the shared clock apply.
 
-`[core-cli-rust]` supplies finite LIFETIME (snapshot default30s, monitor8h), SNAPSHOT_TIMEOUT30s, FRAME_TIMEOUT10s, MAX_ROWS1000000, MAX_RECONNECTS1024, FRAME_BYTES256 and IO_SLICE_BYTES65535. The existing shared CORE Limits minimum is56 bytes; one outgoing frame is reserved even though this command writes only4 bytes. Resource/partial-frame/snapshot limits terminate with an explicit cause and original-source cleanup. Every native hard target is captured before caller clock ports and registered before a revision race can defer canonical sampling. Logical rollback never extends the original native target. Snapshot/partial-frame targets do not restart on each byte or connection attempt. Buffered snapshots yield foreground work between events.
+## Configuration and output
 
-Signal/parent control belongs to this command. It refuses foreign inherited SERVICE/readiness descriptors and stays under its calling UID, as a client; the CORE daemon's USERNAME is not permission to change the CLI's identity. Every error/signal/limit path closes the Monitor first and independently disconnects its Resolver, without needing a fresh clock. Original native causes, first failed attempts, bounded prefixes and independent cleanup errors remain explicit. A complete monitor-request local write is not a service ACK; success of snapshot mode requires its END. Final stdout flush happens after physical network retirement and its error remains independent.
+`[core]` selects the normal CLIENT local/TCP endpoint. `[resolver]` supplies the
+shared Resolver when TCP hostname lookup is required. Rows contain UTC logical
+time, peer abbreviation, numeric state and remaining timeout. Unknown numeric
+states remain visible. A successful local request write is not snapshot completion;
+EOF without the end marker fails snapshot mode.
 
-Like the original command, normal stdout/stderr are conventional OS writers. Each formatted row is bounded and no output inventory is accumulated, but an OS-blocked stdio/calendar call is not claimed forcibly canceled by an async network deadline. This is an explicit host-boundary limitation rather than a hidden task or invented write success. Actual signal/pipe/error behavior remains unqualified.
+`[core-cli-rust]` bounds local work and resources:
 
-No C/Rust key file or fixture was read/hashed, and no stopped implementation is used as evidence. This command source does not assert complete CORE handshake/network or whole-node interoperability.
+| Key | Default |
+| --- | --- |
+| `LIFETIME` | 30 seconds for snapshot; 8 hours for monitor |
+| `SNAPSHOT_TIMEOUT` | 30 seconds |
+| `FRAME_TIMEOUT` | 10 seconds |
+| `MAX_ROWS` | 1,000,000 |
+| `MAX_RECONNECTS` | 1,024 |
+| `FRAME_BYTES` | 256 |
+| `IO_SLICE_BYTES` | 65,535 |
+
+Durations must be finite and nonzero. Frame storage is at least 56 bytes and no
+more than the official u16 frame width. Native hard targets are captured once;
+clock rollback, partial reads and retry do not renew an original bound.
+
+## Module and resource ownership
+
+`main.rs` selects PROGRAM configuration and diagnostics. `foreground.rs` drives
+CORE and Resolver; `bounds.rs`, `settings.rs`, `reporting.rs` and `output.rs` own
+their respective command policies. `early.rs` calls shared
+[`ClientStartup`](../../adapters/service-startup/README.md#client-program-startup)
+before competing native resources. `control.rs` uses the same client stop adapter,
+including Windows console notifications and original parent control.
+
+The command runs as its invoking process identity. The daemon's `USERNAME`
+configuration does not change the client token. A client owns no listening-service
+readiness endpoint and refuses inherited listeners. Every shutdown path closes
+its CORE monitor and independently disconnects Resolver. Cleanup and final output
+errors remain observable; EOF on parent control does not fabricate a stop signal.
+Synchronous OS stdout/calendar calls are not forcibly interrupted by network
+bounds.
+
+## Native tests
+
+[Normal-process tests](tests/normal_process.rs) execute the built command against
+private TCP peers with literal official monitor frames. They cover fragmented
+rows, future state values, genuine end markers, EOF failure and original socket
+retirement. The same cases run on native CI platforms. These fixtures are Rust
+process/transport regressions; C interoperability receipts remain separate.

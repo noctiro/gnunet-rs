@@ -2,12 +2,12 @@
 //! The local PILS identity and peer protocol inputs are explicit model inputs;
 //! no PILS/CORE service, normal daemon or C interoperability is asserted.
 use super::*;
+use crate::test_support::Directory;
 use gnunet_client_host::EndpointSource;
 use gnunet_service_runtime::clock::SystemClock;
 use gnunet_wire::official::dht::{GetMessage, Path, ResultMessage, RouteOptions};
 use std::{
     net::{IpAddr, Ipv4Addr},
-    path::PathBuf,
     time::Duration,
 };
 use tokio::{net::UdpSocket, time::timeout};
@@ -360,25 +360,6 @@ fn identity_change_retires_actual_old_udp_debt_without_replaying_or_renewing_put
     })
 }
 
-struct Directory(PathBuf);
-impl Directory {
-    fn new() -> std::io::Result<Self> {
-        use std::os::unix::fs::DirBuilderExt;
-        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let path = std::env::temp_dir().join(format!(
-            "gn-dht-identity-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-        ));
-        std::fs::DirBuilder::new().mode(0o700).create(&path)?;
-        Ok(Self(path))
-    }
-}
-impl Drop for Directory {
-    fn drop(&mut self) {
-        let _cleanup = std::fs::remove_dir_all(&self.0);
-    }
-}
 struct Actor(tokio::task::JoinHandle<std::io::Result<()>>);
 impl Drop for Actor {
     fn drop(&mut self) {
@@ -434,7 +415,7 @@ fn changed_pils_keeps_old_core_ordinary_input_but_tracks_only_matching_ip_and_re
         timeout(Duration::from_secs(8), async {
             let directory = Directory::new()?;
             let path = directory.0.join("c.sock");
-            let listener = tokio::net::UnixListener::bind(&path)?;
+            let listener = crate::test_support::Listener::bind(&path).await?;
             let old_key = EddsaPrivateKey::from_seed([11; 32]);
             let old_local = *old_key.public_key().as_bytes();
             let new_key = EddsaPrivateKey::from_seed([12; 32]);

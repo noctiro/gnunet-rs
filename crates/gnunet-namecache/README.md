@@ -5,11 +5,11 @@ This is an independent NAMECACHE component for GNUnet v0.29.1 pinned revision
 messages and a bounded volatile encrypted-block cache. It has no GNS resolver,
 zone-secret manager, record decryption, host recovery, DHT or native process.
 
-The original repository supplied NAMECACHE message constants and complete public
-`gnunet_gnscrypto::Block` decoding/query/expiration and zone-bound verification,
-but no independent NAMECACHE IPC codec or storage core. Native transport/client dispatch and persistent service hosting
-are separate work; this source candidate does not claim they exist or have passed
-an interoperability run.
+The core uses `gnunet_gnscrypto::Block` for public block decoding, query,
+expiration and zone-bound verification. Native hosting and persistence belong
+to the [NAMECACHE adapter](../../adapters/namecache-std/README.md).
+
+## Wire format
 
 | Active message | Number | Exact fields after normal BE16 size/type header |
 | --- | --- | --- |
@@ -37,12 +37,16 @@ the wire limit without introducing a different encoding. All length and
 capacity checks precede writes in the wire encoder; decoding never dereferences
 an unvalidated C block structure.
 
+## Verification
+
 The default feature set is allocation-free. `verify_lookup` checks only public
 material: exact block structure, original query equality, equal inner/outer
 expiration and the official carried-key signature. Expiration0 remains a miss. `Block::verify_signature` factors the existing signature verifier into a public
 entry point corresponding to `GNUNET_GNSRECORD_block_verify`; it does not assert
 that a carried key is authorized for a zone/name. The old `verify_for` continues
 to check its original zone/name binding before calling the same signature code. No plaintext is decrypted by the cache or native-client validation entry point.
+
+## Cache operations
 
 The explicit `alloc` feature provides real `Cache::{insert,lookup,delete,
 expire_before,handle}`. Queries are sorted for allocation-free binary-search
@@ -57,6 +61,8 @@ the incoming block, then insert it, and select the greatest expiration on lookup
 replaced by an older expiry; equal expiry uses the new bytes, and exact duplicates
 need no new allocation. Lower-expiry rows cannot become valid after the greatest
 version has expired, so retaining them would only waste bounded cache space. Deletion actually removes the query and reports its presence/absence.
+
+## Expiry and retention
 
 Expiration is explicit, using the exact SQL predicate `expiration < now`; equality
 stays valid. The native SQLite implementation schedules cleanup hourly during
@@ -74,13 +80,6 @@ SYSERR, deletion absence to NO, and a hit contains stored
 bytes. Malformed block input is an error for the original native owner to reject,
 not a fabricated success or lookup miss. Memory success is never described as a
 durable disk commit, remote publication, or a future backend receipt.
-
-The single focused model uses the preexisting public encrypted-block/query
-fixtures for both key constructions and covers public-only response verification,
-exact frame layout, signed results, replacement, bounded refusal, expiry and
-delete outcomes. Mutated expiry bytes appear only as opaque cache mocks,
-not valid-signature vectors. It includes no private-input fixtures or key files. This pure model and one controlled Unix client model passed using only
-the declared public ciphertext/query vectors. Native service/persistence qualification remains separate.
 
 A replacement fitting the existing ciphertext capacity reuses that allocation
 after full structural validation, keeping the same accounted capacity. Larger

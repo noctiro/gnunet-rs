@@ -6,6 +6,8 @@ libc, small native boundary and pure wire/types, without a service, async runtim
 cryptography or libgnunet FFI. Public entry points are `run(Profile)`, `diagnostic`
 and the owned `Failure` exit-code getter; this is not an embedded service API.
 
+## Public interface
+
 VPN keeps its five positional arguments: `tun ipv6|- prefix ipv4|- mask`. EXIT uses six: `tun egress|- ipv6|- prefix ipv4|- mask`. Enabled IPv6 permits
 prefix1..127; disabled families ignore the associated prefix/mask. EXIT refuses
 both families disabled. Interface arguments preserve OS bytes and are bounded by

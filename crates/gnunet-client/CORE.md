@@ -134,8 +134,7 @@ and a Rust application self-loopback/monitor against an C CORE service.
 The header-only observer uses a nonmatching subscription: current C treats an
 empty subscription list plus observation flags as an inbound wildcard and sends
 full inbound data. The owner accepts the valid full/header wire forms.
-These are component IPC observations, separate from CAKE peer execution and
-independent-node acceptance. The optional `gnunet-core-client-host` adapter supplies caller-driven native
+The optional `gnunet-core-client-host` adapter supplies caller-driven native
 application and monitor owners. SDK feature `official-core-client` selects it
 independently of the CORE service host. It owns bounded exact message sources,
 immutable wire frames, native attempts and timers, and one canonical-clock
@@ -145,5 +144,4 @@ Owned traffic allocation precedes pure frame consumption. Capacity refusal
 retains the exact complete frame for retry or explicit MQ retirement. Loss
 stops the original physical owner first, then returns original completions and
 all peer notices before starting another physical epoch. No application source
-is replayed automatically. Full service/NSE/native node acceptance remains
-separate work.
+is replayed automatically.

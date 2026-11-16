@@ -1,14 +1,39 @@
-# Source profile
+# ARM service reference behavior
 
-GNUnet tag v0.29.1, commit346358e26d4dcc2dc4f51bef5d52dca29c7d8165. Daemon `src/service/arm/gnunet-service-arm.c` SHA25696c0ba0c52c21fe0d347818fa406a233e341868c8d9561d59d4e96fba62515df.
+GNUnet v0.29.1, commit `346358e26d4dcc2dc4f51bef5d52dca29c7d8165`.
+Daemon source: `src/service/arm/gnunet-service-arm.c`. Exact source bindings
+are stored in [source-inventory.json](source-inventory.json).
 
 Source contracts cover the daemon, public ARM API, configuration and testing
-interfaces. The [public API inventory](../../spec/gnunet/api/README.md) and
-[release criteria](../../spec/gnunet/external/RELEASE.md) retain requirements
-beyond this pure service core.
+interfaces. See the [API inventory](../../spec/gnunet/api/README.md) and
+[release criteria](../../spec/gnunet/external/RELEASE.md) for their requirements.
 
-Reviewed source anchors: setup_service1897..2015 registry/default1ms/FOREVER; start_process745..945 and os_process fork/exec semantics; start/stop1160..1322 precedence; LIST1350..1427 ABI and snapshot; notification context strict>1024; shutdown1500..1560 cancel-global-task, close-all-listeners, TERM-all-children; restart1571..1638 global IDLE scan; reaping1648..1864 process clear/STOPPED/stop completion/cooldown from old restart_at/clean exit0 no forced task; client EOF2049..2060 clears requester marker; monitor2070..2086 dedup membership with repeated initial ACK/no snapshot; run2096..2194 initial starts before notifier.
+## Source anchors
 
-All C-facing wire ABI is explicit ArmAbi: current normal Darwin align8 RESULT24/LIST-prefix24, info28; existing align4 codec requires separate normal-host evidence. No generic C union ABI is imported into owner IDs. Public IDs are local Rust ownership capabilities, never new wire fields. Full configuration/native/CLI/testing requirements remain pending, especially SIMPLE/default-prefix/custom quote parsing and unflushed self-stop RESULT→EOF callback distinctions recorded by the design.
+| Function or path | Contract |
+| --- | --- |
+| `setup_service:1897..2015` | Registry order, default 1 ms and FOREVER |
+| `start_process:745..945`, `os_process` | Fork/exec admission |
+| Start/stop `1160..1322` | Request precedence |
+| LIST `1350..1427` | ABI and snapshot |
+| Notification context | Optional drop only at logical MQ length > 1024 |
+| Shutdown `1500..1560` | Cancel global task, close all listeners, then TERM all children |
+| Restart `1571..1638` | Global IDLE scan |
+| Reaping `1648..1864` | Clear child, STOPPED, stop completion, cooldown from old `restart_at`; clean exit 0 does not force a task |
+| Client EOF `2049..2060` | Clear requester marker |
+| Monitor `2070..2086` | Deduplicated membership, repeated initial ACK, no snapshot |
+| Run `2096..2194` | Initial starts before notifier |
 
-New bounds/ownership profiles: independent caller Scope identity prevents foreign/rebuilt-token revival; no global atomic. Explicit storage failure can close recipient clients but never masquerades as official optional dropping. Real native acknowledgments/child waits and final cleanup cannot fail from ordinary message sequence exhaustion. Valid-operation/source ordering requires host settle before unrelated callback polling; tests are pure source-derived state controls and intentionally do not call an extracted replacement C state machine.
+## ABI and scheduling
+
+All C-facing wire ABI uses explicit `ArmAbi`: the selected normal Darwin align-8
+profile has RESULT 24, LIST prefix 24 and info 28 bytes. The align-4 codec requires
+separate normal-host qualification. Public owner IDs are local Rust capabilities,
+with no imported C union layout or additional wire fields.
+
+Independent caller Scope identity prevents foreign or rebuilt-token revival
+without a global atomic. Storage failure can require recipient closure but never
+masquerades as an official optional drop. Native acknowledgments, child waits and
+final cleanup remain possible after ordinary message sequence exhaustion. The
+host settles each synchronous body or resumable scan before polling an unrelated
+external callback.

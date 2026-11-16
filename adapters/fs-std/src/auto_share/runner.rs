@@ -246,6 +246,12 @@ impl Owner {
             running: false,
         })
     }
+    /// Combined current catalog-image and WAL naming barriers. File contents and
+    /// prepared groups have separate observations; this performs no I/O.
+    #[must_use]
+    pub fn catalog_directory_sync(&self) -> Option<gnunet_native::DirectorySync> {
+        self.catalog.directory_sync()
+    }
     /// Same original stop capability; it starts no task and resets no deadline.
     pub fn stop(&self) -> Stop {
         self.stop.clone()

@@ -52,7 +52,15 @@ impl std::fmt::Display for Error {
         write!(f, "TOPOLOGY: {self:?}")
     }
 }
-impl std::error::Error for Error {}
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Fault(error) | Self::Clock(error) => Some(error),
+            Self::Native(error) => Some(error),
+            Self::Io(error) => Some(error),
+        }
+    }
+}
 /// Actual local diagnostic observations, never inferred connections/storage.
 #[derive(Debug)]
 pub enum Event<'id> {
@@ -849,6 +857,10 @@ impl<'id> Runtime<'id> {
             if self.guard(None, observe)? {
                 return Poll::Ready(Ok(Progress::Stopped));
             }
+            // A completed Sleep no longer registers a wake. Even when every
+            // source below is idle, poll again to arm the next native tick;
+            // the initial monitor delay also depends on these ticks.
+            cx.waker().wake_by_ref();
         }
         let changed = self.subscription.poll_changed(cx, self.revision);
         if let Poll::Ready(Err(e)) = changed {

@@ -13,6 +13,8 @@ python3 adapters/ipc-unix/examples/statistics_handle_oracle.py \
   --output /absolute/path/to/new-owned-proof-directory
 ```
 
+## Contract
+
 The reference receipt is produced by `tools/reference/build_reference.py`. The
 runner requires its pinned clean official source, unchanged normal executables,
 libraries and default configurations. It copies participant executables into

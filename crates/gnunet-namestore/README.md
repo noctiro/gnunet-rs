@@ -4,6 +4,8 @@ Independent Rust NAMESTORE policy and state machines for the pinned official
 GNUnet reference. The default build has no allocator, filesystem, tasks or clock. Labels use case-preserving Unicode18 NFC, reject dot/NUL and permit at most255
 UTF-8 bytes. Caller-owned buffers hold normalized records and sorting indices.
 
+## Public interface
+
 Record policy handles private/maintenance filtering, critical record types,
 exclusive delegations, relative/shadow expiry, apex nickname metadata and deletion
 tombstones protecting the previous public expiry. Non-apex nicknames are

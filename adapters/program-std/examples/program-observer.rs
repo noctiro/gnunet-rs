@@ -9,10 +9,9 @@ mod actual {
         },
         shared_clock::SharedClock,
     };
-    use gnunet_resolver_broker::{FamilyProfile, Limits as BrokerLimits, LiveConfiguration};
+    use gnunet_resolver_broker::{Limits as BrokerLimits, LiveConfiguration};
     use std::{
         io::{self, Write},
-        os::unix::ffi::OsStrExt,
         sync::Arc,
     };
     fn hex(out: &mut impl Write, v: Option<&[u8]>) -> io::Result<()> {
@@ -33,7 +32,10 @@ mod actual {
         calls: usize,
     ) -> Result<(), Failure> {
         write!(out, "TASK {calls} OFFSET {} FILE ", clock.offset()?)?;
-        hex(out, view.filename.map(|p| p.as_os_str().as_bytes()))?;
+        let filename = view
+            .filename
+            .map(|path| gnunet_native::os_bytes::encode(path.as_os_str()));
+        hex(out, filename.as_deref())?;
         out.write_all(b" ARMCONFIG ")?;
         hex(out, view.config.get(b"arm", b"CONFIG"))?;
         out.write_all(b" ARGS")?;
@@ -54,7 +56,7 @@ mod actual {
         let project = Arc::new(gnunet_config::ProjectData::default());
         let initial =
             gnunet_config::Configuration::create(Arc::clone(&project), Default::default())?;
-        let profile = FamilyProfile::new(libc::AF_INET, libc::AF_INET6)?;
+        let profile = gnunet_resolver_broker::native_profile()?;
         let (mut resolver, driver) = gnunet_resolver_broker::broker::<8, 1024>(
             LiveConfiguration::new(initial),
             BrokerLimits::default(),

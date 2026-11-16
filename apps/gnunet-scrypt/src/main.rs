@@ -6,9 +6,7 @@ use std::{
     process::ExitCode,
 };
 type Failure = Box<dyn Error>;
-#[cfg(unix)]
 mod options;
-#[cfg(unix)]
 mod run;
 #[derive(Debug)]
 struct SelectedFailure {
@@ -42,25 +40,14 @@ fn main() -> ExitCode {
         }
     }
 }
-#[cfg(not(unix))]
-fn entry() -> Result<(), Failure> {
-    Err("this ordinary NSE proof file/PROGRAM profile requires Unix".into())
-}
-#[cfg(unix)]
 #[expect(
     unsafe_code,
-    reason = "Unique first-exec inherited descriptor transfer before any logger, runtime, entropy or key-file owner"
+    reason = "Once-only native inheritance capture before logger, runtime, entropy or key-file owners"
 )]
-fn capture() -> Result<gnunet_service_startup::CapturedStartup, Failure> {
-    // SAFETY: the first operation of this fresh executable, before any competing
-    // descriptor/env capture, thread, runtime, logger, entropy or file operation.
-    Ok(unsafe {
-        gnunet_service_startup::capture_from_environment(
-            gnunet_service_startup::InheritedMode::CloseAfterConfiguredBind,
-        )?
-    })
+fn capture() -> Result<gnunet_service_startup::ClientStartup, Failure> {
+    // SAFETY: first startup action, before files, logger, runtime or workers.
+    Ok(unsafe { gnunet_service_startup::ClientStartup::capture() }?)
 }
-#[cfg(unix)]
 fn entry() -> Result<(), Failure> {
     use gnunet_program_host::{
         logging::Logger,
@@ -69,24 +56,8 @@ fn entry() -> Result<(), Failure> {
         reporting::Reporter,
         shared_clock::SharedClock,
     };
-    use gnunet_service_startup::InheritedResources;
     use std::sync::Arc;
     let captured = capture()?;
-    match captured.inherited {
-        InheritedResources::CloseAfterBind(hold) => {
-            let offered = !hold.is_empty();
-            let closed = hold.abort();
-            if offered {
-                return Err(format!(
-                    "NSE proof has no listener; original offered descriptors retired: {closed:?}"
-                )
-                .into());
-            }
-        }
-        InheritedResources::Listeners(_) => {
-            return Err("unexpected NSE proof activation mode".into());
-        }
-    }
     let clock = SharedClock::native(8)?;
     let configuration = gnunet_config::Configuration::create(
         Arc::new(gnunet_config::ProjectData::default()),
@@ -113,7 +84,8 @@ fn entry() -> Result<(), Failure> {
         &mut io::stderr().lock(),
     );
     let reporter = Reporter::new(logger, clock.clone());
-    if let Some(notice) = captured.control_notice {
+    #[cfg(unix)]
+    if let Some(notice) = captured.notice {
         reporter.debug(
             "scrypt.parent.notice",
             format_args!("original parent-control declaration: {notice:?}"),
@@ -137,14 +109,15 @@ fn entry() -> Result<(), Failure> {
         };
         let settings = arguments.select(prepared.main().config, prepared.main().arguments)?;
         let canonical: Arc<dyn gnunet_service_runtime::clock::RuntimeClock> = Arc::new(clock);
-        let mut parent = captured.parent_control;
-        // Capture the original whole targets before synchronous durable key/store
-        // setup. The identity loader's startup contract precedes the runtime.
-        let prepared = run::prepare(settings, canonical, reporter.clone(), &mut parent)?;
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
-        runtime.block_on(run::run(prepared, parent))
+        runtime.block_on(run::run(
+            settings,
+            canonical,
+            reporter.clone(),
+            captured.parent,
+        ))
     })();
     if let Err(error) = &outcome {
         reporter.message(

@@ -892,7 +892,7 @@ impl<'a, E: crypto::Entropy, const N: usize> Api<'a, E, N> {
             layout,
             control,
             records,
-            original,
+            original: Box::new(original),
             cause,
             subscription_deadline,
             jobs: core::mem::take(&mut self.leases),

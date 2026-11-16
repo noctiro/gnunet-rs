@@ -97,29 +97,11 @@ bytes, frame size, and block limits reject admissions before exposure; permanent
 input/resource errors stop the source rather than parking a head frame forever
 or faking a miss. Pending results are bounded by the same operation rows.
 
-## Checks
+## Tests
 
-No private-key file was read or hashed. `tests/native.rs` includes only the
-existing explicitly public `edkey_ascii-block.bin` ciphertext and query fixture,
-never private_input or key files. It checks RID response reordering,
-signature-validated lookup/cache, expire0 miss, raw statuses, zero/partial cancel,
-late RID suppression, unknown cache loss/no replay, source replacement and
-ciphertext-tamper refusal. A separate public-cipher Unix profile exercised this
-production client against an unmodified official C service with SQLite, and an
-official C API client against the Rust memory service. The latter also
-observed a miss after an owned Rust service restart. These profiles do not
-establish private-key crypto, whole GNS or whole-project conformance.
-
-`Client::poll_native_guard` checks/arms original native operation/control/drain
-bounds before an enclosing canonical-clock wait. It performs no socket IO,
-logical sampling, decoding or cryptographic work. It can return prior admission
-loss, an already settled completion or a native expiry result; local Unsent and
-Unknown outcomes remain distinct from service results. Ordinary poll shares the
-same logic, and its pinned native timer is reused when only the wake target
-changes.
-
-The configurable complete-block ceiling reaches the wire limit65519;
-the default remains the declared C API value budget63KiB. This distinction
-allows a legitimate63KiB plaintext GNS set plus112-byte header and optional
-16-byte tag when explicitly configured. The active C CACHE implementation sends
-and stores the full block without applying that conservative header constant.
+`tests/native.rs` drives real native AF_UNIX streams on Unix and Windows using
+published ciphertext/query vectors. It covers RID reordering, cancellation,
+source replacement, unknown writes and ciphertext-tamper refusal. Original
+listener and socket-path ownership remain with the fixture until stream
+retirement. The [normal command tests](../../apps/gnunet-namecache/tests/normal_process.rs)
+cover the built executable, literal IPC and zone/name-bound record display.

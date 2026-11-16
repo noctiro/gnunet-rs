@@ -1,34 +1,13 @@
-//! Actual Unix CLIENT verification of real pure-PILS signed nonempty HELLOs.
+//! Native local CLIENT verification of real pure-PILS signed nonempty HELLOs.
 //! CADET is not polled; this component grants no normal daemon/peer qualification.
 use super::*;
+use crate::test_support::Directory;
 use gnunet_pils::{Action, HelloLimits, MasterKey, Profile, Service};
-use gnunet_service_runtime::clock::SystemClock;
-use std::{
-    os::unix::fs::DirBuilderExt,
-    path::PathBuf,
-    sync::atomic::{AtomicU64, Ordering},
+use gnunet_service_runtime::{
+    clock::SystemClock,
+    local::{Listener, Stream},
 };
-use tokio::net::{UnixListener, UnixStream};
-
 type Failure = Box<dyn std::error::Error>;
-static NEXT: AtomicU64 = AtomicU64::new(0);
-pub(super) struct Directory(pub(super) PathBuf);
-impl Directory {
-    pub(super) fn new() -> Result<Self, Failure> {
-        let path = std::env::temp_dir().join(format!(
-            "msg-pils-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::DirBuilder::new().mode(0o700).create(&path)?;
-        Ok(Self(path))
-    }
-}
-impl Drop for Directory {
-    fn drop(&mut self) {
-        let _removed = std::fs::remove_dir_all(&self.0);
-    }
-}
 pub(super) struct NoEntropy;
 impl Entropy for NoEntropy {
     fn fill(&mut self, _: &mut [u8]) -> Result<(), Fault> {
@@ -39,7 +18,7 @@ impl Entropy for NoEntropy {
 async fn original_identity(source_profile: Profile, selected: Profile) -> Result<(), Failure> {
     let directory = Directory::new()?;
     let path = directory.0.join("p");
-    let listener = UnixListener::bind(&path)?;
+    let listener = Listener::bind(&path)?;
     let clock: Arc<dyn RuntimeClock> = Arc::new(SystemClock);
     let now = clock.sample()?.now.as_micros();
     let mut service = Service::<4096>::new(
@@ -118,7 +97,7 @@ async fn original_identity(source_profile: Profile, selected: Profile) -> Result
                 Err(error) => return Err(error),
             }
         }
-        Ok::<UnixStream, io::Error>(stream)
+        Ok::<Stream, io::Error>(stream)
     });
     let mut held = None;
     let mut identities = 0;

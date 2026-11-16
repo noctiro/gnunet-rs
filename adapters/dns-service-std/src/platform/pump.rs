@@ -1,10 +1,9 @@
 //! Actual nonblocking pipe/TUN pump. AsyncFd owns duplicated original stdio
 //! descriptors, avoiding Tokio stdin's implicit blocking-worker thread.
-use super::*;
-use gnunet_service_runtime::framing::OwnedFrame;
 use gnunet_service_runtime::readiness::RegisteredIo;
 use gnunet_tun_host::{AsyncTun, Loss, ReadEvent, WriteEvent, WriteId};
 use std::future::{Future, poll_fn};
+use std::{io, time::Duration};
 use std::{
     os::fd::{AsFd, OwnedFd},
     pin::Pin,
@@ -39,6 +38,43 @@ impl Pipe {
         self.0.poll_write(cx, bytes)
     }
 }
+/// Diagnostic projection without retaining the retired TUN's authority tokens.
+pub(super) struct NativeLoss {
+    cause: gnunet_tun_host::LossCause,
+    pending: Option<u64>,
+    close_error: Option<io::Error>,
+}
+impl From<Loss> for NativeLoss {
+    fn from(loss: Loss) -> Self {
+        Self {
+            cause: loss.cause,
+            pending: loss.pending.map(|write| write.diagnostic()),
+            close_error: loss.close_error,
+        }
+    }
+}
+impl std::fmt::Debug for NativeLoss {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NativeLoss")
+            .field("cause", &self.cause)
+            .field("pending", &self.pending)
+            .field("close_error", &self.close_error)
+            .finish()
+    }
+}
+impl std::fmt::Display for NativeLoss {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{self:?}")
+    }
+}
+impl std::error::Error for NativeLoss {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match &self.cause {
+            gnunet_tun_host::LossCause::Io(error) => Some(error),
+            _ => self.close_error.as_ref().map(|error| error as _),
+        }
+    }
+}
 /// Actual metadata only; DNS payload bytes never enter diagnostic fields.
 #[derive(Debug, Default)]
 pub(super) struct PumpReport {
@@ -48,11 +84,11 @@ pub(super) struct PumpReport {
     pub discarded: u64,
     pub pending_prefix: Option<(usize, usize)>,
     pub input_prefix: Option<(usize, usize)>,
-    pub native_loss: Option<Loss>,
+    pub native_loss: Option<NativeLoss>,
     pub first: Option<io::Error>,
 }
 struct Output {
-    frame: OwnedFrame,
+    bytes: usize,
     offset: usize,
     until: tokio::time::Instant,
 }
@@ -61,6 +97,7 @@ pub(super) struct Pump {
     input: Pipe,
     output: Pipe,
     rx: Zeroizing<Vec<u8>>,
+    tx: Zeroizing<Vec<u8>>,
     read: usize,
     wanted: usize,
     read_until: Option<tokio::time::Instant>,
@@ -81,10 +118,14 @@ impl Pump {
         rx.try_reserve_exact(65535)
             .map_err(|_| io::Error::other("DNS helper input allocation"))?;
         rx.resize(65535, 0);
+        let mut tx = Vec::new();
+        tx.try_reserve_exact(65535).map_err(io::Error::other)?;
+        tx.resize(65535, 0);
         Ok(Self {
             input,
             output,
             rx: Zeroizing::new(rx),
+            tx: Zeroizing::new(tx),
             read: 0,
             wanted: 4,
             read_until: None,
@@ -100,16 +141,22 @@ impl Pump {
             report: PumpReport::default(),
         })
     }
-    fn step(&mut self, cx: &mut Context<'_>, tun: &mut AsyncTun) -> Poll<io::Result<bool>> {
+    pub(super) fn poll_stop(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         for signal in &mut self.signals {
             if let Poll::Ready(result) = signal.poll_recv(cx) {
-                return Poll::Ready(result.map(|()| Ok(false)).unwrap_or_else(|| {
-                    Err(io::Error::new(
+                return Poll::Ready(result.ok_or_else(|| {
+                    io::Error::new(
                         io::ErrorKind::UnexpectedEof,
                         "DNS helper signal source closed",
-                    ))
+                    )
                 }));
             }
+        }
+        Poll::Pending
+    }
+    fn poll_guard(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<bool>> {
+        if let Poll::Ready(result) = self.poll_stop(cx) {
+            return Poll::Ready(result.map(|()| false));
         }
         if self
             .read_until
@@ -130,14 +177,18 @@ impl Pump {
                 "DNS helper original stdout lifetime",
             )));
         }
+        Poll::Pending
+    }
+    fn step(&mut self, cx: &mut Context<'_>, tun: &mut AsyncTun) -> Poll<io::Result<bool>> {
+        if let ready @ Poll::Ready(_) = self.poll_guard(cx) {
+            return ready;
+        }
         for n in 0..4 {
             let class = (self.turn + n) % 4;
             let progress = match class {
                 0 => {
                     if let Some(output) = self.out.as_mut() {
-                        let result = self
-                            .output
-                            .write(cx, &output.frame.bytes()[output.offset..]);
+                        let result = self.output.write(cx, &self.tx[output.offset..output.bytes]);
                         match result {
                             Poll::Pending => Poll::Pending,
                             Poll::Ready(Err(e)) if e.kind() == io::ErrorKind::BrokenPipe => {
@@ -152,7 +203,8 @@ impl Pump {
                                 output.offset += n;
                                 self.report.pipe_written =
                                     self.report.pipe_written.saturating_add(n as u64);
-                                if output.offset == output.frame.len() {
+                                if output.offset == output.bytes {
+                                    self.tx[..output.bytes].fill(0);
                                     self.out = None;
                                 }
                                 Poll::Ready(Ok(true))
@@ -177,7 +229,7 @@ impl Pump {
                                 Poll::Ready(Ok(true))
                             }
                             Poll::Ready(WriteEvent::Lost(loss)) => {
-                                self.report.native_loss = Some(loss);
+                                self.report.native_loss = Some(loss.into());
                                 Poll::Ready(Err(io::Error::other("DNS original TUN source lost")))
                             }
                             Poll::Ready(WriteEvent::Unsent { .. }) => {
@@ -280,15 +332,11 @@ impl Pump {
                                     self.report.discarded = self.report.discarded.saturating_add(1);
                                     return Poll::Ready(Ok(true));
                                 }
-                                let mut frame = Vec::new();
-                                frame.try_reserve_exact(raw.len() + 8).map_err(|_| {
-                                    io::Error::other("DNS helper output allocation")
-                                })?;
-                                frame.resize(raw.len() + 8, 0);
-                                crate::core::encode_helper(raw, &mut frame)
+                                let bytes = raw.len() + 8;
+                                crate::core::encode_helper(raw, &mut self.tx[..bytes])
                                     .map_err(io::Error::other)?;
                                 self.out = Some(Output {
-                                    frame: OwnedFrame::new(frame),
+                                    bytes,
                                     offset: 0,
                                     until: tokio::time::Instant::now() + Duration::from_secs(30),
                                 });
@@ -300,7 +348,7 @@ impl Pump {
                                 Poll::Ready(Ok(true))
                             }
                             Poll::Ready(ReadEvent::Lost(loss)) => {
-                                self.report.native_loss = Some(loss);
+                                self.report.native_loss = Some(loss.into());
                                 Poll::Ready(Err(io::Error::other(
                                     "DNS actual TUN read source lost",
                                 )))
@@ -339,9 +387,29 @@ impl Pump {
         }
         Poll::Pending
     }
-    pub async fn run(mut self, tun: &mut AsyncTun) -> PumpReport {
+    pub async fn run(self, tun: &mut AsyncTun) -> PumpReport {
+        self.run_guarded(tun, std::future::pending()).await
+    }
+    pub(super) async fn run_guarded(
+        mut self,
+        tun: &mut AsyncTun,
+        guard: impl Future<Output = io::Result<()>>,
+    ) -> PumpReport {
+        let mut guard = std::pin::pin!(guard);
         loop {
-            match poll_fn(|cx| self.step(cx, tun)).await {
+            match poll_fn(|cx| {
+                // Stop and original pipe deadlines precede observation work.
+                // A failed observation fences every following packet class.
+                if let ready @ Poll::Ready(_) = self.poll_guard(cx) {
+                    return ready;
+                }
+                if let Poll::Ready(result) = guard.as_mut().poll(cx) {
+                    return Poll::Ready(result.map(|()| false));
+                }
+                self.step(cx, tun)
+            })
+            .await
+            {
                 Ok(true) => {}
                 Ok(false) => break,
                 Err(e) => {
@@ -350,7 +418,7 @@ impl Pump {
                 }
             }
         }
-        self.report.pending_prefix = self.out.as_ref().map(|o| (o.offset, o.frame.len()));
+        self.report.pending_prefix = self.out.as_ref().map(|o| (o.offset, o.bytes));
         self.report.input_prefix = (self.read != 0).then_some((self.read, self.wanted));
         if let Some(id) = self.write.take()
             && let Err(e) = tun.cancel(&id)

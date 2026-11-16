@@ -97,6 +97,9 @@ impl Reports {
             *current = Some(cx.waker().clone());
         }
     }
+    pub(crate) fn ready_observed(&self) -> bool {
+        self.0.ready.get()
+    }
     pub(crate) fn failed(&self) -> bool {
         self.0.failure.borrow().is_some()
     }

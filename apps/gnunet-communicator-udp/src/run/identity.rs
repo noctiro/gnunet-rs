@@ -1,7 +1,8 @@
 //! One original public observer, durable per-identity state and bounded recovery.
+mod retirement;
 use crate::Cause;
 use gnunet_pils::client::{Epoch, Identity as Observation};
-use gnunet_pils_host::client::Client;
+use gnunet_pils_host::client::{Client, ConnectionLoss};
 use gnunet_service_runtime::clock::{Deadline, RuntimeClock};
 use gnunet_types::Error;
 use gnunet_udp_communicator_host::{
@@ -10,6 +11,7 @@ use gnunet_udp_communicator_host::{
     replay::{Journal, Namespace},
 };
 use gnunet_wire::official::AbsoluteTime;
+pub(super) use retirement::observe as observe_retirement;
 use std::{
     future::Future,
     pin::Pin,
@@ -22,17 +24,20 @@ use tokio::time::{Instant, Sleep};
 struct Window {
     hard: Instant,
     until: AbsoluteTime,
+    started: AbsoluteTime,
     native: Pin<Box<Sleep>>,
     canonical: Pin<Box<Deadline>>,
 }
 impl Window {
     fn new(clock: Arc<dyn RuntimeClock>) -> Result<Self, Cause> {
-        let hard = Instant::now()
+        Self::since(clock, Instant::now())
+    }
+    fn since(clock: Arc<dyn RuntimeClock>, started: Instant) -> Result<Self, Cause> {
+        let hard = started
             .checked_add(Duration::from_secs(30))
             .ok_or(Error::Overflow)?;
-        let until = clock
-            .sample()?
-            .now
+        let canonical_start = clock.sample()?.now;
+        let until = canonical_start
             .as_micros()
             .checked_add(30_000_000)
             .filter(|v| *v != u64::MAX)
@@ -40,6 +45,7 @@ impl Window {
         Ok(Self {
             hard,
             until: AbsoluteTime::from_micros(until),
+            started: canonical_start,
             native: Box::pin(tokio::time::sleep_until(hard)),
             canonical: Box::pin(Deadline::at(clock, AbsoluteTime::from_micros(until))?),
         })
@@ -68,6 +74,10 @@ struct Generation<'id> {
 )]
 enum Phase<'id> {
     Active(Generation<'id>),
+    Paused {
+        previous: Observation<'id>,
+        lost: Epoch<'id>,
+    },
     Retired,
 }
 pub(super) struct State<'id> {
@@ -77,6 +87,7 @@ pub(super) struct State<'id> {
     peers: usize,
     clock: Arc<dyn RuntimeClock>,
     window: Option<Window>,
+    first_loss: Option<ConnectionLoss>,
 }
 impl<'id> State<'id> {
     pub fn new(
@@ -101,33 +112,123 @@ impl<'id> State<'id> {
             peers,
             clock,
             window: None,
+            first_loss: None,
         })
     }
     pub fn binding(&self) -> Result<&IdentityEpoch<'id>, Error> {
         match &self.phase {
             Phase::Active(v) => Ok(&v.binding),
+            Phase::Paused { .. } => Err(Error::NotReady),
             Phase::Retired => Err(Error::Closed),
         }
     }
     pub fn ports(&mut self) -> Result<(&IdentityEpoch<'id>, &mut Journal), Error> {
         match &mut self.phase {
             Phase::Active(v) => Ok((&v.binding, &mut v.journal)),
+            Phase::Paused { .. } => Err(Error::NotReady),
             Phase::Retired => Err(Error::Closed),
         }
     }
+    fn failure(&mut self, terminal: Cause) -> Cause {
+        match self.first_loss.take() {
+            Some(first) => Box::new(RecoveryFailure { first, terminal }),
+            None => terminal,
+        }
+    }
     pub fn guard(&mut self, cx: &mut Context<'_>) -> Result<(), Cause> {
-        if let Some(window) = &mut self.window {
-            window.guard(cx)?;
+        if let Some(window) = &mut self.window
+            && let Err(error) = window.guard(cx)
+        {
+            return Err(self.failure(error));
         }
         Ok(())
     }
+    /// The native PILS driver calls this again after its own fallible clock
+    /// provider and before each connect/read/write, without renewing targets.
+    pub fn guard_io(&mut self) -> Result<(), Cause> {
+        let Some(window) = &self.window else {
+            return Ok(());
+        };
+        let (hard, until, started) = (window.hard, window.until, window.started);
+        if Instant::now() >= hard {
+            return Err(self.failure(Error::Deadline.into()));
+        }
+        let sampled = self.clock.sample();
+        if Instant::now() >= hard {
+            return Err(self.failure(Error::Deadline.into()));
+        }
+        let now = sampled.map_err(|error| self.failure(error.into()))?.now;
+        if now >= until {
+            return Err(self.failure(Error::Deadline.into()));
+        }
+        if now < started {
+            return Err(self.failure(Error::TimeUncertain.into()));
+        }
+        Ok(())
+    }
+    pub fn paused(&self) -> bool {
+        matches!(self.phase, Phase::Paused { .. })
+    }
+    pub fn first_loss(&self) -> Option<&ConnectionLoss> {
+        self.first_loss.as_ref()
+    }
+    /// The caller has consumed an actual native connection loss. No network
+    /// operation may use the previous key after this synchronous boundary.
+    pub fn pause(
+        &mut self,
+        epoch: Epoch<'id>,
+        first: ConnectionLoss,
+        comm: &mut Communicator<'_>,
+    ) -> Result<Option<IdentityRetirement>, Cause> {
+        let started = Instant::now();
+        match &mut self.phase {
+            Phase::Active(current) => {
+                if current.binding.observation().epoch() != epoch {
+                    return Err(Error::StaleGeneration.into());
+                }
+                let previous = current.binding.observation();
+                let retired = comm.retire_identity()?;
+                current.binding.close();
+                if !current.journal.quiescent()? {
+                    return Err(Error::OutcomeUnknown.into());
+                }
+                // Drop the closed generation before opening any replacement
+                // key/journal; the process namespace and original IO stay owned.
+                self.phase = Phase::Paused {
+                    previous,
+                    lost: epoch,
+                };
+                self.first_loss.get_or_insert(first);
+                if self.window.is_none() {
+                    self.window = Some(Window::since(self.clock.clone(), started)?);
+                }
+                Ok(Some(retired))
+            }
+            Phase::Paused { lost, .. } => {
+                if epoch != *lost && !epoch.is_successor_of(*lost) {
+                    return Err(Error::StaleGeneration.into());
+                }
+                *lost = epoch;
+                Ok(None)
+            }
+            Phase::Retired => Err(Error::Closed.into()),
+        }
+    }
     /// Original source branding, revision and freshness precede any key access.
-    fn verify(&self, next: Observation<'id>, now: AbsoluteTime) -> Result<(), Error> {
-        let previous = self.binding()?.observation();
-        if next.epoch() != self.epoch
-            || next.revision() < previous.revision()
-            || (next.revision() == previous.revision() && next != previous)
-        {
+    pub(super) fn verify(&self, next: Observation<'id>, now: AbsoluteTime) -> Result<(), Error> {
+        let valid = match &self.phase {
+            Phase::Active(current) => {
+                let previous = current.binding.observation();
+                next.epoch() == self.epoch
+                    && next.revision() >= previous.revision()
+                    && (next.revision() != previous.revision() || next == previous)
+            }
+            Phase::Paused { previous, lost } => {
+                next.epoch().is_successor_of(*lost) && next.revision() > previous.revision()
+            }
+            Phase::Retired => return Err(Error::Closed),
+        };
+        if !valid {
             return Err(Error::StaleGeneration);
         }
         if next.expiration() <= now {
@@ -136,7 +237,7 @@ impl<'id> State<'id> {
         Ok(())
     }
     /// Retire actual old IO before replacing keys or history. A failed rebuild
-    /// leaves an explicit Retired phase, with no active signer/journal facade.
+    /// grants no active signer/journal facade.
     pub fn select(
         &mut self,
         source: &Client<'id, 32>,
@@ -146,10 +247,9 @@ impl<'id> State<'id> {
     ) -> Result<bool, Cause> {
         let next = source.identity().ok_or(Error::NotReady)?;
         self.verify(next, now)?;
-        let Phase::Active(current) = &mut self.phase else {
-            return Err(Error::Closed.into());
-        };
-        if next.peer().as_bytes() == &current.binding.peer() {
+        if let Phase::Active(current) = &mut self.phase
+            && next.peer().as_bytes() == &current.binding.peer()
+        {
             current.binding.refresh_native(source, now)?;
             return Ok(false);
         }
@@ -163,13 +263,16 @@ impl<'id> State<'id> {
         {
             return Err(Error::Deadline.into());
         }
-        if !current.journal.quiescent()? {
-            return Err(Error::OutcomeUnknown.into());
+        if let Phase::Active(current) = &mut self.phase {
+            let retired = comm.retire_identity()?;
+            current.binding.close();
+            if !current.journal.quiescent()? {
+                return Err(Error::OutcomeUnknown.into());
+            }
+            let old = std::mem::replace(&mut self.phase, Phase::Retired);
+            drop(old);
+            observe(retired)?;
         }
-        let retired = comm.retire_identity()?;
-        let old = std::mem::replace(&mut self.phase, Phase::Retired);
-        drop(old);
-        observe(retired)?;
         if self
             .window
             .as_ref()
@@ -204,16 +307,39 @@ impl<'id> State<'id> {
         }
         comm.resume_identity(binding.current_native(source, current)?, &journal)?;
         self.phase = Phase::Active(Generation { binding, journal });
+        self.epoch = next.epoch();
         Ok(true)
     }
     /// Called only after the real replacement REGISTER/restoration whole writes.
     pub fn restored(&mut self) -> bool {
+        self.first_loss = None;
         self.window.take().is_some()
     }
     pub fn close(&mut self) {
-        if let Phase::Active(v) = &mut self.phase {
-            v.binding.close();
-        }
+        let old = std::mem::replace(&mut self.phase, Phase::Retired);
+        drop(old);
+        self.window = None;
+        self.first_loss = None;
+    }
+}
+
+#[derive(Debug)]
+struct RecoveryFailure {
+    first: ConnectionLoss,
+    terminal: Cause,
+}
+impl std::fmt::Display for RecoveryFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "PILS recovery ended: {}; first connection loss: {}",
+            self.terminal, self.first
+        )
+    }
+}
+impl std::error::Error for RecoveryFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.terminal.as_ref())
     }
 }
 

@@ -617,6 +617,7 @@ impl Task {
             raw.resize(bytes, 0);
             uri.encode(&mut raw)?;
             options.transfer.deadline = AbsoluteTime::from_micros(0);
+            options.transfer.native_deadline = None;
             let manifest = Manifest {
                 uri: raw,
                 options,
@@ -755,6 +756,12 @@ impl Task {
     #[must_use]
     pub fn task_id(&self) -> &[u8; 32] {
         self.store.task_id()
+    }
+    /// Actual WAL root/parent naming barrier, separate from file synchronization.
+    /// This neither performs I/O nor refreshes authority.
+    #[must_use]
+    pub fn storage_directory_sync(&self) -> Option<crate::DirectorySync> {
+        self.store.directory_sync()
     }
     #[cfg(feature = "network")]
     pub(crate) fn directory_identity(&self) -> std::io::Result<FileIdentity> {

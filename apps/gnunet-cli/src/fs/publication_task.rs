@@ -30,7 +30,6 @@ use std::{
     ffi::OsStr,
     fmt,
     io::{self, Write},
-    os::unix::ffi::OsStrExt,
     path::Path,
 };
 
@@ -95,7 +94,7 @@ fn index_attempt(value: Attempt, manifest: Option<&Manifest>) -> Value {
     let source = manifest.and_then(|manifest| manifest.plan.index_sources().get(value.index));
     json!({"index":value.index,"intent_record":value.intent_record,"request_hash_hex":hex(&value.request_hash),
         "source":source.map(|source|json!({"file_id_hex":hex(&source.file_id),
-            "path":std::str::from_utf8(&source.path).ok(),"path_hex":hex(&source.path),"bytes":source.stamp.bytes}))})
+            "path":source.path.to_str(),"path_hex":hex(gnunet_native::os_bytes::encode(source.path.as_os_str()).as_ref()),"bytes":source.stamp.bytes}))})
 }
 fn index_pending(value: IndexPending, manifest: Option<&Manifest>) -> Value {
     let disposition = match value.disposition {
@@ -400,7 +399,7 @@ impl Error for CommandFailure {
     }
 }
 fn failed(
-    out: &mut impl Write,
+    out: &mut super::Output<'_, impl Write>,
     error: Box<task::Failure>,
     original: Option<&Task>,
 ) -> Box<dyn Error> {
@@ -414,7 +413,11 @@ fn failed(
         diagnostic,
     })
 }
-fn refused(out: &mut impl Write, error: task::Cause, original: &Task) -> Box<dyn Error> {
+fn refused(
+    out: &mut super::Output<'_, impl Write>,
+    error: task::Cause,
+    original: &Task,
+) -> Box<dyn Error> {
     let diagnostic = row(
         out,
         &json!({"event":"fs_publish_task_command_refused","task_id":hex(original.task_id()),
@@ -437,13 +440,13 @@ fn preparation_blocks(
     // merely to obtain one. The selected policy becomes the task's manifest.
     selection.select(&gnunet_service_runtime::clock::SystemClock)
 }
-fn prepared(task: Task, out: &mut impl Write) -> Result<(), Box<dyn Error>> {
+fn prepared(task: Task, out: &mut super::Output<'_, impl Write>) -> Result<(), Box<dyn Error>> {
     row(out, &task_row("fs_publish_task_prepared", &task)?)?;
     Ok(())
 }
 pub(super) fn create_file(
     args: &[impl AsRef<OsStr>],
-    out: &mut impl Write,
+    out: &mut super::Output<'_, impl Write>,
 ) -> Result<(), Box<dyn Error>> {
     let parsed = super::publish::settings::content_arguments(args)?;
     let args = parsed.positional;
@@ -461,7 +464,7 @@ pub(super) fn create_file(
 }
 pub(super) fn create_indexed_file(
     args: &[impl AsRef<OsStr>],
-    out: &mut impl Write,
+    out: &mut super::Output<'_, impl Write>,
 ) -> Result<(), Box<dyn Error>> {
     let parsed = super::publish::settings::content_arguments(args)?;
     let args = parsed.positional;
@@ -481,19 +484,19 @@ pub(super) fn create_indexed_file(
 }
 pub(super) fn create_tree(
     args: &[impl AsRef<OsStr>],
-    out: &mut impl Write,
+    out: &mut super::Output<'_, impl Write>,
 ) -> Result<(), Box<dyn Error>> {
     prepare_tree(args, out, false)
 }
 pub(super) fn create_indexed_tree(
     args: &[impl AsRef<OsStr>],
-    out: &mut impl Write,
+    out: &mut super::Output<'_, impl Write>,
 ) -> Result<(), Box<dyn Error>> {
     prepare_tree(args, out, true)
 }
 fn prepare_tree(
     args: &[impl AsRef<OsStr>],
-    out: &mut impl Write,
+    out: &mut super::Output<'_, impl Write>,
     indexed: bool,
 ) -> Result<(), Box<dyn Error>> {
     let parsed = super::publish::settings::content_arguments(args)?;
@@ -527,16 +530,18 @@ fn prepare_tree(
 }
 pub(super) fn create_keywords(
     args: &[impl AsRef<OsStr>],
-    out: &mut impl Write,
+    out: &mut super::Output<'_, impl Write>,
 ) -> Result<(), Box<dyn Error>> {
     let parsed = super::publish::settings::keyword_arguments(args, false)?;
     let args = parsed.positional;
     let mut metadata = super::publish::settings::RecordMetadata::new(parsed.manual)?;
     let metadata = metadata.plan()?;
-    let Uri::Keywords(query) = Uri::parse(args[1].as_bytes(), UriLimits::default())? else {
+    let Uri::Keywords(query) =
+        Uri::parse(crate::argument::wire_bytes(args[1])?, UriLimits::default())?
+    else {
         return Err("publish-task-keywords requires a KSK URI".into());
     };
-    let target = Uri::parse(args[2].as_bytes(), UriLimits::default())?;
+    let target = Uri::parse(crate::argument::wire_bytes(args[2])?, UriLimits::default())?;
     let task = Task::create_keywords(
         Path::new(args[0]),
         query,
@@ -550,19 +555,19 @@ pub(super) fn create_keywords(
 }
 pub(super) fn create_namespace(
     args: &[impl AsRef<OsStr>],
-    out: &mut impl Write,
+    out: &mut super::Output<'_, impl Write>,
 ) -> Result<(), Box<dyn Error>> {
     let parsed = super::publish::settings::metadata_arguments(args, 5, 5, &[])?;
     let args = parsed.positional;
     let mut metadata = super::publish::settings::RecordMetadata::new(parsed.manual)?;
     let metadata = metadata.plan()?;
     let key = KeyFile::open(Path::new(args[1]))?;
-    let target = Uri::parse(args[4].as_bytes(), UriLimits::default())?;
+    let target = Uri::parse(crate::argument::wire_bytes(args[4])?, UriLimits::default())?;
     let task = Task::create_namespace(
         Path::new(args[0]),
         &key,
-        args[2].as_bytes(),
-        args[3].as_bytes(),
+        crate::argument::wire_bytes(args[2])?,
+        crate::argument::wire_bytes(args[3])?,
         target,
         metadata.as_ref(),
         preparation_blocks(parsed.publication)?,
@@ -573,10 +578,13 @@ pub(super) fn create_namespace(
 }
 pub(super) fn create_managed_namespace(
     args: &[impl AsRef<OsStr>],
-    out: &mut impl Write,
+    out: &mut super::Output<'_, impl Write>,
 ) -> Result<(), Box<dyn Error>> {
     let parsed = super::publish::settings::metadata_arguments(args, 5, 5, &[b"--update"])?;
-    let update = parsed.value(b"--update").map(OsStr::as_bytes);
+    let update = parsed
+        .value(b"--update")
+        .map(crate::argument::wire_bytes)
+        .transpose()?;
     let args = parsed.positional;
     let mut metadata = super::publish::settings::RecordMetadata::new(parsed.manual)?;
     let metadata = metadata.plan()?;
@@ -587,12 +595,12 @@ pub(super) fn create_managed_namespace(
         GraphLimits::default(),
         store::Limits::default(),
     )?;
-    let target = Uri::parse(args[4].as_bytes(), UriLimits::default())?;
+    let target = Uri::parse(crate::argument::wire_bytes(args[4])?, UriLimits::default())?;
     let task = Task::create_managed_namespace(
         Path::new(args[0]),
         &key,
         &mut graph,
-        args[3].as_bytes(),
+        crate::argument::wire_bytes(args[3])?,
         update,
         target,
         metadata.as_ref(),
@@ -618,7 +626,7 @@ fn open_graph(original: &Task, path: &Path) -> Result<Graph, task::Cause> {
 }
 pub(super) fn status_command(
     args: &[impl AsRef<OsStr>],
-    out: &mut impl Write,
+    out: &mut super::Output<'_, impl Write>,
 ) -> Result<(), Box<dyn Error>> {
     let task = Task::open(Path::new(args[0].as_ref()), store::Limits::default())
         .map_err(|error| failed(out, error, None))?;
@@ -638,18 +646,21 @@ fn quota(raw: Option<&impl AsRef<OsStr>>) -> Result<Option<usize>, Box<dyn Error
     })
     .transpose()
 }
-pub(super) fn run(args: &[impl AsRef<OsStr>], out: &mut impl Write) -> Result<(), Box<dyn Error>> {
+pub(super) fn run(
+    args: &[impl AsRef<OsStr>],
+    out: &mut super::Output<'_, impl Write>,
+) -> Result<(), Box<dyn Error>> {
     run_inner(args, out, RunMode::Plain)
 }
 pub(super) fn run_indexed(
     args: &[impl AsRef<OsStr>],
-    out: &mut impl Write,
+    out: &mut super::Output<'_, impl Write>,
 ) -> Result<(), Box<dyn Error>> {
     run_inner(args, out, RunMode::Indexed)
 }
 pub(super) fn run_managed(
     args: &[impl AsRef<OsStr>],
-    out: &mut impl Write,
+    out: &mut super::Output<'_, impl Write>,
 ) -> Result<(), Box<dyn Error>> {
     run_inner(args, out, RunMode::Managed)
 }
@@ -661,7 +672,7 @@ enum RunMode {
 }
 fn run_inner(
     args: &[impl AsRef<OsStr>],
-    out: &mut impl Write,
+    out: &mut super::Output<'_, impl Write>,
     mode: RunMode,
 ) -> Result<(), Box<dyn Error>> {
     let indexed = mode == RunMode::Indexed;
@@ -686,6 +697,7 @@ fn run_inner(
         None
     };
     let source = EndpointSource::unix(Path::new(args[offset].as_ref()).to_path_buf());
+    out.interval(interval)?;
     let deadline = target(&source, interval)?;
     let mut start = task_row("fs_publish_task_run_started", &task)?;
     start["deadline_micros"] = json!(deadline.as_micros());
@@ -741,6 +753,7 @@ fn run_inner(
             task.run(source,&mut buffers,deadline,observe).await
         }
     });
+    out.cleanup()?;
     match result {
         Ok(done) => {
             let diagnostic = row(out, &outcome_row(&done, &task)).err();
@@ -779,7 +792,7 @@ fn run_inner(
 }
 pub(super) fn record_graph(
     args: &[impl AsRef<OsStr>],
-    out: &mut impl Write,
+    out: &mut super::Output<'_, impl Write>,
 ) -> Result<(), Box<dyn Error>> {
     let mut task = Task::open(Path::new(args[0].as_ref()), store::Limits::default())
         .map_err(|error| failed(out, error, None))?;
@@ -801,6 +814,7 @@ pub(super) fn record_graph(
         }
         if output.is_some(){Control::Pause}else{Control::Continue}
     });
+    out.cleanup()?;
     match result {
         Ok(done) => {
             let diagnostic = row(out, &graph_outcome_row(&done, &task)).err();
@@ -831,7 +845,7 @@ pub(super) fn record_graph(
 }
 pub(super) fn cancel(
     args: &[impl AsRef<OsStr>],
-    out: &mut impl Write,
+    out: &mut super::Output<'_, impl Write>,
 ) -> Result<(), Box<dyn Error>> {
     let mut task = Task::open(Path::new(args[0].as_ref()), store::Limits::default())
         .map_err(|error| failed(out, error, None))?;
@@ -849,7 +863,7 @@ pub(super) fn cancel(
 }
 pub(super) fn retry_refused(
     args: &[impl AsRef<OsStr>],
-    out: &mut impl Write,
+    out: &mut super::Output<'_, impl Write>,
 ) -> Result<(), Box<dyn Error>> {
     let mut task = Task::open(Path::new(args[0].as_ref()), store::Limits::default())
         .map_err(|error| failed(out, error, None))?;
@@ -864,7 +878,7 @@ pub(super) fn retry_refused(
 
 pub(super) fn retry_index_refused(
     args: &[impl AsRef<OsStr>],
-    out: &mut impl Write,
+    out: &mut super::Output<'_, impl Write>,
 ) -> Result<(), Box<dyn Error>> {
     let mut task = Task::open(Path::new(args[0].as_ref()), store::Limits::default())
         .map_err(|error| failed(out, error, None))?;

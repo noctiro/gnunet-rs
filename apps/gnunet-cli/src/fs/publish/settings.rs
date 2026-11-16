@@ -1,7 +1,7 @@
 //! Manual publication annotations and bounded record planning.
 use super::super::publication_options;
 use gnunet::fs_host::extraction::{ManualMetadata, Policy};
-use std::{error::Error, ffi::OsStr, os::unix::ffi::OsStrExt};
+use std::{error::Error, ffi::OsStr};
 
 /// The one bounded manual-metadata grammar for actual KSK/SKS frontdoors.
 /// Named options consume their original following value atomically, even when
@@ -16,7 +16,7 @@ impl<'a> MetadataArguments<'a> {
     pub fn value(&self, name: &[u8]) -> Option<&'a OsStr> {
         self.values
             .iter()
-            .find(|(key, _)| key.as_bytes() == name)
+            .find(|(key, _)| key.as_encoded_bytes() == name)
             .map(|(_, value)| *value)
     }
 }
@@ -36,7 +36,7 @@ pub(crate) fn metadata_arguments<'a, T: AsRef<OsStr>>(
     let mut at = 0;
     while at < args.len() {
         let arg = args[at].as_ref();
-        let raw = arg.as_bytes();
+        let raw = arg.as_encoded_bytes();
         if !literal && arg == OsStr::new("--") {
             literal = true;
         } else if !literal && (matches!(raw, b"-m" | b"--meta") || value_options.contains(&raw)) {
@@ -46,11 +46,11 @@ pub(crate) fn metadata_arguments<'a, T: AsRef<OsStr>>(
                 .ok_or("publication option requires a value")?
                 .as_ref();
             if matches!(raw, b"-m" | b"--meta") {
-                metadata.push(value.as_bytes())?;
+                metadata.push(crate::argument::wire_bytes(value)?)?;
             } else {
                 if values
                     .iter()
-                    .any(|(key, _): &(&OsStr, &OsStr)| key.as_bytes() == raw)
+                    .any(|(key, _): &(&OsStr, &OsStr)| key.as_encoded_bytes() == raw)
                 {
                     return Err("publication option was specified more than once".into());
                 }

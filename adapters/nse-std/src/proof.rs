@@ -1,54 +1,61 @@
-//! One real OS-fenced raw8 proof writer, atomic commit and explicit recovery.
-use std::{
-    fs::{self, File, OpenOptions},
-    io::{self, Read, Write},
-    os::unix::fs::{MetadataExt, OpenOptionsExt},
-    path::{Path, PathBuf},
+//! Native raw8 proof persistence, original-object fencing and explicit recovery.
+mod namespace;
+use gnunet_native::{
+    DirectorySync,
+    filesystem::{EntryInfo, file_info},
 };
-/// Exact native stage; a successful write alone does not establish durability.
+use namespace::Namespace;
+use std::{
+    fs::File,
+    io::{self, Read, Seek, SeekFrom, Write},
+    path::PathBuf,
+};
+/// Exact native stage; write success alone is not a durability receipt.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Stage {
-    /// Original fence acquisition/validation.
+    /// Original namespace and writer-lock qualification.
     Fence,
     /// Exact raw8 read.
     Read,
-    /// New temporary file creation.
+    /// Private staging-file creation.
     Create,
-    /// Exact original bytes written.
+    /// Original staging bytes written.
     Write,
-    /// Original temporary file synchronized.
+    /// Original staging file synchronized.
     FileSync,
-    /// Original atomic replacement.
+    /// Original publication request.
     Rename,
-    /// Parent directory synchronized.
+    /// Naming barrier and original namespace binding.
     DirectorySync,
-    /// Original unknown commit settled by exact readback.
+    /// Reconciliation of an original uncertain publication.
     Recovery,
 }
-/// Actual commit certainty, independent of local syscall/error classification.
+/// Publication certainty, independently of native error classification.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Outcome {
-    /// No rename committed; the original bytes may be retried explicitly.
+    /// No proof publication was attempted.
     NotCommitted,
-    /// Rename succeeded but durability was not established.
+    /// Publication may have occurred; no new write may replace this obligation.
     Unknown,
 }
-/// Original native failure and its actual persistence boundary.
+/// Original native failure with any independent owned-staging cleanup failure.
 #[derive(Debug)]
 pub struct Error {
-    /// Failed original stage.
+    /// Failed native stage.
     pub stage: Stage,
-    /// Whether the original replacement may have committed.
+    /// Original publication certainty.
     pub outcome: Outcome,
-    /// Original OS cause.
+    /// Original OS failure.
     pub cause: io::Error,
+    /// Independent cleanup failure; never replaces the original cause.
+    pub cleanup: Option<io::Error>,
 }
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "NSE proof {:?}/{:?}: {}",
-            self.stage, self.outcome, self.cause
+            "NSE proof {:?}/{:?}: {}; staging cleanup={:?}",
+            self.stage, self.outcome, self.cause, self.cleanup
         )
     }
 }
@@ -62,157 +69,92 @@ fn error(stage: Stage, outcome: Outcome, cause: io::Error) -> Error {
         stage,
         outcome,
         cause,
+        cleanup: None,
     }
 }
-/// Owned writer fence and original unknown outcome. The persistent guard file is
-/// never unlinked; kernel locking releases on process/owner exit rather than PID guessing.
+struct Pending {
+    bytes: [u8; 8],
+    file: File,
+}
+/// Actual writer lock, original private namespace and unsettled publication.
+/// Callers serialize namespace administration and exclude hostile mutation.
 pub struct Store {
-    path: PathBuf,
-    parent: PathBuf,
-    guard_path: PathBuf,
-    guard: File,
-    identity: (u64, u64),
-    unknown: Option<[u8; 8]>,
+    namespace: Namespace,
+    unknown: Option<Pending>,
+    directory_sync: DirectorySync,
 }
 impl Store {
-    /// Obtain a real exclusive OS lock, settle prior directory writes, and validate
-    /// any existing file as an exact regular raw8 object before it can be used.
+    /// Acquire a native writer lock, observe naming-barrier capability and
+    /// validate any existing public proof as an exact ordinary raw8 object.
     pub fn open(path: PathBuf) -> Result<Self, Error> {
-        gnunet_service_runtime::private_parents(&path)
-            .map_err(|e| error(Stage::Fence, Outcome::NotCommitted, e))?;
-        let parent = path
-            .parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .unwrap_or(Path::new("."))
-            .to_owned();
-        let name = path.file_name().ok_or_else(|| {
-            error(
-                Stage::Fence,
-                Outcome::NotCommitted,
-                io::Error::other("proof path has no filename"),
-            )
-        })?;
-        let mut guard_name = name.to_os_string();
-        guard_name.push(".nse-lock");
-        let guard_path = parent.join(guard_name);
-        let mut options = OpenOptions::new();
-        options
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .mode(0o600);
-        let guard = options
-            .open(&guard_path)
-            .map_err(|e| error(Stage::Fence, Outcome::NotCommitted, e))?;
-        guard
-            .try_lock()
-            .map_err(|e| error(Stage::Fence, Outcome::NotCommitted, e.into()))?;
-        let meta = guard
-            .metadata()
-            .map_err(|e| error(Stage::Fence, Outcome::NotCommitted, e))?;
-        if !meta.is_file() {
-            return Err(error(
-                Stage::Fence,
-                Outcome::NotCommitted,
-                io::Error::other("proof fence is not regular"),
-            ));
-        }
+        let namespace = Namespace::open(&path)
+            .map_err(|cause| error(Stage::Fence, Outcome::NotCommitted, cause))?;
+        let directory_sync = namespace
+            .sync()
+            .map_err(|cause| error(Stage::DirectorySync, Outcome::Unknown, cause))?;
         let store = Self {
-            path,
-            parent,
-            guard_path,
-            guard,
-            identity: (meta.dev(), meta.ino()),
+            namespace,
             unknown: None,
+            directory_sync,
         };
-        store
-            .directory_sync()
-            .map_err(|e| error(Stage::DirectorySync, Outcome::Unknown, e))?;
         let _saved = store.read()?;
         Ok(store)
     }
     fn fence(&self) -> Result<(), Error> {
-        let actual = fs::symlink_metadata(&self.guard_path)
-            .map_err(|e| error(Stage::Fence, Outcome::Unknown, e))?;
-        let held = self
-            .guard
-            .metadata()
-            .map_err(|e| error(Stage::Fence, Outcome::Unknown, e))?;
-        if !actual.is_file()
-            || (actual.dev(), actual.ino()) != self.identity
-            || (held.dev(), held.ino()) != self.identity
-        {
-            return Err(error(
-                Stage::Fence,
-                Outcome::Unknown,
-                io::Error::other("original proof fence path changed"),
-            ));
-        }
+        self.namespace
+            .verify()
+            .map_err(|cause| error(Stage::Fence, Outcome::Unknown, cause))
+    }
+    fn sync_directory(&mut self) -> io::Result<()> {
+        self.directory_sync = self.directory_sync.combine(self.namespace.sync()?);
         Ok(())
     }
-    fn directory_sync(&self) -> io::Result<()> {
-        File::open(&self.parent)?.sync_all()
+    /// Actual naming-barrier capability, separately from successful file sync.
+    /// Windows reports Unavailable rather than claiming directory durability.
+    pub const fn directory_sync(&self) -> DirectorySync {
+        self.directory_sync
     }
     fn read(&self) -> Result<Option<[u8; 8]>, Error> {
         self.fence()?;
-        let meta = match fs::symlink_metadata(&self.path) {
-            Ok(v) => v,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
-            Err(e) => return Err(error(Stage::Read, Outcome::NotCommitted, e)),
+        let file = match self.namespace.open_proof() {
+            Ok(file) => file,
+            Err(cause) if cause.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(cause) => return Err(error(Stage::Read, Outcome::NotCommitted, cause)),
         };
-        if !meta.is_file() || meta.len() != 8 {
-            return Err(error(
-                Stage::Read,
-                Outcome::NotCommitted,
-                io::Error::other("proof is not an exact regular raw8 file"),
-            ));
-        }
-        let mut file =
-            File::open(&self.path).map_err(|e| error(Stage::Read, Outcome::NotCommitted, e))?;
-        let opened = file
-            .metadata()
-            .map_err(|e| error(Stage::Read, Outcome::NotCommitted, e))?;
-        if (opened.dev(), opened.ino(), opened.len()) != (meta.dev(), meta.ino(), 8) {
-            return Err(error(
-                Stage::Read,
+        read_original(&self.namespace, &file)
+            .map(Some)
+            .map_err(|cause| error(Stage::Read, Outcome::NotCommitted, cause))
+    }
+    fn read_pending(&self) -> Result<[u8; 8], Error> {
+        let pending = self.unknown.as_ref().ok_or_else(|| {
+            error(
+                Stage::Recovery,
                 Outcome::Unknown,
-                io::Error::other("proof changed during read"),
-            ));
-        }
-        let mut bytes = [0; 8];
-        file.read_exact(&mut bytes)
-            .map_err(|e| error(Stage::Read, Outcome::NotCommitted, e))?;
-        Ok(Some(bytes))
+                io::Error::other("missing original proof publication"),
+            )
+        })?;
+        read_original(&self.namespace, &pending.file)
+            .map_err(|cause| error(Stage::Read, Outcome::Unknown, cause))
     }
-    // Once a replacement succeeded, every subsequent readback failure retains
-    // its original stage/cause but cannot claim that no replacement committed.
-    fn read_after_rename(&self) -> Result<Option<[u8; 8]>, Error> {
-        self.read().map_err(|mut failure| {
-            failure.outcome = Outcome::Unknown;
-            failure
-        })
-    }
-    /// Read an actual saved raw8 file; None means missing and never durability.
-    /// An unknown original commit must be settled before any file is adopted.
+    /// Read a saved raw8 object. Missing is not a durability receipt. No unknown
+    /// original publication can be adopted or silently replaced through this API.
     pub fn loaded(&self) -> Result<Option<[u8; 8]>, Error> {
         if self.unknown.is_some() {
             return Err(error(
                 Stage::Recovery,
                 Outcome::Unknown,
-                io::Error::other("original commit must be recovered"),
+                io::Error::other("original proof publication requires recovery"),
             ));
         }
         self.read()
     }
-    /// Check the actual original OS fence as well as any unknown commit before
-    /// permitting another identity epoch. Authority loss retains its native cause.
+    /// Check original namespace authority and the absence of unsettled effects.
     pub fn quiescent(&self) -> Result<bool, Error> {
         self.fence()?;
         Ok(self.unknown.is_none())
     }
-    /// Atomically write this exact raw8 value under the retained original fence.
-    /// A post-rename failure quiesces this owner; it never issues a fresh write.
+    /// Publish the exact raw8 value. Unknown effects fence subsequent writes;
+    /// publication/readback retain the original file rather than reopening it.
     pub fn commit(&mut self, bytes: [u8; 8]) -> Result<(), Error> {
         self.commit_observed(bytes, || {})
     }
@@ -225,301 +167,101 @@ impl Store {
             return Err(error(
                 Stage::Recovery,
                 Outcome::Unknown,
-                io::Error::other("unsettled original proof commit"),
+                io::Error::other("unsettled original proof publication"),
             ));
         }
         self.fence()?;
-        let mut random = [0; 16];
-        getrandom::fill(&mut random)
-            .map_err(|e| error(Stage::Create, Outcome::NotCommitted, io::Error::other(e)))?;
-        let mut name = self
-            .path
-            .file_name()
-            .ok_or_else(|| {
-                error(
-                    Stage::Create,
-                    Outcome::NotCommitted,
-                    io::Error::other("no proof filename"),
-                )
-            })?
-            .to_os_string();
-        name.push(format!(".new-{:032x}", u128::from_be_bytes(random)));
-        let temporary_path = self.parent.join(name);
-        let mut options = OpenOptions::new();
-        options.write(true).create_new(true).mode(0o600);
-        let mut file = options
-            .open(&temporary_path)
-            .map_err(|e| error(Stage::Create, Outcome::NotCommitted, e))?;
-        let metadata = file
-            .metadata()
-            .map_err(|e| error(Stage::Create, Outcome::NotCommitted, e))?;
-        let mut temporary = Temporary {
-            path: temporary_path,
-            identity: (metadata.dev(), metadata.ino()),
-            renamed: false,
-        };
-        file.write_all(&bytes)
-            .map_err(|e| error(Stage::Write, Outcome::NotCommitted, e))?;
-        file.sync_all()
-            .map_err(|e| error(Stage::FileSync, Outcome::NotCommitted, e))?;
-        drop(file);
-        self.fence()?;
-        fs::rename(&temporary.path, &self.path)
-            .map_err(|e| error(Stage::Rename, Outcome::NotCommitted, e))?;
-        temporary.renamed = true;
-        self.unknown = Some(bytes);
+        let (name, mut file) = self
+            .namespace
+            .staging()
+            .map_err(|cause| error(Stage::Create, Outcome::NotCommitted, cause))?;
+        let prepared = (|| {
+            let mut offset = 0;
+            while offset < bytes.len() {
+                // Interrupted writes are not replayed: the native prefix may be unknown.
+                let count = file
+                    .write(&bytes[offset..])
+                    .map_err(|cause| error(Stage::Write, Outcome::NotCommitted, cause))?;
+                if count == 0 {
+                    return Err(error(
+                        Stage::Write,
+                        Outcome::NotCommitted,
+                        io::ErrorKind::WriteZero.into(),
+                    ));
+                }
+                offset += count;
+            }
+            file.sync_all()
+                .map_err(|cause| error(Stage::FileSync, Outcome::NotCommitted, cause))?;
+            self.fence()
+        })();
+        if let Err(mut original) = prepared {
+            original.cleanup = self.namespace.discard(&name, &file).err();
+            return Err(original);
+        }
+        // Keep this exact file even on a failed publication request. No later
+        // read of a different inode with equal bytes can settle its effects.
+        let result = self.namespace.publish(&name, &file);
+        self.unknown = Some(Pending { bytes, file });
+        result.map_err(|cause| error(Stage::Rename, Outcome::Unknown, cause))?;
         after_rename();
-        self.directory_sync()
-            .map_err(|e| error(Stage::DirectorySync, Outcome::Unknown, e))?;
-        if self.read_after_rename()? != Some(bytes) {
+        self.sync_directory()
+            .map_err(|cause| error(Stage::DirectorySync, Outcome::Unknown, cause))?;
+        if self.read_pending()? != bytes {
             return Err(error(
                 Stage::Recovery,
                 Outcome::Unknown,
-                io::Error::other("original commit readback differs"),
+                io::Error::other("original proof readback differs"),
             ));
         }
         self.unknown = None;
         Ok(())
     }
-    /// Settle the same original unknown commit by directory sync and exact readback.
-    /// No new raw8 value is written or accepted as a substitute.
+    /// Reconcile the same held publication by naming barrier and exact readback.
+    /// This never writes a substitute value or accepts a replacement object.
     pub fn recover(&mut self) -> Result<Option<[u8; 8]>, Error> {
-        let Some(expected) = self.unknown else {
+        let Some(expected) = self.unknown.as_ref().map(|pending| pending.bytes) else {
             self.fence()?;
             return Ok(None);
         };
         self.fence()?;
-        self.directory_sync()
-            .map_err(|e| error(Stage::Recovery, Outcome::Unknown, e))?;
-        if self.read_after_rename()? != Some(expected) {
+        self.sync_directory()
+            .map_err(|cause| error(Stage::Recovery, Outcome::Unknown, cause))?;
+        if self.read_pending()? != expected {
             return Err(error(
                 Stage::Recovery,
                 Outcome::Unknown,
-                io::Error::other("unknown original proof cannot be reconciled"),
+                io::Error::other("original proof cannot be reconciled"),
             ));
         }
         self.unknown = None;
         Ok(Some(expected))
     }
 }
-struct Temporary {
-    path: PathBuf,
-    identity: (u64, u64),
-    renamed: bool,
-}
-impl Drop for Temporary {
-    fn drop(&mut self) {
-        if self.renamed {
-            return;
+fn read_original(namespace: &Namespace, mut file: &File) -> io::Result<[u8; 8]> {
+    namespace.verify_proof(file)?;
+    let before = match file_info(file)? {
+        EntryInfo::File(info) if info.bytes == 8 => info,
+        _ => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "NSE proof must be an exact ordinary raw8 file",
+            ));
         }
-        if let Ok(metadata) = fs::symlink_metadata(&self.path)
-            && metadata.is_file()
-            && (metadata.dev(), metadata.ino()) == self.identity
-        {
-            let _removed = fs::remove_file(&self.path);
-        }
+    };
+    file.seek(SeekFrom::Start(0))?;
+    let mut bytes = [0; 8];
+    file.read_exact(&mut bytes)?;
+    let mut trailing = [0];
+    if file.read(&mut trailing)? != 0 || file_info(file)? != EntryInfo::File(before) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "NSE proof changed during read",
+        ));
     }
+    namespace.verify_proof(file)?;
+    Ok(bytes)
 }
 
 #[cfg(test)]
-mod tests {
-    #![expect(
-        clippy::panic_in_result_fn,
-        reason = "Real filesystem witnesses assert original OS fence, inode and commit boundaries."
-    )]
-    use super::*;
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static NEXT: AtomicU64 = AtomicU64::new(0);
-    struct Scratch(PathBuf);
-    impl Scratch {
-        fn new() -> io::Result<Self> {
-            let path = std::env::temp_dir().join(format!(
-                "nse-proof-{}-{}",
-                std::process::id(),
-                NEXT.fetch_add(1, Ordering::Relaxed)
-            ));
-            fs::create_dir(&path)?;
-            Ok(Self(path))
-        }
-    }
-    impl Drop for Scratch {
-        fn drop(&mut self) {
-            let _removed = fs::remove_dir_all(&self.0);
-        }
-    }
-    #[test]
-    fn actual_raw8_is_atomic_and_kernel_fence_releases_without_pid_guessing()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let scratch = Scratch::new()?;
-        let path = scratch.0.join("proof");
-        let mut first = Store::open(path.clone())?;
-        assert_eq!(first.loaded()?, None);
-        assert!(matches!(
-            Store::open(path.clone()),
-            Err(Error {
-                stage: Stage::Fence,
-                ..
-            })
-        ));
-        first.commit([0; 8])?;
-        assert_eq!(first.loaded()?, Some([0; 8]));
-        assert_eq!(fs::read(&path)?, [0; 8]);
-        first.commit([3; 8])?;
-        assert_eq!(fs::read(&path)?, [3; 8]);
-        assert_eq!(fs::metadata(&path)?.len(), 8);
-        assert!(first.quiescent()?);
-        drop(first);
-        assert!(scratch.0.join("proof.nse-lock").is_file());
-        let second = Store::open(path)?;
-        assert_eq!(second.loaded()?, Some([3; 8]));
-        assert!(second.quiescent()?);
-        Ok(())
-    }
-    #[test]
-    fn real_postrename_directory_failure_retains_original_unknown_until_readback()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let scratch = Scratch::new()?;
-        let live = scratch.0.join("live");
-        let moved = scratch.0.join("moved");
-        fs::create_dir(&live)?;
-        let path = live.join("proof");
-        fs::write(&path, [1; 8])?;
-        let mut store = Store::open(path)?;
-        let result = store.commit_observed([2; 8], || {
-            assert!(fs::rename(&live, &moved).is_ok());
-        });
-        assert!(matches!(
-            result,
-            Err(Error {
-                stage: Stage::DirectorySync,
-                outcome: Outcome::Unknown,
-                ..
-            })
-        ));
-        assert_eq!(fs::read(moved.join("proof"))?, [2; 8]);
-        assert!(store.quiescent().is_err());
-        assert!(store.loaded().is_err());
-        assert!(matches!(
-            store.commit([9; 8]),
-            Err(Error {
-                stage: Stage::Recovery,
-                outcome: Outcome::Unknown,
-                ..
-            })
-        ));
-        assert!(store.recover().is_err());
-        fs::rename(&moved, &live)?;
-        assert!(!store.quiescent()?);
-        assert_eq!(store.recover()?, Some([2; 8]));
-        assert!(store.quiescent()?);
-        assert_eq!(store.loaded()?, Some([2; 8]));
-        store.commit([4; 8])?;
-        assert_eq!(fs::read(live.join("proof"))?, [4; 8]);
-        Ok(())
-    }
-    #[test]
-    fn malformed_file_and_replaced_fence_never_authorize_another_epoch()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let scratch = Scratch::new()?;
-        let path = scratch.0.join("proof");
-        fs::write(&path, [7; 9])?;
-        assert!(matches!(
-            Store::open(path.clone()),
-            Err(Error {
-                stage: Stage::Read,
-                ..
-            })
-        ));
-        fs::remove_file(&path)?;
-        let mut store = Store::open(path.clone())?;
-        fs::rename(scratch.0.join("proof.nse-lock"), scratch.0.join("old-lock"))?;
-        fs::write(scratch.0.join("proof.nse-lock"), [])?;
-        assert!(store.quiescent().is_err());
-        assert!(store.loaded().is_err());
-        assert!(matches!(
-            store.commit([5; 8]),
-            Err(Error {
-                stage: Stage::Fence,
-                outcome: Outcome::Unknown,
-                ..
-            })
-        ));
-        assert!(!path.exists());
-        Ok(())
-    }
-    #[test]
-    fn failed_temp_creation_never_deletes_someone_elses_random_name()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let scratch = Scratch::new()?;
-        let path = scratch.0.join("name");
-        fs::write(&path, [7])?;
-        let metadata = fs::metadata(&path)?;
-        let temporary = Temporary {
-            path: path.clone(),
-            identity: (metadata.dev(), metadata.ino()),
-            renamed: false,
-        };
-        fs::rename(&path, scratch.0.join("old"))?;
-        fs::write(&path, [9])?;
-        drop(temporary);
-        assert_eq!(fs::read(path)?, [9]);
-        Ok(())
-    }
-    fn postrename_readback_refusal_case(recovery: bool) -> Result<(), Box<dyn std::error::Error>> {
-        let scratch = Scratch::new()?;
-        let path = scratch.0.join("proof");
-        let saved = scratch.0.join("original-renamed-proof");
-        let mut store = Store::open(path.clone())?;
-        store.commit([1; 8])?;
-        // The real replacement has already happened and its original bytes were
-        // fsynced. Make only the subsequent exact readback fail on an actual
-        // non-regular filesystem object, retaining the original replacement.
-        let result = store.commit_observed([2; 8], || {
-            assert!(fs::rename(&path, &saved).is_ok());
-            assert!(fs::create_dir(&path).is_ok());
-        });
-        let original = result.err().ok_or("readback unexpectedly succeeded")?;
-        assert_eq!(store.unknown, Some([2; 8]));
-        let failure = if recovery {
-            store
-                .recover()
-                .err()
-                .ok_or("recovery adopted wrong object")?
-        } else {
-            original
-        };
-        assert_eq!(failure.stage, Stage::Read);
-        assert_eq!(failure.outcome, Outcome::Unknown);
-        assert!(matches!(
-            store.loaded(),
-            Err(Error {
-                outcome: Outcome::Unknown,
-                ..
-            })
-        ));
-        assert!(matches!(
-            store.commit([3; 8]),
-            Err(Error {
-                outcome: Outcome::Unknown,
-                ..
-            })
-        ));
-        fs::remove_dir(&path)?;
-        fs::rename(&saved, &path)?;
-        assert_eq!(store.recover()?, Some([2; 8]));
-        assert_eq!(store.loaded()?, Some([2; 8]));
-        store.commit([3; 8])?;
-        assert_eq!(store.loaded()?, Some([3; 8]));
-        Ok(())
-    }
-    #[test]
-    fn postrename_readback_refusal_never_reports_not_committed()
-    -> Result<(), Box<dyn std::error::Error>> {
-        postrename_readback_refusal_case(false)
-    }
-    #[test]
-    fn postrename_readback_recovery_refusal_never_reports_not_committed()
-    -> Result<(), Box<dyn std::error::Error>> {
-        postrename_readback_refusal_case(true)
-    }
-}
+mod tests;

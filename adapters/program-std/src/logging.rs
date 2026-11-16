@@ -1,20 +1,25 @@
 //! Caller-owned logging engine; process-global installation is a separate port.
+#[cfg(unix)]
+use crate::native::strerror;
 use crate::{
     format::{Argument as Value, Message},
-    native::{Calendar, ErrnoGuard, strerror},
+    native::{Calendar, ErrnoGuard, error_text, wall_time},
     policy::{CallSite, CallSiteCache, Level, Policy},
 };
+use gnunet_native::os_bytes;
 use std::{
     cell::Cell,
     collections::{BTreeMap, VecDeque},
-    ffi::OsStr,
     fs::{File, OpenOptions},
     io::{self, Write},
-    os::unix::{ffi::OsStrExt, fs::OpenOptionsExt},
-    path::PathBuf,
+    path::{Path, PathBuf},
     rc::Rc,
     sync::atomic::{AtomicU64, Ordering},
 };
+#[cfg(unix)]
+const LOG_PATH_CAPACITY: usize = libc::PATH_MAX as usize + 1;
+#[cfg(windows)]
+const LOG_PATH_CAPACITY: usize = 32767 * 3 + 1;
 /// Environment captured by the first setup, with force-file re-read per setup.
 #[derive(Clone, Default, Debug)]
 pub struct Environment {
@@ -31,7 +36,7 @@ impl Environment {
     /// Read this process environment without modifying it.
     #[must_use]
     pub fn capture() -> Self {
-        let value = |key| std::env::var_os(key).map(|v| v.as_os_str().as_bytes().to_vec());
+        let value = |key| std::env::var_os(key).map(|v| os_bytes::encode(&v).into_owned());
         Self {
             force: value("GNUNET_FORCE_LOG"),
             ordinary: value("GNUNET_LOG"),
@@ -51,7 +56,7 @@ impl Stamp {
     /// Current wall time with the original logging timeval adjustment formula.
     /// Checked signed intermediates reject overflow rather than reproducing C UB.
     pub fn now(offset: i64) -> io::Result<Self> {
-        let base = Calendar::wall()?;
+        let base = wall_time()?;
         let absolute_us = (base.seconds as u64)
             .wrapping_mul(1_000_000)
             .wrapping_add(base.micros as u64)
@@ -86,7 +91,7 @@ impl Stamp {
     }
     /// Source log_setup filename calendar: UTC, unshifted, with second precision.
     pub fn setup_now() -> io::Result<Self> {
-        let base = Calendar::wall()?;
+        let base = wall_time()?;
         Self::controlled_utc(base.seconds, 0)
     }
     /// Deterministic UTC calendar seam. This does not alter the system clock.
@@ -165,9 +170,7 @@ impl Files {
         let Some(template) = &self.template else {
             return Ok(None);
         };
-        let mut filename = stamp
-            .calendar
-            .format(template, libc::PATH_MAX as usize + 1)?;
+        let mut filename = stamp.calendar.format(template, LOG_PATH_CAPACITY)?;
         if let Some(index) = filename.iter().rposition(|&c| c == b'[')
             && filename.get(index + 1) == Some(&b']')
         {
@@ -175,7 +178,7 @@ impl Files {
             replaced.extend_from_slice(pid.to_string().as_bytes());
             replaced.extend_from_slice(&filename[index + 2..]);
             filename = replaced;
-            filename.truncate(libc::PATH_MAX as usize - 1);
+            filename.truncate(LOG_PATH_CAPACITY - 2);
         }
         if filename == self.last {
             return Ok(None);
@@ -184,13 +187,17 @@ impl Files {
             if self.old.len() == 3
                 && let Some(old) = self.old.pop_front()
             {
-                drop(std::fs::remove_file(OsStr::from_bytes(&old)));
+                // Rotation deletion is best effort, including an earlier name
+                // that failed native decoding before it could ever be opened.
+                if let Ok(old) = os_bytes::decode(&old) {
+                    drop(std::fs::remove_file(&*old));
+                }
             }
             self.old.push_back(std::mem::take(&mut self.last));
         }
         // C updates last_fn before attempting the open, including on failure.
         self.last = filename;
-        Ok(Some(PathBuf::from(OsStr::from_bytes(&self.last))))
+        Ok(Some(PathBuf::from(&*os_bytes::decode(&self.last)?)))
     }
 }
 static NEXT_OWNER: AtomicU64 = AtomicU64::new(1);
@@ -348,7 +355,7 @@ impl<'a> Logger<'a> {
                 )
             })?
             .map_err(io::Error::other)?;
-            self.files.template = Some(expanded.as_os_str().as_bytes().to_vec());
+            self.files.template = Some(os_bytes::encode(expanded.as_os_str()).into_owned());
             self.update_file(stamp, stderr)?;
         }
         Ok(())
@@ -439,7 +446,7 @@ impl<'a> Logger<'a> {
     ) -> io::Result<()> {
         if self.admit(cache, kind, site)? {
             let message = message()?;
-            let _errno = ErrnoGuard::new();
+            let _errno = ErrnoGuard::preserve();
             let stamp = stamp()?;
             self.nocheck(kind, site.component, &message, &stamp, stderr)?;
         }
@@ -458,7 +465,7 @@ impl<'a> Logger<'a> {
     ) -> io::Result<()> {
         if self.admit(cache, kind, site)? {
             let message = message()?;
-            let _errno = ErrnoGuard::new();
+            let _errno = ErrnoGuard::preserve();
             let stamp = stamp()?;
             self.from_nocheck(kind, site.component, &message, &stamp, stderr)?;
         }
@@ -491,7 +498,7 @@ impl<'a> Logger<'a> {
         stamp: &Stamp,
         stderr: &mut impl Write,
     ) -> io::Result<()> {
-        let _errno = ErrnoGuard::new();
+        let _errno = ErrnoGuard::preserve();
         // Source mylog intentionally ignores the updater status, after its
         // actual diagnostics have run. last_fn prevents recursive retry here.
         let _update_failed = self.update_file(stamp, stderr).is_err();
@@ -847,9 +854,14 @@ pub fn base32(input: &[u8]) -> Vec<u8> {
     out
 }
 
+#[cfg(unix)]
 fn native_micros(value: i64) -> i64 {
     let narrowed = value as libc::suseconds_t;
     crate::native::wide_micros(narrowed)
+}
+#[cfg(windows)]
+fn native_micros(value: i64) -> i64 {
+    value
 }
 
 impl Logger<'_> {
@@ -892,14 +904,14 @@ impl Logger<'_> {
     }
     #[expect(
         clippy::too_many_arguments,
-        reason = "Native syscall diagnostics retain explicit fixed source function/line, errno and file arguments"
+        reason = "Native syscall diagnostics retain explicit fixed source function/line, original IO error and file arguments"
     )]
     fn syscall_log(
         &mut self,
         id: &'static str,
         operation: &[u8],
         path: &[u8],
-        errno: i32,
+        error: &io::Error,
         file: &[u8],
         function: &[u8],
         line: i32,
@@ -907,7 +919,7 @@ impl Logger<'_> {
         stamp: &Stamp,
         stderr: &mut impl Write,
     ) -> io::Result<()> {
-        let error = strerror(errno);
+        let error = error_text(error);
         let location_line = i64::from(line);
         let values = [
             Value::Bytes(operation),
@@ -937,6 +949,7 @@ impl Logger<'_> {
             stderr,
         )
     }
+    #[cfg(unix)]
     fn directory_test(
         &mut self,
         path: &[u8],
@@ -951,7 +964,7 @@ impl Logger<'_> {
                         "disk.directory_test.stat",
                         b"stat",
                         path,
-                        errno,
+                        &error,
                         b"disk.c",
                         b"GNUNET_DISK_directory_test",
                         478,
@@ -986,7 +999,7 @@ impl Logger<'_> {
                         "disk.directory_test.access",
                         b"access",
                         path,
-                        error.raw_os_error().unwrap_or(libc::EIO),
+                        &error,
                         b"disk.c",
                         b"GNUNET_DISK_directory_test",
                         498,
@@ -999,6 +1012,7 @@ impl Logger<'_> {
             },
         }
     }
+    #[cfg(unix)]
     fn directory_failure(
         &mut self,
         path: &[u8],
@@ -1025,6 +1039,7 @@ impl Logger<'_> {
             stderr,
         )
     }
+    #[cfg(unix)]
     fn create_directory(
         &mut self,
         directory: &[u8],
@@ -1067,7 +1082,7 @@ impl Logger<'_> {
                             "disk.directory_create.mkdir",
                             b"mkdir",
                             path,
-                            errno,
+                            &error,
                             b"disk.c",
                             b"GNUNET_DISK_directory_create",
                             649,
@@ -1083,6 +1098,7 @@ impl Logger<'_> {
         }
         Ok(1)
     }
+    #[cfg(unix)]
     fn create_directory_for_file(
         &mut self,
         path: &[u8],
@@ -1101,11 +1117,15 @@ impl Logger<'_> {
             Ok(result)
         }
     }
-    fn update_file(&mut self, stamp: &Stamp, stderr: &mut impl Write) -> io::Result<()> {
-        let Some(path) = self.files.plan(stamp, self.destination_pid)? else {
-            return Ok(());
-        };
-        let bytes = path.as_os_str().as_bytes();
+    #[cfg(unix)]
+    fn prepare_log_parent(
+        &mut self,
+        path: &Path,
+        stamp: &Stamp,
+        stderr: &mut impl Write,
+    ) -> io::Result<()> {
+        let native_bytes = os_bytes::encode(path.as_os_str());
+        let bytes = native_bytes.as_ref();
         if self.create_directory_for_file(bytes, stamp, stderr)? == -1 {
             let errno = crate::native::errno();
             let mut body = b"Failed to create directory for `".to_vec();
@@ -1116,20 +1136,73 @@ impl Logger<'_> {
             self.write_diagnostic(&body, stderr)?;
             return Err(io::Error::from_raw_os_error(errno));
         }
-        let file = match OpenOptions::new()
-            .append(true)
-            .create(true)
-            .mode(0o644)
-            .open(&path)
+        Ok(())
+    }
+    #[cfg(windows)]
+    fn prepare_log_parent(
+        &mut self,
+        path: &Path,
+        stamp: &Stamp,
+        stderr: &mut impl Write,
+    ) -> io::Result<()> {
+        let Some(parent) = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        else {
+            return Ok(());
+        };
+        if let Err(error) = gnunet_native::paths::create_directory_all(parent) {
+            self.syscall_log(
+                "common.setup_log_file.mkdir",
+                b"mkdir",
+                &os_bytes::encode(parent.as_os_str()),
+                &error,
+                b"common_logging.c",
+                b"setup_log_file",
+                418,
+                Level::ERROR,
+                stamp,
+                stderr,
+            )?;
+            return Err(error);
+        }
+        Ok(())
+    }
+    fn update_file(&mut self, stamp: &Stamp, stderr: &mut impl Write) -> io::Result<()> {
+        let Some(path) = self.files.plan(stamp, self.destination_pid)? else {
+            return Ok(());
+        };
+        #[cfg(unix)]
+        self.prepare_log_parent(&path, stamp, stderr)?;
+        let native_bytes = os_bytes::encode(path.as_os_str());
+        let bytes = native_bytes.as_ref();
+        let mut options = OpenOptions::new();
+        options.append(true).create(true);
+        #[cfg(unix)]
         {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o644);
+        }
+        let opened = options.open(&path);
+        // A successful Windows file open is authoritative even when directory
+        // metadata is denied. Create parents only for a genuine missing-path
+        // error, then retry once; permissions and other failures are not retries.
+        #[cfg(windows)]
+        let opened = match opened {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                self.prepare_log_parent(&path, stamp, stderr)?;
+                options.open(&path)
+            }
+            other => other,
+        };
+        let file = match opened {
             Ok(file) => crate::process_stderr::lift(file)?,
             Err(error) => {
-                let errno = error.raw_os_error().unwrap_or(libc::EIO);
                 self.syscall_log(
                     "common.setup_log_file.open",
                     b"open",
                     bytes,
-                    errno,
+                    &error,
                     b"common_logging.c",
                     b"setup_log_file",
                     418,

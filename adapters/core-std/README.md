@@ -5,6 +5,8 @@ and uses the official TRANSPORT 360..366 connection for CAKE peer traffic. It co
 implements a substitute handshake. Layouts come from `gnunet-wire`. The reference
 profile is v0.29.1 `346358e26d4dcc2dc4f51bef5d52dca29c7d8165`.
 
+## Construction
+
 `Host::with_clock` borrows an initialized `Identity` and local service-info bytes,
 and joins the embedding process's `Arc<RuntimeClock>`. It owns dynamic maps of
 physical application streams and peer sessions, bounded FIFO bytes, original
@@ -25,9 +27,7 @@ to false. Foreground parses `[core]` flags before bootstrap and applies them to
 every new Host before READY, including identity rotation and PILS reconnection. Absent flags are false; the official shipped `core.conf.in` supplies UID=NO and
 GID=YES. The pinned generic C service parses both flags but its current AF_UNIX
 accept branch permits filesystem-controlled sockets without checking them; this
-Rust host explicitly implements their declared credential policy. Configured
-`USERNAME` is handled only by the explicit new-process startup stages below. This change does not establish complete CORE interoperability or alter the
-identity algorithms.
+Rust host explicitly implements their declared credential policy. Configured `USERNAME` must match the actual process account before service work.
 
 `attach_client` and `attach_transport` accept original initialized stream
 capabilities for embedding. An attached TRANSPORT receives the ordinary START
@@ -71,6 +71,8 @@ receipt. Foreground accumulation keeps the first observed loss across Host
 rotations even if a later logical sample is smaller. Counters saturate; no
 queue, extra clock sample, timeout change or per-packet log is introduced. Whole TRANSPORT MQ loss remains the independent `transport_losses` counter.
 
+## Application queues
+
 Applications receive INIT_REPLY and the existing authenticated peer snapshot. The local identity supports self loopback without a fabricated peer
 CONNECT. Registered inbound types, full inbound/outbound, header previews and
 the current empty-subscription wildcard behavior follow the official service. A slow client exceeding its explicit output capacity is closed; other clients
@@ -91,6 +93,8 @@ large backlog pre-encrypted under an association that might be replaced. Unadmit
 association loss. Already admitted partial frames drain unchanged or their
 whole original MQ closes. Cancellation never claims definite remote non-delivery.
 
+## Monitoring
+
 Monitor connections start independently of INIT, include handshakes in progress,
 finish the initial snapshot with state11/zeropeer/FOREVER, and then continue with
 state/deadline updates. Deadlines stay in the shared absolute source
@@ -99,56 +103,38 @@ native wakes. Clock errors remain errors and never become a fake FOREVER. An FOR
 clock reaches u64::MAX. Only the initial ready phase runs immediately; saturated
 retransmit, probe and idle targets remain unscheduled.
 
-The standard `gnunet-service-core` binary supports `[core] USERNAME` through
-`startup::prepare_process` followed by synchronous `apply_identity`. Early
-activation and optional parent-control capture still run first through shared
-startup. The same inherited parent signal stream is registered after identity
-selection; SIGINT/SIGTERM bytes select ordinary service shutdown, while
-EOF removes only that stream and read failure remains the shutdown error. No descriptor number is looked up again. Entering one current-thread runtime permits
-synchronous adoption of the original inherited SERVICE listeners or prebinding
-configured TCP ports, including privileged ports. No async task is polled in this
-scope. After leaving it, `apply_identity` runs the gid/initgroups/uid
-sequence for the account already expanded and resolved by shared startup. The
-private `PreparedProcess` is created only after its successful report;
-no synthetic UID/report grants this state. New configured Unix sockets are
-created afterwards under that selected account, avoiding an inaccessible
-root-owned private socket after a root-to-user transition. Inherited Unix
-listeners and prebound TCP descriptors remain the same owned resources; they are
-not reopened, renumbered or chowned. The binary then starts signal handling,
-finishes the deferred Unix bind, reads the master and starts PILS/Resolver/CORE
-using the same runtime and original listener owner. Identity
-rotation retains that listener owner and does not apply USERNAME again. Native
-failure may follow partial identity changes and terminates startup without
-retrying or claiming rollback. With no configured account the Unchanged
-branch runs. The profile is explicitly `GroupsProfile::WithInitgroups`, including
-its reported native fallback semantics; this does not assert complete saved-id
-or capability removal.
+## Native startup and cleanup
 
-Generic `startup::foreground[_with_clock]` remains safe for embedding with
-respect to process identity: it rejects configured USERNAME and never calls
-setuid. Embedders that intentionally own a fresh process use the explicit stages;
-others can supply `Host` their external initialized identity and listener policy. Listener bind does not grant the target account access to existing paths. The
-administrator must provision master/runtime directories and inherited listeners
-for that account; startup does not chown any existing inode or parent directory,
-re-open the master under the old account, or fall back to a local key. The new
-Unix bind uses the shared path creation/stale-endpoint checks and original inode
-guard under the target identity. As before, replacement of owned paths or later
-permission changes can affect shared cleanup. Daemonization remains out of this
-foreground's scope.
+The standard service has separate Unix descriptor/account and Windows
+SID/activation/bootstrap entries around one foreground. Unix `prepare_process`
+and synchronous `apply_identity` retain the original TCP/inherited listeners
+across the account transition. `PreparedProcess::finish` completes local binding
+and returns a `PreparedService` with its validated policy. Windows constructs the
+same type from completed native listeners after configured-SID verification.
 
-`startup::foreground_with_clock` shares that same clock with PILS verification,
-the process Resolver and both CLIENT endpoints. `foreground` selects one shared
-native SystemClock for that whole composition. The existing endpoint selector
-retains official configured Unix/TCP fallback and shared Resolver semantics. The read-only master loader is `gnunet-pils-host::identity::load_existing`:
+`foreground[_with_clock]` and `PreparedService::from_listening` verify the actual
+configured account without changing it. The caller owns account provisioning;
+no saved-ID, capability or impersonation guarantee is inferred from that check.
+A read-only embedding may use an already applied account without manufacturing a
+privilege report.
+
+The shared driver polls the original operation and Resolver fairly on each
+turn. Its one parent notification begins only after verified PILS identity and
+real host construction, with a fixed native deadline and the same shutdown
+future. Readiness failure still closes the current host and retains its counters.
+All foreground exits explicitly disconnect the original Resolver and retain
+independent I/O, connection and cleanup errors. Whole-future cancellation also
+runs `Host::Drop` shutdown and scratch erasure.
+
+The read-only master loader is `gnunet-pils-host::identity::load_existing`:
 existing raw32 files must be private regular files. The host verifies actual
 PILS1831 framing, HELLO signature/expiration, announced context hash and the
 derived public identity before publishing it. `MasterKey::with_active_seed`
 constructs the CORE key owner without exporting or logging the master.
 
-The default bootstrap explicitly selects PILS Reference029. Its current HELLO
+Node-wide `[PILS] PROFILE` selects one explicit profile, defaulting to Reference029. Its current HELLO
 profile signs metadata using the source's empty address hash: this does **not**
-authenticate address contents. Other supported source/draft interpretations
-require `PilsFeed::with_profile`; failure never triggers a different profile. An identity change closes/drops the old host and its key associations before
+authenticate address contents. Direct feeds can use `PilsFeed::with_profile`; failure never triggers a different profile. An identity change closes/drops the old host and its key associations before
 constructing the new one. PILS loss retires that epoch and retries with backoff.
 
 Limits are host capabilities, not invented configuration/wire fields. Each app
@@ -167,13 +153,6 @@ the process Resolver broker implements its typed effects. The host and protocol
 engine have no production dependency on the STATISTICS adapter or public facade. `io::Link` is a thin domain budget adapter over runtime `framing::Framed<()>`. It retains whole-frame accounting and the original control reserve, frame/byte
 limits and IO quantum. The generic layer owns the exact physical cursor and
 immutable bytes; the domain keeps credit, cancellation and nonce authority.
-
-Rust tests cover UnixStream partial/canceled IO, flow-control/frame
-ownership, clock rollback/error and waiter cleanup, lost associations, request
-FIFO/cancellation, slow clients, per-peer independence, full/header subscriptions,
-monitor continuation and verified PILS publication. C experiment receipts must
-bind the exact frozen actor/source. Earlier alpha observations never count as
-proof of a later source revision or a complete GNUnet implementation.
 
 The standard SERVICE entry uses the shared byte-preserving SERVICE option table
 `-c/--config`, `-d/--daemonize`, `-h/--help`, `-L/--log`,

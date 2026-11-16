@@ -1,177 +1,197 @@
-//! Marked Rust-owned directory/counter and atomic configuration publication.
-//! No key, peer runtime or controller protocol is embedded in this utility.
+//! Original marked root, lock/counter fencing and native publication ownership.
 use crate::*;
-use std::{
-    fs::{self, DirBuilder, File, OpenOptions},
-    io::{Read, Write},
-    os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt},
-};
+use gnunet_native::filesystem::{self, Directory as NativeDirectory, FileIdentity};
+use std::{ffi::OsStr, fs::File, io::Read};
+mod publication;
+mod removal;
 const MARK: &str = ".testbed-rust-owner";
+const LOCK: &str = ".testbed-rust.lock";
+const COUNTER: &str = ".testbed-rust.counter";
 const MAGIC: &[u8] = b"GNUNET-RUST-TESTBED-DIRECTORY\nversion=1\n";
-fn open(path: &Path, create: bool) -> io::Result<File> {
-    let mut options = OpenOptions::new();
-    options
-        .read(true)
-        .write(create)
-        .create(create)
-        .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK);
-    options.open(path)
+fn path_bytes(path: &Path) -> usize {
+    gnunet_native::os_bytes::encode(path.as_os_str()).len()
 }
-fn read_small(path: &Path, max: usize) -> Result<Vec<u8>, Failure> {
-    let mut file = open(path, false).map_err(|e| Failure::io("open metadata", path, e))?;
-    if !file
-        .metadata()
-        .map_err(|e| Failure::io("metadata", path, e))?
-        .is_file()
+fn root_fits(path: &Path, limit: usize) -> bool {
+    [MARK, LOCK, COUNTER]
+        .iter()
+        .all(|name| path_bytes(&path.join(name)) <= limit)
+}
+fn absolute(path: &Path) -> io::Result<PathBuf> {
+    std::path::absolute(path)
+}
+fn split(path: &Path) -> io::Result<(&Path, &OsStr)> {
+    let name = path.file_name().ok_or(io::ErrorKind::InvalidInput)?;
+    let parent = path
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .ok_or(io::ErrorKind::InvalidInput)?;
+    Ok((parent, name))
+}
+fn read_small(
+    directory: &NativeDirectory,
+    name: &str,
+    maximum: usize,
+    path: &Path,
+) -> Result<Vec<u8>, Failure> {
+    let mut file = directory
+        .open_file(OsStr::new(name))
+        .map_err(|error| Failure::io("open metadata", path, error))?;
+    let result = read_original(&mut file, maximum, path);
+    let close = filesystem::close(file);
+    match (result, close) {
+        (Ok(bytes), Ok(())) => Ok(bytes),
+        (Err(mut original), Err(error)) => {
+            original.add(Cause::Io {
+                operation: "close metadata",
+                path: path.to_owned(),
+                error,
+            });
+            Err(original)
+        }
+        (Err(error), Ok(())) => Err(error),
+        (Ok(_), Err(error)) => Err(Failure::io("close metadata", path, error)),
+    }
+}
+fn read_original(file: &mut File, maximum: usize, path: &Path) -> Result<Vec<u8>, Failure> {
+    filesystem::validate_private_file(file)
+        .map_err(|error| Failure::io("qualify metadata", path, error))?;
+    let before =
+        filesystem::file_info(file).map_err(|error| Failure::io("metadata", path, error))?;
+    let mut bytes = Vec::new();
+    let extent = maximum.checked_add(1).ok_or(Fault::Overflow)?;
+    bytes
+        .try_reserve_exact(extent)
+        .map_err(|_| Fault::Capacity)?;
+    Read::by_ref(file)
+        .take(u64::try_from(extent).map_err(|_| Fault::Overflow)?)
+        .read_to_end(&mut bytes)
+        .map_err(|error| Failure::io("read metadata", path, error))?;
+    if bytes.len() > maximum {
+        return Err(Fault::TooLarge.into());
+    }
+    if filesystem::file_info(file).map_err(|error| Failure::io("recheck metadata", path, error))?
+        != before
     {
         return Err(Cause::Changed.into());
     }
-    let mut bytes = Vec::new();
-    bytes
-        .try_reserve_exact(max + 1)
-        .map_err(|_| Fault::Capacity)?;
-    Read::by_ref(&mut file)
-        .take(u64::try_from(max + 1).map_err(|_| Fault::Overflow)?)
-        .read_to_end(&mut bytes)
-        .map_err(|e| Failure::io("read metadata", path, e))?;
-    if bytes.len() > max {
-        return Err(Fault::TooLarge.into());
-    }
     Ok(bytes)
 }
-fn create_exact(path: &Path, body: &[u8]) -> Result<(), Failure> {
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-        .open(path)
-        .map_err(|e| Failure::io("create owned metadata", path, e))?;
-    file.write_all(body)
-        .and_then(|()| file.sync_all())
-        .map_err(|e| Failure::io("commit owned metadata", path, e))
-}
-fn sync(path: &Path) -> Result<(), Failure> {
-    File::open(path)
-        .and_then(|f| f.sync_all())
-        .map_err(|e| Failure::io("sync directory", path, e))
-}
-/// One actual locked marked root. Drop closes the original File owner only;
-/// removal is explicit and independently reported.
 pub(crate) struct Directory {
     pub path: PathBuf,
+    parent: NativeDirectory,
+    name: OsString,
+    original: NativeDirectory,
+    marker: File,
+    marker_info: filesystem::EntryInfo,
     lock: File,
-    dev: u64,
-    ino: u64,
-    temporary: u64,
+    limits: Limits,
     pub fenced: bool,
 }
 impl Directory {
     pub fn create(options: &Options, allocation: u64) -> Result<(Self, u64), Failure> {
-        let (path, created) = if let Some(path) = &options.prefix {
-            let path = if path.is_absolute() {
-                path.clone()
-            } else {
-                std::env::current_dir()
-                    .map_err(|e| Failure::io("current directory", path, e))?
-                    .join(path)
-            };
-            if path.as_os_str().as_bytes().len() > options.limits.path_bytes {
+        let (path, parent, name, original) = if let Some(prefix) = &options.prefix {
+            let path =
+                absolute(prefix).map_err(|error| Failure::io("resolve prefix", prefix, error))?;
+            if !root_fits(&path, options.limits.path_bytes) {
                 return Err(Fault::TooLarge.into());
             }
-            match DirBuilder::new().mode(0o700).create(&path) {
-                Ok(()) => (path, true),
-                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => (path, false),
-                Err(e) => return Err(Failure::io("create prefix", path, e)),
-            }
+            let (parent_path, name) =
+                split(&path).map_err(|error| Failure::io("split prefix", &path, error))?;
+            let parent = NativeDirectory::open(parent_path)
+                .map_err(|error| Failure::io("open prefix parent", parent_path, error))?;
+            let original = parent
+                .ensure_directory(name)
+                .map_err(|error| Failure::io("create/open prefix", &path, error))?;
+            let name = name.to_owned();
+            (path, parent, name, original)
         } else {
-            let label = options.label.as_os_str().as_bytes();
-            if label.is_empty()
-                || label == b"."
-                || label == b".."
-                || label.iter().any(|b| matches!(b, 0 | b'/'))
+            let parent_path = absolute(&options.temporary_parent).map_err(|error| {
+                Failure::io("resolve temporary parent", &options.temporary_parent, error)
+            })?;
+            let parent = NativeDirectory::open(&parent_path)
+                .map_err(|error| Failure::io("open temporary parent", &parent_path, error))?;
+            let label = Path::new(&options.label);
+            if label.components().count() != 1
+                || label.file_name() != Some(options.label.as_os_str())
+                || options.label.is_empty()
             {
                 return Err(Fault::InvalidInput.into());
             }
-            let mut found = None;
+            let mut selected = None;
             for n in 0..options.limits.directory_attempts {
                 let mut name = options.label.clone();
                 name.push(format!("-{}-{allocation}-{n}", std::process::id()));
-                let path = options.temporary_parent.join(name);
-                if path.as_os_str().as_bytes().len() > options.limits.path_bytes {
+                let path = parent_path.join(&name);
+                if !root_fits(&path, options.limits.path_bytes) {
                     return Err(Fault::TooLarge.into());
                 }
-                match DirBuilder::new().mode(0o700).create(&path) {
-                    Ok(()) => {
-                        found = Some(path);
+                match parent.create_private_directory(&name) {
+                    Ok(original) => {
+                        selected = Some((path, name, original));
                         break;
                     }
-                    Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
-                    Err(e) => return Err(Failure::io("create temporary directory", path, e)),
+                    Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+                    Err(error) => return Err(Failure::io("create temporary root", path, error)),
                 }
             }
-            (found.ok_or(Fault::Capacity)?, true)
+            let (path, name, original) = selected.ok_or(Fault::Capacity)?;
+            (path, parent, name, original)
         };
-        if path.as_os_str().as_bytes().len() > options.limits.path_bytes {
-            return Err(Fault::TooLarge.into());
-        }
-        let stat =
-            fs::symlink_metadata(&path).map_err(|e| Failure::io("root metadata", &path, e))?;
-        if !stat.is_dir() || stat.file_type().is_symlink() || stat.mode() & 0o077 != 0 {
-            return Err(Cause::ForeignDirectory.into());
-        }
-        let marker = path.join(MARK);
-        let mut initialized = created;
-        match fs::symlink_metadata(&marker) {
-            Ok(m) => {
-                if !m.is_file()
-                    || m.file_type().is_symlink()
-                    || read_small(&marker, MAGIC.len())? != MAGIC
-                {
-                    return Err(Cause::ForeignDirectory.into());
-                }
-            }
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                if fs::read_dir(&path)
-                    .map_err(|e| Failure::io("inspect empty root", &path, e))?
+        original
+            .validate_private()
+            .map_err(|error| Failure::io("qualify private root", &path, error))?;
+        let initialized = match original.entry_info(OsStr::new(MARK)) {
+            Ok(_) => false,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                if original
+                    .entries()
+                    .map_err(|error| Failure::io("inspect empty root", &path, error))?
                     .next()
                     .is_some()
                 {
                     return Err(Cause::ForeignDirectory.into());
                 }
-                create_exact(&marker, MAGIC)?;
-                initialized = true
+                Self::publish_initial(&original, MARK, MAGIC, &path)?;
+                true
             }
-            Err(e) => return Err(Failure::io("inspect marker", marker, e)),
+            Err(error) => return Err(Failure::io("inspect marker", &path, error)),
+        };
+        let mut marker = original
+            .open_file(OsStr::new(MARK))
+            .map_err(|error| Failure::io("capture marker", &path, error))?;
+        if read_original(&mut marker, MAGIC.len(), &path.join(MARK))? != MAGIC {
+            return Err(Cause::ForeignDirectory.into());
         }
-        let lock_path = path.join(".testbed-rust.lock");
-        let lock =
-            open(&lock_path, true).map_err(|e| Failure::io("open root lock", &lock_path, e))?;
-        if !lock
-            .metadata()
-            .map_err(|e| Failure::io("root lock metadata", &lock_path, e))?
-            .is_file()
-        {
-            return Err(Cause::Changed.into());
-        }
+        let marker_info = filesystem::file_info(&marker)
+            .map_err(|error| Failure::io("marker identity", &path, error))?;
+        let lock = match original.create_private_file(OsStr::new(LOCK)) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => original
+                .open_file_for_update(OsStr::new(LOCK))
+                .map_err(|error| Failure::io("open root lock", &path, error))?,
+            Err(error) => return Err(Failure::io("create root lock", &path, error)),
+        };
+        filesystem::private_single_file_identity(&lock)
+            .map_err(|error| Failure::io("qualify root lock", &path, error))?;
         lock.try_lock()
-            .map_err(|e| Failure::io("lock root", &lock_path, io::Error::other(e)))?;
+            .map_err(|error| Failure::io("lock root", &path, io::Error::other(error)))?;
         let directory = Self {
             path,
+            parent,
+            name,
+            original,
+            marker,
+            marker_info,
             lock,
-            dev: stat.dev(),
-            ino: stat.ino(),
-            temporary: 0,
+            limits: options.limits,
             fenced: false,
         };
-        let counter = directory.path.join(".testbed-rust.counter");
+        let counter_path = directory.path.join(COUNTER);
         let high = if initialized {
-            create_exact(&counter, b"0\n")?;
-            sync(&directory.path)?;
+            Self::publish_initial(&directory.original, COUNTER, b"0\n", &counter_path)?;
             0
         } else {
-            let bytes = read_small(&counter, 21)?;
+            let bytes = read_small(&directory.original, COUNTER, 21, &counter_path)?;
             let digits = bytes.strip_suffix(b"\n").ok_or(Cause::Changed)?;
             if digits.is_empty() || !digits.iter().all(u8::is_ascii_digit) {
                 return Err(Cause::Changed.into());
@@ -184,127 +204,88 @@ impl Directory {
         directory.check()?;
         Ok((directory, high))
     }
+    fn publish_initial(
+        directory: &NativeDirectory,
+        name: &str,
+        bytes: &[u8],
+        path: &Path,
+    ) -> Result<(), Failure> {
+        let published = filesystem::publication::publish(
+            directory,
+            OsStr::new(name),
+            bytes,
+            filesystem::publication::Destination::Create,
+            || Ok(()),
+        )
+        .map_err(|error| {
+            Failure::from(Cause::Publication {
+                path: path.to_owned(),
+                error: Box::new(error),
+            })
+        })?;
+        let (file, _barrier) = published.into_parts();
+        filesystem::close(file).map_err(|error| Failure::io("close initial metadata", path, error))
+    }
     pub fn check(&self) -> Result<(), Failure> {
         if self.fenced {
             return Err(Cause::Changed.into());
         }
         self.check_identity()
+            .map_err(|error| Failure::io("check original root", &self.path, error))
     }
-    fn check_identity(&self) -> Result<(), Failure> {
-        let m = fs::symlink_metadata(&self.path)
-            .map_err(|e| Failure::io("check owned root", &self.path, e))?;
-        if !m.is_dir()
-            || m.file_type().is_symlink()
-            || m.dev() != self.dev
-            || m.ino() != self.ino
-            || m.mode() & 0o077 != 0
-            || read_small(&self.path.join(MARK), MAGIC.len())? != MAGIC
+    fn check_identity(&self) -> io::Result<()> {
+        self.original.validate_private()?;
+        filesystem::validate_private_file(&self.marker)?;
+        filesystem::private_single_file_identity(&self.lock)?;
+        if !self.parent.same_directory(&self.name, &self.original)?
+            || FileIdentity::of(NativeDirectory::open(&self.path)?.as_file())?
+                != FileIdentity::of(self.original.as_file())?
+            || filesystem::file_info(&self.marker)? != self.marker_info
+            || !self.original.same_file(OsStr::new(MARK), &self.marker)?
+            || !self.original.same_file(OsStr::new(LOCK), &self.lock)?
         {
-            return Err(Cause::Changed.into());
+            return Err(io::Error::other(
+                "original TESTBED root/marker/lock changed",
+            ));
         }
         Ok(())
     }
-    pub fn counter(&mut self, n: u64) -> Result<(), Failure> {
-        self.check()?;
-        let target = self.path.join(".testbed-rust.counter");
-        let result = self.publish(&target, format!("{n}\n").as_bytes(), Replace::Allowed);
-        if result.is_err() {
+    pub fn counter(&mut self, number: u64) -> Result<(), Failure> {
+        let target = self.path.join(COUNTER);
+        let outcome = self.publish(
+            &target,
+            format!("{number}\n").as_bytes(),
+            Replace::Allowed,
+            None,
+        );
+        if outcome.is_err() {
             self.fenced = true;
         }
-        result.map(|_| ())
+        outcome.map(|_| ())
     }
-    /// Atomic publication preserving the original installation exposure on failure.
-    pub fn publish(
-        &mut self,
-        target: &Path,
-        body: &[u8],
-        replace: Replace,
-    ) -> Result<Published, Failure> {
+    pub fn create_home(&self, number: u64) -> Result<NativeDirectory, Failure> {
         self.check()?;
-        let resolved;
-        let target = if target.is_absolute() {
-            target
-        } else {
-            resolved = std::env::current_dir()
-                .map_err(|e| Failure::io("resolve publication directory", target, e))?
-                .join(target);
-            resolved.as_path()
-        };
-        let parent = target
-            .parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .unwrap_or_else(|| Path::new("."));
-        let sequence = self.temporary.checked_add(1).ok_or(Fault::Overflow)?;
-        self.temporary = sequence;
-        let temporary = parent.join(format!(
-            ".testbed-rust-{}-{}-{sequence}.new",
-            std::process::id(),
-            self.ino
-        ));
-        let mut stage = Exposure::Unchanged;
-        let outcome: Result<Published, Failure> = (|| {
-            let mut file = OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .mode(0o600)
-                .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-                .open(&temporary)
-                .map_err(|e| Failure::io("create configuration stage", &temporary, e))?;
-            stage = Exposure::Staged;
-            file.write_all(body)
-                .and_then(|()| file.sync_all())
-                .map_err(|e| Failure::io("write configuration stage", &temporary, e))?;
-            if replace == Replace::Allowed {
-                fs::rename(&temporary, target)
-                    .map_err(|e| Failure::io("install configuration", target, e))?;
-                stage = Exposure::Installed
-            } else {
-                fs::hard_link(&temporary, target)
-                    .map_err(|e| Failure::io("install new configuration", target, e))?;
-                stage = Exposure::Installed;
-                fs::remove_file(&temporary)
-                    .map_err(|e| Failure::io("remove installed stage", &temporary, e))?;
-            }
-            sync(parent)?;
-            Ok(Published {
-                path: target.to_path_buf(),
-                bytes: body.len(),
+        let name = OsString::from(number.to_string());
+        let original = self
+            .original
+            .create_private_directory(&name)
+            .map_err(|error| {
+                Failure::io("create configuration home", self.path.join(&name), error)
+            })?;
+        self.check()?;
+        Ok(original)
+    }
+    pub fn remove_home(&self, number: u64, original: &NativeDirectory) -> Result<(), Failure> {
+        self.original
+            .remove_directory(OsStr::new(&number.to_string()), original)
+            .map_err(|error| {
+                Failure::io(
+                    "remove original configuration home",
+                    self.path.join(number.to_string()),
+                    error,
+                )
             })
-        })();
-        match outcome {
-            Ok(v) => Ok(v),
-            Err(mut failure) => {
-                failure.exposure = stage;
-                if stage == Exposure::Staged
-                    && let Err(e) = fs::remove_file(&temporary)
-                    && e.kind() != io::ErrorKind::NotFound
-                {
-                    failure.add(Cause::Io {
-                        operation: "remove failed stage",
-                        path: temporary,
-                        error: e,
-                    })
-                }
-                if stage == Exposure::Installed {
-                    self.fenced = true;
-                }
-                Err(failure)
-            }
-        }
     }
-    pub fn remove(self, remove_paths: bool) -> Result<Removal, Failure> {
-        let path = self.path.clone();
-        if !remove_paths {
-            return Ok(Removal::Kept(path));
-        }
-        self.check_identity()?;
-        fs::remove_dir_all(&path).map_err(|e| Failure::io("remove owned root", &path, e))?;
-        if let Some(parent) = path.parent() {
-            sync(parent)?;
-        }
-        Ok(Removal::Removed(path))
-    }
-    /// Actual original locked descriptor is kept through the last native effect.
     pub fn locked(&self) -> bool {
         self.lock.metadata().is_ok()
     }

@@ -1,7 +1,6 @@
-//! Strict private v2 event bytes. The original TaskStore owns checksums and WAL ordering.
+//! Strict local v3 event bytes. The original TaskStore owns checksums and WAL ordering.
 use super::model::{
-    EntryBinding, Event, Manifest, ModelError, Phase, RootMode, TempFact, validate_name,
-    validate_path,
+    EntryBinding, Event, Manifest, ModelError, Phase, RootMode, TempFact, validate_path,
 };
 use crate::{
     network::{DownloadOptions, tree_download::TreeDownloadOptions},
@@ -9,16 +8,14 @@ use crate::{
 };
 use gnunet_fs::{Content, Location, Uri, directory::walk::Kind};
 use gnunet_types::AbsoluteTime;
-use std::{
-    ffi::OsString,
-    os::unix::ffi::{OsStrExt, OsStringExt},
-    path::PathBuf,
-};
+use std::path::PathBuf;
 /// Maximum returned event body; caller may use a stricter Store body cap.
 pub const MAX_EVENT_BYTES: usize = 8 * 1024 * 1024;
 /// Bounded official root/LOC URI bytes, independent of encoded proof size.
 pub const MAX_URI_BYTES: usize = 16_384;
-const VERSION: u16 = 2;
+const VERSION: u16 = 3;
+#[cfg(test)]
+mod tests;
 const MANIFEST: u16 = 1;
 const ROOT: u16 = 2;
 const DIR_INTENT: u16 = 3;
@@ -47,7 +44,7 @@ pub struct SelectionView<'a> {
     pub proof: &'a [u8],
 }
 /// Encode complete bounded private state bytes. Native paths remain exact bytes;
-/// transfer.deadline is omitted and will be rebuilt explicitly for each run.
+/// Transfer deadlines are omitted and rebuilt explicitly for each run.
 pub fn encode_event(event: &Event<'_>) -> Result<(u16, Vec<u8>), ModelError> {
     let mut w = Writer(Vec::new());
     w.u16(VERSION)?;
@@ -64,7 +61,10 @@ pub fn encode_event(event: &Event<'_>) -> Result<(u16, Vec<u8>), ModelError> {
             }
             put_options(&mut w, m.options)?;
             w.blob(&m.root_uri, MAX_URI_BYTES)?;
-            w.blob(m.relative.as_os_str().as_bytes(), 4096)?;
+            w.blob(
+                &gnunet_native::os_bytes::encode(m.relative.as_os_str()),
+                4096,
+            )?;
             MANIFEST
         }
         Event::RootAttached(id) => {
@@ -93,17 +93,22 @@ pub fn encode_event(event: &Event<'_>) -> Result<(u16, Vec<u8>), ModelError> {
             put_binding(&mut w, binding)?;
             put_identity(&mut w, temporary.parent)?;
             put_identity(&mut w, temporary.identity)?;
-            validate_name(temporary.name.as_bytes())?;
-            w.blob(temporary.name.as_bytes(), 4096)?;
+            super::model::validate_temporary_name(&temporary.name)?;
+            w.blob(&gnunet_native::os_bytes::encode(&temporary.name), 8)?;
             TEMP
         }
         Event::CommitIntent { id } => {
             w.raw(id)?;
             INTENT
         }
-        Event::FileCommitted { id, identity } => {
+        Event::FileCommitted {
+            id,
+            identity,
+            directory_sync,
+        } => {
             w.raw(id)?;
             put_identity(&mut w, *identity)?;
+            w.u8(stage_tag(CommitStage::FileSynchronized(*directory_sync)))?;
             COMMITTED
         }
         Event::Cleanup { id, success, stage } => {
@@ -186,22 +191,31 @@ pub fn decode_event(kind: u16, bytes: &[u8]) -> Result<Event<'_>, ModelError> {
             let binding = get_binding(&mut r)?;
             let parent = get_identity(&mut r)?;
             let identity = get_identity(&mut r)?;
-            let name = r.blob(4096)?;
-            validate_name(name)?;
+            let name = gnunet_native::os_bytes::decode_owned(copy(r.blob(8)?)?)
+                .map_err(|_| ModelError::Format)?;
+            super::model::validate_temporary_name(&name)?;
             Event::TempOwned {
                 binding,
                 temporary: TempFact {
                     parent,
                     identity,
-                    name: OsString::from_vec(copy(name)?),
+                    name,
                 },
             }
         }
         INTENT => Event::CommitIntent { id: r.array()? },
-        COMMITTED => Event::FileCommitted {
-            id: r.array()?,
-            identity: get_identity(&mut r)?,
-        },
+        COMMITTED => {
+            let id = r.array()?;
+            let identity = get_identity(&mut r)?;
+            let CommitStage::FileSynchronized(directory_sync) = get_stage(r.u8()?)? else {
+                return Err(ModelError::Format);
+            };
+            Event::FileCommitted {
+                id,
+                identity,
+                directory_sync,
+            }
+        }
         CLEANUP => Event::Cleanup {
             id: r.array()?,
             success: r.boolean()?,
@@ -260,7 +274,7 @@ fn put_binding(w: &mut Writer, b: &EntryBinding) -> Result<(), ModelError> {
         w.raw(&parent)?;
     }
     w.u8(if b.kind == Kind::Directory { 1 } else { 0 })?;
-    w.blob(b.path.as_os_str().as_bytes(), 4096)?;
+    w.blob(&gnunet_native::os_bytes::encode(b.path.as_os_str()), 4096)?;
     put_content(w, b.content)
 }
 fn get_binding(r: &mut Reader<'_>) -> Result<EntryBinding, ModelError> {
@@ -294,14 +308,10 @@ fn get_content(r: &mut Reader<'_>) -> Result<Content, ModelError> {
     })
 }
 fn put_identity(w: &mut Writer, id: FileIdentity) -> Result<(), ModelError> {
-    w.u64(id.device)?;
-    w.u64(id.inode)
+    w.raw(id.as_bytes())
 }
 fn get_identity(r: &mut Reader<'_>) -> Result<FileIdentity, ModelError> {
-    Ok(FileIdentity {
-        device: r.u64()?,
-        inode: r.u64()?,
-    })
+    FileIdentity::from_bytes(r.array()?).map_err(|_| ModelError::Format)
 }
 fn put_location(w: &mut Writer, location: Option<Location>) -> Result<(), ModelError> {
     w.u8(u8::from(location.is_some()))?;
@@ -432,19 +442,23 @@ fn stage_tag(stage: CommitStage) -> u8 {
     match stage {
         CommitStage::NotLinked => 0,
         CommitStage::LinkedUnknown => 1,
-        CommitStage::Durable => 2,
+        CommitStage::FileSynchronized(gnunet_native::DirectorySync::Synchronized) => 2,
+        CommitStage::FileSynchronized(gnunet_native::DirectorySync::Unavailable) => 3,
     }
 }
 fn get_stage(tag: u8) -> Result<CommitStage, ModelError> {
     Ok(match tag {
         0 => CommitStage::NotLinked,
         1 => CommitStage::LinkedUnknown,
-        2 => CommitStage::Durable,
+        2 => CommitStage::FileSynchronized(gnunet_native::DirectorySync::Synchronized),
+        3 => CommitStage::FileSynchronized(gnunet_native::DirectorySync::Unavailable),
         _ => return Err(ModelError::Format),
     })
 }
 fn path(bytes: &[u8]) -> Result<PathBuf, ModelError> {
-    Ok(PathBuf::from(OsString::from_vec(copy(bytes)?)))
+    Ok(PathBuf::from(
+        gnunet_native::os_bytes::decode_owned(copy(bytes)?).map_err(|_| ModelError::Format)?,
+    ))
 }
 fn copy(bytes: &[u8]) -> Result<Vec<u8>, ModelError> {
     let mut out = Vec::new();

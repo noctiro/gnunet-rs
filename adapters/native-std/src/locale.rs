@@ -12,7 +12,40 @@ mod backend;
 #[cfg(windows)]
 #[path = "locale/windows.rs"]
 mod backend;
+#[cfg(windows)]
+pub(crate) use backend::nls;
 pub use backend::{LocaleSnapshot, ThreadLocale};
+/// Retained Windows classification and collation for local regular expressions.
+#[cfg(windows)]
+pub mod regex;
+/// POSIX character-class names, independent of a native classification mask.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CharacterClass {
+    /// Letters or decimal digits.
+    Alnum,
+    /// Letters.
+    Alpha,
+    /// Horizontal whitespace.
+    Blank,
+    /// Control characters.
+    Control,
+    /// Decimal digits.
+    Digit,
+    /// Visible characters excluding whitespace.
+    Graph,
+    /// Lowercase letters.
+    Lower,
+    /// Printable characters including space.
+    Print,
+    /// Punctuation.
+    Punct,
+    /// Whitespace.
+    Space,
+    /// Uppercase letters.
+    Upper,
+    /// Hexadecimal digits.
+    Hex,
+}
 /// Standard conversion result; callers decide whether trailing data is allowed.
 pub struct FloatScan {
     /// Native float value, including supported inf/NaN spellings.

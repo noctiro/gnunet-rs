@@ -42,10 +42,8 @@ impl Bind {
                         Ok(SocketAddr::from((Ipv6Addr::UNSPECIFIED, port)))
                     }
                     Err(error)
-                        if matches!(
-                            error.raw_os_error(),
-                            Some(libc::EAFNOSUPPORT | libc::EPROTONOSUPPORT | libc::EADDRNOTAVAIL)
-                        ) =>
+                        if gnunet_native::network::socket_family_unavailable(&error)
+                            || error.kind() == std::io::ErrorKind::AddrNotAvailable =>
                     {
                         Ok(SocketAddr::from((Ipv4Addr::UNSPECIFIED, port)))
                     }

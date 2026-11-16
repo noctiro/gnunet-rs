@@ -50,8 +50,6 @@ pub enum Failure {
     },
     /// Original identity-bound durable journal failure.
     History(JournalError),
-    /// Actual caller-owned network classification failure.
-    Classification(io::Error),
     /// Actual public burst construction/clock/native failure.
     BurstStart(gnunet_nat_burst_host::Error),
     /// Owned original burst command and actual terminal cause.
@@ -82,7 +80,7 @@ impl std::error::Error for Failure {
         match self {
             Self::Core(e) => Some(e),
             Self::Native(e) => Some(e),
-            Self::Transport(e) | Self::Classification(e) => Some(e),
+            Self::Transport(e) => Some(e),
             Self::TransportEof => None,
             Self::TransportRetirement { original, cleanup } => original
                 .as_ref()
@@ -109,9 +107,57 @@ pub struct Configuration {
     /// standard datagram size, overriding only this template's datagram_bytes.
     pub transmit: TxPolicy,
 }
-/// One actual progress step. Bytes written locally never prove remote delivery.
+/// Original input requiring address classification, without added wire metadata.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AddressUse {
+    /// Original TRANSPORT CREATE; refusal queues its negative CREATED reply.
+    Create {
+        /// Original opaque request identifier.
+        request: [u8; 4],
+    },
+    /// Authenticated initial exchange, before durable replay admission.
+    Initial,
+    /// Authenticated BOX, before consuming its original KID.
+    Boxed,
+    /// Source-bound signed discovery hint, without queue admission.
+    Discovery,
+    /// Unauthenticated passive public burst probe.
+    Probe,
+}
+/// One actual progress step. Bytes written locally never prove remote delivery.
+#[derive(Debug)]
 pub enum Activity {
+    /// This address was refused by the caller-owned classifier. Other endpoints,
+    /// the shared socket and MQ remain active; no fallback category is invented.
+    ClassificationFailed {
+        /// Original peer value; the operation states its authentication scope.
+        peer: PeerId,
+        /// Exact requested address or kernel-reported datagram source.
+        target: SocketAddr,
+        /// Original input whose admission was refused.
+        operation: AddressUse,
+        /// Original provider cause, retained without conversion to a wire error.
+        error: io::Error,
+    },
+    /// The queued native send failed and its intended endpoint is retiring;
+    /// the original shared socket remains owned. This attributes no remote fault.
+    SendError {
+        /// Index of the original owned socket.
+        socket: usize,
+        /// Intended public destination, not authentication of the error source.
+        peer: PeerId,
+        /// Exact original native destination.
+        target: SocketAddr,
+        /// Original native cause; the failed packet is never retried.
+        error: io::Error,
+    },
+    /// Isolated receive failure; the original shared socket remains active.
+    ReceiveError {
+        /// Index of the original owned socket.
+        socket: usize,
+        /// Original native cause; no peer or packet is inferred.
+        error: io::Error,
+    },
     /// Original socket or MQ made positive native progress.
     Io,
     /// One retained original effect entered MQ framing, not remote admission.
@@ -153,6 +199,16 @@ pub enum Activity {
         /// Original numeric broadcast/multicast target.
         target: SocketAddr,
     },
+    /// One original optional discovery operation retired without disturbing
+    /// encrypted endpoints or their shared socket. No send/leave is implied.
+    DiscoveryFailed {
+        /// Original bound socket slot.
+        socket: usize,
+        /// Exact original interface operation and intended destination.
+        operation: discovery::Operation,
+        /// Original local refusal, expiry or native error.
+        error: SocketError,
+    },
     /// One source-bound signature hint is available through take_discovered.
     /// This is not TRANSPORT address validation or an authenticated queue.
     Discovered,
@@ -167,8 +223,12 @@ pub enum Activity {
     Closed,
 }
 pub mod burst;
+mod discovery_io;
+pub use discovery_io::InterfaceUpdate;
 mod identity;
+mod incoming;
 mod recovery;
+mod transmit;
 pub use identity::Retirement as IdentityRetirement;
 pub use recovery::{Callback, EffectMeta, Retired, TransportLoss};
 
@@ -676,6 +736,29 @@ impl<'id> Communicator<'id> {
             .min()
     }
 }
+#[derive(Debug)]
+enum EndpointPlanError {
+    Protocol(Error),
+    Classification(io::Error),
+}
+impl From<Error> for EndpointPlanError {
+    fn from(error: Error) -> Self {
+        Self::Protocol(error)
+    }
+}
+impl std::fmt::Display for EndpointPlanError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "UDP endpoint preparation: {self:?}")
+    }
+}
+impl std::error::Error for EndpointPlanError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(match self {
+            Self::Protocol(error) => error,
+            Self::Classification(error) => error,
+        })
+    }
+}
 struct EndpointPlan {
     index: usize,
     endpoint: Endpoint,
@@ -744,19 +827,6 @@ impl<'id> Communicator<'id> {
             }
         })
     }
-    fn fail_endpoint_send(&mut self, index: usize, failure: OwnedFrame) -> Result<(), Error> {
-        // A negative SEND result makes TRANSPORT discard the QID. Both KX
-        // and BOX share this sender generation, so neither may keep granting
-        // credit or make a later CREATE appear to have a live queue. Preserve
-        // the original failure first, then let bounded maintenance drain the
-        // existing generation's completion and DOWNs without replaying it.
-        if self.endpoints.get(index).is_none_or(Option::is_none) {
-            return Err(Error::Stale);
-        }
-        self.push(failure, Origin::Effect)?;
-        self.endpoints[index].as_mut().ok_or(Error::Stale)?.retiring = true;
-        Ok(())
-    }
     fn endpoint(&self, peer: PeerId, target: SocketAddr) -> Option<usize> {
         self.endpoints.iter().position(|entry| {
             entry
@@ -790,7 +860,7 @@ impl<'id> Communicator<'id> {
         target: SocketAddr,
         now: u64,
         classify: &mut impl FnMut(SocketAddr) -> io::Result<u32>,
-    ) -> Result<EndpointAdmission, Failure> {
+    ) -> Result<EndpointAdmission, EndpointPlanError> {
         if let Some(index) = self.endpoint(peer, target) {
             return if self.endpoints[index]
                 .as_ref()
@@ -811,7 +881,23 @@ impl<'id> Communicator<'id> {
         socket: usize,
         now: u64,
         classify: &mut impl FnMut(SocketAddr) -> io::Result<u32>,
-    ) -> Result<EndpointAdmission, Failure> {
+    ) -> Result<EndpointAdmission, EndpointPlanError> {
+        let original = self
+            .sockets
+            .get(socket)
+            .filter(|socket| !socket.is_closed())
+            .ok_or(Error::Closed)?;
+        self.prepare_endpoint_profile(peer, target, socket, original.profile(), now, classify)
+    }
+    fn prepare_endpoint_profile(
+        &self,
+        peer: PeerId,
+        target: SocketAddr,
+        socket: usize,
+        profile: Profile,
+        now: u64,
+        classify: &mut impl FnMut(SocketAddr) -> io::Result<u32>,
+    ) -> Result<EndpointAdmission, EndpointPlanError> {
         if let Some(endpoint) =
             self.endpoints.iter().flatten().find(|entry| {
                 entry.peer == peer && entry.target == target && entry.socket == socket
@@ -823,13 +909,8 @@ impl<'id> Communicator<'id> {
                 Ok(EndpointAdmission::Live)
             };
         }
-        if socket >= self.sockets.len() || self.sockets[socket].is_closed() {
-            return Err(Error::Closed.into());
-        }
-        if !matches!(
-            (self.sockets[socket].profile(), target),
-            (Profile::Ipv4, SocketAddr::V4(_))
-        ) && !matches!((self.sockets[socket].profile(),target),(Profile::Ipv6,SocketAddr::V6(address)) if address.ip().to_ipv4_mapped().is_none())
+        if !matches!((profile, target), (Profile::Ipv4, SocketAddr::V4(_)))
+            && !matches!((profile,target),(Profile::Ipv6,SocketAddr::V6(address)) if address.ip().to_ipv4_mapped().is_none())
         {
             return Err(Error::InvalidInput.into());
         }
@@ -841,9 +922,9 @@ impl<'id> Communicator<'id> {
         let generation = self.endpoint_serial.checked_add(1).ok_or(Error::Overflow)?;
         let id = self.next_queue;
         let next_queue = id.checked_add(1).ok_or(Error::Overflow)?;
-        let network = classify(target).map_err(Failure::Classification)?;
+        let network = classify(target).map_err(EndpointPlanError::Classification)?;
         let mut policy = self.configuration.transmit;
-        policy.datagram_bytes = self.sockets[socket].profile().datagram_bytes();
+        policy.datagram_bytes = profile.datagram_bytes();
         let sender = Sender::new(self.configuration.local, peer, policy, now)?;
         let address = transport::address(target);
         let endpoint = Endpoint {
@@ -939,6 +1020,7 @@ impl<'id> Communicator<'id> {
             return Ok(None);
         }
         let frame = OwnedFrame::copy_from(bytes)?;
+        let mut activity = Activity::Command;
         match Event::decode(frame.bytes())? {
             Event::Create {
                 request,
@@ -947,7 +1029,7 @@ impl<'id> Communicator<'id> {
             } => {
                 let target = transport::parse_address(address);
                 let plan = target
-                    .map_err(Failure::Core)
+                    .map_err(EndpointPlanError::Protocol)
                     .and_then(|target| self.prepare_endpoint(peer, target, now, classify));
                 match plan {
                     Ok(EndpointAdmission::New(plan)) => {
@@ -963,7 +1045,7 @@ impl<'id> Communicator<'id> {
                         frozen(8, |out| transport::created(request, false, out))?,
                         Origin::Effect,
                     )?,
-                    Err(Failure::Core(
+                    Err(EndpointPlanError::Protocol(
                         Error::InvalidInput
                         | Error::NotReady
                         | Error::Capacity
@@ -973,7 +1055,19 @@ impl<'id> Communicator<'id> {
                         frozen(8, |out| transport::created(request, false, out))?,
                         Origin::Effect,
                     )?,
-                    Err(error) => return Err(error),
+                    Err(EndpointPlanError::Classification(error)) => {
+                        self.push(
+                            frozen(8, |out| transport::created(request, false, out))?,
+                            Origin::Effect,
+                        )?;
+                        activity = Activity::ClassificationFailed {
+                            peer,
+                            target: transport::parse_address(address)?,
+                            operation: AddressUse::Create { request },
+                            error,
+                        };
+                    }
+                    Err(EndpointPlanError::Protocol(error)) => return Err(error.into()),
                 }
             }
             Event::Send {
@@ -1070,7 +1164,7 @@ impl<'id> Communicator<'id> {
         if !self.io.release_frame() {
             return Err(Error::Stale.into());
         }
-        Ok(Some(Activity::Command))
+        Ok(Some(activity))
     }
     fn acknowledge(&mut self, now: u64) -> Result<Option<Activity>, Failure> {
         let Some(mut work) = self.ack.take() else {
@@ -1166,335 +1260,7 @@ impl<'id> Communicator<'id> {
 
 #[cfg(test)]
 mod tests;
-impl<'id> Communicator<'id> {
-    fn discarded(
-        &mut self,
-        socket: usize,
-        receipt: Receipt,
-        error: Error,
-    ) -> Result<Option<Activity>, Failure> {
-        self.sockets[socket].consume(receipt)?;
-        Ok(Some(Activity::Discarded(error)))
-    }
-    fn incoming(
-        &mut self,
-        socket: usize,
-        identity: &Identity,
-        journal: &mut Journal,
-        receipt: Receipt,
-        now: u64,
-        classify: &mut impl FnMut(SocketAddr) -> io::Result<u32>,
-    ) -> Result<Option<Activity>, Failure> {
-        match self.burst_probe(socket, receipt) {
-            Ok(burst::Probe::Selected) => return Ok(Some(Activity::Burst)),
-            Ok(burst::Probe::Pending) => return Ok(None),
-            Ok(burst::Probe::Unrelated) => {}
-            Err(error) => {
-                self.close();
-                return Err(error);
-            }
-        }
-        if receipt.len() == gnunet_nat_burst_host::wire::MESSAGE_BYTES
-            && socket < self.defaults
-            && self.burst.is_some()
-        {
-            let order = self.burst.as_ref().ok_or(Error::Stale)?.policy.remote_order;
-            let probe = gnunet_nat_burst_host::wire::BurstMessage::decode(
-                self.sockets[socket].bytes(receipt)?,
-                order,
-            )?;
-            if probe.local_port != 0 || probe.peer == self.configuration.local {
-                return self.discarded(socket, receipt, Error::InvalidInput);
-            }
-            if !self.room(1, 256) {
-                return Ok(None);
-            }
-            match self.prepare_endpoint_on(probe.peer, receipt.address(), socket, now, classify) {
-                Ok(EndpointAdmission::New(plan)) => self.commit_endpoint(plan)?,
-                Ok(EndpointAdmission::Live) => {}
-                Ok(EndpointAdmission::Retiring) => {
-                    return self.discarded(socket, receipt, Error::NotReady);
-                }
-                Err(Failure::Core(error)) => return self.discarded(socket, receipt, error),
-                Err(error) => return Err(error),
-            }
-            self.sockets[socket].consume(receipt)?;
-            return Ok(Some(Activity::Burst));
-        }
-        if self.ack.is_some() {
-            return Ok(None);
-        }
-        let incoming_bound = receipt
-            .len()
-            .saturating_sub(48)
-            .checked_add(88)
-            .ok_or(Error::Overflow)?;
-        if incoming_bound > 65535 {
-            return self.discarded(socket, receipt, Error::TooLarge);
-        }
-        let bytes = incoming_bound.checked_add(512).ok_or(Error::Overflow)?;
-        if 4 > self.configuration.capacity.frames || bytes > self.configuration.capacity.bytes {
-            return self.discarded(socket, receipt, Error::Capacity);
-        }
-        if !self.room(4, bytes) {
-            return Ok(None);
-        }
-        // Move, never clone, the one original scratch allocation during this
-        // synchronous borrow so the authenticated guard can outlive table lookup.
-        let mut scratch = std::mem::replace(&mut self.scratch, Zeroizing::new(Vec::new()));
-        let result = self.incoming_staged(
-            socket,
-            identity,
-            journal,
-            receipt,
-            now,
-            classify,
-            &mut scratch,
-            incoming_bound,
-        );
-        self.scratch = scratch;
-        match result {
-            Err(Failure::Core(
-                error @ (Error::Authentication
-                | Error::Replay
-                | Error::Malformed
-                | Error::Truncated
-                | Error::InvalidInput
-                | Error::Unsupported
-                | Error::NotFound
-                | Error::TooLarge
-                | Error::Capacity),
-            )) => self.discarded(socket, receipt, error),
-            result => result,
-        }
-    }
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "One original receipt, scratch and independently owned admission ports remain explicit before replay commit"
-    )]
-    fn incoming_staged(
-        &mut self,
-        socket: usize,
-        identity: &Identity,
-        journal: &mut Journal,
-        receipt: Receipt,
-        now: u64,
-        classify: &mut impl FnMut(SocketAddr) -> io::Result<u32>,
-        scratch: &mut [u8],
-        incoming_bound: usize,
-    ) -> Result<Option<Activity>, Failure> {
-        let ack_buffers = [buffer(116)?, buffer(116)?];
-        let message_buffer = buffer(incoming_bound)?;
-        self.index
-            .try_reserve_exact(MAX_NEW_KEY_IDS)
-            .map_err(|_| Error::Capacity)?;
-        let watermark = self.endpoint_serial;
-        let packet = self.sockets[socket].bytes(receipt)?;
-        let mut matched = false;
-        let mut replay = false;
-        let mut retiring_candidate = false;
-        let mut received = None;
-        if let Some(prefix) = packet.get(..32) {
-            let kid = <[u8; 32]>::try_from(prefix).map_err(|_| Error::Truncated)?;
-            let start = self.index.partition_point(|entry| entry.value < kid);
-            let end = self.index.partition_point(|entry| entry.value <= kid);
-            let mut previous = None;
-            for at in start..end {
-                let candidate = self.index[at];
-                if previous == Some((candidate.peer, candidate.generation)) {
-                    continue;
-                }
-                previous = Some((candidate.peer, candidate.generation));
-                let Some(peer) = self.peers[candidate.peer]
-                    .as_ref()
-                    .filter(|peer| peer.generation == candidate.generation)
-                else {
-                    continue;
-                };
-                let sender = peer.id;
-                let endpoint = match self.prepare_endpoint_on(
-                    sender,
-                    receipt.address(),
-                    socket,
-                    now,
-                    classify,
-                )? {
-                    EndpointAdmission::New(plan) => Some(plan),
-                    EndpointAdmission::Live => None,
-                    EndpointAdmission::Retiring => {
-                        // A key id can have several bounded candidates. An old
-                        // retiring sender must not hide a later live match.
-                        retiring_candidate = true;
-                        continue;
-                    }
-                };
-                let peer = self.peers[candidate.peer].as_mut().ok_or(Error::Stale)?;
-                match peer
-                    .receiver
-                    .boxed(identity, self.sockets[socket].bytes(receipt)?, scratch)
-                {
-                    Ok(value) => {
-                        received = Some((candidate.peer, sender, true, value, endpoint));
-                        break;
-                    }
-                    Err(Error::NotFound) => {}
-                    Err(Error::Replay) => {
-                        matched = true;
-                        replay = true;
-                    }
-                    Err(Error::Authentication) => matched = true,
-                    Err(error) => return self.discarded(socket, receipt, error),
-                }
-            }
-        }
-        if received.is_none() && matched {
-            return self.discarded(
-                socket,
-                receipt,
-                if replay {
-                    Error::Replay
-                } else {
-                    Error::Authentication
-                },
-            );
-        }
-        if received.is_none() && retiring_candidate {
-            return self.discarded(socket, receipt, Error::NotReady);
-        }
-        if received.is_none() && receipt.len() == 96 && self.discovery.is_some() {
-            let sender = match discovery::verify(
-                self.sockets[socket].bytes(receipt)?,
-                receipt.address(),
-                self.configuration.local,
-            ) {
-                Ok(Some(sender)) => sender,
-                Ok(None) => return self.discarded(socket, receipt, Error::NotFound),
-                Err(error) => return self.discarded(socket, receipt, error),
-            };
-            let state = self.discovery.as_mut().ok_or(Error::Stale)?;
-            if state.hint.is_some() {
-                return self.discarded(socket, receipt, Error::Capacity);
-            }
-            let network = classify(receipt.address()).map_err(Failure::Classification)?;
-            state.hint = Some(Discovered {
-                peer: sender,
-                source: receipt.address(),
-                network,
-            });
-            self.sockets[socket].consume(receipt)?;
-            return Ok(Some(Activity::Discovered));
-        }
-        let (peer_index, sender, boxed, value, endpoint) = if let Some(received) = received {
-            received
-        } else {
-            let opened =
-                match handshake::open(identity, self.sockets[socket].bytes(receipt)?, scratch) {
-                    Ok(opened) => opened,
-                    Err(error) => return self.discarded(socket, receipt, error),
-                };
-            let sender = opened.sender();
-            let existing = self.peer_index(sender);
-            let index = existing
-                .or_else(|| self.peers.iter().position(Option::is_none))
-                .ok_or(Error::Capacity)?;
-            let endpoint =
-                match self.prepare_endpoint_on(sender, receipt.address(), socket, now, classify)? {
-                    EndpointAdmission::New(plan) => Some(plan),
-                    EndpointAdmission::Live => None,
-                    EndpointAdmission::Retiring => {
-                        return self.discarded(socket, receipt, Error::NotReady);
-                    }
-                };
-            if existing.is_some() {
-                let peer = self.peers[index].as_mut().ok_or(Error::Stale)?;
-                let value = peer.receiver.initial_opened(identity, opened, journal);
-                let value = self.received_or_history(value, journal)?;
-                (index, sender, false, value, endpoint)
-            } else {
-                let generation = self.peer_serial.checked_add(1).ok_or(Error::Overflow)?;
-                let mut receiver = Receiver::new(
-                    self.configuration.local,
-                    sender,
-                    RxPolicy {
-                        secrets: self.configuration.transmit.secrets,
-                        maximum_secret_bytes: self.configuration.transmit.maximum_secret_bytes,
-                    },
-                )?;
-                let value = receiver.initial_opened(identity, opened, journal);
-                let value = self.received_or_history(value, journal)?;
-                self.peers[index] = Some(Peer {
-                    id: sender,
-                    generation,
-                    receiver,
-                    last_rx: now,
-                });
-                self.peer_serial = generation;
-                (index, sender, false, value, endpoint)
-            }
-        };
-        // Every buffer, endpoint and selector-index capacity was reserved before
-        // the original Receiver consumed a KID or made its durable replay commit.
-        let mut staged: [Option<OwnedFrame>; 3] = [None, None, None];
-        for (index, (ack, bytes)) in value
-            .acknowledgements
-            .into_iter()
-            .zip(ack_buffers)
-            .enumerate()
-        {
-            if let Some(ack) = ack {
-                staged[index] = Some(freeze(bytes, |out| transport::notify(sender, ack, out))?);
-            }
-        }
-        if let Some(message) = value.message() {
-            staged[2] = Some(freeze(message_buffer, |out| {
-                transport::incoming(sender, message, out)
-            })?);
-        }
-        if let Some(plan) = endpoint {
-            self.commit_endpoint(plan)?;
-        }
-        if let Some(peer) = self.peers[peer_index].as_mut() {
-            peer.last_rx = now;
-        }
-        self.index_peer(peer_index);
-        if let Some(ack) = value.incoming_ack {
-            self.ack = Some(AckWork {
-                peer: sender,
-                ack,
-                cursor: 0,
-                watermark,
-                release_input: false,
-            });
-        }
-        for frame in staged.into_iter().flatten() {
-            self.push(frame, Origin::Effect)?;
-        }
-        self.sockets[socket].consume(receipt)?;
-        Ok(Some(Activity::Incoming {
-            peer: sender,
-            source: receipt.address(),
-            boxed,
-            bytes: receipt.len(),
-        }))
-    }
-    fn received_or_history(
-        &self,
-        result: Result<Received, Error>,
-        journal: &mut Journal,
-    ) -> Result<Received, Failure> {
-        match result {
-            Ok(value) => Ok(value),
-            Err(Error::Storage | Error::OutcomeUnknown) => {
-                if let Some(failure) = journal.take_failure() {
-                    Err(Failure::History(JournalError::Native(failure)))
-                } else {
-                    Err(Error::OutcomeUnknown.into())
-                }
-            }
-            Err(error) => Err(error.into()),
-        }
-    }
-}
+impl<'id> Communicator<'id> {}
 impl<'id> Communicator<'id> {
     fn admit_effect(&mut self) -> Result<Option<Activity>, Failure> {
         let Some(effect) = self.effects.front() else {
@@ -1558,125 +1324,6 @@ impl<'id> Communicator<'id> {
                 Poll::Ready(Ok(activity))
             }
         }
-    }
-    fn transmit(&mut self, cx: &mut Context<'_>, now: u64) -> Poll<Result<Activity, Failure>> {
-        for offset in 0..self.sockets.len() {
-            let socket = (self.tx_cursor + offset) % self.sockets.len();
-            let Some(completion) = self.completions[socket].as_ref() else {
-                continue;
-            };
-            let index = completion.endpoint;
-            let endpoint = self.endpoints[index].as_ref().ok_or(Error::Stale)?;
-            if endpoint.generation != completion.generation {
-                return Poll::Ready(Err(Error::Stale.into()));
-            }
-            // A retained send can outlive its preparation while the socket is
-            // backpressured. Check the same live endpoint's actual ACK target
-            // before every native retry, even when transmission wins the fair
-            // turn before maintenance. Retirement preserves the original failure.
-            if endpoint.retiring
-                || now.saturating_sub(endpoint.last_ack)
-                    >= self.configuration.transmit.acknowledgement_timeout_us
-            {
-                if let Some(activity) = self.retire_endpoint(index)? {
-                    self.tx_cursor = (socket + 1) % self.sockets.len();
-                    return Poll::Ready(Ok(activity));
-                }
-                continue;
-            }
-            let result = match self.sockets[socket].poll_send(cx) {
-                Poll::Pending => continue,
-                Poll::Ready(result) => result,
-            };
-            self.tx_cursor = (socket + 1) % self.sockets.len();
-            let completion = self.completions[socket].take().ok_or(Error::Stale)?;
-            match result {
-                Ok(sent) => {
-                    if sent.operation != completion.operation || sent.target != completion.target {
-                        self.fail_endpoint_send(index, completion.failure)?;
-                        return Poll::Ready(Err(Error::Stale.into()));
-                    }
-                    self.push(completion.success, Origin::Effect)?;
-                    return Poll::Ready(Ok(Activity::NativeSent {
-                        peer: completion.peer,
-                        target: completion.target,
-                        mode: completion.mode,
-                        bytes: sent.bytes,
-                    }));
-                }
-                Err(error) => {
-                    drop(self.sockets[socket].cancel_send());
-                    self.fail_endpoint_send(index, completion.failure)?;
-                    return Poll::Ready(Err(error.into()));
-                }
-            }
-        }
-        Poll::Pending
-    }
-    fn retire_endpoint(&mut self, index: usize) -> Result<Option<Activity>, Failure> {
-        if self.endpoints[index].as_ref().is_some_and(|endpoint| {
-            endpoint.source_generation != self.publication_source.generation
-        }) {
-            return self.drop_detached_endpoint(index).map(Some);
-        }
-        let Some(endpoint) = self.endpoints[index].as_mut() else {
-            return Ok(None);
-        };
-        // Retirement is terminal for this generation, including while failure
-        // and queue-down effects are backpressured. No later ACK or command may
-        // revive the sender between those bounded steps.
-        endpoint.retiring = true;
-        let endpoint = self.endpoints[index].as_ref().ok_or(Error::Stale)?;
-        let socket = endpoint.socket;
-        let has_completion = self.completions[socket].as_ref().is_some_and(|completion| {
-            completion.endpoint == index && completion.generation == endpoint.generation
-        });
-        if has_completion {
-            // Release this completion's reserved slots with its original failure
-            // first. Requiring both queue-down frames in the same step can exceed
-            // the valid four-frame budget while another socket also owns a TX.
-            if !self.room_without(1, 52, Some(socket)) {
-                return Ok(None);
-            }
-            let completion = self.completions[socket].take().ok_or(Error::Stale)?;
-            drop(self.sockets[socket].cancel_send());
-            self.push(completion.failure, Origin::Effect)?;
-            return Ok(Some(Activity::Command));
-        }
-        let frames = 1 + usize::from(endpoint.boxed.is_some());
-        let bytes = 40 + usize::from(endpoint.boxed.is_some()) * 40;
-        if !self.room(frames, bytes) {
-            return Ok(None);
-        }
-        let queue = Self::queue_for(endpoint, endpoint.kx, 0, false)?;
-        let kx = frozen(40, |out| queue.down(out))?;
-        let boxed = if let Some(id) = endpoint.boxed {
-            let queue = Self::queue_for(endpoint, id, 0, true)?;
-            Some(frozen(40, |out| queue.down(out))?)
-        } else {
-            None
-        };
-        let mut endpoint = self.endpoints[index].take().ok_or(Error::Stale)?;
-        endpoint.sender.close();
-        if socket >= self.defaults
-            && !self
-                .endpoints
-                .iter()
-                .flatten()
-                .any(|other| other.socket == socket)
-        {
-            self.sockets[socket].close();
-        }
-        self.push(kx, Origin::Effect)?;
-        if let Some(frame) = boxed {
-            self.push(frame, Origin::Effect)?;
-        }
-        if self.restoring {
-            // A queue withdrawn during recovery remains part of that actual
-            // publication prefix until its final DOWN is wholly written.
-            self.restore_fence = self.next_effect;
-        }
-        Ok(Some(Activity::Retired))
     }
     fn maintenance(&mut self, now: Option<u64>) -> Result<Option<Activity>, Failure> {
         let lifetime = self.configuration.transmit.acknowledgement_timeout_us;
@@ -1761,6 +1408,14 @@ impl<'id> Communicator<'id> {
             && self.peers.iter().all(Option::is_none)
             && self.completions.iter().all(Option::is_none)
         {
+            match self.io.poll_shutdown(cx) {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(Err(error)) => {
+                    self.close();
+                    return Poll::Ready(Err(Failure::Transport(error)));
+                }
+                Poll::Ready(Ok(())) => {}
+            }
             self.io.retire();
             self.publication_source.retire();
             self.transport_attached = false;
@@ -1849,6 +1504,15 @@ impl<'id> Communicator<'id> {
                         }
                         match self.sockets[socket].poll_receive(cx) {
                             Poll::Pending => {}
+                            Poll::Ready(Err(SocketError::Io(error)))
+                                if gnunet_native::network::isolated_datagram_receive_error(
+                                    &error,
+                                ) =>
+                            {
+                                self.rx_cursor = (socket + 1) % self.sockets.len();
+                                activity = Some(Activity::ReceiveError { socket, error });
+                                break;
+                            }
                             Poll::Ready(Err(error)) => return Poll::Ready(Err(error.into())),
                             Poll::Ready(Ok(receipt)) => {
                                 if let Some(progress) = self
@@ -1882,176 +1546,5 @@ impl<'id> Communicator<'id> {
             }
         }
         Poll::Pending
-    }
-}
-impl<'id> Communicator<'id> {
-    /// Enable actual LAN presence on these original sockets. Requires a
-    /// time-enabled Tokio IO runtime, as does the normal standard PROGRAM.
-    /// Caller supplies complete native interface snapshots separately. Current
-    /// native source-selection support is Linux/Darwin; no other ABI is guessed.
-    pub fn enable_discovery(
-        &mut self,
-        configuration: discovery::Configuration,
-    ) -> Result<(), Error> {
-        if self.closing || self.closed {
-            return Err(Error::Closed);
-        }
-        if self.discovery.is_some() {
-            return Err(Error::Conflict);
-        }
-        if !cfg!(any(target_os = "linux", target_os = "macos")) {
-            return Err(Error::Unsupported);
-        }
-        self.discovery = Some(discovery::State::new(configuration)?);
-        Ok(())
-    }
-    /// Replace only after an actual complete successful native interface scan.
-    /// A failed/incomplete scan must retain the previous snapshot. No IO, key
-    /// use or new clock sample occurs here; actual membership/send is polled.
-    pub fn update_interfaces(&mut self, interfaces: &[discovery::Interface]) -> Result<(), Error> {
-        if self.closing || self.closed {
-            return Err(Error::Closed);
-        }
-        self.discovery
-            .as_mut()
-            .ok_or(Error::NotReady)?
-            .update(interfaces, self.last_clock)
-    }
-    /// Consume one bounded signature hint exactly once. Caller must submit it
-    /// to the original TRANSPORT Application Validate owner and retain its own
-    /// unadmitted hint under backpressure; this grants no authenticated queue.
-    pub fn take_discovered(&mut self) -> Option<Discovered> {
-        if self.closing || self.closed {
-            return None;
-        }
-        self.discovery.as_mut().and_then(|state| state.hint.take())
-    }
-    /// Check/register only original discovery-send native deadlines. Call this
-    /// before awaiting/reading a canonical clock; it performs no socket syscall,
-    /// clock request, signature, encryption or application validation.
-    pub fn poll_native_guard(&mut self, cx: &mut Context<'_>) -> Option<Failure> {
-        if self.closing || self.closed {
-            return None;
-        }
-        if let Some(failure) = self.burst_native_guard(cx) {
-            return Some(failure);
-        }
-        for index in 0..self.defaults {
-            if let Err(error) = self.sockets[index].poll_discovery_guard(cx) {
-                self.sockets[index].cancel_discovery();
-                if let Some(state) = self.discovery.as_mut() {
-                    state.pending[index] = None;
-                }
-                return Some(error.into());
-            }
-        }
-        None
-    }
-    fn discovery_step(
-        &mut self,
-        cx: &mut Context<'_>,
-        identity: &Identity,
-        now: u64,
-    ) -> Result<Option<Activity>, Failure> {
-        let Some(state) = self.discovery.as_mut() else {
-            return Ok(None);
-        };
-        for index in 0..self.defaults {
-            let Some((operation, target)) = state.pending[index] else {
-                continue;
-            };
-            match self.sockets[index].poll_discovery_send(cx) {
-                Poll::Pending => {}
-                Poll::Ready(Err(error)) => {
-                    self.sockets[index].cancel_discovery();
-                    state.pending[index] = None;
-                    return Err(error.into());
-                }
-                Poll::Ready(Ok(sent)) => {
-                    state.pending[index] = None;
-                    if sent.operation != operation || sent.target != target || sent.bytes != 96 {
-                        return Err(Error::Stale.into());
-                    }
-                    return Ok(Some(Activity::DiscoverySent { target }));
-                }
-            }
-        }
-        let v6 = self
-            .sockets
-            .iter()
-            .take(self.defaults)
-            .position(|socket| socket.profile() == Profile::Ipv6);
-        if let Some(socket) = v6 {
-            if let Some(at) = state.memberships.iter().position(|index| {
-                !state
-                    .rows
-                    .iter()
-                    .any(|row| row.interface.source.is_ipv6() && row.interface.index == *index)
-            }) {
-                let index = state.memberships[at];
-                self.sockets[socket].leave_discovery(&discovery::IPV6_GROUP, index)?;
-                state.memberships.swap_remove(at);
-                return Ok(Some(Activity::Discovery));
-            }
-            if let Some(index) = state
-                .rows
-                .iter()
-                .filter(|row| row.interface.source.is_ipv6())
-                .map(|row| row.interface.index)
-                .find(|index| !state.memberships.contains(index))
-            {
-                // Metadata capacity was reserved before any actual join. Retain
-                // each successful native membership until leave or socket close.
-                if state.memberships.len() == state.configuration.interfaces {
-                    return Err(Error::Capacity.into());
-                }
-                self.sockets[socket].join_discovery(&discovery::IPV6_GROUP, index)?;
-                state.memberships.push(index);
-                return Ok(Some(Activity::Discovery));
-            }
-        }
-        for offset in 0..state.rows.len() {
-            let index = (state.cursor + offset) % state.rows.len();
-            if now < state.rows[index].due {
-                continue;
-            }
-            let interface = state.rows[index].interface;
-            let Some(socket) = self.sockets.iter().take(self.defaults).position(|socket| {
-                matches!(
-                    (socket.profile(), interface.source),
-                    (Profile::Ipv4, SocketAddr::V4(_)) | (Profile::Ipv6, SocketAddr::V6(_))
-                )
-            }) else {
-                continue;
-            };
-            if self.sockets[socket].has_pending_send() {
-                continue;
-            }
-            let hard = Instant::now()
-                .checked_add(state.configuration.send_lifetime)
-                .ok_or(Error::Overflow)?;
-            let due = now
-                .checked_add(state.configuration.interval_us)
-                .filter(|due| *due != u64::MAX)
-                .ok_or(Error::Overflow)?;
-            let operation = state.sequence.checked_add(1).ok_or(Error::Overflow)?;
-            let target = interface.target(self.sockets[socket].local_address().port())?;
-            let packet = state.packet(index, identity)?;
-            // Check the original native budget again after synchronous signing.
-            self.sockets[socket].queue_discovery(
-                interface.source,
-                interface.index,
-                target,
-                operation,
-                packet,
-                hard,
-            )?;
-            state.sequence = operation;
-            state.pending[socket] = Some((operation, target));
-            state.rows[index].due = due;
-            state.cursor = (index + 1) % state.rows.len();
-            return Ok(Some(Activity::Discovery));
-        }
-        Ok(None)
     }
 }

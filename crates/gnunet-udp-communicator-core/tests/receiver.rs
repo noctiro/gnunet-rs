@@ -205,6 +205,10 @@ fn out_of_order_boxes_consume_only_their_original_kid_and_bad_tag_cannot_burn_va
     )?;
     let first = sender.boxed(&a, &message(2), 101, &mut entropy)?;
     let second = sender.boxed(&a, &message(3), 102, &mut entropy)?;
+    let available = receiver.available();
+    drop(receiver.prepare_boxed(&b, first.bytes(), &mut scratch)?);
+    assert_eq!(receiver.available(), available);
+    assert!(scratch[..first.bytes().len() - 48].iter().all(|b| *b == 0));
     let mut bad = first.bytes().to_vec();
     bad[32] ^= 1;
     assert!(matches!(
@@ -262,6 +266,15 @@ fn acknowledged_keys_are_cached_before_publication_and_refills_keep_a_bounded_sp
             100 + u64::from(sequence),
             &mut entropy,
         )?;
+        if sequence == 33 {
+            // This packet plans the first refill. Refusing external admission
+            // must not install its public selectors or alter its original KID.
+            let available = receiver.available();
+            let ids: Vec<_> = receiver.key_ids().copied().collect();
+            drop(receiver.prepare_boxed(&b, packet.bytes(), &mut scratch)?);
+            assert_eq!(receiver.available(), available);
+            assert_eq!(receiver.key_ids().copied().collect::<Vec<_>>(), ids);
+        }
         let received = receiver.boxed(&b, packet.bytes(), &mut scratch)?;
         assert_eq!(received.message(), Some(message(sequence).as_slice()));
         for ack in received.acknowledgements.into_iter().flatten() {
@@ -312,6 +325,9 @@ fn authenticated_rekey_preflight_installs_only_cached_new_secret_and_keeps_old_w
     )?;
     let old = sender.boxed(&a, &message(2), 101, &mut entropy)?;
     let rekey = sender.boxed(&a, &message(3), 102, &mut entropy)?;
+    drop(receiver.prepare_boxed(&b, rekey.bytes(), &mut scratch)?);
+    assert_eq!(receiver.secrets(), 1);
+    assert_eq!(receiver.available(), 128);
     let accepted = receiver.boxed(&b, rekey.bytes(), &mut scratch)?;
     assert_eq!(accepted.message(), Some(message(3).as_slice()));
     let new_ack = accepted.acknowledgements[1].ok_or(Error::Stale)?;

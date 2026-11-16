@@ -5,6 +5,8 @@ outside `Service<'i>`; create with `Service::new(&mut instance, local_peer,
 main_hash, Config, Limits, now, random)`. Main hash is SHA512(b"rps").
 No KDF is run by the core. SubStart supplies its already-derived wire hash.
 
+## Contract
+
 `Random::fill(&mut self, &mut [u8]) -> Result<(), gnunet_types::Error>` must
 supply fresh cryptographic randomness. `Rank::rank(&mut self, &[u8;64], &Peer)
 -> Result<[u8;64], Error>` must implement HMAC-SHA512. Both are explicit ports.

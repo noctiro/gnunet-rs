@@ -1,10 +1,10 @@
 //! Real automatic probes of authenticated search hits, with independent history.
+use super::entropy::OsEntropy;
 use super::{
     publication::hex,
     service::{duration, target},
 };
 use gnunet::{
-    crypto::Entropy,
     fs::{Limits as UriLimits, Uri, client::Instance, ublock},
     fs_host::{
         ipc, network, probe_task,
@@ -20,19 +20,11 @@ use std::{
     error::Error,
     ffi::OsStr,
     fmt,
-    fs::File,
     future::{Future, poll_fn},
-    io::{self, Read, Write},
-    os::unix::ffi::OsStrExt,
+    io::{self, Write},
     path::Path,
 };
 
-struct OsEntropy(File);
-impl Entropy for OsEntropy {
-    fn fill(&mut self, out: &mut [u8]) -> Result<(), ProtocolError> {
-        self.0.read_exact(out).map_err(|_| ProtocolError::Entropy)
-    }
-}
 fn row(out: &mut impl Write, value: &Value) -> io::Result<()> {
     serde_json::to_writer(&mut *out, value).map_err(io::Error::other)?;
     writeln!(out)?;
@@ -132,7 +124,10 @@ impl Error for Failure {
     }
 }
 
-pub(super) fn run(args: &[impl AsRef<OsStr>], out: &mut impl Write) -> Result<(), Box<dyn Error>> {
+pub(super) fn run(
+    args: &[impl AsRef<OsStr>],
+    out: &mut super::Output<'_, impl Write>,
+) -> Result<(), Box<dyn Error>> {
     let interval = match args.get(3) {
         Some(v) => duration(Some(v))?,
         None => 5_000_000,
@@ -159,11 +154,15 @@ pub(super) fn run(args: &[impl AsRef<OsStr>], out: &mut impl Write) -> Result<()
             .parse()?,
         None => 2,
     };
-    let query = Uri::parse(args[1].as_ref().as_bytes(), UriLimits::default())?;
+    let query = Uri::parse(
+        crate::argument::wire_bytes(args[1].as_ref())?,
+        UriLimits::default(),
+    )?;
     if !matches!(query, Uri::Keywords(_) | Uri::Namespace(_)) {
         return Err("automatic search probing requires a KSK or SKS query".into());
     }
     let source = ipc::EndpointSource::unix(Path::new(args[0].as_ref()).to_path_buf());
+    out.interval(interval)?;
     let deadline = target(&source, interval)?;
     let store = Persistence::open(args[2].as_ref(), probe_task::Limits::default())?;
     tokio::runtime::Builder::new_current_thread().enable_all().build()?.block_on(async {
@@ -171,13 +170,13 @@ pub(super) fn run(args: &[impl AsRef<OsStr>], out: &mut impl Write) -> Result<()
         let options=search::Options{anonymity:1,local_only:false,deadline,limits:search::Limits::default(),block:ublock::Limits::default(),protocol:ipc::ProtocolLimits::default(),native:ipc::Limits::default()};
         let session=Session::<_,1024>::new(query,&mut identities,||source.duplicate(),options)?;
         let mut driver=Automatic::new(session,automatic::Policy{max_running,..Default::default()})?.with_persistence(store);
-        let stop=driver.stop_handle();let mut entropy=OsEntropy(File::open("/dev/urandom")?);
-        let mut interrupt=tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
-        let mut terminate=tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+        let stop=driver.stop_handle();let mut entropy=OsEntropy;
+        let mut signals=super::stop::StopEvents::new()?;
+        let result=async {
         let(mut probes,mut successes,mut trials,mut historical_max_trials)=(0u64,0u64,0u64,0u32);
         let mut failure=Failure::default();let mut stopped="caller_stop";
         loop {
-            let actual={let mut next=std::pin::pin!(driver.next(&mut entropy));poll_fn(|cx|{if interrupt.poll_recv(cx).is_ready()||terminate.poll_recv(cx).is_ready(){stop.request();}next.as_mut().poll(cx)}).await};
+            let actual={let mut next=std::pin::pin!(driver.next(&mut entropy));poll_fn(|cx|{if signals.poll(cx){stop.request();}next.as_mut().poll(cx)}).await};
             let value=match actual {
                 Ok(Some(Event::Search(step)))=>{
                     match *step {
@@ -216,7 +215,10 @@ pub(super) fn run(args: &[impl AsRef<OsStr>], out: &mut impl Write) -> Result<()
             };
             if failure.output.is_none() && let Some(value)=value && let Err(error)=row(out,&value){failure.output=Some(error);stop.request();}
         }
-        if failure.output.is_none(){row(out,&json!({"event":"fs_search_probe_stopped","reason":stopped,"probes":probes,"successes":successes,"trials":trials,"historical_max_trials":historical_max_trials,"cleanup":failure.coordinator.as_ref().and_then(|e|e.cleanup.as_ref()).map(ToString::to_string),"whole_search_complete":false}))?;}
+        out.cleanup()?;
+        if failure.output.is_none(){row(out,&json!({"event":"fs_search_probe_stopped","reason":stopped,"stop_error":signals.failure().map(ToString::to_string),"probes":probes,"successes":successes,"trials":trials,"historical_max_trials":historical_max_trials,"cleanup":failure.coordinator.as_ref().and_then(|e|e.cleanup.as_ref()).map(ToString::to_string),"whole_search_complete":false}))?;}
         if failure.coordinator.is_some()||failure.persistence.is_some()||failure.recording.is_some()||failure.output.is_some(){Err(Box::new(failure)as Box<dyn Error>)}else{Ok(())}
+        }.await;
+        signals.finish(result)
     })
 }

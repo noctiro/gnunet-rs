@@ -12,6 +12,7 @@ use gnunet_datastore::backend::{
     Backend, BackendError, Failure, Maintenance, MaintenancePolicy, Meta, Put, PutPolicy,
     PutReport, Record, Selection, Usage,
 };
+pub use gnunet_native::DirectorySync;
 use gnunet_types::Error as ProtocolError;
 use gnunet_wire::official::datastore::MAX_VALUE_BYTES;
 use std::{
@@ -385,6 +386,18 @@ impl Store {
             test_fault: None,
         })
     }
+    /// Last successful observation covering the values, root and parent names.
+    /// This is independent of file-data synchronization and logical WAL commit.
+    /// Windows reports Unavailable. A pending naming operation or fenced owner
+    /// has no current observation; this method performs no I/O.
+    #[must_use]
+    pub fn directory_sync(&self) -> Option<DirectorySync> {
+        if self.unknown.is_some() {
+            None
+        } else {
+            self.files.directory_sync()
+        }
+    }
     /// Original active uncertainty; ordinary backend results remain fenced.
     #[must_use]
     pub fn failure(&self) -> Option<&Error> {
@@ -523,7 +536,8 @@ impl Store {
             }
         }
         // Settle the selected prefix before exposing any ordinary record. The
-        // chosen snapshot, values directory and WAL names are all durable.
+        // selected snapshot and WAL data are synced. Naming availability is
+        // recorded separately by the native directory barriers.
         if let Some(snapshot) = files.snapshot()? {
             snapshot
                 .sync_all()
@@ -533,14 +547,7 @@ impl Store {
             .wal
             .sync_all()
             .map_err(|e| Error::io("recovery-wal-sync", e))?;
-        files
-            .values
-            .sync_all()
-            .map_err(|e| Error::io("recovery-values-sync", e))?;
-        files
-            .root
-            .sync_all()
-            .map_err(|e| Error::io("recovery-root-sync", e))?;
+        files.sync_names()?;
         for row in &index.rows {
             files.check_object(row.meta.uid, row.len)?;
         }
@@ -641,12 +648,10 @@ impl Store {
                 self.cleanup = Some(CleanupFailure { source: error });
             }
         }
-        if let Err(error) = self.files.values.sync_all()
+        if let Err(error) = self.files.sync_names()
             && self.cleanup.is_none()
         {
-            self.cleanup = Some(CleanupFailure {
-                source: Error::io("deleted-values-sync", error),
-            });
+            self.cleanup = Some(CleanupFailure { source: error });
         }
     }
     fn commit(&mut self, ops: &[Op], highwater: u64) -> Result<(), Error> {

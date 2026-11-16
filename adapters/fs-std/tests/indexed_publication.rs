@@ -153,7 +153,7 @@ impl BlockSink for Captured {
                 node.block().bytes().to_vec(),
             ),
         );
-        Ok(Insert::Created)
+        Ok(Insert::Created(gnunet_fs_host::Retention::Volatile))
     }
 }
 fn expected(data: &[u8]) -> gnunet_fs_host::Result<(Content, Captured)> {

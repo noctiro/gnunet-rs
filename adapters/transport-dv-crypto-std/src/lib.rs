@@ -1,7 +1,6 @@
 //! Real caller-owned PILS operation glue for DV boxed payload material. This
 //! module creates no MQ, thread, timer, hidden queue or default crypto provider.
 //! Caller drives its existing PILS Client and original hard/cancel/source bounds.
-#![cfg(unix)]
 #![forbid(unsafe_code)]
 /// Actual original PILS jobs for fixed reusable material caches.
 pub mod cache;

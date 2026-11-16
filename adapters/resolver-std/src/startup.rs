@@ -1,6 +1,6 @@
 //! Foreground assembly using official service configuration and literal files.
 use crate::{
-    Host, Limits, MachineFiles, Ports, Report,
+    Host, Limits, MachineInputs, Ports, Report,
     storage::{Geometry, Store},
 };
 use gnunet_client::resolver::FamilyProfile;
@@ -137,7 +137,7 @@ pub fn unix_access(config: &Configuration) -> Result<UnixAccess, Box<dyn Error>>
 pub async fn foreground(
     config: &Configuration,
     activation: Activation,
-    files: MachineFiles,
+    files: MachineInputs,
     endpoints: &[SocketAddr],
     ready: impl FnOnce(&BoundListeners) -> io::Result<()>,
     shutdown: impl Future<Output = io::Result<()>>,
@@ -146,12 +146,7 @@ pub async fn foreground(
     verify_configured_identity(config)?;
     let unix = unix_access(config)?;
     let listeners = BoundListeners::prepare_before_identity(config, b"resolver", activation)?;
-    let bound = listeners
-        .finish_with_access(gnunet_service_runtime::UnixListenerAccess {
-            match_uid: unix.match_uid,
-            match_gid: unix.match_gid,
-        })
-        .await?;
+    let bound = listeners.finish_with_access(unix.into()).await?;
     foreground_listening_with_clock(
         config,
         bound,
@@ -171,7 +166,7 @@ pub async fn foreground(
 /// supervisor, detach, impersonate or accept local-socket activation handles.
 pub async fn foreground_tcp(
     config: &Configuration,
-    files: MachineFiles,
+    files: MachineInputs,
     endpoints: &[SocketAddr],
     ready: impl FnOnce(&BoundListeners) -> io::Result<()>,
     shutdown: impl Future<Output = io::Result<()>>,
@@ -191,11 +186,55 @@ pub async fn foreground_tcp(
     )
     .await
 }
+
+/// Run configured local and TCP IPC on every native platform under the already
+/// selected process account. This owns real AF_UNIX nodes and their native
+/// filesystem policy, with the same Resolver engine, machine inputs and teardown
+/// as other listening entries. It never adopts activation, detaches, changes
+/// process identity or substitutes a TCP listener for a configured local path.
+pub async fn foreground_configured(
+    config: &Configuration,
+    inputs: MachineInputs,
+    endpoints: &[SocketAddr],
+    ready: impl FnOnce(&BoundListeners) -> io::Result<()>,
+    shutdown: impl Future<Output = io::Result<()>>,
+    observe: impl FnMut(crate::SocketEvent),
+) -> Result<Report, Box<dyn Error>> {
+    verify_configured_identity(config)?;
+    let access = unix_access(config)?;
+    let bound = BoundListeners::bind_configured(config, b"resolver", access.into()).await?;
+    foreground_listening_with_clock(
+        config,
+        bound,
+        inputs,
+        endpoints,
+        ready,
+        shutdown,
+        observe,
+        Arc::new(SystemClock),
+    )
+    .await
+}
 #[derive(Debug)]
-struct ForegroundFailure {
-    original: Option<Box<dyn Error>>,
-    cleanup: Option<crate::HostError>,
-    report: Report,
+/// Independent construction/drive, host cleanup and endpoint cleanup failures.
+pub struct ForegroundFailure {
+    /// Original configuration, construction or drive failure.
+    pub original: Option<Box<dyn Error>>,
+    /// Independent Immediate host cleanup failure, if a host was constructed.
+    pub cleanup: Option<crate::HostError>,
+    /// Failed endpoint removal and its original retry owner, after socket close.
+    pub listener_cleanup: Option<ListenerCleanupFailure>,
+    /// Actual host counters; absent when host construction never completed.
+    pub report: Option<Report>,
+}
+/// Endpoint cleanup failure retaining the original file-object/inode owners.
+#[derive(Debug)]
+pub struct ListenerCleanupFailure {
+    /// Errors observed on the first explicit close, in path visitation order.
+    pub errors: Vec<io::Error>,
+    /// Original failed node owners. Retry `remaining.close()` after resolving
+    /// the native error; this set no longer has live listening sockets.
+    pub remaining: BoundListeners,
 }
 impl std::fmt::Display for ForegroundFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -206,16 +245,28 @@ impl std::fmt::Display for ForegroundFailure {
         if let Some(error) = &self.cleanup {
             write!(f, "; independent cleanup: {error}")?;
         }
+        if let Some(cleanup) = &self.listener_cleanup {
+            write!(f, "; endpoint cleanup: {:?}", cleanup.errors)?;
+        }
         write!(f, "; actual report: {:?}", self.report)
     }
 }
 impl Error for ForegroundFailure {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
-        self.original.as_deref().or_else(|| {
-            self.cleanup
-                .as_ref()
-                .map(|error| error as &(dyn Error + 'static))
-        })
+        self.original
+            .as_deref()
+            .or_else(|| {
+                self.cleanup
+                    .as_ref()
+                    .map(|error| error as &(dyn Error + 'static))
+            })
+            .or_else(|| {
+                self.listener_cleanup
+                    .as_ref()?
+                    .errors
+                    .first()
+                    .map(|error| error as &(dyn Error + 'static))
+            })
     }
 }
 /// Consume actual inherited/prebound listeners finished by the selected account.
@@ -228,84 +279,136 @@ impl Error for ForegroundFailure {
     clippy::too_many_arguments,
     reason = "Original config/listeners/files, embedding endpoints and exact process callbacks/source remain separate"
 )]
-pub async fn foreground_listening_with_clock(
+pub fn foreground_listening_with_clock(
     config: &Configuration,
     bound: BoundListeners,
-    files: MachineFiles,
+    files: MachineInputs,
     endpoints: &[SocketAddr],
     ready: impl FnOnce(&BoundListeners) -> io::Result<()>,
+    shutdown: impl Future<Output = io::Result<()>>,
+    observe: impl FnMut(crate::SocketEvent),
+    clock: Arc<dyn RuntimeClock>,
+) -> impl Future<Output = Result<Report, Box<dyn Error>>> {
+    foreground_listening_with_async_ready(
+        config,
+        bound,
+        files,
+        endpoints,
+        |bound| std::future::ready(ready(bound)),
+        shutdown,
+        observe,
+        clock,
+    )
+}
+/// Construct the same Host and await the caller's native readiness publication
+/// before driving it. The future may borrow the caller's original status outbox;
+/// no detached writer/task or fabricated native write completion is introduced.
+/// Construction/publication errors retain the same host and listener cleanup.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Original config/listeners/files, embedding endpoints and exact process callbacks/source remain separate"
+)]
+pub async fn foreground_listening_with_async_ready<Ready: Future<Output = io::Result<()>>>(
+    config: &Configuration,
+    mut bound: BoundListeners,
+    files: MachineInputs,
+    endpoints: &[SocketAddr],
+    ready: impl FnOnce(&BoundListeners) -> Ready,
     shutdown: impl Future<Output = io::Result<()>>,
     mut observe: impl FnMut(crate::SocketEvent),
     clock: Arc<dyn RuntimeClock>,
 ) -> Result<Report, Box<dyn Error>> {
-    verify_configured_identity(config)?;
-    let unix = unix_access(config)?;
-    let options = service_options(config, b"resolver", ShutdownMode::Immediate)?;
-    let mut backing = Store::new(Geometry::default())?;
-    let mut staging = Store::new(Geometry::default())?;
-    let core = Resolver::new(
-        backing.buffers(),
-        CoreLimits {
-            max_name_bytes: 65535,
-            max_record_bytes: 65535,
-            cname_hops: 32,
-        },
-        1,
-    )?;
-    let stage = core.make_scratch(staging.buffers())?;
-    let mut work = Workspace::new();
-    let idna = Backend::new(
-        &mut work,
-        gnunet_idna::Limits::GNUNET,
-        NativeProfile::Libunistring1_5Unicode18_0,
-    );
-    let mut host = Host::<_, 128, 271, 128>::new(
-        core,
-        stage,
-        &idna,
-        Ports::system(),
-        native_family()?,
-        Limits::default(),
-        options,
-        128,
-    )?;
+    let mut cleanup = None;
+    let mut report = None;
     let result = async {
-        host.set_runtime_clock(clock)?;
-        host.set_unix_access(unix)?;
-        host.load_machine_bytes(&files.hosts, &files.resolv)?;
-        // Literal inputs are already copied into the bounded core/stub. Do not
-        // retain a second maximum-size pair of raw files for service lifetime.
-        drop(files);
-        for address in endpoints {
-            host.add_dns_endpoint(*address)?;
-        }
-        ready(&bound)?;
-        let listeners = bound.listeners();
-        let mut drive = std::pin::pin!(host.drive(&listeners, None, &mut observe));
-        let mut shutdown = std::pin::pin!(shutdown);
-        poll_fn(|cx| {
-            if let Poll::Ready(result) = shutdown.as_mut().poll(cx) {
-                return Poll::Ready(result.map_err(|error| Box::new(error) as Box<dyn Error>));
+        verify_configured_identity(config)?;
+        let unix = unix_access(config)?;
+        let options = service_options(config, b"resolver", ShutdownMode::Immediate)?;
+        let mut backing = Store::new(Geometry::default())?;
+        let mut staging = Store::new(Geometry::default())?;
+        let core = Resolver::new(
+            backing.buffers(),
+            CoreLimits {
+                max_name_bytes: 65535,
+                max_record_bytes: 65535,
+                cname_hops: 32,
+            },
+            1,
+        )?;
+        let stage = core.make_scratch(staging.buffers())?;
+        let mut work = Workspace::new();
+        let idna = Backend::new(
+            &mut work,
+            gnunet_idna::Limits::GNUNET,
+            NativeProfile::Libunistring1_5Unicode18_0,
+        );
+        let mut host = Host::<_, 128, 271, 128>::new(
+            core,
+            stage,
+            &idna,
+            Ports::system(),
+            native_family()?,
+            Limits::default(),
+            options,
+            128,
+        )?;
+        let result = async {
+            host.set_runtime_clock(clock)?;
+            host.set_unix_access(unix)?;
+            host.load_machine_bytes(&files.hosts, &files.resolv)?;
+            if let Some(domain) = &files.search_domain {
+                host.set_search_domain(Some(domain))?;
             }
-            drive.as_mut().poll(cx).map(|result| {
-                result
-                    .map(|_| ())
-                    .map_err(|error| Box::new(error) as Box<dyn Error>)
+            // DNSSTUB prepends registrations. Reverse only the native snapshot to
+            // preserve its first-attempt order and retain original IPv6 scopes.
+            for address in files.dns_endpoints.iter().rev() {
+                host.add_dns_endpoint(*address)?;
+            }
+            // Literal inputs are already copied into the bounded core/stub. Do not
+            // retain a second maximum-size pair of raw files for service lifetime.
+            drop(files);
+            for address in endpoints {
+                host.add_dns_endpoint(*address)?;
+            }
+            ready(&bound).await?;
+            let listeners = bound.listeners();
+            let mut drive = std::pin::pin!(host.drive(&listeners, None, &mut observe));
+            let mut shutdown = std::pin::pin!(shutdown);
+            poll_fn(|cx| {
+                if let Poll::Ready(result) = shutdown.as_mut().poll(cx) {
+                    return Poll::Ready(result.map_err(|error| Box::new(error) as Box<dyn Error>));
+                }
+                drive.as_mut().poll(cx).map(|result| {
+                    result
+                        .map(|_| ())
+                        .map_err(|error| Box::new(error) as Box<dyn Error>)
+                })
             })
-        })
-        .await
+            .await
+        }
+        .await;
+        cleanup = host.shutdown(ShutdownMode::Immediate).err();
+        report = Some(host.report());
+        drop(host);
+        result
     }
     .await;
-    let cleanup = host.shutdown(ShutdownMode::Immediate).err();
-    let report = host.report();
-    drop(host);
-    drop(bound);
-    if result.is_err() || cleanup.is_some() {
+    let listener_cleanup = match bound.close() {
+        Ok(()) => None,
+        Err(errors) => Some(ListenerCleanupFailure {
+            errors,
+            remaining: bound,
+        }),
+    };
+    if result.is_err() || cleanup.is_some() || listener_cleanup.is_some() {
         return Err(Box::new(ForegroundFailure {
             original: result.err(),
             cleanup,
+            listener_cleanup,
             report,
         }));
     }
-    Ok(report)
+    report.ok_or_else(|| {
+        io::Error::other("Resolver completed without a constructed host report").into()
+    })
 }

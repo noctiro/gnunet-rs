@@ -1,14 +1,13 @@
 //! Fenced TCP process epoch and persistent signed-time frontier. This private
 //! Rust format is not a C database and never changes any official wire field.
+mod fence;
+mod format;
+mod staging;
+mod storage;
+use format::{Binding, Persisted};
 use gnunet_crypto::EddsaPublicKey;
 use gnunet_tcp_replay_host::{CatalogLease, Floor};
-use std::{
-    fs::{self, File, OpenOptions},
-    io::{self, Read, Write},
-    os::unix::fs::{MetadataExt, OpenOptionsExt},
-    path::{Path, PathBuf},
-    sync::Arc,
-};
+use std::{fs, io, path::Path, rc::Rc, sync::Arc};
 /// Actual native operation that failed.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Stage {
@@ -44,10 +43,16 @@ pub struct Failure {
     pub outcome: Outcome,
     /// Actual OS/resource cause.
     pub cause: io::Error,
+    /// Independent original stage-cleanup failure, if one occurred.
+    pub cleanup: Option<io::Error>,
 }
 impl std::fmt::Display for Failure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}/{:?}: {}", self.stage, self.outcome, self.cause)
+        write!(f, "{:?}/{:?}: {}", self.stage, self.outcome, self.cause)?;
+        if let Some(cleanup) = &self.cleanup {
+            write!(f, "; cleanup: {cleanup}")?;
+        }
+        Ok(())
     }
 }
 impl std::error::Error for Failure {
@@ -60,6 +65,7 @@ fn failure(stage: Stage, outcome: Outcome, cause: io::Error) -> Failure {
         stage,
         outcome,
         cause,
+        cleanup: None,
     }
 }
 /// Exact original persisted state, including a missing-file distinction at open.
@@ -70,43 +76,6 @@ pub struct State {
     /// Highest reserved signed timestamp, whether used or abandoned. Replay floors
     /// and their minimum durable generation are independent private V2 fields.
     pub reserved: u64,
-}
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct Binding {
-    id: [u8; 32],
-    local: EddsaPublicKey,
-    minimum: u64,
-}
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct Persisted {
-    state: State,
-    binding: Binding,
-}
-impl Persisted {
-    fn bytes(self) -> [u8; 89] {
-        gnunet_tcp_replay_host::pairing::FrontierImage {
-            dirty: self.state.dirty,
-            reserved: self.state.reserved,
-            ledger: self.binding.id,
-            local: self.binding.local,
-            minimum: self.binding.minimum,
-        }
-        .encode()
-    }
-    fn decode(bytes: [u8; 89]) -> io::Result<Self> {
-        let value = gnunet_tcp_replay_host::pairing::FrontierImage::decode(bytes)?;
-        Ok(Self {
-            state: State {
-                dirty: value.dirty,
-                reserved: value.reserved,
-            },
-            binding: Binding {
-                id: value.ledger,
-                local: value.local,
-                minimum: value.minimum,
-            },
-        })
-    }
 }
 /// Unique original epoch capability. Dropping it cannot make a dirty epoch clean.
 #[derive(Debug)]
@@ -168,142 +137,16 @@ impl ReplayPermit {
 /// persistent state ownership, never a PID-file lock. Dirty recovery requires
 /// the actual same initialized replay ledger, not remote backend quiescence.
 pub struct Store {
-    path: PathBuf,
-    parent: PathBuf,
-    guard_path: PathBuf,
-    guard: File,
-    guard_identity: (u64, u64),
-    parent_identity: (u64, u64),
+    owner: Rc<fence::Fence>,
+    current: Option<storage::Snapshot>,
+    cleanup: Option<staging::Candidate>,
     brand: Arc<()>,
     serial: u64,
     active: Option<(u64, EddsaPublicKey)>,
-    loaded: Option<Persisted>,
-    unknown: Option<Persisted>,
+    unknown: Option<storage::Pending>,
     catalog: Option<CatalogLease>,
 }
 impl Store {
-    /// Lock and read only the V2/89byte frontier. V1 and unknown formats are
-    /// explicitly refused; no empty replay ledger can migrate an old dirty epoch.
-    pub fn open(path: PathBuf) -> Result<Self, Failure> {
-        gnunet_service_runtime::private_parents(&path)
-            .map_err(|e| failure(Stage::Fence, Outcome::NotCommitted, e))?;
-        let parent = path
-            .parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .unwrap_or(Path::new("."))
-            .to_owned();
-        let mut name = path
-            .file_name()
-            .ok_or_else(|| {
-                failure(
-                    Stage::Fence,
-                    Outcome::NotCommitted,
-                    io::Error::other("missing frontier name"),
-                )
-            })?
-            .to_os_string();
-        name.push(".tcp-lock");
-        let guard_path = parent.join(name);
-        let guard = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(&guard_path)
-            .map_err(|e| failure(Stage::Fence, Outcome::NotCommitted, e))?;
-        guard
-            .try_lock()
-            .map_err(|e| failure(Stage::Fence, Outcome::NotCommitted, e.into()))?;
-        let meta = guard
-            .metadata()
-            .map_err(|e| failure(Stage::Fence, Outcome::NotCommitted, e))?;
-        let dir =
-            fs::metadata(&parent).map_err(|e| failure(Stage::Fence, Outcome::NotCommitted, e))?;
-        if !meta.is_file() || !dir.is_dir() {
-            return Err(failure(
-                Stage::Fence,
-                Outcome::NotCommitted,
-                io::Error::other("invalid frontier namespace"),
-            ));
-        }
-        let mut store = Self {
-            path,
-            parent,
-            guard_path,
-            guard,
-            guard_identity: (meta.dev(), meta.ino()),
-            parent_identity: (dir.dev(), dir.ino()),
-            brand: Arc::new(()),
-            serial: 0,
-            active: None,
-            loaded: None,
-            unknown: None,
-            catalog: None,
-        };
-        store
-            .directory_sync()
-            .map_err(|e| failure(Stage::DirectorySync, Outcome::Unknown, e))?;
-        store.loaded = store.read()?;
-        Ok(store)
-    }
-    fn fence(&self) -> Result<(), Failure> {
-        let actual = fs::symlink_metadata(&self.guard_path)
-            .map_err(|e| failure(Stage::Fence, Outcome::Unknown, e))?;
-        let held = self
-            .guard
-            .metadata()
-            .map_err(|e| failure(Stage::Fence, Outcome::Unknown, e))?;
-        let dir =
-            fs::metadata(&self.parent).map_err(|e| failure(Stage::Fence, Outcome::Unknown, e))?;
-        if !actual.is_file()
-            || (actual.dev(), actual.ino()) != self.guard_identity
-            || (held.dev(), held.ino()) != self.guard_identity
-            || !dir.is_dir()
-            || (dir.dev(), dir.ino()) != self.parent_identity
-        {
-            return Err(failure(
-                Stage::Fence,
-                Outcome::Unknown,
-                io::Error::other("original TCP frontier fence/namespace changed"),
-            ));
-        }
-        Ok(())
-    }
-    fn directory_sync(&self) -> io::Result<()> {
-        File::open(&self.parent)?.sync_all()
-    }
-    fn read(&self) -> Result<Option<Persisted>, Failure> {
-        self.fence()?;
-        let mut file = match OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(&self.path)
-        {
-            Ok(f) => f,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
-            Err(e) => return Err(failure(Stage::Read, Outcome::NotCommitted, e)),
-        };
-        let meta = file
-            .metadata()
-            .map_err(|e| failure(Stage::Read, Outcome::NotCommitted, e))?;
-        if !meta.is_file() || meta.len() != 89 {
-            return Err(failure(
-                Stage::Read,
-                Outcome::NotCommitted,
-                io::Error::other(
-                    "frontier is not exact regular V2/89byte state; legacy V1 is not recoverable",
-                ),
-            ));
-        }
-        let mut bytes = [0; 89];
-        file.read_exact(&mut bytes)
-            .map_err(|e| failure(Stage::Read, Outcome::NotCommitted, e))?;
-        Persisted::decode(bytes)
-            .map(Some)
-            .map_err(|e| failure(Stage::Read, Outcome::NotCommitted, e))
-    }
     /// Actual loaded state. A missing file remains None, distinct from clean zero.
     pub fn loaded(&self) -> Result<Option<State>, Failure> {
         self.fence()?;
@@ -333,7 +176,7 @@ impl Store {
                     )
                 })?;
         }
-        Ok(self.loaded.map(|value| value.state))
+        Ok(self.committed().map(|value| value.state))
     }
     /// Persist the original local/public LedgerId bootstrap intent before any
     /// replay ledger directory/marker creation. min0 can never begin an epoch,
@@ -352,7 +195,7 @@ impl Store {
                 io::Error::other("original frontier is active or uncertain"),
             ));
         }
-        if let Some(actual) = self.loaded {
+        if let Some(actual) = self.committed() {
             if actual.binding.local != peer {
                 return Err(failure(
                     Stage::BackendQuarantine,
@@ -406,7 +249,7 @@ impl Store {
     /// STORE. Existing V2 binding is never replaced, even after clean shutdown.
     pub fn attach_catalog(&mut self, catalog: CatalogLease) -> Result<(), Failure> {
         self.fence()?;
-        if self.loaded.is_none() {
+        if self.committed().is_none() {
             return Err(failure(
                 Stage::BackendQuarantine,
                 Outcome::Unknown,
@@ -427,7 +270,7 @@ impl Store {
                 io::Error::other(e),
             )
         })?;
-        if let Some(actual) = self.loaded
+        if let Some(actual) = self.committed()
             && (actual.binding.id != *catalog.identity().as_bytes()
                 || actual.binding.local != catalog.local()
                 || catalog.generation() < actual.binding.minimum)
@@ -439,7 +282,7 @@ impl Store {
             ));
         }
         catalog
-            .claim_frontier(&self.brand, self.loaded.is_none())
+            .claim_frontier(&self.brand, self.committed().is_none())
             .map_err(|error| {
                 failure(
                     Stage::BackendQuarantine,
@@ -447,7 +290,7 @@ impl Store {
                     io::Error::other(error),
                 )
             })?;
-        let promote = self.loaded.filter(|value| value.binding.minimum == 0);
+        let promote = self.committed().filter(|value| value.binding.minimum == 0);
         if let Some(mut actual) = promote {
             if actual.state.dirty
                 || actual.state.reserved != 0
@@ -473,7 +316,7 @@ impl Store {
     /// missing/replaced/older/unknown catalogs and changed local identities fail.
     pub fn begin(&mut self, peer: EddsaPublicKey) -> Result<Epoch, Failure> {
         self.fence()?;
-        if self.unknown.is_some() || self.active.is_some() || self.loaded.is_none() {
+        if self.unknown.is_some() || self.active.is_some() || self.committed().is_none() {
             return Err(failure(
                 Stage::BackendQuarantine,
                 Outcome::Unknown,
@@ -494,7 +337,7 @@ impl Store {
                 io::Error::other(e),
             )
         })?;
-        let actual = self.loaded.ok_or_else(|| {
+        let actual = self.committed().ok_or_else(|| {
             failure(
                 Stage::BackendQuarantine,
                 Outcome::Unknown,
@@ -576,7 +419,7 @@ impl Store {
                     io::Error::other("floor belongs to another original ledger/local identity"),
                 ));
             }
-            let mut actual = self.loaded.ok_or_else(|| {
+            let mut actual = self.committed().ok_or_else(|| {
                 failure(
                     Stage::BackendQuarantine,
                     Outcome::Unknown,
@@ -660,7 +503,7 @@ impl Store {
                 io::Error::other("empty frontier reservation"),
             ));
         }
-        let floor = self.loaded.map_or(0, |s| s.state.reserved);
+        let floor = self.committed().map_or(0, |s| s.state.reserved);
         let start = utc.max(floor.checked_add(1).ok_or_else(|| {
             failure(
                 Stage::Reservation,
@@ -684,28 +527,6 @@ impl Store {
         )?;
         Ok((start, end))
     }
-    fn settle(&mut self) -> Result<(), Failure> {
-        let Some(expected) = self.unknown else {
-            return self.fence();
-        };
-        self.fence()?;
-        self.directory_sync()
-            .map_err(|e| failure(Stage::Recovery, Outcome::Unknown, e))?;
-        let actual = self.read().map_err(|mut e| {
-            e.outcome = Outcome::Unknown;
-            e
-        })?;
-        if actual != Some(expected) {
-            return Err(failure(
-                Stage::Recovery,
-                Outcome::Unknown,
-                io::Error::other("original uncertain frontier readback differs"),
-            ));
-        }
-        self.loaded = Some(expected);
-        self.unknown = None;
-        Ok(())
-    }
     /// Mark only this original fully retired pool clean. On any error the caller
     /// receives the same proof; a later actor cannot silently substitute for it.
     pub fn finish(&mut self, proof: Quiescent) -> Result<(), FinishRejected> {
@@ -726,9 +547,9 @@ impl Store {
         }
         let state = State {
             dirty: false,
-            reserved: self.loaded.map_or(0, |s| s.state.reserved),
+            reserved: self.committed().map_or(0, |s| s.state.reserved),
         };
-        if self.loaded.map(|value| value.state) != Some(state)
+        if self.committed().map(|value| value.state) != Some(state)
             && let Err(error) = self.update(state, || {})
         {
             return Err(FinishRejected { proof, error });
@@ -738,7 +559,7 @@ impl Store {
     }
     fn update(&mut self, state: State, after: impl FnOnce()) -> Result<(), Failure> {
         let binding = self
-            .loaded
+            .committed()
             .ok_or_else(|| {
                 failure(
                     Stage::BackendQuarantine,
@@ -748,77 +569,5 @@ impl Store {
             })?
             .binding;
         self.update_bound(Persisted { state, binding }, after)
-    }
-    fn update_bound(&mut self, state: Persisted, after: impl FnOnce()) -> Result<(), Failure> {
-        self.fence()?;
-        if self.unknown.is_some() {
-            return Err(failure(
-                Stage::Recovery,
-                Outcome::Unknown,
-                io::Error::other("original frontier commit unresolved"),
-            ));
-        }
-        let mut nonce = [0; 16];
-        getrandom::fill(&mut nonce)
-            .map_err(|e| failure(Stage::Write, Outcome::NotCommitted, io::Error::other(e)))?;
-        let label: String = nonce.iter().map(|b| format!("{b:02x}")).collect();
-        let path = self.parent.join(format!(".tcp-frontier-{label}.tmp"));
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(&path)
-            .map_err(|e| failure(Stage::Write, Outcome::NotCommitted, e))?;
-        let meta = file
-            .metadata()
-            .map_err(|e| failure(Stage::Write, Outcome::NotCommitted, e))?;
-        let mut temporary = Temporary {
-            path,
-            identity: (meta.dev(), meta.ino()),
-            renamed: false,
-        };
-        file.write_all(&state.bytes())
-            .map_err(|e| failure(Stage::Write, Outcome::NotCommitted, e))?;
-        file.sync_all()
-            .map_err(|e| failure(Stage::Write, Outcome::NotCommitted, e))?;
-        self.fence()?;
-        fs::rename(&temporary.path, &self.path)
-            .map_err(|e| failure(Stage::Write, Outcome::NotCommitted, e))?;
-        temporary.renamed = true;
-        self.unknown = Some(state);
-        after();
-        self.directory_sync()
-            .map_err(|e| failure(Stage::DirectorySync, Outcome::Unknown, e))?;
-        let actual = self.read().map_err(|mut e| {
-            e.outcome = Outcome::Unknown;
-            e
-        })?;
-        if actual != Some(state) {
-            return Err(failure(
-                Stage::Recovery,
-                Outcome::Unknown,
-                io::Error::other("original frontier commit readback differs"),
-            ));
-        }
-        self.loaded = Some(state);
-        self.unknown = None;
-        Ok(())
-    }
-}
-struct Temporary {
-    path: PathBuf,
-    identity: (u64, u64),
-    renamed: bool,
-}
-impl Drop for Temporary {
-    fn drop(&mut self) {
-        if !self.renamed
-            && let Ok(meta) = fs::symlink_metadata(&self.path)
-            && meta.is_file()
-            && (meta.dev(), meta.ino()) == self.identity
-        {
-            let _removed = fs::remove_file(&self.path);
-        }
     }
 }

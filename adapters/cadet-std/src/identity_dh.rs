@@ -22,6 +22,7 @@ pub struct Connecting<'pils, const O: usize = 32> {
     native: Client<'pils, O>,
     local: [u8; 32],
     fault: bool,
+    stopped: bool,
     mismatch: Option<Identity<'pils>>,
 }
 impl<'pils, const O: usize> Connecting<'pils, O> {
@@ -40,6 +41,7 @@ impl<'pils, const O: usize> Connecting<'pils, O> {
             native,
             local,
             fault: false,
+            stopped: false,
             mismatch: None,
         })
     }
@@ -61,6 +63,9 @@ impl<'pils, const O: usize> Connecting<'pils, O> {
         cx: &mut Context<'_>,
         deadline: Option<Instant>,
     ) -> Poll<Result<Progress<'pils, O>, Error>> {
+        if self.stopped {
+            return Poll::Ready(Err(ProtocolError::Closed.into()));
+        }
         if self.fault {
             return Poll::Ready(Err(ProtocolError::Authentication.into()));
         }
@@ -84,7 +89,16 @@ impl<'pils, const O: usize> Connecting<'pils, O> {
     }
     /// Explicitly retry only this real client's refused source-domain ports.
     pub fn recover_ports(&mut self) -> Result<(), Error> {
+        if self.stopped {
+            return Err(ProtocolError::Closed.into());
+        }
         self.native.recover_ports()
+    }
+    /// Permanently stop this original startup socket before waiting for a new
+    /// observer identity. No DH job has been admitted by a Connecting owner.
+    pub fn close(&mut self) -> [Option<OperationId<'pils>>; O] {
+        self.stopped = true;
+        self.native.close()
     }
     /// Bind only the actual current verified identity and original typed MQ.
     /// Refusal returns the same startup owner; no native source is discarded.
@@ -100,6 +114,9 @@ impl<'pils, const O: usize> Connecting<'pils, O> {
         timebase: Timebase,
     ) -> Result<Port<'id, 'pils, 'slots, O>, Rejected<Self>> {
         let checked = (|| {
+            if self.stopped {
+                return Err(ProtocolError::Closed);
+            }
             if !Arc::ptr_eq(&self.native.clock(), &timebase.source()) {
                 return Err(ProtocolError::StaleGeneration);
             }

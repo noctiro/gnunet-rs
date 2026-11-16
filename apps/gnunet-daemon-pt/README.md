@@ -1,7 +1,45 @@
 # gnunet-daemon-pt
 
-shared PROGRAM foreground for [pt] TUNNEL_IPV4/TUNNEL_IPV6 through original DNS interception and VPN allocations, and TUNNEL_DNS through DHT exit discovery and CADET DNS channels. Default flags are all NO, matching official pt.conf; no positional arguments or listener exist. Install pt.conf into the normal shared config directory and place the binary in libexec.
+Translate intercepted DNS answers through VPN allocations, or tunnel DNS queries
+to DHT-discovered exits over CADET. The shared PROGRAM foreground supports Linux,
+macOS, Windows and FreeBSD. PT creates no listener or device; DNS interception and
+packet forwarding are supplied by the DNS and VPN services.
 
-TUNNEL_DNS uses the single-query discovery::Native DHT port on the same process Resolver/clock, with original operation identity/deadlines, bounded raw public blocks, signed exit validation and physical cancellation. The generic gnunet-pt-host Owner implements the CADET/discovery/request lifetime machinery; it supplies no DNS/GNS/static-peer substitute. Disabled functions create no unused endpoint selectors. Application packets and TUN/helper lifetimes belong to the VPN service. See adapter README for TTL0, AD/RRSIG, original native bounds, shared statistics and honest remaining acceptance/platform scope.
+## Configuration
 
-Runtime/provider/Resolver/identity and cleanup diagnostics use the PROGRAM-selected `-L` level and `-l` file through the shared Reporter. First output failure stops the original task through its bounded shutdown and remains independent of the business result. Early parent notices are deferred until logger selection, and help/version success is distinguished from logging/configuration errors. The default PROGRAM accepts TUNNEL_DNS and supplies the concrete production DHT binding, original PRE_RESOLUTION DNS source and CADET owner when it is enabled. No native or official interoperability execution is implied by compilation.
+Install [pt.conf](pt.conf) in the shared configuration directory and the binary
+in libexec. The official switches default to NO:
+
+```ini
+[pt]
+TUNNEL_IPV4 = YES
+TUNNEL_IPV6 = YES
+TUNNEL_DNS = NO
+```
+
+Enabled address families select DNS and VPN clients. TUNNEL_DNS selects PRE DNS,
+DHT discovery and CADET. Disabled functions create no endpoint selectors; with
+all switches disabled the daemon exits normally. `[pt-rust]` supplies finite
+resource and timeout settings described by the [host](../../adapters/pt-std/).
+
+```sh
+gnunet-daemon-pt -c gnunet.conf -L INFO
+```
+
+No positional arguments are accepted. `-L` selects the diagnostic level and `-l`
+selects a log file.
+
+## Startup and shutdown
+
+Client startup captures original inheritance before native initialization and
+refuses service-listener activation. Unix applies configured process privileges;
+Windows verifies the configured identity against its process token. The shared
+stop subscription handles native termination and parent-control bytes. PT has
+NOARMBIND=YES and sends no listener READY.
+
+The foreground owns one PROGRAM Resolver and clock. On stop or failure it
+retires DNS/VPN/CADET/DHT work, drains STATISTICS within its original bound and
+disconnects the Resolver, preserving independent cleanup and diagnostic errors.
+Protocol and lifecycle contracts are documented in the
+[host README](../../adapters/pt-std/README.md); native runtime qualification remains
+in [implementation status](../../IMPLEMENTATION_STATUS.md).

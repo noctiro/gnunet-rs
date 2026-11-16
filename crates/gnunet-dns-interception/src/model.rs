@@ -100,6 +100,24 @@ fn actual_phase_results_original_sources_and_local_write_boundaries() -> Result<
     let packet = gnunet_vpn::packet::Packet::parse(raw)?;
     packet.validate_checksums()?;
     assert_eq!(packet.ports()?, (53, 5555));
+    engine.reject_prepared(effect)?;
+    let mut native = [0; 128];
+    assert_eq!(
+        engine.prepare_packet(request, &mut native[..1]),
+        Err(Error::Capacity)
+    );
+    let (native_effect, native_len) = engine.prepare_packet(request, &mut native)?;
+    assert_eq!(
+        &native[..native_len],
+        raw,
+        "native device output must retain the helper's exact IP packet"
+    );
+    assert_eq!(
+        engine.queued(effect),
+        Err(Error::StaleGeneration),
+        "rejected helper attempt must not authorize native output"
+    );
+    let effect = native_effect;
     engine.queued(effect)?;
     assert_eq!(engine.retire(request), Err(Error::WouldBlock));
     engine.exposed(effect)?;
@@ -130,5 +148,81 @@ fn actual_phase_results_original_sources_and_local_write_boundaries() -> Result<
         engine.intercept(old, &ip[..n], 2, 1000),
         Err(Error::StaleGeneration)
     );
+    Ok(())
+}
+
+#[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "The ownership regression asserts that retiring one real packet debt cannot retire or authorize a different effect"
+)]
+fn packet_retirement_isolated_from_source_and_other_requests() -> Result<(), Error> {
+    let domain = Instance::new();
+    let mut engine = Engine::new(
+        &domain,
+        Limits {
+            clients: 1,
+            requests: 2,
+            bytes: 4096,
+            payload_bytes: 512,
+        },
+    )?;
+    let source = engine.attach_source()?;
+    let query = [0x12, 0x34, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    let mut answer = query;
+    answer[2] |= 0x80;
+    let mut udp = [0; 8];
+    udp[..2].copy_from_slice(&5555u16.to_be_bytes());
+    udp[2..4].copy_from_slice(&53u16.to_be_bytes());
+    let mut ip = [0; 128];
+    let len = gnunet_vpn::packet::build_parts(
+        Address::V4([192, 0, 2, 1]),
+        Address::V4([192, 0, 2, 53]),
+        17,
+        &udp,
+        &query,
+        &mut ip,
+    )?;
+    let first = engine.intercept(source, &ip[..len], 1, 1000)?;
+    let second = engine.intercept(source, &ip[..len], 1, 2000)?;
+    assert_eq!(engine.next_work(first)?, Work::Resolve(first));
+    let job = engine.resolving(first)?;
+    engine.resolved(job, &answer)?;
+    assert_eq!(
+        engine.next_work(first)?,
+        Work::Helper {
+            request: first,
+            source
+        }
+    );
+    let mut out = [0; 128];
+    let (effect, _) = engine.prepare_packet(first, &mut out)?;
+    assert_eq!(engine.packet_stopped(effect), Err(Error::Conflict));
+    engine.queued(effect)?;
+    engine.exposed(effect)?;
+    engine.abort(first)?;
+    assert_eq!(engine.retire(first), Err(Error::WouldBlock));
+    engine.packet_stopped(effect)?;
+    assert_eq!(engine.next_work(first)?, Work::Retire(first));
+    engine.retire(first)?;
+    assert_eq!(engine.next_work(second)?, Work::Resolve(second));
+    let replacement = engine.intercept(source, &ip[..len], 2, 3000)?;
+    assert_eq!(engine.packet_stopped(effect), Err(Error::StaleGeneration));
+    assert_eq!(engine.next_work(replacement)?, Work::Resolve(replacement));
+    let job = engine.resolving(second)?;
+    engine.resolved(job, &answer)?;
+    assert_eq!(
+        engine.next_work(second)?,
+        Work::Helper {
+            request: second,
+            source
+        }
+    );
+    let (effect, _) = engine.prepare_packet(second, &mut out)?;
+    engine.queued(effect)?;
+    engine.written(effect)?;
+    engine.retire(second)?;
+    engine.abort(replacement)?;
+    engine.retire(replacement)?;
     Ok(())
 }

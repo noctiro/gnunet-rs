@@ -120,6 +120,7 @@ where
     } = observers;
     let listener_ports = listeners.ports();
     let mut cursor = 0;
+    continuity.guard_io(source.as_ref())?;
     let keys = pils.with_active_seed(|seed| KeyRing::from_seed(*seed))?;
     if keys.public() != identity.peer() {
         return Err(Error::Authentication.into());
@@ -282,12 +283,13 @@ where
             if !matches!(phase, Phase::Stopping) {
                 let checked = poll_fn(|cx| Poll::Ready(continuity.guard(cx))).await
                     .and_then(|()| {
+                        if continuity.paused() { return Ok(None); }
                         let next = pils.identity().ok_or(Error::StaleGeneration)?;
                         continuity.verify(next, clock.source().as_ref())?;
-                        Ok(next)
+                        Ok(Some(next))
                     });
                 match checked {
-                    Ok(next) if phase.active() && next.peer() != identity.peer() => {
+                    Ok(Some(next)) if phase.active() && next.peer() != identity.peer() => {
                         match continuity.changing(next, clock.source()) {
                             Ok(()) => {
                                 diagnose(Diagnostic::Identity(IdentityEvent::Retiring {
@@ -408,7 +410,7 @@ where
                 Timeout,
             }
             let event = {
-                let mut driving = std::pin::pin!(pils.drive(None));
+                let process_clock=clock.source();
                 let mut resolving = std::pin::pin!(resolver.drive_waiting(None, &mut *observe_resolver));
                 poll_fn(|cx| {
                     let statistics_activity=statistics.as_mut().is_some_and(|owner|owner.guard(cx,failed() || (force && !phase.replacing())));
@@ -456,10 +458,10 @@ where
                         match part {
                             0 => {
                                 if !pils_live { continue; }
-                                if let Poll::Ready(r) = driving.as_mut().poll(cx) {
+                                if let Poll::Ready(r) = continuity.poll_source(pils,process_clock.as_ref(),cx) {
                                     cursor = 1;
                                     return Poll::Ready(
-                                        r.map(Running::Pils).map_err(|e| Box::new(e) as Failure),
+                                        r.map(Running::Pils),
                                     );
                                 }
                             }
@@ -662,7 +664,23 @@ where
                     if let pils::Progress::Inbound(pc::Inbound::Identity { .. }) = &original {
                         report.identity_updates = report.identity_updates.saturating_add(1);
                     }
-                    if let Err(error) = identity::observe(original, observe_pils) {
+                    if identity::recoverable(&original) {
+                        // Stop original peer IO without new clock/provider work.
+                        // The same Pool debts, address owner and replay worker
+                        // must still finish before a successor is polled.
+                        phase=Phase::Replacing;force=true;pils_live=false;
+                        if !pool_retired && let Some(pool)=publication.pool_mut() {
+                            if let Some(last)=clock.last_time() {
+                                if let Err(error)=pool.retire_epoch(last) {
+                                    result=Err(independent(result,error.into()));phase=Phase::Stopping;
+                                }
+                                pool_retired=true;pool_closing=true;
+                            } else {
+                                result=Err(independent(result,Error::NotReady.into()));phase=Phase::Stopping;
+                            }
+                        }
+                    }
+                    if let Err(error) = continuity.observe(original, observe_pils,clock.source()) {
                         result = Err(independent(result, error)); phase = Phase::Stopping; force = true;
                     }
                 }

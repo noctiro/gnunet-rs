@@ -60,7 +60,7 @@ pub(crate) fn decode(
     }
     let mut records = Vec::new();
     records
-        .try_reserve_exact(maximum)
+        .try_reserve_exact(count)
         .map_err(|_| Error::Capacity)?;
     for row in bytes[HEADER..].as_chunks::<ROW>().0 {
         if row[33..40] != [0; 7] {

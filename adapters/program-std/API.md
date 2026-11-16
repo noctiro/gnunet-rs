@@ -32,6 +32,14 @@ timer reserves a fallible separate subscription. Arc clones share only the time
 domain. Registration-time already-due finite delays stay ready across clock
 rollback; MAX remains never. Real drive budgets remain physical Tokio time.
 
+`runtime::run_tasks_with_speedup` shares that ticket/stop owner for entries that
+already own option parsing and configuration. It transfers the same configuration
+to scoped initialization after speedup admission, without acquiring a Resolver or
+repeating locale setup. `run_tasks` and `run_tasks_fallible` remain explicit runs
+without automatic speedup. `Delay::until` and `Delay::after` expose the same
+clock-subscribed logical timers independently of a task scope; pending timers
+rearm after clock changes, while an already-ready deadline stays admitted.
+
 ## GETOPT
 
 Owned option tables retain raw argument bytes, source GNU ordering/permutation,
@@ -43,6 +51,12 @@ undefined malformed relative/base32/NULL-format paths are not executed by any
 normal oracle and receive no equivalence credit; Rust typed safe errors remain.
 
 ## Logging and native capability
+
+`Reporter::message_translated` defers catalog lookup and typed formatting until
+the selected Logger admits the callsite. Backend/format errors use the same
+permanent failure latch and wake the original owner. Taking the first error
+never resumes output; filtered messages perform no catalog operation. Nested
+formatting retains the first failure even if the outer callback later fails.
 
 Logger owns the parsed-once policy, static callsite caches, skip/debug/bulk/scope,
 custom callbacks, filenames/open files and lazy typed messages. `enabled`, Policy

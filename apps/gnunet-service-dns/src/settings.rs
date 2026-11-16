@@ -1,7 +1,9 @@
 //! Official DNS/helper keys and explicit bounded Rust resource policy.
 use crate::{Failure, statistics};
 use gnunet_config::Configuration;
-use gnunet_dns_service_host::{GatewayLimits, HelperOptions, Limits, core};
+#[cfg(unix)]
+use gnunet_dns_service_host::HelperOptions;
+use gnunet_dns_service_host::{GatewayLimits, Limits, core};
 use gnunet_service_runtime::{
     credentials::UnixAccess,
     service::{ServiceOptions, ShutdownMode},
@@ -53,7 +55,7 @@ pub(super) struct Settings {
     pub core: core::Limits,
     pub native: Limits,
     pub gateway: GatewayLimits,
-    pub helper: HelperOptions,
+    pub packets: crate::packet_source::Settings,
     pub exit: IpAddr,
     pub options: ServiceOptions,
     pub unix: UnixAccess,
@@ -112,7 +114,17 @@ impl Settings {
         {
             return Err("DNS_EXIT must be a numeric usable resolver distinct from interception TUN addresses".into());
         }
-        let interface = text(c, b"IFNAME", "gnunet-dns")?.to_owned();
+        let interface = text(
+            c,
+            b"IFNAME",
+            if cfg!(target_os = "macos") {
+                "utun"
+            } else {
+                "gnunet-dns"
+            },
+        )?
+        .to_owned();
+        #[cfg(unix)]
         if interface.is_empty()
             || interface.len() >= 16
             || !interface
@@ -121,13 +133,32 @@ impl Settings {
         {
             return Err("invalid DNS IFNAME".into());
         }
+        #[cfg(windows)]
+        if interface.is_empty()
+            || interface.encode_utf16().count() > 128
+            || interface.contains('\0')
+        {
+            return Err("invalid Windows DNS IFNAME".into());
+        }
+        #[cfg(unix)]
         let binary = if c.get(LOCAL, b"HELPER_BINARY").is_some() {
             c.get_filename(LOCAL, b"HELPER_BINARY", &gnunet_config::ProcessEnvironment)?
         } else {
-            std::env::current_exe()?.with_file_name("gnunet-helper-dns")
+            std::env::current_exe()?.with_file_name(if cfg!(windows) {
+                "gnunet-helper-dns.exe"
+            } else {
+                "gnunet-helper-dns"
+            })
         };
+        #[cfg(unix)]
         if !binary.is_absolute() {
             return Err("DNS Rust helper path must be absolute".into());
+        }
+        #[cfg(windows)]
+        for key in [b"UNIX_MATCH_UID".as_slice(), b"UNIX_MATCH_GID".as_slice()] {
+            if c.get(b"dns", key).is_some() && yes(c, key, false)? {
+                return Err("Windows DNS uses native endpoint ACLs; Unix UID/GID peer matching is unavailable".into());
+            }
         }
         let grace = duration(c, b"SHUTDOWN_GRACE", Duration::from_secs(60))?;
         Ok(Self {
@@ -139,7 +170,8 @@ impl Settings {
             },
             native,
             gateway,
-            helper: HelperOptions {
+            #[cfg(unix)]
+            packets: crate::packet_source::Settings::Helper(HelperOptions {
                 program: binary,
                 interface,
                 ipv6,
@@ -151,12 +183,26 @@ impl Settings {
                 io_slice_bytes: slice,
                 input_lifetime: duration(c, b"HELPER_INPUT_LIFETIME", Duration::from_secs(10))?,
                 stop_grace: grace,
-            },
+            }),
+            #[cfg(windows)]
+            packets: crate::packet_source::Settings::Windows(
+                crate::packet_source::windows::Settings::read(
+                    c,
+                    crate::packet_source::windows::Addresses {
+                        interface,
+                        ipv4,
+                        mask,
+                        ipv6,
+                        prefix,
+                    },
+                    yes(c, b"SKIP_ROUTING_SETUP", false)?,
+                )?,
+            ),
             exit,
             options: service_options(c, b"dns", ShutdownMode::Immediate)?,
             unix: UnixAccess {
-                match_uid: yes(c, b"UNIX_MATCH_UID", true)?,
-                match_gid: yes(c, b"UNIX_MATCH_GID", true)?,
+                match_uid: yes(c, b"UNIX_MATCH_UID", cfg!(unix))?,
+                match_gid: yes(c, b"UNIX_MATCH_GID", cfg!(unix))?,
             },
             resolver: gnunet_resolver_broker::Limits {
                 max_frame_bytes: 65535,

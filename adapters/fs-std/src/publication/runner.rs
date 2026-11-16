@@ -28,6 +28,7 @@ struct Work {
     wanted: Option<StopReason>,
     graph_verified: bool,
     graph_newly: bool,
+    native_deadline: Option<tokio::time::Instant>,
 }
 impl Work {
     fn progress(&self, store: &Store, state: &model::State) -> Progress {
@@ -104,7 +105,19 @@ impl Run<'_> {
         if let Some(reason) = work.wanted {
             return Ok(Some(reason));
         }
+        if work
+            .native_deadline
+            .is_some_and(|hard| tokio::time::Instant::now() >= hard)
+        {
+            return self.request(work, StopReason::Deadline).map(Some);
+        }
         let now = clock.sample()?.now;
+        if work
+            .native_deadline
+            .is_some_and(|hard| tokio::time::Instant::now() >= hard)
+        {
+            return self.request(work, StopReason::Deadline).map(Some);
+        }
         if last.is_some_and(|old| now < old) {
             return Err(ProtocolError::TimeUncertain.into());
         }
@@ -139,6 +152,7 @@ impl Run<'_> {
             wanted: None,
             graph_verified: false,
             graph_newly: false,
+            native_deadline: None,
         };
         let mut verified = None;
         let mut last_native = None;
@@ -149,12 +163,22 @@ impl Run<'_> {
         let mut last = None;
         let clock = source.clock();
         let mut result:Result<StopReason,Abort>=async {
+            let mut time=match TimeLimit::new(clock.clone(),deadline,None) {
+                Ok(time)=>time,
+                Err(network::Error::Deadline{..})=>return self.request(&mut work,StopReason::Deadline).map_err(Abort::from),
+                Err(error)=>return Err(Cause::Transfer(error).into()),
+            };
+            work.native_deadline=time.native_deadline();
             if let Some(reason)=self.check(&mut work,clock.as_ref(),deadline,&mut last,&mut control)?{return Ok(reason);}
             let mut repo=Repository::open_child(self.store.directory(),OsStr::new("objects")).map_err(plan::Error::Host)?;
             // Local verification may cooperatively stop before there is a native
             // owner. Its decision is journaled before any later native effect.
             let proof=self.state.manifest.plan.verify(&mut repo,buffers,self.state.manifest.limits,|progress|{
                 work.verification=progress;
+                if work.native_deadline.is_some_and(|hard| tokio::time::Instant::now() >= hard) {
+                    work.wanted=Some(StopReason::Deadline);
+                    return crate::Control::Cancel;
+                }
                 let decision=control(work.progress(self.store,self.state));
                 match decision {Control::Continue=>crate::Control::Continue,Control::Pause=>{work.wanted=Some(StopReason::CallerPause);crate::Control::Cancel},Control::Cancel=>{work.wanted=Some(StopReason::Cancelled);crate::Control::Cancel}}
             });
@@ -173,7 +197,6 @@ impl Run<'_> {
                 let original=self.state.manifest.plan.index_sources().get(index).ok_or(ProtocolError::Stale)?.clone();
                 let guard=plan::indexed::SourceGuard::open(&original)?;
                 let fs=fs_source.as_ref().ok_or(Cause::State("indexed publication has no FS source"))?.duplicate()?;
-                let mut time=TimeLimit::new(fs.clock(),deadline).map_err(Cause::Transfer)?;
                 let request_hash=index_runner::request_hash(&original)?;
                 append(self.store,self.state,model::Event::Index(registration::Event::Intent{index,request_hash}))?;
                 let attempt=self.state.indexes.pending.ok_or(Cause::State("original registration intent missing"))?.attempt;
@@ -201,10 +224,6 @@ impl Run<'_> {
             let mut identity=Instance::new();let mut frame=vec![0;65_535];let mut slots=[Slot::new(&mut frame)];let mut reservations=[];
             let protocol=ProtocolClient::new(&mut identity,&mut slots,&mut reservations,ProtocolLimits {max_pending:1,..Default::default()})?;
             let mut client=Client::new(protocol,source,NativeLimits {reply_frames:1,reply_bytes:65_535,..Default::default()})?;
-            let mut time=match TimeLimit::new(client.clock(),deadline) {
-                Ok(time)=>time,
-                Err(error)=>{cleanup=client.close().err();return Err(Cause::Transfer(error).into());}
-            };
             let operation:Result<StopReason,Abort>=async {
                 let mut source_guard:Option<plan::indexed::SourceGuard>=None;
                 while self.state.counts.accepted<self.state.manifest.plan.puts.len() {

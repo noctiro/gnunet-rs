@@ -15,9 +15,13 @@ and peer-management queries.
 The service accepts standard `-c`, `-d`, `-h`, `-L`, `-l` and `-v` options.
 Listeners use `[cadet] UNIXPATH/PORT/BINDTO/DISABLEV6`, activation descriptors,
 ACL/TOLERANT and `UNIX_MATCH_UID/GID`. UID policy takes precedence over GID.
-Configured `USERNAME` is resolved before the process identity transition; inherited
-endpoints are not reopened or chowned. Daemonization occurs before runtime/tasks
-and signals readiness through the original child-status capability.
+The shared [native SERVICE driver](../../adapters/program-std/README.md#service-startup)
+owns inherited listeners, selected diagnostics, process identity, detachment and
+the current-thread runtime. Unix prepares inherited/TCP endpoints before privilege
+changes, then completes local endpoints under the configured identity. Windows
+verifies the configured process token, imports native activation, and selects
+managed console detachment or qualified standalone re-exec. Explicit Unix UID/GID
+checks remain unsupported on Windows; endpoint ACLs retain their native policy.
 
 `[PILS] PROFILE` selects `reference029` by default or the official conditional
 `deterministic` profile. A local `PILS_PROFILE` assertion must agree. The same
@@ -25,18 +29,30 @@ choice reaches observation, DH/signing and HELLO verification. Verification neve
 falls back to another profile.
 
 Startup waits for verified PILS identity and, in peer mode, matching DH/signing
-providers and durable monotime reservation. stdout READY and parent readiness
-are emitted once after local construction; they do not promise remote connectivity.
+providers and durable monotime reservation. The separate
+[readiness owner](src/readiness.rs) writes stdout READY and consumes the original
+parent capability once after local construction. Its finite wait observes logging
+and the same sticky stop subscription used by identity and node work. A failed or
+canceled submission cannot start another readiness attempt. Readiness does not
+promise remote connectivity.
 Explicit local-only mode reports its peer backend as unavailable.
 
 ## Identity and storage
 
-The application owner retains MQs and logical ports across healthy updates on the
-original observer. Peer recovery stops old CORE, DH/signing, discovery and
-TRANSPORT sources, retires affected remote operations and verifies fresh providers
-before replacement. Repeated updates share the original recovery deadline.
-Established local pairs and frozen output retain their original identity.
-Physical observer loss remains fatal.
+The application owner retains MQs and logical ports across identity updates and
+physical PILS connection loss. Peer recovery stops old CORE, DH/signing, discovery
+and TRANSPORT sources, retires affected remote operations and verifies fresh
+providers before replacement. Application I/O pauses while the observer has no
+current verified identity. A new socket alone grants no identity authority.
+Repeated updates and socket retries share the original native recovery deadline
+and first physical failure; a late readiness observation cannot clear that bound.
+The cap is `PILS_STARTUP_TIMEOUT + PEER_FORCED_DRAIN`, shortened by any inherited
+generation bound. Startup verification can impose an earlier bound.
+Protocol, resource and clock refusals remain failures. Established local pairs
+and frozen output retain their original identity.
+Once the peer generation is closing, its local effect drain uses the original
+native scheduling epoch independently of the refused logical time source.
+Physical source closure still precedes terminal send outcomes and peer release.
 
 `PEER_MONOTIME_FILE` selects the filename stem, defaulting to
 `${GNUNET_DATA_HOME}/cadet/rust-monotime`. Each full public identity has its own
@@ -115,3 +131,6 @@ retirement while inventory still exists. Queue admission is not a transmitted
 message; unknown/partial sends are not counted as written. Nonpersistent
 publication retains unconfirmed mutations without replay.
 `STATISTICS_TIMEOUT` and `STATISTICS_SHUTDOWN_GRACE` default to five seconds.
+The final peer summary also reports original CORE send outcomes, including
+partial ciphertext retirements. These local observations remain distinct from
+peer acknowledgement and application delivery.

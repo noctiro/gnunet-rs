@@ -6,54 +6,10 @@ use std::{
     pin::Pin,
     task::{Context, Poll},
 };
-use tokio::{
-    io::unix::AsyncFd,
-    time::{Instant, Sleep},
-};
-fn read_once(
-    io: &AsyncFd<OwnedTun>,
-    cx: &mut Context<'_>,
-    bytes: &mut [u8],
-) -> Poll<io::Result<usize>> {
-    let mut ready = match io.poll_read_ready(cx) {
-        Poll::Pending => return Poll::Pending,
-        Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
-        Poll::Ready(Ok(ready)) => ready,
-    };
-    match ready
-        .try_io(|io| nix::unistd::read(io.get_ref().descriptor()?, bytes).map_err(io::Error::from))
-    {
-        Err(_) => {
-            // Cached Ready may not have stored a waker before try_io cleared it.
-            // Re-poll to register it without repeating the operation here.
-            cx.waker().wake_by_ref();
-            Poll::Pending
-        }
-        Ok(value) => Poll::Ready(value),
-    }
-}
-fn write_once(
-    io: &AsyncFd<OwnedTun>,
-    cx: &mut Context<'_>,
-    bytes: &[u8],
-) -> Poll<io::Result<usize>> {
-    let mut ready = match io.poll_write_ready(cx) {
-        Poll::Pending => return Poll::Pending,
-        Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
-        Poll::Ready(Ok(ready)) => ready,
-    };
-    match ready
-        .try_io(|io| nix::unistd::write(io.get_ref().descriptor()?, bytes).map_err(io::Error::from))
-    {
-        Err(_) => {
-            // Cached Ready may not have stored a waker before try_io cleared it.
-            // Re-poll to register it without repeating the operation here.
-            cx.waker().wake_by_ref();
-            Poll::Pending
-        }
-        Ok(value) => Poll::Ready(value),
-    }
-}
+use tokio::time::{Instant, Sleep};
+mod registration;
+pub use registration::Refusal as RegistrationFailure;
+use registration::{Input, Registered};
 /// Original write authority; another device or epoch cannot settle/cancel it.
 #[derive(Clone, Debug)]
 pub struct WriteId {
@@ -106,11 +62,19 @@ pub enum LossCause {
     Closed,
     /// A bounded local allocation failed after input was consumed.
     Capacity,
+    /// Windows: retire this session while retaining the original adapter for
+    /// explicit recovery. No queued packet moves to the replacement epoch.
+    #[cfg(windows)]
+    SessionRestart,
+    /// Windows: a complete native interface table no longer contains the
+    /// original LUID. This is not a kernel-route cleanup receipt.
+    #[cfg(windows)]
+    InterfaceMissing,
 }
 /// Actual source retirement, including any original uncompleted write id.
 #[derive(Debug)]
 pub struct Loss {
-    /// Actual old physical owner.
+    /// Retired original packet-source identity.
     pub epoch: Epoch,
     /// Original queued write, if any; ShortWrite means exposure unknown.
     pub pending: Option<WriteId>,
@@ -118,6 +82,24 @@ pub struct Loss {
     pub cause: LossCause,
     /// Independent actual close failure; close is never retried.
     pub close_error: Option<io::Error>,
+    /// Windows: the original ended session's adapter retained for explicit
+    /// restart. Dropping this owner releases that adapter; explicit close and
+    /// allocation-failure teardown do not produce a restart owner.
+    #[cfg(windows)]
+    pub recovery: Option<Box<crate::WintunRecovery>>,
+}
+impl Loss {
+    /// Release the optional retained Windows adapter when the caller chooses
+    /// shutdown rather than recovery. Original loss/close diagnostics remain;
+    /// this grants no independent native interface-removal acknowledgement.
+    pub fn release_wintun_recovery(&mut self) {
+        #[cfg(windows)]
+        if let Some(recovery) = self.recovery.take() {
+            recovery.close();
+        }
+        #[cfg(not(windows))]
+        let _unchanged = self;
+    }
 }
 /// Unchanged actual packet and original source, normalized without extra protocol.
 pub struct Received {
@@ -142,6 +124,13 @@ impl Received {
     pub fn bytes(&self) -> &[u8] {
         &self.frame[self.mode.prefix_len()..]
     }
+    /// Transfer the original native frame allocation without copying or stripping
+    /// its prefix. Read `bytes`/`native_bytes` before transfer to retain the raw
+    /// IP offset; the caller assumes buffer erasure and subsequent ownership.
+    #[must_use]
+    pub fn into_native_bytes(self) -> Vec<u8> {
+        self.frame
+    }
     /// Exact actual native frame, including its original framing prefix.
     #[must_use]
     pub fn native_bytes(&self) -> &[u8] {
@@ -156,7 +145,7 @@ pub enum ReadEvent {
     Rejected(PacketError),
     /// Original queued packet expired with no write exposure.
     WriteExpired(WriteId),
-    /// Physical source close happened before this observation.
+    /// Original packet-source retirement happened before this observation.
     Lost(Loss),
     /// This caller's finite wait ended; no source/packet success is inferred.
     WaitDeadline,
@@ -174,7 +163,8 @@ pub enum Unsent {
 /// Exact whole-packet write/local retirement, never downstream IP/peer receipt.
 #[derive(Debug)]
 pub enum WriteEvent {
-    /// One complete native write returned its full size.
+    /// The original native boundary accepted one complete packet (a device
+    /// write or Wintun send-ring submission), without network/delivery evidence.
     Written {
         /// Exact original packet.
         write: WriteId,
@@ -205,9 +195,9 @@ struct Pending {
     alarm: Pin<Box<Sleep>>,
 }
 /// Caller-driven async registration over exactly one verified OwnedTun. Dropping
-/// read/write futures preserves the FD, complete RX framing and immutable TX.
+/// read/write futures preserves the source, complete RX framing and immutable TX.
 pub struct AsyncTun {
-    io: Option<AsyncFd<OwnedTun>>,
+    io: Option<Registered>,
     info: Info,
     epoch: Epoch,
     rx: Vec<u8>,
@@ -219,25 +209,40 @@ impl AsyncTun {
     /// Register a verified descriptor on the caller's current Tokio reactor.
     /// Failure closes this consumed descriptor. No runtime/task is constructed.
     pub fn new(tun: OwnedTun) -> io::Result<Self> {
-        tokio::runtime::Handle::try_current().map_err(|e| io::Error::other(e.to_string()))?;
+        Self::try_new(tun).map_err(|failure| {
+            let (tun, error) = failure.into_parts();
+            tun.setup_error(error)
+        })
+    }
+    /// Register without consuming the original owner on refusal. This permits
+    /// explicit recovery after allocation/reactor setup failure, without replay.
+    /// The entered runtime must enable I/O and time; missing enabled drivers can
+    /// panic in Tokio rather than returning a registration refusal.
+    pub fn try_new(tun: OwnedTun) -> Result<Self, Box<RegistrationFailure>> {
         let maximum = tun.limits.packet_bytes;
         let info = tun.info.clone();
         let epoch = tun.epoch();
-        let cap = maximum
-            .checked_add(info.mode.prefix_len() + 1)
-            .ok_or_else(|| io::Error::other("TUN read capacity overflow"))?;
-        let mut rx = Vec::new();
-        rx.try_reserve_exact(cap)
-            .map_err(|_| io::Error::other("TUN read allocation"))?;
-        rx.resize(cap, 0);
-        #[expect(
-            unsafe_code,
-            reason = "Private reactor ownership retains the same live OwnedTun FD until deregistration; no mutable descriptor replacement is exposed"
-        )]
-        // SAFETY: verified OwnedTun owns a live FD; this private AsyncFd exposes
-        // no replacement/close path through get_mut. retire first into_inner()
-        // deregisters the reactor before consuming and closing that same FD.
-        let registered = unsafe { AsyncFd::register(tun) }.map_err(io::Error::from)?;
+        let prepared = (|| {
+            tokio::runtime::Handle::try_current().map_err(|e| io::Error::other(e.to_string()))?;
+            let cap = maximum
+                .checked_add(info.mode.prefix_len() + 1)
+                .ok_or_else(|| io::Error::other("TUN read capacity overflow"))?;
+            let mut rx = Vec::new();
+            rx.try_reserve_exact(cap)
+                .map_err(|_| io::Error::other("TUN read allocation"))?;
+            rx.resize(cap, 0);
+            Ok(rx)
+        })();
+        let rx = match prepared {
+            Ok(rx) => rx,
+            Err(cause) => return Err(Box::new(RegistrationFailure { tun, cause })),
+        };
+        let registered = match Registered::new(tun) {
+            Ok(io) => io,
+            Err(refusal) => {
+                return Err(refusal);
+            }
+        };
         Ok(Self {
             io: Some(registered),
             info,
@@ -267,7 +272,7 @@ impl AsyncTun {
             .get_mut()
             .plan(action, until)
     }
-    /// Apply one actual supported native configuration action to this same FD.
+    /// Apply one actual native configuration action to this same source.
     pub fn apply(
         &mut self,
         effect: crate::Effect,
@@ -312,12 +317,16 @@ impl AsyncTun {
             .watch_ipv6(address, prefix, until, options)
     }
     /// Read actual original interface administration state without mutation.
-    pub fn snapshot(&self, until: Instant) -> Result<crate::NativeSnapshot, crate::AdminFailure> {
+    pub fn snapshot(
+        &self,
+        until: Instant,
+        options: crate::SnapshotOptions,
+    ) -> Result<crate::NativeSnapshot, crate::AdminFailure> {
         self.io
             .as_ref()
             .ok_or(crate::AdminFailure::SourceRetired)?
             .get_ref()
-            .snapshot(until)
+            .snapshot(until, options)
     }
     /// Query one exact original interface route with a finite native deadline.
     /// The owned job retains identity, never the TUN descriptor or route ownership.
@@ -396,6 +405,9 @@ impl AsyncTun {
             .pending
             .take()
             .ok_or_else(|| io::Error::other("missing original packet"))?;
+        if let Some(io) = &mut self.io {
+            io.reset_write_wait();
+        }
         Ok(WriteEvent::Unsent {
             write: p.id,
             reason: if Instant::now() >= p.until {
@@ -411,19 +423,37 @@ impl AsyncTun {
             .as_mut()
             .is_some_and(|p| Instant::now() >= p.until || p.alarm.as_mut().poll(cx).is_ready())
         {
+            if let Some(io) = &mut self.io {
+                io.reset_write_wait();
+            }
             self.pending.take().map(|p| p.id)
         } else {
             None
         }
     }
     fn retire(&mut self, cause: LossCause) -> Loss {
+        // Retirement is visible before unregistering callbacks or invoking
+        // provider cleanup, including reentrant wake code on that path.
+        self.epoch.0.alive.set(false);
         let pending = self.pending.take().map(|p| p.id);
+        self.rx.fill(0);
+        #[cfg(unix)]
         let close_error = self.io.take().and_then(|io| io.into_inner().close().err());
+        #[cfg(windows)]
+        let (close_error, recovery) = match self.io.take() {
+            Some(io) if !matches!(cause, LossCause::Closed | LossCause::Capacity) => {
+                (None, Some(Box::new(io.into_inner().retain_wintun())))
+            }
+            Some(io) => (io.into_inner().close().err(), None),
+            None => (None, None),
+        };
         Loss {
             epoch: self.epoch.clone(),
             pending,
             cause,
             close_error,
+            #[cfg(windows)]
+            recovery,
         }
     }
     /// Attempt native close before retiring the queued packet/epoch; close errno
@@ -431,16 +461,61 @@ impl AsyncTun {
     pub fn close(&mut self) -> Loss {
         self.retire(LossCause::Closed)
     }
+    /// End the original Windows session, returning its adapter in Loss::recovery.
+    /// The old epoch, queued write and read registration retire before restart.
+    #[cfg(windows)]
+    pub fn retire_wintun_session(&mut self) -> Loss {
+        self.retire(LossCause::SessionRestart)
+    }
+    /// Retire a physically missing original Windows interface while retaining
+    /// its adapter for explicit recovery. A present or reused LUID is not loss
+    /// proof; native query failures stay errors. This performs no route cleanup.
+    ///
+    /// # Errors
+    /// Preserves native complete-table, capacity and compartment errors.
+    #[cfg(windows)]
+    pub fn retire_missing_wintun(&mut self) -> io::Result<Option<Loss>> {
+        let Some(io) = self.io.as_ref() else {
+            return Ok(None);
+        };
+        let presence = io
+            .get_ref()
+            .session()
+            .adapter()
+            .port()
+            .identity()
+            .presence(gnunet_native::interfaces::RetirementLimits::default())?;
+        match presence {
+            gnunet_native::interfaces::InterfacePresence::Missing => {
+                Ok(Some(self.retire(LossCause::InterfaceMissing)))
+            }
+            gnunet_native::interfaces::InterfacePresence::Present => Ok(None),
+            gnunet_native::interfaces::InterfacePresence::Reused => Err(io::Error::new(
+                io::ErrorKind::NotConnected,
+                "original Wintun LUID was reused",
+            )),
+        }
+    }
+    /// Defer persistent interface destruction during a surrounding destructor.
+    /// Packet FD close still runs. A later close reports the deferred cleanup
+    /// as DeviceCleanupError with its original explicit recovery capability;
+    /// it cannot become evidence of successful interface removal.
+    #[cfg(unix)]
+    pub fn defer_interface_cleanup(&mut self) {
+        if let Some(io) = self.io.as_mut() {
+            io.get_mut().defer_interface_cleanup();
+        }
+    }
     /// Perform at most one actual native read per poll. Oversized/truncated IP,
     /// nonzero PI flags and native family mismatches are explicit consumed rejects.
     pub fn poll_read(&mut self, cx: &mut Context<'_>) -> Poll<ReadEvent> {
         if let Some(id) = self.expired(cx) {
             return Poll::Ready(ReadEvent::WriteExpired(id));
         }
-        let Some(io) = &self.io else {
+        let Some(io) = &mut self.io else {
             return Poll::Ready(ReadEvent::Closed);
         };
-        let result = read_once(io, cx, &mut self.rx);
+        let result = io.read(cx, &mut self.rx);
         let result = match result {
             Poll::Pending => return Poll::Pending,
             Poll::Ready(value) => value,
@@ -451,8 +526,10 @@ impl AsyncTun {
                 return Poll::Pending;
             }
             Err(e) => return Poll::Ready(ReadEvent::Lost(self.retire(LossCause::Io(e)))),
-            Ok(0) => return Poll::Ready(ReadEvent::Lost(self.retire(LossCause::Eof))),
-            Ok(n) => n,
+            Ok(Input::Data(0)) => return Poll::Ready(ReadEvent::Lost(self.retire(LossCause::Eof))),
+            Ok(Input::Data(n)) => n,
+            #[cfg(windows)]
+            Ok(Input::Oversize) => return Poll::Ready(ReadEvent::Rejected(PacketError::TooLarge)),
         };
         if n > self.maximum + self.info.mode.prefix_len() {
             return Poll::Ready(ReadEvent::Rejected(PacketError::TooLarge));
@@ -482,14 +559,14 @@ impl AsyncTun {
                 reason: Unsent::Deadline,
             });
         }
-        let Some(io) = &self.io else {
+        let Some(io) = &mut self.io else {
             return Poll::Ready(WriteEvent::Closed);
         };
         let Some(p) = &self.pending else {
             return Poll::Ready(WriteEvent::Idle);
         };
         let expected = p.frame.len();
-        let result = write_once(io, cx, &p.frame);
+        let result = io.write(cx, &p.frame);
         let result = match result {
             Poll::Pending => return Poll::Pending,
             Poll::Ready(value) => value,

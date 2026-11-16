@@ -1059,10 +1059,8 @@ mod delivery_boundary_tests {
             1,
             65535,
         )?;
-        let (socket, mut communicator) = tokio::net::UnixStream::pair()?;
-        let client = server.admit(gnunet_service_runtime::connection::Connection::from_unix(
-            socket,
-        ))?;
+        let (socket, mut communicator) = crate::test_support::pair().await?;
+        let client = server.admit(socket)?;
         let lease = server.clients[0].lease;
         let registration = wire(Request::Register {
             characteristics: Characteristics::Reliable,

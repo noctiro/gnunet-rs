@@ -6,6 +6,8 @@ implementation because it borrows a PSK. `Parameters::base(info)` chooses only
 the official default0020 Base mode; `base_elligator(info)` selects0022 for its
 distinct typed setup operations. Context is an exclusive erased owner.
 
+## Contract
+
 The exact new public operation signatures are in `src/hpke.rs`:
 
 * sender_setup2(&EcdheSecret, Option<&EcdheSecret>, EcdhePublic, &Parameters)

@@ -1,12 +1,14 @@
 //! Active configuration_create semantics using the shared official CONFIG.
 use crate::*;
 use gnunet_config::Configuration;
-use std::{fs::DirBuilder, net::IpAddr, os::unix::fs::DirBuilderExt};
+use gnunet_native::{filesystem::Directory as NativeDirectory, os_bytes};
+use std::net::IpAddr;
 /// An actual generated configuration plus its exact logical port/path ownership.
 /// It contains no fake peer/controller object or ready state.
 pub struct Generated<'id> {
     pub(crate) id: core::PathId<'id>,
     pub(crate) home: PathBuf,
+    pub(crate) home_owner: NativeDirectory,
     pub(crate) configuration: Configuration,
     pub(crate) ports: Vec<core::Reservation<'id>>,
 }
@@ -159,25 +161,27 @@ impl<'id, 'slots> System<'id, 'slots> {
         self.attempts += 1;
         self.directory.counter(self.core.path_high_water())?;
         let home = self.directory.path.join(id.number().to_string());
-        if home.as_os_str().as_bytes().len() > self.options.limits.path_bytes {
+        if os_bytes::encode(home.as_os_str()).len() > self.options.limits.path_bytes {
             return Err(Fault::TooLarge.into());
         }
-        // The counter is actually durable before any numbered home/config is exposed.
+        // Synchronized counter data and native publication precede numbered
+        // home creation. Directory durability remains platform-specific.
         let mut ports = Vec::new();
         ports
             .try_reserve_exact(needed)
             .map_err(|_| Fault::Capacity)?;
-        DirBuilder::new()
-            .mode(0o700)
-            .create(&home)
-            .map_err(|e| Failure::io("create configuration home", &home, e))?;
+        let home_owner = self.directory.create_home(id.number())?;
         let outcome: Result<Configuration, Failure> = (|| {
             let mut config = template.duplicate()?;
             let default = home.join("config");
-            let path = default.as_os_str().as_bytes();
-            config.set_value(b"PATHS", b"DEFAULTCONFIG", Some(path))?;
-            config.set_value(b"arm", b"CONFIG", Some(path))?;
-            config.set_value(b"PATHS", b"GNUNET_HOME", Some(home.as_os_str().as_bytes()))?;
+            let path = os_bytes::encode(default.as_os_str());
+            config.set_value(b"PATHS", b"DEFAULTCONFIG", Some(&path))?;
+            config.set_value(b"arm", b"CONFIG", Some(&path))?;
+            config.set_value(
+                b"PATHS",
+                b"GNUNET_HOME",
+                Some(&os_bytes::encode(home.as_os_str())),
+            )?;
             for (section, key, _) in template.entries() {
                 if key.eq_ignore_ascii_case(b"PORT") {
                     let original = template.get_number(section, key)?;
@@ -221,17 +225,20 @@ impl<'id, 'slots> System<'id, 'slots> {
                     {
                         return Err(Fault::InvalidInput.into());
                     }
-                    let mut filename =
-                        std::ffi::OsString::from(std::ffi::OsStr::from_bytes(section));
+                    let mut filename = os_bytes::decode(section)
+                        .map_err(|error| {
+                            Failure::io("decode service socket basename", &home, error)
+                        })?
+                        .into_owned();
                     filename.push(".sock");
                     let socket = home.join(filename);
-                    let bytes = socket.as_os_str().as_bytes();
+                    let bytes = os_bytes::encode(socket.as_os_str());
                     if bytes.len() > self.options.limits.path_bytes {
                         return Err(Fault::TooLarge.into());
                     }
                     socket2::SockAddr::unix(&socket)
                         .map_err(|e| Failure::io("validate generated UNIXPATH", &socket, e))?;
-                    config.set_value(section, key, Some(bytes))?;
+                    config.set_value(section, key, Some(&bytes))?;
                 } else if key.eq_ignore_ascii_case(b"HOSTNAME") {
                     let host = self.options.hostname.as_deref().unwrap_or(b"localhost");
                     config.set_value(section, key, Some(host))?;
@@ -264,6 +271,7 @@ impl<'id, 'slots> System<'id, 'slots> {
             Ok(configuration) => Ok(Generated {
                 id,
                 home,
+                home_owner,
                 configuration,
                 ports,
             }),
@@ -273,13 +281,9 @@ impl<'id, 'slots> System<'id, 'slots> {
                         failure.add(Cause::Protocol(e));
                     }
                 }
-                match std::fs::remove_dir(&home) {
+                match self.directory.remove_home(id.number(), &home_owner) {
                     Ok(()) => {}
-                    Err(e) => failure.add(Cause::Io {
-                        operation: "remove failed configuration home",
-                        path: home,
-                        error: e,
-                    }),
+                    Err(error) => failure.add(error.cause),
                 }
                 Err(failure)
             }

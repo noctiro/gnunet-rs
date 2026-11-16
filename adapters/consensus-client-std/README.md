@@ -6,6 +6,8 @@ service, background worker, hidden Resolver, private ACK or peer protocol. The s
 Resolver remain caller-owned ports. Construction reserves a clock listener
 but native connection/timer work occurs only while explicitly polled.
 
+## Public interface
+
 Client::new(source, Join, Limits, Bounds), insert(type,data), conclude(),
 poll_progress(cx)/progress(), native_deadline(), poll_native_guard(cx), close(). Insertions may be admitted before JOIN writes. JOIN, each original INSERT and
 CONCLUDE remain in an ordered FIFO, each with a distinct original local token
@@ -55,6 +57,8 @@ FIFO pressure with original prefix/bound/unknown disposition preservation, a
 premature525 refusal, and an owned523 surviving real525/source retirement after
 whole524. These are local native failure/ownership fixtures, not peer agreement
 producers or successful CONSENSUS qualification.
+
+## Cancellation and recovery
 
 Dropping an original Client also uses the existing clock-free physical-close
 path, retiring its public Epoch before the native Channel storage is dropped. Caller-held receipt/observation Epoch clones therefore become non-live when

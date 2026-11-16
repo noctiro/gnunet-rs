@@ -1,30 +1,48 @@
 # gnunet-testbed configuration utility
 
-The active pinned executable supports `-n/--number NUMBER` and
-`-t/--template FILENAME`. This PROGRAM frontend implements those operations
-using shared GETOPT/CONFIG/PROGRAM and the native TESTBED owner. It accepts no
-peer/controller operations because the current production target has none. Standard PROGRAM -c/help/version/log options retain their shared semantics.
+`gnunet-testbed` creates unique GNUnet configurations from a loaded template on
+Linux, macOS, FreeBSD and Windows. PROGRAM supplies configuration, filename
+expansion, help/version and logging. Generated peer homes and canonical configs
+are kept for subsequent service startup.
 
-```
+## Usage
+
+```sh
 gnunet-testbed -n 3 -t test-template.conf --output output-directory
 ```
 
-Templates overlay the loaded default/PROGRAM configuration. The output
-directory must already exist. Output uses 0000-<template-basename>, etc.; using a
-safe basename avoids the C formatter's broken embedded absolute-template path. The exact original canonical home/config is really fsync-published first so
-ARM.CONFIG and DEFAULTCONFIG resolve to bytes. Each canonical/export
-publication has its own output line; a later failure is not reported as an
-entire batch success. The process starts zero peer/service/helper processes.
+`-n/--number` selects 1–4096 configurations; `-t/--template` selects the template
+to overlay on PROGRAM configuration. The output directory must already exist.
+Exports use `0000-<template-basename>`, `0001-<template-basename>`, and so on.
+Each generated canonical home/config is published before the export that refers
+to it through `ARM.CONFIG`. The in-memory `PATHS.DEFAULTCONFIG` also selects
+the canonical file. Official CONFIG serialization omits that loader-derived key;
+a reloaded export initializes it from its own selected filename.
 
-Optional local utility controls are --prefix DIRECTORY, --output DIRECTORY,
---trusted-ip IP/CIDR, --hostname NAME, --low-port PORT (inclusive) and --high-port
-PORT (exclusive). GNUNET_TESTBED_PREFIX is used when explicit --prefix is absent. This may name only a new/empty or exact Rust-marked private directory, never an
-existing C peer/key store. Ports are past bind observations with logical
-exclusion; output never claims future kernel exclusivity or service readiness. Configuration count is bounded1..4096 and required original port metadata is
-precomputed before native creation. No unbounded diagnostics/output collection.
+## Configuration
 
-An error keeps already written configuration files and owned paths, reports the
-original failure and independently attempted close/keep result, and exits1. Normal completion also keeps paths, matching the active command's purpose. Explicit library destroy(true) is available for an owning caller's later cleanup. Signals use ordinary process termination; there is no wire CANCEL or unknown
-write replay. Atomic staging plus the original counter fence protects restart
-from reusing issued home paths. Filesystem calls may block in the OS, and no
-finite fsync/cancel guarantee is fabricated.
+Optional controls are `--prefix DIRECTORY`, `--output DIRECTORY`,
+`--trusted-ip IP/CIDR`, `--hostname NAME`, `--low-port PORT` (inclusive) and
+`--high-port PORT` (exclusive). `GNUNET_TESTBED_PREFIX` applies when `--prefix`
+is absent. A selected root must be new, empty or exactly marked by this utility.
+Native paths and Unicode names use the shared CONFIG representation.
+
+Port assignments are past native bind observations plus logical batch exclusion.
+A later service must still acquire its sockets. The command reports canonical
+and exported publications separately, including completed file synchronization
+and the native directory barrier observation. Windows directory synchronization
+can be unavailable. The host's [ownership and publication contract](../../adapters/testbed-std/README.md)
+describes restart, resource limits and explicit tree removal.
+
+## Cancellation and failures
+
+Native client startup captures original inheritance before other resources.
+Unix signals, Windows console stop events and parent control stop admission
+between bounded generation/publication steps. Synchronous filesystem calls can
+block and cannot be forcibly preempted. Existing publications and owned homes
+remain available after cancellation or a later error; issued path numbers are
+not replayed. Operation and independent cleanup errors remain distinct, and
+failure returns a nonzero exit status.
+
+The executable generates files and releases its logical reservations; callers
+start and manage peers through ARM or the service runtime.

@@ -1,19 +1,17 @@
 //! Standard SERVICE owns the original helper, DNSSTUB, MQs and shared Resolver.
 use crate::{
     Failure,
-    control::Signals,
     settings::Settings,
     statistics::{self, Publisher},
 };
 use gnunet_config::Configuration;
 use gnunet_dns_service_host::{
-    Event, Gateway, GatewayProgress, GatewayReport, Helper, HelperExit, RejectedGateway, Server,
-    core,
+    Event, Gateway, GatewayProgress, GatewayReport, RejectedGateway, Retirement, Server, core,
 };
 use gnunet_program_host::{policy::Level, reporting::Reporter, shared_clock::SharedClock};
 use gnunet_resolver_broker::{Driver as ResolverDriver, LiveConfiguration};
 use gnunet_service_runtime::{BoundListeners, clock::RuntimeClock, service::Listener};
-use gnunet_service_startup::{ParentControl, daemon::ChildReady};
+use gnunet_service_startup::{ControlReceiver, StopSignals as Signals};
 use std::{
     future::{Future, poll_fn},
     io::{self, Write},
@@ -46,13 +44,13 @@ fn observe(reports: &Reporter, event: Event<'_>) {
             "dns.callback.lost",
             format_args!("dns original callback lost: {effect:?} local-state={state:?}"),
         ),
-        Event::HelperOutputLost {
+        Event::PacketOutputLost {
             effect,
-            written,
+            exposure,
             total,
         } => reports.warning(
-            "dns.helper.output.lost",
-            format_args!("dns original helper output lost: {effect:?} bytes={written}/{total}"),
+            "dns.packet.output.lost",
+            format_args!("dns original packet output lost: {effect:?} exposure={exposure:?} packet-bytes={total}"),
         ),
         Event::Cleanup(reason) => reports.warning(
             "dns.cleanup",
@@ -78,14 +76,10 @@ struct Failures {
 fn gateway_failed(report: &GatewayReport) -> bool {
     report.first.is_some()
         || report.cleanup.is_some()
-        || report.helper_exit.as_ref().is_none_or(|exit| {
-            exit.forced
-                || exit.signal_error.is_some()
-                || exit
-                    .status
-                    .as_ref()
-                    .map_or(true, |status| !status.success())
-        })
+        || report
+            .source_retirement
+            .as_ref()
+            .is_none_or(Retirement::has_failure)
 }
 impl Failures {
     fn finish(self) -> Result<(), Failure> {
@@ -160,14 +154,13 @@ impl std::error::Error for Failures {
             })
     }
 }
-pub(super) struct Inputs<'ready> {
+pub(super) struct Inputs {
     pub config: Configuration,
     pub settings: Settings,
     pub bound: BoundListeners,
-    pub parent: Option<ParentControl>,
+    pub parent: Option<ControlReceiver>,
     pub clock: SharedClock,
     pub reports: Reporter,
-    pub child: &'ready mut ChildReady,
 }
 struct Owners<'id, 'stats> {
     gateway: Option<Gateway<'id>>,
@@ -218,7 +211,11 @@ impl Drop for Owners<'_, '_> {
             }
             self.abort_statistics();
             let resolver = self.resolver.disconnect();
-            reports.warning("dns.interrupted", format_args!("dns SERVICE future interrupted: original MQ/pipes/sockets physically stopped; helper OS cleanup remains unconfirmed; Resolver={resolver:?}"));
+            let retirement = self
+                .gateway
+                .as_ref()
+                .and_then(|gateway| gateway.report().source_retirement.as_ref());
+            reports.warning("dns.interrupted", format_args!("dns SERVICE interrupted: packet source retirement={retirement:?}; Resolver={resolver:?}"));
         }
     }
 }
@@ -270,7 +267,7 @@ async fn turn<'id>(
         if reports.failed() {
             return Poll::Ready(Err("DNS selected diagnostic destination failed".into()));
         }
-        if let Poll::Ready(signal) = signals.poll(cx) {
+        if let Poll::Ready(signal) = signals.poll_stop(cx) {
             return Poll::Ready(signal.map(|()| Turn::Stop).map_err(Into::into));
         }
         for n in 0..3 {
@@ -327,7 +324,7 @@ async fn turn<'id>(
 struct Rejected {
     original: gnunet_dns_service_host::Error,
     mq: Option<gnunet_dns_service_host::Error>,
-    helper: Option<HelperExit>,
+    source: Option<Retirement>,
     deadline: Option<tokio::time::error::Elapsed>,
     bound: Option<gnunet_types::Error>,
 }
@@ -335,8 +332,8 @@ impl std::fmt::Display for Rejected {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "dns composition original={}; MQ cleanup={:?}; actual helper exit={:?}; unconfirmed retirement={:?}; bound={:?}",
-            self.original, self.mq, self.helper, self.deadline, self.bound
+            "dns composition original={}; MQ cleanup={:?}; packet source retirement={:?}; unconfirmed retirement={:?}; bound={:?}",
+            self.original, self.mq, self.source, self.deadline, self.bound
         )
     }
 }
@@ -354,7 +351,7 @@ async fn rejected(
     let mq = rejected
         .server
         .close_all(&mut |event| observe(reports, event));
-    rejected.helper.request_stop();
+    rejected.packets.request_stop();
     let now = Instant::now();
     let target = now.checked_add(grace);
     let until = target.unwrap_or(now);
@@ -362,15 +359,15 @@ async fn rejected(
         until,
         poll_fn(|cx| {
             reports.register(cx);
-            rejected.helper.poll_exit(cx)
+            rejected.packets.poll_retirement(cx)
         }),
     )
     .await;
-    let (helper, deadline) = match outcome {
+    let (source, deadline) = match outcome {
         Ok(exit) => (Some(exit), None),
         Err(error) => {
             let exit = poll_fn(|cx| {
-                Poll::Ready(match rejected.helper.poll_exit(cx) {
+                Poll::Ready(match rejected.packets.poll_retirement(cx) {
                     Poll::Ready(exit) => Some(exit),
                     Poll::Pending => None,
                 })
@@ -379,15 +376,21 @@ async fn rejected(
             (exit, Some(error))
         }
     };
+    if let Some(mut upstream) = rejected.upstream.take() {
+        let _stopped = upstream.stop();
+    }
     Box::new(Rejected {
         original,
         mq,
-        helper,
+        source,
         deadline,
         bound: target.is_none().then_some(gnunet_types::Error::Overflow),
     })
 }
-pub(super) async fn run(input: Inputs<'_>) -> Result<(), Failure> {
+pub(super) async fn run(
+    input: Inputs,
+    ready: impl Future<Output = Result<(), Failure>>,
+) -> Result<(), Failure> {
     let Inputs {
         config,
         settings,
@@ -395,7 +398,6 @@ pub(super) async fn run(input: Inputs<'_>) -> Result<(), Failure> {
         parent,
         clock,
         reports,
-        child,
     } = input;
     let instance = core::Instance::new();
     let mut stats_instance = gnunet_ipc_unix::handle::Instance::new();
@@ -427,19 +429,22 @@ pub(super) async fn run(input: Inputs<'_>) -> Result<(), Failure> {
         crate::startup_check(&reports)?;
         let engine = core::Engine::new(&instance, settings.core)?;
         let server = Server::new(engine, runtime_clock, settings.native, settings.options, settings.unix)?;
-        let helper = Helper::spawn(settings.helper)?;
-        let gateway = match Gateway::new(server, helper, settings.exit, settings.gateway) { Ok(gateway) => gateway, Err(error) => return Err(rejected(error, grace, &reports).await) };
+        let packet_source = settings.packets.label();
+        let mut upstream = gnunet_dns_service_host::Upstream::start(settings.gateway.resolver_sockets, core::MAX_DNS_BYTES)?;
+        upstream.add_dns_sa(std::net::SocketAddr::new(settings.exit, 53))?;
+        let packets = crate::packet_source::open(settings.packets, &mut upstream, settings.exit)?;
+        let gateway = match Gateway::with_upstream(server, packets, upstream, settings.gateway) { Ok(gateway) => gateway, Err(error) => return Err(rejected(error, grace, &reports).await) };
         owners.gateway = Some(gateway);
         crate::startup_check(&reports)?;
         {
             let mut out = io::stdout().lock();
-            writeln!(out, "READY dns wire=0.29.1 helper=actual-spawned interception-setup=unacknowledged query-backend=actual-DNSSTUB DNSSEC=unclaimed clients={} requests={} payload-bytes={} workers=0", settings.core.clients, settings.core.requests, settings.core.bytes)?;
+            writeln!(out, "READY dns clients={} requests={} source={packet_source} interception-setup=unacknowledged", settings.core.clients, settings.core.requests)?;
             out.flush()?;
         }
         // This exact child only reports readiness after every actual original
-        // listener, Server, helper process and DNSSTUB owner exists and stdout
+        // listener, Server, packet source and DNSSTUB owner exists and stdout
         // flushed. The helper protocol has no TUN/firewall setup acknowledgement.
-        child.ready()?;
+        ready.await?;
         let mut first = 0;
         loop {
             crate::startup_check(&reports)?;
@@ -455,8 +460,11 @@ pub(super) async fn run(input: Inputs<'_>) -> Result<(), Failure> {
             first = (first + 1) % 3;
             match progress {
                 Turn::Stop => break Ok(()), Turn::Resolver | Turn::Statistics => {},
-                Turn::Gateway(GatewayProgress::Stopped | GatewayProgress::HelperExited) => break Err("DNS original helper/source stopped before requested shutdown".into()),
+                Turn::Gateway(GatewayProgress::Stopped | GatewayProgress::SourceRetired) => break Err("DNS original helper/source stopped before requested shutdown".into()),
                 Turn::Gateway(GatewayProgress::PacketDropped(reason)) => reports.debug("dns.packet.discarded", format_args!("dns actual captured packet discarded: {reason}")),
+                Turn::Gateway(GatewayProgress::PacketRefused { request, reason }) => reports.warning("dns.packet.refused", format_args!("dns packet-local refusal {request:?}: {reason}")),
+                #[cfg(windows)]
+                Turn::Gateway(GatewayProgress::RouteObservationFailed { reason }) => reports.warning("dns.route.observation", format_args!("dns interface observation failed: {reason}")),
                 Turn::Gateway(GatewayProgress::ResolverRefused { request, reason }) => reports.warning("dns.resolver.refused", format_args!("dns original resolver admission refused for {request:?}: {reason}")),
                 Turn::Gateway(GatewayProgress::ResolverDiscarded { native, reason }) => reports.debug("dns.resolver.discarded", format_args!("dns actual resolver datagram discarded for {native:?}: {reason}")),
                 Turn::Gateway(GatewayProgress::ResolverQueued { .. } | GatewayProgress::Activity | GatewayProgress::WaitDeadline) => {},
@@ -593,11 +601,15 @@ pub(super) async fn run(input: Inputs<'_>) -> Result<(), Failure> {
             .await;
         }
     }
-    let retirement = drained.err().map(|error| -> Failure { format!("dns original helper/statistics retirement unconfirmed within fixed native grace: {error}; privileged cleanup remains unclaimed").into() });
+    let retirement = drained.err().map(|error| -> Failure { format!("dns packet source/statistics retirement unconfirmed within fixed native grace: {error}; privileged cleanup remains unclaimed").into() });
     owners.abort_statistics();
     let publisher = owners.statistics.as_ref().map(Publisher::report);
     let gateway = owners.gateway.take().map(Gateway::into_report);
-    reports.message(Level::INFO, "dns.stopped", format_args!("STOPPED dns original-report={gateway:?} statistics={publisher:?}; local-written is not remote-acknowledged; privileged cleanup is not inferred"));
+    reports.message(
+        Level::INFO,
+        "dns.stopped",
+        format_args!("STOPPED dns gateway={gateway:?} statistics={publisher:?}"),
+    );
     let resolver_close = owners
         .resolver
         .disconnect()

@@ -17,7 +17,16 @@ use linux::Backend;
 mod bsd;
 #[cfg(any(target_os = "macos", target_os = "freebsd"))]
 use bsd::Backend;
-#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "freebsd")))]
+#[cfg(windows)]
+mod windows;
+#[cfg(windows)]
+use windows::Backend;
+#[cfg(not(any(
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "freebsd",
+    windows
+)))]
 mod unsupported {
     use super::*;
     pub(super) struct Backend;
@@ -43,7 +52,12 @@ mod unsupported {
         }
     }
 }
-#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "freebsd")))]
+#[cfg(not(any(
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "freebsd",
+    windows
+)))]
 use unsupported::Backend;
 /// Immutable exact address/interface identity and original observation deadline.
 #[derive(Clone, Debug)]
@@ -91,6 +105,15 @@ pub enum Ipv6State {
     /// Exact tuple exists without tentative/duplicate/detached flags.
     /// This does not prove link-up, route installation or future availability.
     Ready,
+    /// Windows reports that the address is deprecated; it is not Preferred.
+    Deprecated,
+    /// Windows reports the address invalid.
+    Invalid,
+    /// An unrecognized native DAD state, without readiness credit.
+    Unknown {
+        /// Actual unrecognized native DAD value.
+        native: i32,
+    },
     /// A BSD kernel reports the address detached from its link.
     Detached,
     /// Complete kernel query reports the address absent from this interface.
@@ -180,9 +203,7 @@ impl Ipv6WatchOptions {
             || !(1..=256).contains(&self.dump_datagrams)
             || !(32768..=1048576).contains(&self.dump_bytes)
         {
-            return Err(crate::platform::invalid(
-                "invalid IPv6 readiness resource bound",
-            ));
+            return Err(invalid("invalid IPv6 readiness resource bound"));
         }
         Ok(())
     }
@@ -190,11 +211,16 @@ impl Ipv6WatchOptions {
 pub(super) enum Step {
     #[cfg(target_os = "linux")]
     Activity(usize),
-    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
+    #[cfg(any(
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "freebsd",
+        windows
+    ))]
     Sample(Ipv6State, Option<u32>),
 }
 /// Caller-driven original read-only kernel observer. No background thread, address
-/// mutation, automatic rebind, or replay occurs. Drop only releases its query FD.
+/// mutation, automatic rebind, or replay occurs. Drop releases only its native observation resources.
 #[must_use]
 pub struct Ipv6Watch {
     target: Ipv6Target,
@@ -205,6 +231,7 @@ pub struct Ipv6Watch {
     querying: bool,
     last: Option<Ipv6Observation>,
 }
+#[cfg(unix)]
 impl OwnedTun {
     /// Start read-only DAD/address observation for this verified original device.
     /// Success creates the real query socket but does not mean the address exists.
@@ -217,16 +244,16 @@ impl OwnedTun {
     ) -> io::Result<Ipv6Watch> {
         options.validate()?;
         if prefix > 128 {
-            return Err(crate::platform::invalid("IPv6 prefix overflow"));
+            return Err(invalid("IPv6 prefix overflow"));
         }
-        if !self.epoch.current() || self.fd.is_none() {
+        if !self.epoch.current() || self.handle.is_none() {
             return Err(io::ErrorKind::NotConnected.into());
         }
         if Instant::now() >= until {
             return Err(io::ErrorKind::TimedOut.into());
         }
         tokio::runtime::Handle::try_current().map_err(|e| io::Error::other(e.to_string()))?;
-        let info = crate::platform::verify(self.fd.as_ref().ok_or(io::ErrorKind::NotConnected)?)?;
+        let info = crate::platform::verify(self.native_fd()?)?;
         if info.index != self.info.index || info.name != self.info.name {
             return Err(io::Error::new(
                 io::ErrorKind::NotConnected,
@@ -281,6 +308,9 @@ impl Ipv6Watch {
         if !self.target.epoch.current() {
             return Ok(false);
         }
+        #[cfg(windows)]
+        return self.backend.as_ref().map_or(Ok(false), Backend::source);
+        #[cfg(unix)]
         match crate::platform::index(&self.target.interface.name) {
             Ok(index) => Ok(index == self.target.interface.index),
             Err(e)
@@ -336,7 +366,12 @@ impl Ipv6Watch {
             Poll::Ready(Err(e)) => Poll::Ready(self.complete(Ipv6End::Error(e))),
             #[cfg(target_os = "linux")]
             Poll::Ready(Ok(Step::Activity(bytes))) => Poll::Ready(Ipv6Progress::Activity { bytes }),
-            #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                windows
+            ))]
             Poll::Ready(Ok(Step::Sample(state, native_flags))) => {
                 match self.source() {
                     Ok(true) => {}
@@ -393,6 +428,7 @@ fn malformed() -> io::Error {
 
 /// Real observer used by both the descriptor owner and an actual helper pipe
 /// source. A source-bound kernel interface check precedes socket construction.
+#[cfg(unix)]
 pub(crate) fn watch(
     epoch: Epoch,
     info: Info,
@@ -403,7 +439,7 @@ pub(crate) fn watch(
 ) -> io::Result<Ipv6Watch> {
     options.validate()?;
     if prefix > 128 {
-        return Err(crate::platform::invalid("IPv6 prefix overflow"));
+        return Err(invalid("IPv6 prefix overflow"));
     }
     crate::helper::check_interface(&epoch, &info, until).map_err(io::Error::other)?;
     let target = Ipv6Target {
@@ -413,8 +449,16 @@ pub(crate) fn watch(
         prefix,
         deadline: until,
     };
-    let mut backend = Backend::new(&target, options)?;
+    let backend = Backend::new(&target, options)?;
+    initialize(target, backend, options)
+}
+fn initialize(
+    target: Ipv6Target,
+    mut backend: Backend,
+    options: Ipv6WatchOptions,
+) -> io::Result<Ipv6Watch> {
     backend.begin()?;
+    let until = target.deadline;
     Ok(Ipv6Watch {
         target,
         backend: Some(backend),
@@ -424,4 +468,8 @@ pub(crate) fn watch(
         querying: true,
         last: None,
     })
+}
+
+fn invalid(message: &'static str) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidInput, message)
 }

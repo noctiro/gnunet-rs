@@ -1,6 +1,5 @@
 //! Original SETI/CADET owners under explicit standard SERVICE startup.
 use crate::{
-    control::Signals,
     lifecycle::{Cleanup, Resolver},
     settings::{Settings, bytes, filled},
 };
@@ -12,7 +11,7 @@ use gnunet_resolver_broker::{LiveConfiguration, broker, native_profile};
 use gnunet_service_runtime::{
     BoundListeners, accepted::SocketEvent, clock::RuntimeClock, service::ShutdownMode,
 };
-use gnunet_service_startup::{ParentControl, daemon::ChildReady};
+use gnunet_service_startup::StopSignals;
 use gnunet_seti as core;
 use gnunet_seti_host::{CloseCause, Error as NativeError, Event, Progress, Server};
 use gnunet_types::Error as ProtocolError;
@@ -195,12 +194,12 @@ impl Error for Failed {
 }
 pub(super) struct Inputs<'a> {
     pub config: &'a Configuration,
-    pub settings: Settings,
+    pub settings: &'a Settings,
     pub bound: &'a BoundListeners,
-    pub parent: Option<ParentControl>,
+    pub signals: StopSignals,
     pub clock: SharedClock,
     pub reports: Reporter,
-    pub child: &'a mut ChildReady,
+    pub ready: gnunet_program_host::service::native::Readiness<'a>,
     pub cleanup: Cleanup,
 }
 #[expect(
@@ -212,19 +211,18 @@ pub(super) async fn run(input: Inputs<'_>) -> Result<(), Cause> {
         config,
         settings,
         bound,
-        parent,
+        mut signals,
         clock: shared_clock,
         reports,
-        child,
+        ready,
         cleanup,
     } = input;
-    let mut signals = Signals::new(parent)?;
     if reports.failed() {
         return Ok(());
     }
     let early_stop = poll_fn(|cx| {
         reports.register(cx);
-        Poll::Ready(match signals.poll(cx) {
+        Poll::Ready(match signals.poll_stop(cx) {
             Poll::Ready(result) => result.map(|()| true),
             Poll::Pending => Ok(false),
         })
@@ -350,7 +348,7 @@ pub(super) async fn run(input: Inputs<'_>) -> Result<(), Cause> {
                     if reports.failed() {
                         return Poll::Ready(Ok(None));
                     }
-                    if let Poll::Ready(signal) = signals.poll(cx) {
+                    if let Poll::Ready(signal) = signals.poll_stop(cx) {
                         return Poll::Ready(signal
                             .map(|()| None)
                             .map_err(|error| Box::new(error) as Cause));
@@ -400,7 +398,7 @@ pub(super) async fn run(input: Inputs<'_>) -> Result<(), Cause> {
             if reports.failed() {
                 return Poll::Ready(Ok(true));
             }
-            Poll::Ready(match signals.poll(cx) {
+            Poll::Ready(match signals.poll_stop(cx) {
                 Poll::Ready(result) => result.map(|()| true),
                 Poll::Pending => Ok(false),
             })
@@ -417,7 +415,7 @@ pub(super) async fn run(input: Inputs<'_>) -> Result<(), Cause> {
             )?;
             out.flush()?;
         }
-        child.ready()?;
+        ready.signal(&mut signals, &reports).await?;
         let listeners = bound.listeners();
         let mut stop_at = None;
         let mut stop_alarm: Option<std::pin::Pin<Box<tokio::time::Sleep>>> = None;
@@ -441,7 +439,7 @@ pub(super) async fn run(input: Inputs<'_>) -> Result<(), Cause> {
                         return Poll::Ready(Ok(None));
                     }
                     if !reports.failed()
-                        && let Poll::Ready(signal) = signals.poll(cx)
+                        && let Poll::Ready(signal) = signals.poll_stop(cx)
                     {
                         return Poll::Ready(signal
                             .map(|()| None)

@@ -1,21 +1,14 @@
 //! One bounded immutable JSON line and real borrowed-stdout cursor.
 use super::{Failure, driver::Names};
+use crate::foreground::Stdout;
 use gnunet_client::statistics::{Statistic, WatchValue};
-use nix::{
-    poll::{PollFd, PollFlags, PollTimeout},
-    sys::stat::{self, SFlag},
-};
-use std::{
-    io::{self, Write},
-    os::fd::AsFd,
-};
+use std::io::{self, Write};
 const CAPACITY: usize = 8192;
 pub(super) struct Output {
     bytes: Vec<u8>,
     used: usize,
     capacity: usize,
-    stdout: io::Stdout,
-    regular: bool,
+    stdout: Stdout,
 }
 struct Limited<'a>(&'a mut Vec<u8>, usize);
 impl Write for Limited<'_> {
@@ -54,15 +47,12 @@ impl Output {
     }
     pub fn with_capacity(capacity: usize) -> Result<Self, Failure> {
         let bytes = Vec::new();
-        let stdout = io::stdout();
-        let metadata = stat::fstat(stdout.as_fd())?;
-        let kind = SFlag::from_bits_truncate(metadata.st_mode);
+        let stdout = Stdout::new()?;
         Ok(Self {
             bytes,
             used: 0,
             capacity,
             stdout,
-            regular: (kind & SFlag::S_IFMT) == SFlag::S_IFREG,
         })
     }
     pub fn stage(
@@ -140,42 +130,16 @@ impl Output {
         if self.bytes.is_empty() {
             return Ok(Some(true));
         }
-        if !self.regular {
-            let mut descriptors = [PollFd::new(self.stdout.as_fd(), PollFlags::POLLOUT)];
-            match nix::poll::poll(&mut descriptors, PollTimeout::ZERO) {
-                Ok(_) => {
-                    let event = descriptors[0]
-                        .revents()
-                        .ok_or_else(|| io::Error::other("unknown stdout poll bits"))?;
-                    if event.contains(PollFlags::POLLNVAL) {
-                        return Err(io::Error::from_raw_os_error(nix::libc::EBADF));
-                    }
-                    if !event
-                        .intersects(PollFlags::POLLOUT | PollFlags::POLLERR | PollFlags::POLLHUP)
-                    {
-                        return Ok(None);
-                    }
-                }
-                Err(nix::errno::Errno::EINTR) => return Ok(None),
-                Err(e) => return Err(io::Error::from(e)),
-            }
-        }
-        let end = if self.regular {
-            self.bytes.len()
-        } else {
-            self.used.saturating_add(512).min(self.bytes.len())
-        };
-        match nix::unistd::write(self.stdout.as_fd(), &self.bytes[self.used..end]) {
-            Ok(0) => Err(io::Error::new(
+        match self.stdout.write(&self.bytes[self.used..])? {
+            Some(0) => Err(io::Error::new(
                 io::ErrorKind::WriteZero,
-                "zero original WATCH stdout write",
+                "zero STATISTICS stdout write",
             )),
-            Ok(n) => {
+            Some(n) => {
                 self.used += n;
                 Ok(Some(self.used == self.bytes.len()))
             }
-            Err(nix::errno::Errno::EINTR | nix::errno::Errno::EAGAIN) => Ok(None),
-            Err(e) => Err(io::Error::from(e)),
+            None => Ok(None),
         }
     }
     pub fn pending(&self) -> (usize, usize) {

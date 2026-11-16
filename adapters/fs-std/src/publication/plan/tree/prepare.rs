@@ -14,10 +14,8 @@ use gnunet_crypto::Hash512State;
 use gnunet_fs::{Content, content::Layout, directory as dir};
 use gnunet_types::Error as ProtocolError;
 use std::{
-    ffi::OsStr,
     fs,
     mem::size_of,
-    os::unix::ffi::OsStrExt,
     path::{Path, PathBuf},
 };
 
@@ -51,9 +49,9 @@ fn checked_metadata(
     Ok(())
 }
 fn hash_source(hash: &mut Hash512State, path: &Path, stamp: Stamp) {
-    let bytes = path.as_os_str().as_bytes();
+    let bytes = gnunet_native::os_bytes::encode(path.as_os_str());
     hash.update(&(bytes.len() as u64).to_be_bytes());
-    hash.update(bytes);
+    hash.update(&bytes);
     stamp.hash(hash);
 }
 fn composed(before: Progress, now: Progress) -> Result<Progress, Error> {
@@ -188,7 +186,11 @@ impl<C: FnMut(Progress) -> Control, M: MetadataProvider> Prepare<C, M> {
             &bytes,
             cap.max_metadata_bytes,
             directory,
-            relative.file_name().map(OsStrExt::as_bytes),
+            relative
+                .file_name()
+                .map(crate::input_tree::protocol_name)
+                .transpose()
+                .map_err(source_error)?,
         )?;
         // The unchanged public planner keeps its original total-work accounting.
         if bytes == entry.metadata {
@@ -328,13 +330,13 @@ impl<C: FnMut(Progress) -> Control, M: MetadataProvider> Prepare<C, M> {
     ) -> Result<(), Error> {
         let extra = path
             .as_os_str()
-            .as_bytes()
+            .as_encoded_bytes()
             .len()
             .checked_add(size_of::<TreeObject>())
             .and_then(|v| v.checked_add(puts.len().checked_mul(size_of::<Put>())?))
             .ok_or(Error::Limit)?;
         let source_bytes = source.as_ref().map_or(0, |s| {
-            size_of::<indexed::Source>().saturating_add(s.path.len())
+            size_of::<indexed::Source>().saturating_add(s.path.as_os_str().len())
         });
         let next_bytes = self
             .plan_bytes
@@ -360,11 +362,11 @@ impl<C: FnMut(Progress) -> Control, M: MetadataProvider> Prepare<C, M> {
         } else {
             None
         };
-        let raw = path.as_os_str().as_bytes();
+        let raw = gnunet_native::os_bytes::encode(path.as_os_str());
         let mut path = Vec::new();
         path.try_reserve_exact(raw.len())
             .map_err(|_| Error::Limit)?;
-        path.extend_from_slice(raw);
+        path.extend_from_slice(&raw);
         self.objects.push(TreeObject {
             path,
             content,
@@ -499,7 +501,7 @@ impl<C: FnMut(Progress) -> Control, M: MetadataProvider> Prepare<C, M> {
             return Err(TreePublishCause::Limit(TreeBudget::Entries).into());
         }
         let mut hash = Hash512State::new();
-        hash.update(b"gnunet-rs native tree source v1\0");
+        hash.update(b"gnunet-rs native tree source v2\0");
         hash_source(&mut hash, Path::new(""), root.stamp);
         let mut frames = Vec::new();
         frames
@@ -523,8 +525,8 @@ impl<C: FnMut(Progress) -> Control, M: MetadataProvider> Prepare<C, M> {
             let index = frames[last].next;
             frames[last].next += 1;
             let name = &frames[last].source.names[index];
-            let child = path.join(OsStr::from_bytes(&name.bytes));
-            if child.as_os_str().as_bytes().len() > limits.max_path_bytes {
+            let child = path.join(&name.native);
+            if child.as_os_str().as_encoded_bytes().len() > limits.max_path_bytes {
                 return Err(TreePublishCause::Limit(TreeBudget::Path).into());
             }
             if frames.len() > limits.max_depth {
@@ -652,7 +654,7 @@ pub fn prepare_tree_with_metadata(
         None,
     )?;
     let mut hash = Hash512State::new();
-    hash.update(b"gnunet-rs native tree source v1\0");
+    hash.update(b"gnunet-rs native tree source v2\0");
     hash_source(&mut hash, &root.path, root.source.stamp);
     let mut frames = Vec::new();
     frames
@@ -665,8 +667,8 @@ pub fn prepare_tree_with_metadata(
         if frames[last].next < frames[last].source.names.len() {
             let index = frames[last].next;
             let name = &frames[last].source.names[index];
-            let path = frames[last].path.join(OsStr::from_bytes(&name.bytes));
-            if path.as_os_str().as_bytes().len() > limits.tree.max_path_bytes {
+            let path = frames[last].path.join(&name.native);
+            if path.as_os_str().as_encoded_bytes().len() > limits.tree.max_path_bytes {
                 return Err(TreePublishCause::Limit(TreeBudget::Path).into());
             }
             if frames.len() > limits.tree.max_depth {

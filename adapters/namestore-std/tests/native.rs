@@ -1,7 +1,5 @@
-//! One controlled actual IPC/worker/restart model with public mock bytes only.
-//! Helpers never read/hash a persisted body or key. No entropy, key derivation,
-//! signing, encryption, private_input fixture, C store or real secret is used.
-#![cfg(unix)]
+//! Private local IPC, original worker and restart with public structural fixtures.
+#![cfg(any(unix, windows))]
 #![forbid(unsafe_code)]
 use gnunet_namestore::{Code, Filter, SecretKeyView};
 use gnunet_namestore_host::{
@@ -9,6 +7,8 @@ use gnunet_namestore_host::{
     server::{Limits, Ports, Progress, Server},
     worker::Worker,
 };
+use gnunet_native::filesystem::Directory;
+use gnunet_service_runtime::local::{Listener as LocalListener, Stream};
 use gnunet_service_runtime::{
     clock::SystemClock,
     credentials::UnixAccess,
@@ -19,33 +19,28 @@ use gnunet_wire::official::{
     identity::KeyType,
     namestore::{self as wire, CString, Records, Request, Response, StoreSet},
 };
+#[cfg(windows)]
+use socket2::{Domain, SockAddr, Socket, Type};
 use std::{
     error::Error,
     future::{Future, poll_fn},
-    os::unix::fs::DirBuilderExt,
     path::PathBuf,
     sync::Arc,
     task::Poll,
     time::Duration,
 };
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::UnixStream,
-};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use zeroize::Zeroizing;
 type Failure = Box<dyn Error>;
 struct Temporary(PathBuf);
 impl Temporary {
-    fn new() -> Result<Self, Failure> {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "namestore-public-mock-{}-{now}",
-            std::process::id()
-        ));
-        std::fs::DirBuilder::new().mode(0o700).create(&path)?;
-        Ok(Self(path))
+    fn new() -> std::io::Result<Self> {
+        let mut nonce = [0; 16];
+        gnunet_native::entropy::fill(&mut nonce)?;
+        let parent = std::env::temp_dir();
+        let name = format!("gn-ns-{:032x}", u128::from_be_bytes(nonce));
+        Directory::open(&parent)?.create_private_directory(std::ffi::OsStr::new(&name))?;
+        Ok(Self(parent.join(name)))
     }
 }
 impl Drop for Temporary {
@@ -53,13 +48,26 @@ impl Drop for Temporary {
         let _cleanup = std::fs::remove_dir_all(&self.0);
     }
 }
-async fn send(s: &mut UnixStream, r: Request<'_>) -> Result<(), Failure> {
+fn listen(path: &std::path::Path) -> std::io::Result<LocalListener> {
+    #[cfg(unix)]
+    {
+        LocalListener::bind(path)
+    }
+    #[cfg(windows)]
+    {
+        let socket = Socket::new(Domain::UNIX, Type::STREAM, None)?;
+        socket.bind(&SockAddr::unix(path)?)?;
+        socket.listen(16)?;
+        LocalListener::from_bound_socket(socket)
+    }
+}
+async fn send(s: &mut Stream, r: Request<'_>) -> Result<(), Failure> {
     let mut b = Zeroizing::new(vec![0; r.encoded_len()?]);
     r.encode(&mut b)?;
     s.write_all(&b).await?;
     Ok(())
 }
-async fn frame(s: &mut UnixStream) -> Result<Zeroizing<Vec<u8>>, Failure> {
+async fn frame(s: &mut Stream) -> Result<Zeroizing<Vec<u8>>, Failure> {
     let mut h = [0; 4];
     s.read_exact(&mut h).await?;
     let length = usize::from(u16::from_be_bytes([h[0], h[1]]));
@@ -99,7 +107,7 @@ fn record(bytes: &[u8], label: &[u8], last: u8) -> Result<(), Failure> {
     Ok(())
 }
 async fn store(
-    s: &mut UnixStream,
+    s: &mut Stream,
     rid: u32,
     key: SecretKeyView<'_>,
     sets: &[StoreSet<'_>],
@@ -133,7 +141,7 @@ async fn actor(path: PathBuf) -> Result<(), Failure> {
     let mut raw2 = Zeroizing::new(*raw);
     raw2[19] = 2;
     let second = Records::new(&*raw2, 1)?;
-    let mut monitor = UnixStream::connect(&path).await?;
+    let mut monitor = Stream::connect(&path).await?;
     send(
         &mut monitor,
         Request::MonitorStart {
@@ -147,7 +155,7 @@ async fn actor(path: PathBuf) -> Result<(), Failure> {
         Response::decode(&frame(&mut monitor).await?)?,
         Response::MonitorSync
     ));
-    let mut rpc = UnixStream::connect(&path).await?;
+    let mut rpc = Stream::connect(&path).await?;
     let sets = [
         StoreSet {
             label: CString::new(b"alpha")?,
@@ -281,7 +289,7 @@ async fn actor(path: PathBuf) -> Result<(), Failure> {
     store(&mut rpc, 7, key, &invalid, false).await?;
     record(&frame(&mut monitor).await?, b"alpha", 2)?;
     code(&frame(&mut rpc).await?, 7, Code::LABEL_INVALID.value())?;
-    let mut iterator = UnixStream::connect(&path).await?;
+    let mut iterator = Stream::connect(&path).await?;
     send(
         &mut iterator,
         Request::IterateStart {
@@ -299,7 +307,7 @@ async fn actor(path: PathBuf) -> Result<(), Failure> {
         Response::End { rid: 10 }
     ));
     drop(iterator);
-    let mut stopped = UnixStream::connect(&path).await?;
+    let mut stopped = Stream::connect(&path).await?;
     send(
         &mut stopped,
         Request::IterateStart {
@@ -322,10 +330,9 @@ async fn actor(path: PathBuf) -> Result<(), Failure> {
     Ok(())
 }
 #[test]
-#[ignore = "Source-only: mock-zone bytes flow through real snapshot integrity hashing/files and recovery; compile only under the current no-key-storage boundary"]
 #[expect(
     clippy::panic_in_result_fn,
-    reason = "The compile-only aggregate model asserts its original storage and recovery observations"
+    reason = "The aggregate model asserts original storage and independently reopened recovery observations"
 )]
 fn actual_mock_batch_monitor_editor_worker_and_restart() -> Result<(), Failure> {
     tokio::runtime::Builder::new_current_thread()
@@ -335,7 +342,7 @@ fn actual_mock_batch_monitor_editor_worker_and_restart() -> Result<(), Failure> 
             let temporary = Temporary::new()?;
             let path = temporary.0.join("ipc");
             let directory = temporary.0.join("store");
-            let listener = tokio::net::UnixListener::bind(&path)?;
+            let listener = listen(&path)?;
             let listeners = [Listener::Unix(&listener)];
             let (mut store, loaded) = backend::Store::open(
                 Namespace::Namestore,
@@ -377,7 +384,7 @@ fn actual_mock_batch_monitor_editor_worker_and_restart() -> Result<(), Failure> 
                 Ports {
                     options: ServiceOptions::default(),
                     unix: UnixAccess {
-                        match_uid: true,
+                        match_uid: cfg!(unix),
                         match_gid: false,
                     },
                     clock: Arc::new(SystemClock),

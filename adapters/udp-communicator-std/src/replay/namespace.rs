@@ -1,72 +1,59 @@
-//! One process fence and full-identity child journals, without history migration.
+//! One process fence and complete-identity journals on original directories.
 use super::{DATA, Fence, Journal, JournalError, Outcome, PeerId, Stage, TEMP, invalid, native};
-use std::{
-    fs, io,
-    os::unix::fs::{DirBuilderExt, MetadataExt},
-    path::Path,
-    sync::Arc,
-};
-
-/// Long-lived normal UDP replay root. Child journals retain this actual process
-/// fence too; dropping the facade cannot release authority behind a live child.
+use std::{ffi::OsStr, io, path::Path, sync::Arc};
+const SCAN_LIMIT: usize = 65_536;
+/// Normal UDP replay root. Children retain the original process fence until
+/// their own physical lifetime ends; retired identity histories are not erased.
 pub struct Namespace {
     root: Arc<Fence>,
 }
 impl Namespace {
-    /// Open an existing private root. Unsuffixed snapshots or temporary snapshot
-    /// footprints are refused, never migrated, imported or treated as empty.
+    /// Open an existing private root. Unsuffixed snapshots/stages are refused;
+    /// no old layout is migrated or silently adopted as an empty identity.
     pub fn open(directory: impl AsRef<Path>) -> Result<Self, JournalError> {
-        let original = fs::symlink_metadata(directory.as_ref())
-            .map_err(|e| native(Stage::Fence, Outcome::NotCommitted, e))?;
-        if !original.is_dir() || original.mode() & 0o077 != 0 {
-            return Err(invalid(
-                Stage::Fence,
-                Outcome::NotCommitted,
-                "UDP replay namespace root must be a private real directory",
-            ));
-        }
         let owner = Self {
             root: Arc::new(Fence::open(directory.as_ref())?),
         };
         owner.check()?;
-        owner.reject_unsuffixed_temporary()?;
-        Ok(owner)
-    }
-    pub(super) fn check_root(root: &Fence) -> Result<(), JournalError> {
-        root.check()?;
-        match fs::symlink_metadata(root.directory.join(DATA)) {
-            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(native(Stage::Fence, Outcome::Unknown, e)),
-            Ok(_) => Err(invalid(
-                Stage::Fence,
-                Outcome::Unknown,
-                "unsuffixed UDP replay history cannot be replaced with empty per-identity state",
-            )),
-        }
-    }
-    fn reject_unsuffixed_temporary(&self) -> Result<(), JournalError> {
-        // Scan once at root acquisition, never on the packet admission path.
-        // The held root writer fence excludes ordinary unsuffixed writers.
-        for entry in fs::read_dir(&self.root.directory)
-            .map_err(|e| native(Stage::Fence, Outcome::Unknown, e))?
-        {
-            let entry = entry.map_err(|e| native(Stage::Fence, Outcome::Unknown, e))?;
-            let name = entry.file_name();
+        let entries = owner
+            .root
+            .parent
+            .entries()
+            .map_err(|cause| native(Stage::Fence, Outcome::Unknown, cause))?;
+        let mut count = 0;
+        for name in entries {
+            let name = name.map_err(|cause| native(Stage::Fence, Outcome::Unknown, cause))?;
+            count += 1;
+            if count > SCAN_LIMIT {
+                return Err(gnunet_types::Error::Capacity.into());
+            }
             if name.as_encoded_bytes().starts_with(TEMP.as_bytes()) {
                 return Err(invalid(
                     Stage::Fence,
                     Outcome::Unknown,
-                    "unsuffixed UDP replay history cannot be replaced with empty per-identity state",
+                    "unsuffixed UDP replay stages cannot become empty identity state",
                 ));
             }
         }
-        Ok(())
+        Ok(owner)
+    }
+    pub(super) fn check_root(root: &Fence) -> Result<(), JournalError> {
+        root.check()?;
+        match root.parent.entry_info(OsStr::new(DATA)) {
+            Err(cause) if cause.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(cause) => Err(native(Stage::Fence, Outcome::Unknown, cause)),
+            Ok(_) => Err(invalid(
+                Stage::Fence,
+                Outcome::Unknown,
+                "unsuffixed UDP history cannot become empty per-identity state",
+            )),
+        }
     }
     fn check(&self) -> Result<(), JournalError> {
         Self::check_root(&self.root)
     }
-    /// Open this complete local identity's original journal. Each child keeps
-    /// its own writer fence, replay floors and outgoing timestamp high-water.
+    /// Open this full local identity's original private journal. Directory
+    /// creation and publication stay anchored to the held process root.
     pub fn journal(&self, local: PeerId, maximum: usize) -> Result<Journal, JournalError> {
         if maximum == 0 || maximum > super::MAX_PEERS {
             return Err(gnunet_types::Error::InvalidInput.into());
@@ -81,30 +68,26 @@ impl Namespace {
             name.push(char::from(HEX[usize::from(byte >> 4)]));
             name.push(char::from(HEX[usize::from(byte & 15)]));
         }
-        let path = self.root.directory.join(name);
-        match fs::DirBuilder::new().mode(0o700).create(&path) {
-            Ok(()) => self
+        let directory = match self.root.parent.create_private_directory(OsStr::new(&name)) {
+            Ok(directory) => {
+                self.root
+                    .sync()
+                    .map_err(|cause| native(Stage::DirectorySync, Outcome::Unknown, cause))?;
+                directory
+            }
+            Err(cause) if cause.kind() == io::ErrorKind::AlreadyExists => self
                 .root
-                .sync()
-                .map_err(|e| native(Stage::DirectorySync, Outcome::Unknown, e))?,
-            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
-            Err(e) => return Err(native(Stage::Create, Outcome::NotCommitted, e)),
-        }
-        let metadata =
-            fs::symlink_metadata(&path).map_err(|e| native(Stage::Fence, Outcome::Unknown, e))?;
-        if !metadata.is_dir() || metadata.mode() & 0o077 != 0 {
-            return Err(invalid(
-                Stage::Fence,
-                Outcome::Unknown,
-                "UDP identity journal must be a private real directory",
-            ));
-        }
-        let mut journal = Journal::open(path, local, maximum)?;
+                .parent
+                .open_directory(OsStr::new(&name))
+                .map_err(|cause| native(Stage::Fence, Outcome::Unknown, cause))?,
+            Err(cause) => return Err(native(Stage::Create, Outcome::NotCommitted, cause)),
+        };
+        let fence = Fence::adopt(directory, &self.root.directory.join(&name))?;
+        let mut journal = Journal::from_fence(fence, local, maximum)?;
         journal.namespace = Some(self.root.clone());
         journal.fence()?;
         Ok(journal)
     }
 }
-
 #[cfg(test)]
 mod tests;

@@ -7,7 +7,14 @@ use crate::{
 use alloc::vec::Vec;
 use core::mem::size_of;
 use gnunet_wire::official::set::Abi;
+mod effects;
+mod gradecast;
+mod preface;
+mod results;
+mod retirement;
+mod round;
 mod source;
+use round::{Round, Schedule};
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Stage {
     Collect,
@@ -35,12 +42,15 @@ struct Task<'id> {
     key: RoundContext,
     peer: usize,
     set: SetId<'id>,
+    deadline: u64,
     state: TaskState,
     failure: Option<Error>,
     own_contested: bool,
     remote_marker: bool,
     own_marker_missing: bool,
     remote_context_contested: bool,
+    staged: Members,
+    inventory: Option<u64>,
 }
 struct Set<'id> {
     id: SetId<'id>,
@@ -49,10 +59,13 @@ struct Set<'id> {
     ready: bool,
     closed: bool,
     close_requested: bool,
+    // Publishing PrepareSet transfers a real preparation/retirement obligation
+    // to the host. Before publication this is only a local immutable snapshot.
+    preparation_issued: bool,
     // A trusted host has physically retired this exact native source. Its
     // logical CloseSet debt remains until that original effect settles.
     retired: Option<Error>,
-    kind: u16,
+    kind: Round,
     repetition: i16,
     leader: i16,
 }
@@ -66,8 +79,8 @@ struct Offer<'id> {
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum LeaderStage {
-    Setup(u16),
-    Run(u16),
+    Setup(Round),
+    Run(Round),
     EchoGrade,
     ConfirmGrade,
     Done,
@@ -95,8 +108,7 @@ pub struct Session<'id> {
     peers: Vec<[u8; 32]>,
     local: usize,
     global: [u8; 64],
-    start: u64,
-    deadline: u64,
+    schedule: Schedule,
     now: u64,
     pool: Pool,
     current: Members,
@@ -104,13 +116,13 @@ pub struct Session<'id> {
     leaders: Vec<Leader<'id>>,
     round_ballot: Option<Ballot>,
     tasks: Vec<Task<'id>>,
+    staged_bytes: usize,
     sets: Vec<Set<'id>>,
     offers: Vec<Offer<'id>>,
     inputs: Vec<SetId<'id>>,
     stage: Stage,
-    kind: u16,
+    kind: Round,
     rep: usize,
-    repetitions: usize,
     setup_cursor: usize,
     work_leader: usize,
     work_cursor: usize,
@@ -217,8 +229,7 @@ impl<'id> Session<'id> {
             peers,
             local: at,
             global,
-            start: join.start,
-            deadline: join.deadline,
+            schedule: Schedule::new(join.start, join.deadline, count)?,
             now,
             pool: Pool::new(),
             current: Members::new(),
@@ -226,13 +237,13 @@ impl<'id> Session<'id> {
             leaders: Vec::new(),
             round_ballot: None,
             tasks: Vec::new(),
+            staged_bytes: 0,
             sets: Vec::new(),
             offers: Vec::new(),
             inputs: Vec::new(),
             stage: Stage::Collect,
-            kind: 0,
+            kind: Round::Union,
             rep: 0,
-            repetitions: count / 3 + 1,
             setup_cursor: 0,
             work_leader: 0,
             work_cursor: 0,
@@ -268,41 +279,6 @@ impl<'id> Session<'id> {
         self.next = n.checked_add(1);
         Ok(n)
     }
-    fn publish(&mut self, action: Action<'id>) -> Result<(), Error> {
-        if self.pending.is_some() {
-            return Err(Error::WouldBlock);
-        }
-        let source = match &action {
-            Action::PrepareSet { set } | Action::Reconcile { set, .. } => Some(*set),
-            _ => None,
-        };
-        if let Some(source) = source {
-            let source = &self.sets[self.set_at(source)?];
-            if source.closed || source.retired.is_some() {
-                return Err(Error::Closed);
-            }
-        }
-        let deadline = match &action {
-            Action::PrepareSet { set } => Some(self.sets[self.set_at(*set)?].deadline),
-            Action::Reconcile { task, .. } => {
-                Some(self.task_deadline(self.tasks[self.task_at(*task)?].key))
-            }
-            a if a.cleanup() => None,
-            _ => Some(self.deadline),
-        };
-        let serial = self.serial()?;
-        self.pending = Some(Effect {
-            id: EffectId {
-                brand: self.brand,
-                session: self.session,
-                serial,
-            },
-            action,
-            admitted: false,
-            deadline,
-        });
-        Ok(())
-    }
     /// Canonical derived standard SET application hash.
     #[must_use]
     pub const fn global_id(&self) -> [u8; 64] {
@@ -328,6 +304,7 @@ impl<'id> Session<'id> {
             state::charge(&self.peers)?,
             state::charge(&self.leaders)?,
             state::charge(&self.tasks)?,
+            self.staged_bytes,
             state::charge(&self.sets)?,
             state::charge(&self.offers)?,
             state::charge(&self.inputs)?,
@@ -443,7 +420,7 @@ impl<'id> Session<'id> {
             return Err(Error::TooLarge);
         }
         self.now = self.now.max(now);
-        if self.now >= self.deadline {
+        if self.now >= self.schedule.deadline() {
             return Err(Error::Deadline);
         }
         let mut free = self.available()?;
@@ -477,7 +454,7 @@ impl<'id> Session<'id> {
             return Err(Error::Conflict);
         }
         self.now = self.now.max(now);
-        if self.now >= self.deadline {
+        if self.now >= self.schedule.deadline() {
             return Err(Error::Deadline);
         }
         self.concluded = true;
@@ -509,7 +486,7 @@ impl<'id> Session<'id> {
     ) -> Result<OfferId<'id>, Error> {
         self.allowed()?;
         self.now = self.now.max(now);
-        if self.now >= self.deadline {
+        if self.now >= self.schedule.deadline() {
             return Err(Error::Deadline);
         }
         let p = self
@@ -517,47 +494,54 @@ impl<'id> Session<'id> {
             .binary_search(&peer)
             .map_err(|_| Error::Authentication)?;
         let (p1, p2) = Self::arrange(self.local, p, self.peers.len());
+        let kind = Round::from_wire(context.kind)?;
         if p == self.local
             || context.peer1 != p1
             || context.peer2 != p2
             || p2 as usize != self.local
-            || !matches!(context.kind, 0 | 1 | 2 | 3 | 5)
         {
             return Err(Error::Authentication);
         }
-        if context.kind <= 1 {
+        if kind.preface() {
             if context.repetition != -1 || context.leader != -1 {
                 return Err(Error::Malformed);
             }
         } else if context.repetition < 0
-            || context.repetition as usize >= self.repetitions
+            || context.repetition as usize >= self.schedule.repetitions()
             || context.leader < 0
             || context.leader as usize >= self.peers.len()
         {
             return Err(Error::Malformed);
         }
+        let repetition = if kind.preface() {
+            0
+        } else {
+            context.repetition as usize
+        };
+        if self.now >= self.window_deadline(kind, repetition) {
+            return Err(Error::Deadline);
+        }
         if self.sets.iter().any(|set| {
             set.retired.is_some()
-                && set.kind == context.kind
+                && set.kind == kind
                 && set.repetition == context.repetition
                 && set.leader == context.leader
         }) {
             return Err(Error::Closed);
         }
         if !matches!(self.stage, Stage::Collect | Stage::WaitStart) {
-            let stale = if context.kind <= 1 {
-                self.kind > context.kind || matches!(self.stage, Stage::Finish)
+            let stale = if kind.preface() {
+                self.kind > kind || matches!(self.stage, Stage::Finish)
             } else if context.repetition as usize != self.rep {
                 (context.repetition as usize) < self.rep
             } else if matches!(self.stage, Stage::Apply | Stage::Finish) {
                 true
             } else if let Some(leader) = self.leaders.get(context.leader as usize) {
-                let floor = match leader.stage {
-                    LeaderStage::Setup(kind) | LeaderStage::Run(kind) => Self::grade_rank(kind),
-                    LeaderStage::EchoGrade => 2,
-                    LeaderStage::ConfirmGrade | LeaderStage::Done => 3,
-                };
-                Self::grade_rank(context.kind) < floor
+                match leader.stage {
+                    LeaderStage::Setup(round) | LeaderStage::Run(round) => kind < round,
+                    LeaderStage::EchoGrade => kind < Round::Confirm,
+                    LeaderStage::ConfirmGrade | LeaderStage::Done => true,
+                }
             } else {
                 false
             };
@@ -645,45 +629,24 @@ impl<'id> Session<'id> {
                 data: &self.pool.elements[*i as usize].raw,
             }))
     }
-    fn grade_rank(kind: u16) -> usize {
-        match kind {
-            2 => 0,
-            3 => 1,
-            _ => 2,
-        }
-    }
-    fn window_deadline(&self, kind: u16, rep: usize) -> u64 {
-        let round = match kind {
-            0 => 0,
-            1 => 1,
-            2 => 2 + 3 * rep,
-            3 => 3 + 3 * rep,
-            5 => 4 + 3 * rep,
-            _ => 0,
-        };
-        let periods = 3 + 3 * self.repetitions;
-        let width = u128::from(self.deadline - self.start);
-        self.start
-            .saturating_add(((width * (round + 1) as u128) / periods as u128) as u64)
-            .min(self.deadline)
+    fn window_deadline(&self, kind: Round, rep: usize) -> u64 {
+        self.schedule.window(kind, rep)
     }
     fn phase_deadline(&self) -> u64 {
         self.window_deadline(self.kind, self.rep)
-    }
-    fn task_deadline(&self, key: RoundContext) -> u64 {
-        self.window_deadline(key.kind, key.repetition.max(0) as usize)
     }
     fn wake_gradecast(&mut self) {
         self.leader_scan = self.leaders.len();
         self.task_scan = self.tasks.len();
     }
-    fn begin(&mut self, kind: u16) -> Result<(), Error> {
+    fn begin(&mut self, kind: Round) -> Result<(), Error> {
         self.kind = kind;
         self.stage = Stage::Setup;
         self.setup_cursor = 0;
         self.work_cursor = 0;
         self.inputs.clear();
         self.tasks.clear();
+        self.staged_bytes = 0;
         self.run_cursor = 0;
         self.run_blocked = false;
         self.unfinished = 0;
@@ -691,7 +654,7 @@ impl<'id> Session<'id> {
     }
     fn start_phase_set(
         &mut self,
-        kind: u16,
+        kind: Round,
         leader: usize,
         input: bool,
     ) -> Result<SetId<'id>, Error> {
@@ -699,20 +662,21 @@ impl<'id> Session<'id> {
         // copied only once into the original immutable SET population snapshot.
         let mut free = self.available()?;
         let mut members = match kind {
-            0..=2 => self.current.copy(&mut free)?,
-            3 => self.leaders[leader].proposal.copy(&mut free)?,
-            5 => self.leaders[leader].echo.copy(&mut free)?,
-            _ => return Err(Error::Conflict),
+            Round::Union | Round::Inventory | Round::Lead => self.current.copy(&mut free)?,
+            Round::Echo => self.leaders[leader].proposal.copy(&mut free)?,
+            Round::Confirm => self.leaders[leader].echo.copy(&mut free)?,
         };
-        if kind == 1 {
+        if kind == Round::Inventory
+            && let Ok(sender) = u8::try_from(self.local)
+        {
             let mut raw = [0; 12];
             raw[2] = 2;
             raw[3..11].copy_from_slice(&self.first_size.to_be_bytes());
-            raw[11] = self.local as u8;
+            raw[11] = sender;
             let id = self.pool.intern(&raw, self.abi, self.limits, &mut free)?;
             members.add(id, self.limits, &mut free)?;
         }
-        if kind == 5 && self.leaders[leader].contested {
+        if kind == Round::Confirm && self.leaders[leader].contested {
             let id = self
                 .pool
                 .intern(&[0, 0, 1], self.abi, self.limits, &mut free)?;
@@ -734,41 +698,43 @@ impl<'id> Session<'id> {
             ready: false,
             closed: false,
             close_requested: false,
+            preparation_issued: false,
             retired: None,
             kind,
-            repetition: if kind <= 1 { -1 } else { self.rep as i16 },
-            leader: if kind <= 1 { -1 } else { leader as i16 },
+            repetition: if kind.preface() { -1 } else { self.rep as i16 },
+            leader: if kind.preface() { -1 } else { leader as i16 },
         });
         if input {
             self.inputs.push(id);
         }
         Ok(id)
     }
-    fn total_tasks(&self) -> Result<usize, Error> {
-        if self.kind <= 1 {
-            Ok(self.peers.len())
-        } else {
-            Err(Error::Conflict)
-        }
-    }
     fn plan_task(
         &mut self,
-        kind: u16,
+        kind: Round,
         leader: Option<usize>,
         other: usize,
         set: SetId<'id>,
     ) -> Result<(), Error> {
         let (p1, p2) = Self::arrange(self.local, other, self.peers.len());
         let key = RoundContext {
-            kind,
+            kind: kind.wire(),
             peer1: p1,
             peer2: p2,
-            repetition: if kind <= 1 { -1 } else { self.rep as i16 },
+            repetition: if kind.preface() { -1 } else { self.rep as i16 },
             leader: leader.map_or(-1, |n| n as i16),
             contested: u16::from(
-                kind == 5 && self.leaders[leader.ok_or(Error::Conflict)?].contested,
+                kind == Round::Confirm && self.leaders[leader.ok_or(Error::Conflict)?].contested,
             ),
         };
+        let original = &self.sets[self.set_at(set)?];
+        if original.kind != kind
+            || original.repetition != key.repetition
+            || original.leader != key.leader
+        {
+            return Err(Error::Conflict);
+        }
+        let deadline = original.deadline;
         let mut free = self.available()?;
         state::reserve(&mut self.tasks, 1, self.limits.tasks, &mut free)?;
         let id = TaskId {
@@ -784,6 +750,7 @@ impl<'id> Session<'id> {
             key,
             peer: other,
             set,
+            deadline,
             state: if other == self.local {
                 TaskState::Done
             } else {
@@ -794,6 +761,8 @@ impl<'id> Session<'id> {
             remote_marker: false,
             own_marker_missing: false,
             remote_context_contested: false,
+            staged: Members::new(),
+            inventory: None,
         });
         if other != self.local
             && let Some(cause) = self.sets[self.set_at(set)?].retired
@@ -801,807 +770,6 @@ impl<'id> Session<'id> {
             self.task_failed(self.tasks.len() - 1, cause, false)?;
         }
         Ok(())
-    }
-    fn setup_step(&mut self) -> Result<bool, Error> {
-        let retired = self.inputs.iter().any(|id| {
-            self.set_at(*id)
-                .is_ok_and(|at| self.sets[at].retired.is_some())
-        });
-        if self.now >= self.phase_deadline() && !retired {
-            return Err(Error::Deadline);
-        }
-
-        if self.total_tasks()? > self.limits.tasks {
-            return Err(Error::Capacity);
-        }
-        let sets = if matches!(self.kind, 3 | 5) {
-            self.peers.len()
-        } else {
-            1
-        };
-        if self.inputs.len() < sets {
-            self.start_phase_set(self.kind, self.inputs.len(), true)?;
-            return Ok(true);
-        }
-        for id in &self.inputs {
-            let at = self.set_at(*id)?;
-            if !self.sets[at].ready && self.sets[at].retired.is_none() {
-                let set = *id;
-                self.publish(Action::PrepareSet { set })?;
-                return Ok(true);
-            }
-        }
-        if self.setup_cursor < self.total_tasks()? {
-            let set = *self.inputs.first().ok_or(Error::NotReady)?;
-            self.plan_task(self.kind, None, self.setup_cursor, set)?;
-            self.setup_cursor += 1;
-            return Ok(true);
-        }
-        self.stage = Stage::Run;
-        Ok(true)
-    }
-    fn task_failed(&mut self, index: usize, cause: Error, cancel: bool) -> Result<(), Error> {
-        if self.tasks[index].failure.is_none() {
-            if self.first_task_context.is_none() {
-                let task = &self.tasks[index];
-                let state = match task.state {
-                    TaskState::Planned => FailureTaskState::Planned,
-                    TaskState::Starting => FailureTaskState::Starting,
-                    TaskState::Active => FailureTaskState::Active,
-                    TaskState::Done => FailureTaskState::Done,
-                    TaskState::Failed => FailureTaskState::Failed,
-                    TaskState::Cancel => FailureTaskState::Cancel,
-                };
-                self.first_task_context = Some(TaskFailureContext {
-                    cause,
-                    stage: self.failure_stage(),
-                    task_serial: task.id.serial,
-                    set_serial: task.set.serial,
-                    round: task.key,
-                    peer_index: task.peer,
-                    state,
-                    observed_canonical: self.now,
-                });
-            }
-            self.tasks[index].failure = Some(cause);
-            self.failed_tasks = self.failed_tasks.checked_add(1).ok_or(Error::Overflow)?;
-        }
-        if !cancel && !matches!(self.tasks[index].state, TaskState::Done | TaskState::Failed) {
-            self.unfinished = self.unfinished.checked_sub(1).ok_or(Error::Conflict)?;
-        }
-        self.run_blocked = false;
-        self.run_cursor = self.run_cursor.min(index);
-        self.tasks[index].state = if cancel {
-            TaskState::Cancel
-        } else {
-            TaskState::Failed
-        };
-        self.wake_gradecast();
-        Ok(())
-    }
-    fn record_result(&mut self, t: usize, change: Change, id: u32) -> Result<(), Error> {
-        let task = &self.tasks[t];
-        let kind = task.key.kind;
-        let leader = task.key.leader;
-        let peer = task.peer;
-        let base = self.set_at(task.set)?;
-        if self.sets[base].members.contains(id) != (change == Change::Remove) {
-            return Err(Error::Authentication);
-        }
-        if self.blacklisted[peer] != 0 {
-            return Ok(());
-        }
-        let mut free = self.available()?;
-        match kind {
-            0 | 1 => {
-                if change == Change::Add {
-                    self.current.add(id, self.limits, &mut free)?;
-                }
-            }
-            2 => {
-                let l = usize::try_from(leader).map_err(|_| Error::Malformed)?;
-                if l != self.local {
-                    match change {
-                        Change::Add => self.leaders[l].proposal.add(id, self.limits, &mut free)?,
-                        Change::Remove => self.leaders[l].proposal.remove(id),
-                        Change::Stay => {}
-                    }
-                }
-            }
-            3 => {
-                let l = leader as usize;
-                self.leaders[l]
-                    .echo_ballot
-                    .record(id, change, peer, self.limits, &mut free)?;
-            }
-            5 => {
-                let l = leader as usize;
-                self.leaders[l]
-                    .confirm_ballot
-                    .record(id, change, peer, self.limits, &mut free)?;
-            }
-            _ => return Err(Error::Malformed),
-        }
-        Ok(())
-    }
-    /// Apply only one actual matching original SET operation result. A selected
-    /// application policy may accept opaque data without calling it authenticated.
-    pub fn set_result(
-        &mut self,
-        id: TaskId<'id>,
-        peer: [u8; 32],
-        event: SetEvent<'_>,
-        now: u64,
-        validator: &mut impl Validator,
-    ) -> Result<(), Error> {
-        self.now = self.now.max(now);
-        let t = self.task_at(id)?;
-        if self.now >= self.deadline && !self.cancelling {
-            self.cancel(Error::Deadline)?;
-        }
-
-        if self.peers[self.tasks[t].peer] != peer {
-            return Err(Error::Authentication);
-        }
-        if !self.cancelling
-            && self.tasks[t].state == TaskState::Active
-            && self.now >= self.task_deadline(self.tasks[t].key)
-        {
-            self.task_failed(t, Error::Deadline, true)?;
-        }
-        if self.cancelling || self.tasks[t].state == TaskState::Cancel {
-            if matches!(event, SetEvent::Done { .. } | SetEvent::Failure(_))
-                && matches!(self.tasks[t].state, TaskState::Active | TaskState::Cancel)
-            {
-                let cause = self.tasks[t]
-                    .failure
-                    .unwrap_or_else(|| self.outcome.failure.map_or(Error::Cancelled, |f| f.cause));
-                self.task_failed(t, cause, false)?;
-                return Ok(());
-            }
-            return Err(Error::Closed);
-        }
-        let result = self.apply_result(id, peer, event, now, validator);
-        if let Err(cause) = result
-            && self.tasks[t].state == TaskState::Active
-            && !matches!(cause, Error::WouldBlock | Error::NotReady)
-        {
-            self.task_failed(t, cause, true)?;
-        }
-        result
-    }
-    fn apply_result(
-        &mut self,
-        id: TaskId<'id>,
-        peer: [u8; 32],
-        event: SetEvent<'_>,
-        now: u64,
-        validator: &mut impl Validator,
-    ) -> Result<(), Error> {
-        self.allowed()?;
-        self.now = self.now.max(now);
-        let t = self.task_at(id)?;
-        if self.tasks[t].state != TaskState::Active || self.peers[self.tasks[t].peer] != peer {
-            return Err(Error::StaleGeneration);
-        }
-        match event {
-            SetEvent::Failure(cause) => self.task_failed(t, cause, false),
-            SetEvent::Done { current_size } => {
-                let key = self.tasks[t].key;
-                let p = self.tasks[t].peer;
-                if key.kind == 0 {
-                    self.first_size = self.first_size.max(current_size);
-                }
-                if key.kind == 3 {
-                    self.leaders[key.leader as usize].echo_ballot.commit(p)?;
-                }
-                if key.kind == 5 {
-                    let remote = self.tasks[t].remote_marker
-                        || self.tasks[t].remote_context_contested
-                        || (self.tasks[t].own_contested && !self.tasks[t].own_marker_missing);
-                    if remote {
-                        self.leaders[key.leader as usize]
-                            .confirm_ballot
-                            .contest(p)?;
-                    }
-                    self.leaders[key.leader as usize].confirm_ballot.commit(p)?;
-                }
-                self.run_blocked = false;
-                self.tasks[t].state = TaskState::Done;
-                self.unfinished = self.unfinished.checked_sub(1).ok_or(Error::Conflict)?;
-                self.wake_gradecast();
-                Ok(())
-            }
-            SetEvent::AddLocal { element_type, data }
-            | SetEvent::AddRemote { element_type, data } => {
-                if element_type != 25 {
-                    return Err(Error::Malformed);
-                }
-                let block = Block::decode(data)?;
-                if block.marker != 0 {
-                    if block.marker == 1 && self.tasks[t].key.kind == 5 {
-                        if matches!(event, SetEvent::AddLocal { .. }) {
-                            self.tasks[t].remote_marker = true;
-                        } else if self.tasks[t].own_contested && data == [0, 0, 1] {
-                            self.tasks[t].own_marker_missing = true;
-                        } else {
-                            return Err(Error::Authentication);
-                        }
-                    }
-                    if block.marker == 2 {
-                        let (size, sender) = block.size_marker()?;
-                        let p = self.tasks[t].peer;
-                        if usize::from(sender) == p {
-                            self.sizes[p] = size;
-                        }
-                    }
-                    return Ok(());
-                }
-                let element = self.payload(data, now, validator)?;
-                self.record_result(
-                    t,
-                    if matches!(event, SetEvent::AddLocal { .. }) {
-                        Change::Add
-                    } else {
-                        Change::Remove
-                    },
-                    element,
-                )
-            }
-        }
-    }
-    fn run_step(&mut self) -> Result<bool, Error> {
-        if self.run_blocked {
-            if self.now < self.phase_deadline() {
-                return Ok(false);
-            }
-            self.run_blocked = false;
-            self.run_cursor = 0;
-        }
-
-        if self.run_cursor < self.tasks.len() {
-            let i = self.run_cursor;
-            self.run_cursor += 1;
-            let task = &self.tasks[i];
-            if task.state == TaskState::Cancel {
-                let task = task.id;
-                self.publish(Action::CancelTask { task })?;
-                return Ok(true);
-            }
-            if task.state == TaskState::Active && self.now >= self.phase_deadline() {
-                self.task_failed(i, Error::Deadline, true)?;
-                return Ok(true);
-            }
-            if task.state != TaskState::Planned {
-                return Ok(true);
-            }
-            if self.blacklisted[task.peer] != 0 {
-                self.task_failed(i, Error::Authentication, false)?;
-                return Ok(true);
-            }
-            if self.now >= self.phase_deadline() {
-                self.task_failed(i, Error::Deadline, false)?;
-                return Ok(true);
-            }
-            let incoming = if task.key.peer2 as usize == self.local {
-                self.offers
-                    .iter()
-                    .find(|o| !o.claimed && o.peer == task.peer && Self::key_eq(o.key, task.key))
-                    .map(|o| o.id)
-            } else {
-                None
-            };
-            if task.key.peer2 as usize == self.local && incoming.is_none() {
-                return Ok(true);
-            }
-            let action = Action::Reconcile {
-                task: task.id,
-                set: task.set,
-                peer: self.peers[task.peer],
-                context: task.key,
-                incoming,
-                lower_bound: self.lower_bound,
-            };
-            self.publish(action)?;
-            self.tasks[i].state = TaskState::Starting;
-            if let Some(offer) = incoming {
-                let at = self.offer_at(offer)?;
-                self.offers[at].claimed = true;
-                self.tasks[i].remote_context_contested = self.offers[at].key.contested != 0;
-            }
-            return Ok(true);
-        }
-        if self.unfinished != 0 {
-            self.run_blocked = true;
-            return Ok(false);
-        }
-        // Every original task is semantically or physically terminal before its
-        // original input source is retired. Close debts are actual, not counted away.
-        if let Some(s) = self.sets.iter().find(|s| !s.closed && !s.close_requested) {
-            let set = s.id;
-            self.publish(Action::CloseSet { set })?;
-            let at = self.set_at(set)?;
-            self.sets[at].close_requested = true;
-            return Ok(true);
-        }
-        if self.sets.iter().any(|s| !s.closed) {
-            return Ok(false);
-        }
-        self.sets.clear();
-        self.inputs.clear();
-        // Every original preface source was physically retired above. Its
-        // terminal native tasks no longer consume the next repetition's pool.
-        self.tasks.clear();
-        match self.kind {
-            0 => {
-                self.first_size = self.current.ids.len() as u64;
-                self.begin(1)?;
-            }
-            1 => {
-                let mut sorted = Vec::new();
-                let mut free = self.available()?;
-                state::reserve(&mut sorted, self.sizes.len(), self.limits.peers, &mut free)?;
-                sorted.extend_from_slice(&self.sizes);
-                sorted.sort_unstable();
-                let at = (self.peers.len() / 3 + 1).min(sorted.len() - 1);
-                self.lower_bound = sorted[at].min(u64::from(u8::MAX)) as u8;
-                self.kind = 2;
-                self.rep = 0;
-                self.work_leader = 0;
-                self.stage = Stage::InitRep;
-                self.work_cursor = 0;
-            }
-            _ => return Err(Error::Conflict),
-        }
-        Ok(true)
-    }
-    fn leader_setup(&mut self, l: usize, kind: u16) -> Result<bool, Error> {
-        let retired = self.leaders[l]
-            .source
-            .and_then(|id| self.set_at(id).ok())
-            .is_some_and(|at| self.sets[at].retired.is_some());
-        if self.now >= self.window_deadline(kind, self.rep) && !retired {
-            return Err(Error::Deadline);
-        }
-        let Some(source) = self.leaders[l].source else {
-            let source = self.start_phase_set(kind, l, false)?;
-            self.leaders[l].source = Some(source);
-            return Ok(true);
-        };
-        let at = self.set_at(source)?;
-        if !self.sets[at].ready && self.sets[at].retired.is_none() {
-            self.publish(Action::PrepareSet { set: source })?;
-            return Ok(true);
-        }
-        let total = if kind == 2 && l != self.local {
-            1
-        } else {
-            self.peers.len()
-        };
-        let cursor = self.leaders[l].cursor;
-        if cursor < total {
-            let other = if kind == 2 && l != self.local {
-                l
-            } else {
-                cursor
-            };
-            self.plan_task(kind, Some(l), other, source)?;
-            self.leaders[l].cursor += 1;
-            return Ok(true);
-        }
-        self.leaders[l].stage = LeaderStage::Run(kind);
-        self.leaders[l].cursor = 0;
-        Ok(true)
-    }
-    fn leader_run(&mut self, l: usize, kind: u16) -> Result<bool, Error> {
-        let source = self.leaders[l].source.ok_or(Error::Conflict)?;
-        if self.tasks.iter().any(|task| {
-            task.set == source && !matches!(task.state, TaskState::Done | TaskState::Failed)
-        }) {
-            return Ok(false);
-        }
-        let at = self.set_at(source)?;
-        if !self.sets[at].close_requested {
-            self.publish(Action::CloseSet { set: source })?;
-            self.sets[at].close_requested = true;
-            return Ok(true);
-        }
-        if !self.sets[at].closed {
-            return Ok(false);
-        }
-        // CloseSet has physically retired this exact source and its original
-        // native task rows. Stable retain preserves serial order for task_at;
-        // fresh IDs never relabel callbacks or keep a whole past phase alive.
-        self.tasks.retain(|task| task.set != source);
-        self.sets.retain(|set| set.id != source);
-        self.leaders[l].source = None;
-        self.leaders[l].cursor = 0;
-        self.leaders[l].stage = match kind {
-            2 => LeaderStage::Setup(3),
-            3 => LeaderStage::EchoGrade,
-            5 => LeaderStage::ConfirmGrade,
-            _ => return Err(Error::Conflict),
-        };
-        Ok(true)
-    }
-    fn gradecast_task(&mut self, i: usize) -> Result<bool, Error> {
-        let task = &self.tasks[i];
-        if task.state == TaskState::Cancel {
-            let task = task.id;
-            self.publish(Action::CancelTask { task })?;
-            return Ok(true);
-        }
-        let expired = self.now >= self.task_deadline(task.key);
-        if task.state == TaskState::Active && expired {
-            self.task_failed(i, Error::Deadline, true)?;
-            return Ok(true);
-        }
-        if task.state != TaskState::Planned {
-            return Ok(false);
-        }
-        if self.blacklisted[task.peer] != 0 {
-            self.task_failed(i, Error::Authentication, false)?;
-            return Ok(true);
-        }
-        if expired {
-            self.task_failed(i, Error::Deadline, false)?;
-            return Ok(true);
-        }
-        let incoming = if task.key.peer2 as usize == self.local {
-            self.offers
-                .iter()
-                .find(|o| !o.claimed && o.peer == task.peer && Self::key_eq(o.key, task.key))
-                .map(|o| o.id)
-        } else {
-            None
-        };
-        if task.key.peer2 as usize == self.local && incoming.is_none() {
-            return Ok(false);
-        }
-        let action = Action::Reconcile {
-            task: task.id,
-            set: task.set,
-            peer: self.peers[task.peer],
-            context: task.key,
-            incoming,
-            lower_bound: self.lower_bound,
-        };
-        self.publish(action)?;
-        self.tasks[i].state = TaskState::Starting;
-        if let Some(offer) = incoming {
-            let at = self.offer_at(offer)?;
-            self.offers[at].claimed = true;
-            self.tasks[i].remote_context_contested = self.offers[at].key.contested != 0;
-        }
-        Ok(true)
-    }
-    fn gradecast_step(&mut self) -> Result<bool, Error> {
-        if self
-            .leaders
-            .iter()
-            .all(|leader| leader.stage == LeaderStage::Done)
-        {
-            if self.unfinished != 0 || !self.tasks.is_empty() || !self.sets.is_empty() {
-                return Err(Error::Conflict);
-            }
-            // The previous phase-wide scheduler applied these exclusions only
-            // after every confirmation was terminal. Keep that same boundary:
-            // a fast leader cannot change another live leader's electorate.
-            for (index, leader) in self.leaders.iter().enumerate() {
-                if leader.confidence <= 1 {
-                    self.blacklisted[index] = 1;
-                }
-            }
-            self.stage = Stage::Apply;
-            self.work_cursor = 0;
-            self.apply_worst = usize::MAX;
-            return Ok(true);
-        }
-        self.gradecast_task_turn = !self.gradecast_task_turn;
-        if self.task_scan != 0 && (self.gradecast_task_turn || self.leader_scan == 0) {
-            self.run_cursor %= self.tasks.len();
-            let at = self.run_cursor;
-            self.run_cursor += 1;
-            self.task_scan -= 1;
-            let changed = self.gradecast_task(at)?;
-            if changed {
-                self.leader_scan = self.leaders.len();
-            }
-            return Ok(changed || self.task_scan != 0 || self.leader_scan != 0);
-        }
-        if self.leader_scan != 0 {
-            self.work_leader %= self.leaders.len();
-            let l = self.work_leader;
-            self.work_leader += 1;
-            self.leader_scan -= 1;
-            let changed = match self.leaders[l].stage {
-                LeaderStage::Setup(kind) => self.leader_setup(l, kind)?,
-                LeaderStage::Run(kind) => self.leader_run(l, kind)?,
-                LeaderStage::EchoGrade => self.echo_grade_step(l)?,
-                LeaderStage::ConfirmGrade => self.confirm_grade_step(l)?,
-                LeaderStage::Done => false,
-            };
-            if changed {
-                self.wake_gradecast();
-            }
-            return Ok(changed || self.task_scan != 0 || self.leader_scan != 0);
-        }
-        Ok(false)
-    }
-    fn faults(&self) -> usize {
-        self.peers.len().saturating_sub(1) / 3
-    }
-    fn strong(&self) -> usize {
-        self.peers.len() - self.faults()
-    }
-    fn init_rep_step(&mut self) -> Result<bool, Error> {
-        let n = self.peers.len();
-        if n.checked_mul(n).ok_or(Error::Overflow)? > self.limits.tasks || n > self.limits.sets {
-            return Err(Error::Capacity);
-        }
-        if self.leaders.len() < self.peers.len() {
-            let mut free = self.available()?;
-            let proposal = self.current.copy(&mut free)?;
-            let echo = Members::new();
-            let echo_ballot = Ballot::new(self.peers.len(), self.local, &mut free)?;
-            let confirm_ballot = Ballot::new(self.peers.len(), self.local, &mut free)?;
-            state::reserve(&mut self.leaders, 1, self.limits.peers, &mut free)?;
-            self.leaders.push(Leader {
-                proposal,
-                echo,
-                echo_ballot,
-                confirm_ballot,
-                contested: false,
-                confidence: 0,
-                confirm_worst: usize::MAX,
-                stage: LeaderStage::Setup(2),
-                source: None,
-                cursor: 0,
-            });
-            return Ok(true);
-        }
-        let mut free = self.available()?;
-        let mut ballot = Ballot::new(self.peers.len(), self.local, &mut free)?;
-        ballot.uncommit(self.local)?;
-        self.round_ballot = Some(ballot);
-        self.kind = 2;
-        self.stage = Stage::Gradecast;
-        self.work_leader = 0;
-        self.run_cursor = 0;
-        self.wake_gradecast();
-        Ok(true)
-    }
-    fn echo_grade_step(&mut self, l: usize) -> Result<bool, Error> {
-        if self.leaders[l].cursor == 0 && self.leaders[l].echo.ids.is_empty() {
-            let mut free = self.available()?;
-            self.leaders[l].echo = self.leaders[l].proposal.copy(&mut free)?;
-        }
-        let count = self.leaders[l].echo_ballot.votes.len();
-        if self.leaders[l].cursor < count {
-            let vote = &self.leaders[l].echo_ballot.votes[self.leaders[l].cursor];
-            let element = vote.element;
-            let (change, majority) = self.leaders[l].echo_ballot.majority(vote);
-            if majority < self.strong() {
-                self.leaders[l].contested = true;
-            }
-            let mut free = self.available()?;
-            match change {
-                Change::Add => self.leaders[l].echo.add(element, self.limits, &mut free)?,
-                Change::Remove => self.leaders[l].echo.remove(element),
-                Change::Stay => {}
-            }
-            self.leaders[l].cursor += 1;
-            return Ok(true);
-        }
-        if self.leaders[l].echo_ballot.count() < self.strong() {
-            self.leaders[l].contested = true;
-        }
-        if self.leaders[l].contested {
-            self.leaders[l].confirm_ballot.contest(self.local)?;
-        }
-        self.leaders[l].stage = LeaderStage::Setup(5);
-        self.leaders[l].cursor = 0;
-        Ok(true)
-    }
-    fn confirm_grade_step(&mut self, l: usize) -> Result<bool, Error> {
-        let votes = self.leaders[l].confirm_ballot.votes.len();
-        if self.leaders[l].cursor < votes {
-            let vote = &self.leaders[l].confirm_ballot.votes[self.leaders[l].cursor];
-            let element = vote.element;
-            let (change, majority) = self.leaders[l].confirm_ballot.confirmation_majority(vote);
-            self.leaders[l].confirm_worst = self.leaders[l].confirm_worst.min(majority);
-            let mut free = self.available()?;
-            match change {
-                Change::Add => self.leaders[l].echo.add(element, self.limits, &mut free)?,
-                Change::Remove => self.leaders[l].echo.remove(element),
-                Change::Stay => {}
-            }
-            self.leaders[l].cursor += 1;
-            return Ok(true);
-        }
-        if self.leaders[l].cursor == votes {
-            let ballot = &self.leaders[l].confirm_ballot;
-            let noncontested = ballot.noncontested();
-            let worst = if self.leaders[l].confirm_worst == usize::MAX {
-                noncontested
-            } else {
-                self.leaders[l].confirm_worst
-            };
-            // A failed direct LEAD does not invalidate actual t+1 matching
-            // CONFIRMs. Their original completed SET operations supply the
-            // grade; requiring our LEAD to succeed would permit grades 0 and 2
-            // at two correct receivers of the same Byzantine leader.
-            let confidence = if noncontested >= self.strong() && worst >= self.strong() {
-                2
-            } else if noncontested > self.faults() && worst > self.faults() {
-                1
-            } else {
-                0
-            };
-            self.leaders[l].confidence = confidence;
-            if confidence > 0 {
-                self.round_ballot
-                    .as_mut()
-                    .ok_or(Error::Conflict)?
-                    .commit(l)?;
-                self.leaders[l].cursor += 1;
-            } else {
-                self.leaders[l].stage = LeaderStage::Done;
-                self.leaders[l].cursor = 0;
-            }
-            return Ok(true);
-        }
-        let index = self.leaders[l].cursor - votes - 1;
-        if index < self.pool.elements.len() {
-            if self.leaders[l].confidence > 0 {
-                let id = u32::try_from(index).map_err(|_| Error::Overflow)?;
-                let current = self.current.contains(id);
-                let proposed = self.leaders[l].echo.contains(id);
-                if current != proposed {
-                    let mut free = self.available()?;
-                    self.round_ballot.as_mut().ok_or(Error::Conflict)?.record(
-                        id,
-                        if proposed {
-                            Change::Add
-                        } else {
-                            Change::Remove
-                        },
-                        l,
-                        self.limits,
-                        &mut free,
-                    )?;
-                }
-            }
-            self.leaders[l].cursor += 1;
-            return Ok(true);
-        }
-        self.leaders[l].stage = LeaderStage::Done;
-        self.leaders[l].cursor = 0;
-        Ok(true)
-    }
-    fn apply_step(&mut self) -> Result<bool, Error> {
-        let ballot = self.round_ballot.as_ref().ok_or(Error::Conflict)?;
-        if ballot.count() < self.strong() {
-            return Err(Error::Unavailable);
-        }
-        if let Some(vote) = ballot.votes.get(self.work_cursor) {
-            let id = vote.element;
-            let (change, count) = ballot.union_majority(vote);
-            self.apply_worst = self.apply_worst.min(count);
-            let mut free = self.available()?;
-            match change {
-                Change::Add => self.current.add(id, self.limits, &mut free)?,
-                Change::Remove => self.current.remove(id),
-                Change::Stay => {}
-            }
-            self.work_cursor += 1;
-            return Ok(true);
-        }
-        // The construction permits early stopping only after an n-f majority,
-        // with the same original fault bound used by grade and round admission.
-        let adequate = self.apply_worst >= self.strong();
-        if adequate {
-            self.early = self.early.saturating_add(1);
-        } else if self.early != 0 {
-            return Err(Error::Authentication);
-        }
-        self.round_ballot = None;
-        self.leaders.clear();
-        if self.early >= 2 || self.rep + 1 == self.repetitions {
-            self.stage = Stage::Finish;
-            self.output_cursor = 0;
-        } else {
-            self.rep += 1;
-            self.stage = Stage::InitRep;
-            self.work_leader = 0;
-            self.work_cursor = 0;
-        }
-        Ok(true)
-    }
-    fn finish_step(&mut self) -> Result<bool, Error> {
-        // Installed secretsharing starts a second session with the same public
-        // hash immediately from525. Retire the old real listener/offer source
-        // before publishing the public terminal, never merely clear a counter.
-        if self.listener {
-            self.publish(Action::CloseListener)?;
-            return Ok(true);
-        }
-
-        if let Some(id) = self.current.ids.get(self.output_cursor).copied() {
-            self.output_cursor += 1;
-            if self.local_values.contains(id) {
-                return Ok(true);
-            }
-            let block = Block::decode(&self.pool.elements[id as usize].raw)?;
-            if block.marker != 0 {
-                return Ok(true);
-            }
-            let element_type = block.payload_type;
-            let mut free = self.available()?;
-            let mut data = state::bytes(block.data.len(), &mut free)?;
-            data.copy_from_slice(block.data);
-            self.publish(Action::ClientElement { element_type, data })?;
-            return Ok(true);
-        }
-        self.publish(Action::ClientDone)?;
-        Ok(true)
-    }
-    fn closing_step(&mut self) -> Result<bool, Error> {
-        if self.close_cursor < self.tasks.len() {
-            let i = self.close_cursor;
-            self.close_cursor += 1;
-            if matches!(self.tasks[i].state, TaskState::Active | TaskState::Cancel) {
-                let task = self.tasks[i].id;
-                self.tasks[i].state = TaskState::Cancel;
-                self.publish(Action::CancelTask { task })?;
-            }
-            return Ok(true);
-        }
-        if self.unfinished != 0 {
-            self.close_cursor = 0;
-            return Ok(false);
-        }
-        // The original listener physically owns all remaining unaccepted offers;
-        // its actual retirement closes them as one retained source generation.
-        if self.listener {
-            self.publish(Action::CloseListener)?;
-            return Ok(true);
-        }
-        if let Some(offer) = self.offers.iter().find(|o| !o.reject_requested) {
-            let id = offer.id;
-            self.publish(Action::RejectOffer { offer: id })?;
-            let at = self.offer_at(id)?;
-            self.offers[at].reject_requested = true;
-            return Ok(true);
-        }
-        if let Some(set) = self.sets.iter().find(|s| !s.closed && !s.close_requested) {
-            let id = set.id;
-            self.publish(Action::CloseSet { set: id })?;
-            let at = self.set_at(id)?;
-            self.sets[at].close_requested = true;
-            return Ok(true);
-        }
-        if self.listener {
-            self.publish(Action::CloseListener)?;
-            return Ok(true);
-        }
-        if self.cancelling && !self.client_close_requested {
-            let cause = self.outcome.failure.map_or(Error::Cancelled, |f| f.cause);
-            self.publish(Action::CloseClient { cause })?;
-            self.client_close_requested = true;
-            return Ok(true);
-        }
-        if self
-            .tasks
-            .iter()
-            .all(|t| matches!(t.state, TaskState::Done | TaskState::Failed))
-            && self.sets.iter().all(|s| s.closed)
-            && self.offers.is_empty()
-        {
-            self.stage = Stage::Stopped;
-            return Ok(true);
-        }
-        Ok(false)
     }
     /// Finite CPU/scheduling work, at most64 explicit units per call. True means
     /// genuine state/cursor work, never a physical SET write or peer response.
@@ -1616,7 +784,7 @@ impl<'id> Session<'id> {
         if self.stage == Stage::Gradecast
             && (self.tasks.iter().any(|task| {
                 matches!(task.state, TaskState::Planned | TaskState::Active)
-                    && self.now >= self.task_deadline(task.key)
+                    && self.now >= task.deadline
             }) || self.leaders.iter().any(|leader| {
                 if let LeaderStage::Setup(kind) = leader.stage {
                     self.now >= self.window_deadline(kind, self.rep)
@@ -1627,7 +795,9 @@ impl<'id> Session<'id> {
         {
             self.wake_gradecast();
         }
-        if self.now >= self.deadline && !matches!(self.stage, Stage::Closing | Stage::Stopped) {
+        if self.now >= self.schedule.deadline()
+            && !matches!(self.stage, Stage::Closing | Stage::Stopped)
+        {
             self.cancel(Error::Deadline)?;
         }
         if self
@@ -1661,10 +831,10 @@ impl<'id> Session<'id> {
             let result = match self.stage {
                 Stage::Collect => Ok(false),
                 Stage::WaitStart => {
-                    if self.now < self.start || !self.listener {
+                    if self.now < self.schedule.start() || !self.listener {
                         Ok(false)
                     } else {
-                        self.begin(0).map(|()| true)
+                        self.begin(Round::Union).map(|()| true)
                     }
                 }
                 Stage::Setup => self.setup_step(),
@@ -1691,35 +861,21 @@ impl<'id> Session<'id> {
         }
         Ok(changed)
     }
-    /// Closing-only progress requiring no clock read, synthetic timestamp or
-    /// entropy. Admitted original IO still waits for its real terminal receipt.
-    pub fn retire_step(&mut self) -> Result<bool, Error> {
-        if self.stage == Stage::Stopped {
-            return Ok(false);
-        }
-        if self.stage != Stage::Closing {
-            return Err(Error::NotReady);
-        }
-        if self.pending.is_some() {
-            return Ok(false);
-        }
-        self.closing_step()
-    }
     /// Original next start/phase/session deadline; no retry creates a new bound.
     #[must_use]
     pub fn next_deadline(&self) -> Option<u64> {
         match self.stage {
             Stage::Stopped | Stage::Closing => None,
-            Stage::Collect => Some(self.deadline),
-            Stage::WaitStart if self.now < self.start => Some(self.start),
+            Stage::Collect => Some(self.schedule.deadline()),
+            Stage::WaitStart if self.now < self.schedule.start() => Some(self.schedule.start()),
             Stage::Gradecast => {
-                let mut next = self.deadline;
+                let mut next = self.schedule.deadline();
                 for task in &self.tasks {
                     if matches!(
                         task.state,
                         TaskState::Planned | TaskState::Starting | TaskState::Active
                     ) {
-                        let end = self.task_deadline(task.key);
+                        let end = task.deadline;
                         if end > self.now {
                             next = next.min(end);
                         }
@@ -1735,30 +891,14 @@ impl<'id> Session<'id> {
                 }
                 Some(next)
             }
+            Stage::Setup => Some(self.phase_deadline().min(self.schedule.deadline())),
             Stage::Run if self.phase_deadline() > self.now => {
-                Some(self.phase_deadline().min(self.deadline))
+                Some(self.phase_deadline().min(self.schedule.deadline()))
             }
-            Stage::Run if self.deadline > self.now => Some(self.deadline),
+            Stage::Run if self.schedule.deadline() > self.now => Some(self.schedule.deadline()),
             Stage::Run => None,
-            _ => Some(self.deadline),
+            _ => Some(self.schedule.deadline()),
         }
-    }
-    /// Borrow the single original immutable effect; None is not completion.
-    #[must_use]
-    pub fn effect(&self) -> Option<&Effect<'id>> {
-        self.pending.as_ref()
-    }
-    /// Native admission of exactly this original effect, once.
-    pub fn admit_effect(&mut self, id: EffectId<'id>) -> Result<(), Error> {
-        let effect = self.pending.as_mut().ok_or(Error::NotFound)?;
-        if effect.id != id {
-            return Err(Error::StaleGeneration);
-        }
-        if effect.admitted {
-            return Err(Error::Conflict);
-        }
-        effect.admitted = true;
-        Ok(())
     }
     /// Whether the original operation may still receive ordinary native results.
     /// The host also validates its actual source/epoch and original native bound.
@@ -1797,15 +937,6 @@ impl<'id> Session<'id> {
         self.listener
             && !self.cancelling
             && !matches!(self.stage, Stage::Finish | Stage::Closing | Stage::Stopped)
-    }
-    /// Metadata gate for the same original normal effect. This uses only the last
-    /// observed canonical time; it does not replace a real native hard guard.
-    #[must_use]
-    pub fn effect_io_allowed(&self, id: EffectId<'id>) -> bool {
-        !self.cancelling
-            && self.pending.as_ref().is_some_and(|e| {
-                e.id == id && !e.action.cleanup() && e.deadline.is_none_or(|end| self.now < end)
-            })
     }
     /// Actual independent outcome and client terminal write fact.
     #[must_use]
@@ -1865,7 +996,7 @@ impl<'id> Session<'id> {
         FailureContext {
             cause,
             stage: self.failure_stage(),
-            kind: matches!(self.stage, Stage::Setup | Stage::Run).then_some(self.kind),
+            kind: matches!(self.stage, Stage::Setup | Stage::Run).then_some(self.kind.wire()),
             repetition: matches!(
                 self.stage,
                 Stage::InitRep | Stage::Gradecast | Stage::Apply | Stage::Finish
@@ -1891,183 +1022,6 @@ impl<'id> Session<'id> {
     #[must_use]
     pub fn is_quiescent(&self) -> bool {
         self.stage == Stage::Stopped && self.pending.is_none() && !self.listener
-    }
-    /// Cancel without clock or entropy. An admitted original action remains
-    /// until its real native disposition; future work is never silently replayed.
-    pub fn cancel(&mut self, cause: Error) -> Result<(), Error> {
-        if self.stage == Stage::Stopped {
-            return Err(Error::Closed);
-        }
-        // The ordinary C client destroys its MQ immediately after525. Once
-        // that exact original write is known, source teardown is cleanup only.
-        if self.outcome.client_done_written {
-            if !matches!(cause, Error::Closed | Error::Cancelled) {
-                self.outcome.cleanup_failure.get_or_insert(cause);
-            }
-            if self.stage != Stage::Closing {
-                self.close_cursor = 0;
-            }
-            self.stage = Stage::Closing;
-            return Ok(());
-        }
-        if self.outcome.failure.is_none() {
-            self.failure_context = Some(self.snapshot_failure(cause));
-        }
-        self.outcome.failure.get_or_insert(Failure {
-            cause,
-            cancelled: cause == Error::Cancelled,
-        });
-        self.cancelling = true;
-        if self.stage != Stage::Closing {
-            self.close_cursor = 0;
-        }
-        self.stage = Stage::Closing;
-        if self
-            .pending
-            .as_ref()
-            .is_some_and(|e| !e.admitted && !e.action.cleanup())
-        {
-            let effect = self.pending.take().ok_or(Error::Conflict)?;
-            match effect.action {
-                Action::PrepareSet { set } => {
-                    let at = self.set_at(set)?;
-                    self.sets[at].closed = true;
-                }
-                Action::Reconcile { task, incoming, .. } => {
-                    let at = self.task_at(task)?;
-                    self.task_failed(at, cause, false)?;
-                    if let Some(o) = incoming {
-                        let i = self.offer_at(o)?;
-                        self.offers[i].claimed = false;
-                    }
-                }
-                Action::Listen { .. } => {}
-                _ => {}
-            }
-        }
-        for i in 0..self.tasks.len() {
-            if self.tasks[i].state == TaskState::Planned {
-                self.task_failed(i, cause, false)?;
-            }
-        }
-        Ok(())
-    }
-    /// Settle one original native effect. Cleanup receipts require actual
-    /// physical retirement; queue admission or timeout alone is not Retired.
-    pub fn complete_effect(
-        &mut self,
-        id: EffectId<'id>,
-        completion: Completion,
-    ) -> Result<Terminal<'id>, Error> {
-        self.complete_effect_inner(id, completion, None, None)
-    }
-    fn complete_effect_inner(
-        &mut self,
-        id: EffectId<'id>,
-        completion: Completion,
-        retired_source: Option<SetId<'id>>,
-        uncommitted_offer: Option<OfferId<'id>>,
-    ) -> Result<Terminal<'id>, Error> {
-        let effect = self.pending.as_ref().ok_or(Error::NotFound)?;
-        if effect.id != id {
-            return Err(Error::StaleGeneration);
-        }
-        if !effect.admitted && !matches!(completion, Completion::Unsent(_)) {
-            return Err(Error::Conflict);
-        }
-        if completion == Completion::Retired && !effect.action.cleanup() {
-            return Err(Error::InvalidInput);
-        }
-        let effect = self.pending.take().ok_or(Error::Conflict)?;
-        let cause = match completion {
-            Completion::Unsent(e) | Completion::Lost(e) => Some(e),
-            _ => None,
-        };
-        if effect.action.cleanup() {
-            if let Some(e) = cause {
-                self.outcome.cleanup_failure.get_or_insert(e);
-            }
-            match effect.action {
-                Action::RejectOffer { offer } => {
-                    let o = self.offer_at(offer)?;
-                    self.offers.swap_remove(o);
-                }
-                Action::CancelTask { task } => {
-                    let t = self.task_at(task)?;
-                    self.task_failed(t, self.tasks[t].failure.unwrap_or(Error::Cancelled), false)?;
-                }
-                Action::CloseSet { set } => {
-                    let s = self.set_at(set)?;
-                    self.sets[s].closed = true;
-                }
-                Action::CloseListener => {
-                    self.listener = false;
-                    self.offers.clear();
-                }
-                Action::CloseClient { .. } => {}
-                _ => return Err(Error::Conflict),
-            }
-        } else if let Some(e) = cause {
-            if self.outcome.failure.is_some() {
-                self.outcome.cleanup_failure.get_or_insert(e);
-            }
-            match effect.action {
-                Action::PrepareSet { set } => {
-                    let s = self.set_at(set)?;
-                    if retired_source != Some(set) {
-                        self.sets[s].closed = true;
-                    }
-                }
-                Action::Reconcile { task, incoming, .. } => {
-                    let t = self.task_at(task)?;
-                    self.task_failed(t, e, false)?;
-                    if let Some(o) = incoming {
-                        let at = self.offer_at(o)?;
-                        if uncommitted_offer == Some(o) {
-                            self.offers[at].claimed = false;
-                            self.offers[at].retire = true;
-                        } else {
-                            self.offers.swap_remove(at);
-                        }
-                    }
-                }
-                Action::Listen { .. } => {}
-                _ => {}
-            }
-            if retired_source.is_none() {
-                self.cancel(e)?;
-            }
-        } else {
-            match &effect.action {
-                Action::Listen { .. } => self.listener = true,
-                Action::PrepareSet { set } => {
-                    let s = self.set_at(*set)?;
-                    self.sets[s].ready = true;
-                }
-                Action::Reconcile { task, incoming, .. } => {
-                    let t = self.task_at(*task)?;
-                    if self.cancelling {
-                        self.tasks[t].state = TaskState::Cancel;
-                    } else {
-                        self.tasks[t].state = TaskState::Active;
-                    }
-                    if let Some(o) = incoming {
-                        let at = self.offer_at(*o)?;
-                        self.offers.swap_remove(at);
-                    }
-                }
-                Action::ClientElement { .. } => {}
-                Action::ClientDone => {
-                    self.outcome.client_done_written = true;
-                    self.stage = Stage::Closing;
-                    self.close_cursor = 0;
-                }
-                _ => return Err(Error::Conflict),
-            }
-        }
-        self.run_blocked = false;
-        self.wake_gradecast();
-        Ok(Terminal { effect, completion })
     }
 }
 

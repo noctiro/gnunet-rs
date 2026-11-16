@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
-[target.'cfg(unix)'.dependencies]
+[dependencies]
 gnunet-client-host.workspace = true
 gnunet-config.workspace = true
 gnunet-gnscrypto.workspace = true
@@ -16,6 +16,7 @@ gnunet-namecache-client-host.workspace = true
 gnunet-program-host = { workspace = true, features = ["resolver-broker"] }
 gnunet-resolver-broker.workspace = true
 gnunet-service-runtime.workspace = true
+gnunet-service-startup.workspace = true
 tokio = { workspace = true, features = ["rt", "net", "time", "signal"] }
 zeroize = { workspace = true, features = ["alloc"] }
 
@@ -25,3 +26,7 @@ path = "src/main.rs"
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+gnunet-native.workspace = true
+tokio = { workspace = true, features = ["io-util"] }

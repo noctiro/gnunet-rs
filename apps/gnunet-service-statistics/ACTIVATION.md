@@ -7,6 +7,8 @@ The native application boundary follows GNUnet v0.29.1 commit
 The pinned native dependencies are socket2 0.6.5 and libc 0.2.191; protocol, core,
 crypto, storage and IPC crates retain their prohibition on unsafe code.
 
+## Configuration
+
 The launcher supplies `LISTEN_FDS` and numeric colon-separated `LISTEN_FDNAMES`.
 The service does not check `LISTEN_PID`. The source launcher uses dup-assigned
 numbers and writes those numbers into names; it does not promise consecutive fds
@@ -27,6 +29,8 @@ Rust rejects these malformed declarations before acquiring ownership. It never
 silently discards valid trailing listeners or closes somebody else's fd while
 validating an invalid type. Separate descriptor numbers referring to the same
 underlying socket remain valid separate owned descriptors.
+
+## Descriptor ownership
 
 `unsafe capture()` is called once as the first host initialization operation:
 no runtime, configuration/log file or other Rust fd owner may exist for a named
@@ -66,6 +70,8 @@ The narrowly scoped unsafe operations are:
 * single-threaded removal of the consumed environment hint;
 * a paired umask call and restoration in a synchronous guard.
 
+## Platform validation
+
 macOS defines SO_ACCEPTCONN but querying it through getsockopt returns
 ENOPROTOOPT. Its read-only `proc_pidfdinfo(PROC_PIDFDSOCKETINFO)` path checks the
 returned byte count and reads only `soi_options` at the public SDK prefix offset.
@@ -80,6 +86,8 @@ All carry exact `#[expect(unsafe_code, reason=...)]` and safety comments. No cra
 or workspace unsafe lint is globally relaxed. Safe socket2/std operations handle
 socket type/address inspection, nonblocking mode and listener conversion.
 
+## Private Unix endpoints
+
 `bind_unix_private(&Path)` temporarily sets umask077 while the Unix bind
 creates the socket, matching GNUNET_NETWORK_socket_bind's atomic 0700 creation.
 It restores the exact previous umask on success or failure, and its RAII drop also
@@ -87,6 +95,8 @@ runs on Rust unwinding. A private mutex serializes this module's binds. Because
 umask is process-wide, the host must perform this synchronous startup section
 without unrelated concurrent file creators or foreign umask users; the helper
 contains no await or caller callback. Inherited sockets are not rebound/chmodded.
+
+## Reference probes
 
 `examples/activation_probe.rs` is an isolated, single-threaded subprocess fixture;
 its native setup only creates the deliberately invalid original-CLOEXEC test or
@@ -122,14 +132,12 @@ python3 apps/gnunet-service-statistics/tests/activation_process.py \
   --output /path/to/new/proof-directory
 ```
 
-The helper is a native ownership/OS-boundary test, not a substitute for the
-STATISTICS client lifecycle, transport ACL or whole-GNUnet conformance evidence.
-
 The process captures descriptors through `gnunet-service-runtime`. Its
-shared listener and path guards replace the former application copies; the
-reviewed native-body baseline lives in
-`adapters/service-runtime/tools/migration-baseline.json`. The process
-fixture still exercises this application’s early-main call and normal C daemon.
+shared listener and path guards own native capture, binding and cleanup. The
+process fixture exercises this application's early-main call and normal C daemon;
+its input inventory includes the platform modules behind the activation facade.
+
+## Checks and examples
 
 The application process fixture performs a fresh locked/offline Cargo build of
 the service and example, and compares supplied executable hashes with
@@ -142,7 +150,3 @@ parent control separately. Shared daemon startup, target USER and selected
 Logger run before the host publishes Ready. Deferred Unix creation uses
 `finish_with_access`; owner-only `finish`/private binding remain available to
 existing callers. The normal service applies independent kernel UID/GID checks.
-The centrally compiled entry revision removes private file-control flags
-from existing process fixtures. No process/activation test was executed for this
-revision; the earlier recorded native evidence does not qualify new daemon or
-privilege paths.

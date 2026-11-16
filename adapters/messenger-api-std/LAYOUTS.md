@@ -8,6 +8,8 @@ preallocated finite directories hold explicit attributed-sender, exact message,
 identifier, room and record declarations; their capacities are charged to
 the client's byte budget. No profile negotiation or extra wire byte is invented.
 
+## Layout selection
+
 For a received original, exact locally encoded SEND facts, an explicit held-input
 override, exact message/sender policy and retained original facts precede the
 optional common decoder declaration. GET is not a locally encoded SEND fact.
@@ -64,9 +66,3 @@ pinned C consumer refuses group-bit SECRET, so this source preserves that
 refusal rather than advertise unsupported subset decryption. AUTHORIZATION's
 missing official MAC remains an explicit refusal. No fake MAC/key/provider
 success or fallback plaintext is introduced.
-
-This extension was prepared by source reads/generation and rustfmt only: no
-Cargo/compiler/model, crypto/entropy/key, storage/recovery, native IO or C path
-was executed. Earlier central compile/runtime receipts retain their exact scope
-and do not establish new mixed-node interoperability. No C key store is read or
-migrated, and the service remains an external-CADET/PILS component.

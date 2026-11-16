@@ -571,3 +571,47 @@ fn unregistered_message_preserves_current_get_but_registered_bad_end_fails() -> 
     assert!(h.take_completion().is_none());
     Ok(())
 }
+
+#[test]
+fn explicit_destroy_budget_keeps_the_real_confirmation_past_retry_backoff() -> Result<(), Error> {
+    let mut instance = gnunet_client::statistics_handle::Instance::new();
+    let mut handle = new(&mut instance)?;
+    handle.set(b"persist", 7, true)?;
+    let epoch = handle.begin_connection(AbsoluteTime::from_micros(0))?;
+    let (first, _) = take(&mut handle, epoch)?;
+    assert_eq!(
+        handle.begin_destroy_with_timeout(
+            true,
+            AbsoluteTime::from_micros(0),
+            gnunet_types::Duration(0)
+        ),
+        Err(Error::InvalidInput)
+    );
+    assert_eq!(
+        handle.begin_destroy_with_timeout(
+            true,
+            AbsoluteTime::from_micros(u64::MAX),
+            gnunet_types::Duration(1)
+        ),
+        Err(Error::Overflow)
+    );
+    assert!(!handle.is_destroying());
+    handle.begin_destroy_with_timeout(
+        true,
+        AbsoluteTime::from_micros(10),
+        gnunet_types::Duration(1_000_000),
+    )?;
+    handle.on_frame_written(epoch, first.transmit)?;
+    let (barrier, bytes) = sent(&mut handle, epoch)?;
+    assert_eq!(barrier.kind, OutboundKind::Disconnect);
+    assert_eq!(bytes, b"\0\x04\0\xae");
+    handle.tick(AbsoluteTime::from_micros(100_000))?;
+    assert!(handle.is_destroying());
+    assert!(handle.take_destroy_report().is_none());
+    handle.receive(epoch, CONFIRM, AbsoluteTime::from_micros(100_001))?;
+    handle.finalize_ready_destroy()?;
+    let report = handle.take_destroy_report().ok_or(Error::NotReady)?;
+    assert_eq!(report.outcome, DestroyOutcome::ProcessingConfirmed);
+    assert_eq!(report.unconfirmed_persistent_mutations, 0);
+    Ok(())
+}

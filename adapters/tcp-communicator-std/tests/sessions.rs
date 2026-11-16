@@ -10,6 +10,8 @@
 )]
 #[path = "support/history.rs"]
 mod history;
+#[path = "support/stream.rs"]
+mod stream;
 use core::{
     cell::{Cell, RefCell},
     num::NonZeroUsize,
@@ -33,7 +35,7 @@ use std::{
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::{TcpListener, TcpStream, UnixStream},
+    net::{TcpListener, TcpStream},
 };
 struct Random(u64);
 impl Entropy for Random {
@@ -57,7 +59,7 @@ fn clock() -> Result<Time, Error> {
     .map_err(|_| Error::Overflow)?;
     Ok(Time { now: t, signed: t })
 }
-async fn frame(s: &mut UnixStream) -> io::Result<Vec<u8>> {
+async fn frame(s: &mut TcpStream) -> io::Result<Vec<u8>> {
     let mut h = [0; 4];
     s.read_exact(&mut h).await?;
     let n = u16::from_be_bytes([h[0], h[1]]) as usize;
@@ -69,7 +71,7 @@ async fn frame(s: &mut UnixStream) -> io::Result<Vec<u8>> {
     s.read_exact(&mut b[4..]).await?;
     Ok(b)
 }
-async fn next_frame(s: &mut UnixStream, done: &Cell<bool>) -> io::Result<Option<Vec<u8>>> {
+async fn next_frame(s: &mut TcpStream, done: &Cell<bool>) -> io::Result<Option<Vec<u8>>> {
     // Keep one read future across timer observations so a fragmented header
     // cannot lose its consumed prefix when the peer has not finished yet.
     let reading = frame(s);
@@ -83,7 +85,7 @@ async fn next_frame(s: &mut UnixStream, done: &Cell<bool>) -> io::Result<Option<
         }
     }
 }
-async fn ps(mut s: UnixStream, done: Rc<Cell<bool>>) -> io::Result<UnixStream> {
+async fn ps(mut s: TcpStream, done: Rc<Cell<bool>>) -> io::Result<TcpStream> {
     while let Some(b) = next_frame(&mut s, &done).await? {
         let kind = u16::from_be_bytes([b[2], b[3]]);
         if kind == 821 || kind == 820 {
@@ -102,10 +104,10 @@ async fn ps(mut s: UnixStream, done: Rc<Cell<bool>>) -> io::Result<UnixStream> {
     Ok(s)
 }
 async fn tr(
-    mut s: UnixStream,
+    mut s: TcpStream,
     send: bool,
     done: Rc<Cell<bool>>,
-) -> io::Result<(Vec<u8>, UnixStream)> {
+) -> io::Result<(Vec<u8>, TcpStream)> {
     let mut result = Vec::new();
     while let Some(b) = next_frame(&mut s, &done).await? {
         let kind = u16::from_be_bytes([b[2], b[3]]);
@@ -166,10 +168,10 @@ async fn actual_tcp_fragmented_service_replies_box_and_original_completion()
     let (b_stream, _) = accepted?;
     a_stream.set_nodelay(true)?;
     b_stream.set_nodelay(true)?;
-    let (pa, pas) = UnixStream::pair()?;
-    let (ta, tas) = UnixStream::pair()?;
-    let (pb, pbs) = UnixStream::pair()?;
-    let (tb, tbs) = UnixStream::pair()?;
+    let (pa, pas) = stream::pair().await?;
+    let (ta, tas) = stream::pair().await?;
+    let (pb, pbs) = stream::pair().await?;
+    let (tb, tbs) = stream::pair().await?;
     let ak = EddsaPrivateKey::from_seed([1; 32]);
     let bk = EddsaPrivateKey::from_seed([2; 32]);
     let ae = gnunet_session_crypto::exchange::EcdheSecret::from_eddsa_seed([1; 32]);
@@ -225,7 +227,7 @@ async fn actual_tcp_fragmented_service_replies_box_and_original_completion()
     let mut a = Driver::new(
         a,
         Connection::from_tcp(a_stream),
-        [Connection::from_unix(pa), Connection::from_unix(ta)],
+        [Connection::from_tcp(pa), Connection::from_tcp(ta)],
         cap,
         b"tcp-127.0.0.1:1234",
         1,
@@ -233,7 +235,7 @@ async fn actual_tcp_fragmented_service_replies_box_and_original_completion()
     let mut b = Driver::new(
         b,
         Connection::from_tcp(b_stream),
-        [Connection::from_unix(pb), Connection::from_unix(tb)],
+        [Connection::from_tcp(pb), Connection::from_tcp(tb)],
         cap,
         b"tcp-127.0.0.1:1234",
         1,
@@ -263,8 +265,8 @@ async fn actual_tcp_fragmented_service_replies_box_and_original_completion()
     // Replace the actual inbound TRANSPORT MQ. The original qid, peer, role and
     // address must survive; the signed TCP session itself remains the same owner.
     b.transport_lost(clock()?)?;
-    let (replacement, mut replacement_server) = UnixStream::pair()?;
-    b.attach_transport(Connection::from_unix(replacement))
+    let (replacement, mut replacement_server) = stream::pair().await?;
+    b.attach_transport(Connection::from_tcp(replacement))
         .map_err(|r| r.reason)?;
     let restored = Rc::new(Cell::new(false));
     let restored_waker = Rc::new(RefCell::new(None::<Waker>));

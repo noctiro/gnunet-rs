@@ -9,9 +9,8 @@ use std::{
     error::Error,
     ffi::OsString,
     fmt,
-    fs::File,
     future::{Future, poll_fn},
-    io::{self, Read, Write},
+    io::{self, Write},
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
@@ -85,7 +84,6 @@ impl<F: Future<Output = io::Result<()>>> Guard<'_, F> {
     }
 }
 struct Random<'a> {
-    file: File,
     hard: Instant,
     stopped: &'a Cell<bool>,
     error: Option<io::Error>,
@@ -100,7 +98,7 @@ impl Entropy for Random<'_> {
                 Fault::Deadline
             });
         }
-        if let Err(error) = self.file.read_exact(output) {
+        if let Err(error) = gnunet_native::entropy::fill(output) {
             output.zeroize();
             self.error = Some(error);
             return Err(Fault::Entropy);
@@ -240,7 +238,6 @@ pub(super) fn encrypt(args: &mut [OsString], out: &mut impl Write) -> Result<()>
                 return Err(failed(None, None, Some(error), guard.error.take(), None));
             }
             let mut entropy = Random {
-                file: File::open("/dev/urandom")?,
                 hard,
                 stopped: &stopped,
                 error: None,

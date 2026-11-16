@@ -2,6 +2,8 @@
 
 This package adds deterministic component evidence to the normal-C/Rust socket and daemon checks. It does not implement a replacement C state machine or certify all STATISTICS/GNUnet features.
 
+## Usage
+
 Run the C/Rust component check from any directory, with a fresh output path:
 
 ```sh

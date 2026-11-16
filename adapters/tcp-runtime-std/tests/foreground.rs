@@ -1,8 +1,11 @@
-//! Actual foreground clock-loss retirement with actual PILS and Unix service owners.
+//! Actual foreground clock-loss retirement with production PILS and native local service owners.
 #![expect(
     clippy::panic_in_result_fn,
     reason = "Actual EOF, original error and durable frontier assertions verify resource retirement"
 )]
+#[path = "foreground/recovery.rs"]
+mod recovery;
+use gnunet_service_runtime::local::{Listener as UnixListener, Stream as UnixStream};
 use gnunet_service_runtime::{
     Activation,
     clock::{ClockSample, ClockSubscription, RuntimeClock, SystemClock},
@@ -23,7 +26,7 @@ use std::{
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::{TcpStream, UnixListener, UnixStream},
+    net::TcpStream,
 };
 type Failure = Box<dyn StdError>;
 struct Slot {
@@ -139,12 +142,14 @@ fn drain(stream: &UnixStream) -> std::io::Result<bool> {
 async fn actual_foreground_clock_refusal_drains_original_sockets_and_cleans_same_epoch()
 -> Result<(), Failure> {
     let directory = Directory(std::env::temp_dir().join(format!("gn-tcpf-{}", std::process::id())));
-    std::fs::create_dir(&directory.0)?;
+    gnunet_service_runtime::private_parents(&directory.0.join(".fixture"))?;
     let root = &directory.0;
     let seed = root.join("seed");
-    std::fs::write(&seed, [17; 32])?;
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&seed, std::fs::Permissions::from_mode(0o600))?;
+    let mut keyfile = gnunet_native::filesystem::Directory::open(root)?
+        .create_private_file(std::ffi::OsStr::new("seed"))?;
+    std::io::Write::write_all(&mut keyfile, &[17; 32])?;
+    keyfile.sync_all()?;
+    drop(keyfile);
     let mut config = gnunet_config::Configuration::default();
     for (section, path) in [
         (b"pils".as_slice(), root.join("pils")),
@@ -159,29 +164,24 @@ async fn actual_foreground_clock_refusal_drains_original_sockets_and_cleans_same
     }
     config.set_value(b"communicator-tcp", b"BINDTO", Some(b"127.0.0.1:0"))?;
     config.set_value(b"communicator-tcp", b"DISABLE_V6", Some(b"YES"))?;
-    let service = gnunet_pils::Service::new(
-        gnunet_pils::MasterKey::from_seed([17; 32]),
-        gnunet_pils::Profile::Reference029,
-        SystemClock.sample()?.now.as_micros(),
-        gnunet_pils::HelloLimits {
-            maximum_input_bytes: 65535,
-            maximum_address_bytes: 4096,
-            maximum_addresses: 64,
-        },
+    config.set_value(
+        b"PEER",
+        b"PRIVATE_KEY",
+        Some(seed.as_os_str().as_encoded_bytes()),
     )?;
-    let local_peer = *service.identity().public_key().as_bytes();
-    let listener = std::os::unix::net::UnixListener::bind(root.join("pils"))?;
-    let mut pils = gnunet_pils_host::Host::<4096>::new(
-        listener,
-        service,
-        gnunet_pils_host::Limits {
+    let listener = UnixListener::bind(root.join("pils"))?;
+    let mut pils = gnunet_pils_host::startup::prepare(
+        &config,
+        Arc::new(SystemClock),
+        gnunet_pils_host::service::Limits {
             clients: 4,
-            receive_bytes: 65535,
-            transmit_bytes: 1024 * 1024,
-            accepts_per_step: 4,
             address_bytes: 4096,
+            ..Default::default()
         },
-    )?;
+    )?
+    .into_host();
+    let local_peer = pils.identity().ok_or("PILS identity absent")?;
+    let pils_ports = [gnunet_service_runtime::service::Listener::Unix(&listener)];
     let ps_listener = UnixListener::bind(root.join("ps"))?;
     let tr_listener = UnixListener::bind(root.join("tr"))?;
     let mut ps = None;
@@ -220,7 +220,13 @@ async fn actual_foreground_clock_refusal_drains_original_sockets_and_cleans_same
     let deadline = Instant::now() + Duration::from_secs(3);
     let mut cx = Context::from_waker(Waker::noop());
     let original = loop {
-        pils.poll_once(SystemClock.sample()?.now.as_micros())?;
+        {
+            let mut observe = |_| {};
+            let mut driving = std::pin::pin!(pils.drive(&pils_ports, &mut observe, None));
+            if let Poll::Ready(result) = driving.as_mut().poll(&mut cx) {
+                let _progress = result?;
+            }
+        }
         if ps.is_none()
             && let Poll::Ready(result) = ps_listener.poll_accept(&mut cx)
         {

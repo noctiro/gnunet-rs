@@ -2,6 +2,11 @@
 use super::*;
 use crate::Mode;
 use std::{mem::size_of, net::Ipv6Addr, os::unix::fs::OpenOptionsExt};
+mod lifetime;
+pub(crate) mod recovery;
+pub use lifetime::InterfaceCleanupError;
+pub(crate) use lifetime::{CreationFailure, InterfaceLease, open_exclusive, open_recorded};
+pub(crate) use recovery::discover::find as discover_allocation;
 
 // FreeBSD sys/net/if_tun.h. Sizes come from the native ABI types, not Darwin.
 const GET_NAME: libc::c_ulong = nix::request_code_read!(b't', 93, size_of::<libc::ifreq>());
@@ -17,36 +22,90 @@ const SIOCSIFMTU: libc::c_ulong = nix::request_code_write!(b'i', 52, size_of::<l
 const SIOCSIFFLAGS: libc::c_ulong = nix::request_code_write!(b'i', 16, size_of::<libc::ifreq>());
 const SIOCSIFADDR: libc::c_ulong = nix::request_code_write!(b'i', 12, size_of::<libc::ifreq>());
 const SIOCSIFNETMASK: libc::c_ulong = nix::request_code_write!(b'i', 22, size_of::<libc::ifreq>());
+const GET_FIB: libc::c_ulong = nix::request_code_readwrite!(b'i', 92, size_of::<libc::ifreq>());
+const SET_FIB: libc::c_ulong = nix::request_code_write!(b'i', 93, size_of::<libc::ifreq>());
 
-fn header(fd: &OwnedFd) -> io::Result<libc::c_int> {
+fn get_fib(fd: &OwnedFd, name: &str) -> io::Result<u32> {
+    let mut req = request(name)?;
+    ioctl(fd, GET_FIB, &mut req)?;
+    #[expect(
+        unsafe_code,
+        reason = "Successful SIOCGIFFIB initializes the native unsigned ifru_fib union member"
+    )]
+    // SAFETY: exact getter/request ABI, and the successful kernel call selected
+    // this scalar union member. No pointer or reference is read from the union.
+    Ok(unsafe { req.ifr_ifru.ifru_fib })
+}
+pub(crate) fn interface_fib(info: &Info) -> io::Result<u32> {
+    let fd: OwnedFd = control_socket()?.into();
+    if index(&info.name)? != info.index {
+        return Err(invalid("original interface changed before FIB query"));
+    }
+    let fib = get_fib(&fd, &info.name)?;
+    if index(&info.name)? != info.index {
+        return Err(invalid("original interface changed during FIB query"));
+    }
+    Ok(fib)
+}
+
+fn read_int(fd: &OwnedFd, command: libc::c_ulong) -> io::Result<libc::c_int> {
     let mut value = 0;
     #[expect(
         unsafe_code,
-        reason = "TUNGIFHEAD writes exactly one live initialized c_int, as declared by FreeBSD if_tun.h"
+        reason = "FreeBSD TUN integer getters write one live initialized c_int with the exact declared ioctl size"
     )]
     // SAFETY: the native request size and exclusive output buffer agree.
-    let result = unsafe { libc::ioctl(fd.as_raw_fd(), GET_HEADER, &mut value) };
+    let result = unsafe { libc::ioctl(fd.as_raw_fd(), command, &mut value) };
     result_code(result)?;
     Ok(value)
 }
+fn set_int(fd: &OwnedFd, command: libc::c_ulong, value: libc::c_int) -> io::Result<()> {
+    #[expect(
+        unsafe_code,
+        reason = "FreeBSD TUN integer setters read one live initialized c_int with the exact declared ioctl size"
+    )]
+    // SAFETY: native request size and live initialized input agree.
+    result_code(unsafe { libc::ioctl(fd.as_raw_fd(), command, &value) })
+}
+fn enable_header(fd: &OwnedFd) -> io::Result<()> {
+    set_int(fd, SET_HEADER, 1)
+}
 
-pub(crate) fn verify(fd: &OwnedFd) -> io::Result<Info> {
+pub(super) struct NativeIdentity {
+    pub name: String,
+    pub index: u32,
+    header: bool,
+}
+fn identity(fd: &OwnedFd) -> io::Result<NativeIdentity> {
     let stat = nix::sys::stat::fstat(fd)?;
     if stat.st_mode & libc::S_IFMT != libc::S_IFCHR {
         return Err(invalid("FreeBSD TUN requires a character device"));
     }
-    // TUNGIFHEAD is accepted only by the L3 TUN branch, not TAP. A zero header
-    // cannot establish raw-IP framing: TUN_LMODE may carry a variable sockaddr.
-    if header(fd)? != 1 {
-        return Err(invalid("FreeBSD TUN requires TUN_IFHEAD framing"));
-    }
+    // This getter belongs only to L3 TUN. Zero identifies an unconfigured L3
+    // device for cleanup, without granting any raw-IP packet framing capability.
+    let header = match read_int(fd, GET_HEADER)? {
+        0 => false,
+        1 => true,
+        _ => return Err(invalid("invalid FreeBSD TUN framing flag")),
+    };
     let mut req = request("tun")?;
     ioctl(fd, GET_NAME, &mut req)?;
     let name = read_name(&req.ifr_name)?;
     let index = index(&name)?;
-    Ok(Info {
+    Ok(NativeIdentity {
         name,
         index,
+        header,
+    })
+}
+pub(crate) fn verify(fd: &OwnedFd) -> io::Result<Info> {
+    let actual = identity(fd)?;
+    if !actual.header {
+        return Err(invalid("FreeBSD TUN requires TUN_IFHEAD framing"));
+    }
+    Ok(Info {
+        name: actual.name,
+        index: actual.index,
         mode: Mode::FreeBsd,
     })
 }
@@ -68,14 +127,7 @@ pub(crate) fn open_existing(interface: &str) -> io::Result<OwnedFd> {
         .custom_flags(libc::O_CLOEXEC | libc::O_NONBLOCK | libc::O_NOFOLLOW)
         .open(path)?
         .into();
-    let mut enabled: libc::c_int = 1;
-    #[expect(
-        unsafe_code,
-        reason = "TUNSIFHEAD reads one initialized native c_int and clears incompatible TUN_LMODE in the actual FreeBSD driver"
-    )]
-    // SAFETY: exact ioctl ABI; this owned descriptor remains live synchronously.
-    let result = unsafe { libc::ioctl(fd.as_raw_fd(), SET_HEADER, &mut enabled) };
-    result_code(result)?;
+    enable_header(&fd)?;
     let info = verify(&fd)?;
     if info.name != interface || info.index != expected {
         return Err(io::Error::new(
@@ -234,6 +286,33 @@ fn address6(info: &Info, address: Ipv6Addr, prefix: u8) -> io::Result<()> {
     // SAFETY: exact request layout and native ioctl size, live exclusive storage.
     let result = unsafe { libc::ioctl(socket.as_raw_fd(), ADD_ADDRESS6, &mut req) };
     result_code(result)
+}
+
+pub(crate) fn process_fib() -> io::Result<u32> {
+    let mut fib: libc::c_int = 0;
+    let mut len = std::mem::size_of_val(&fib);
+    #[expect(
+        unsafe_code,
+        reason = "sysctlbyname writes one initialized scalar with its exact capacity; the static name is NUL terminated and no value is changed"
+    )]
+    // SAFETY: output and length remain exclusive and live for the synchronous
+    // read-only call. newp is null and newlen zero, so no sysctl is modified.
+    let result = unsafe {
+        libc::sysctlbyname(
+            c"net.my_fibnum".as_ptr(),
+            (&mut fib as *mut libc::c_int).cast(),
+            &mut len,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if result < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if len != std::mem::size_of_val(&fib) {
+        return Err(invalid("unexpected native process FIB size"));
+    }
+    u32::try_from(fib).map_err(|_| invalid("negative native process FIB"))
 }
 
 #[cfg(test)]

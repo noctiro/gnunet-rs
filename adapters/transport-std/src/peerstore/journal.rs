@@ -4,9 +4,7 @@ use gnunet_crypto::EddsaPublicKey;
 use gnunet_transport::{PeerId, own::CommitOutcome, own_wire};
 use gnunet_types::Error;
 use std::{
-    fs::{self, OpenOptions},
     io::{self, Write},
-    os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -61,6 +59,8 @@ pub struct JournalFailure {
     pub classification: Error,
     /// Original OS error, including its original kind/raw errno when available.
     pub io: Option<io::Error>,
+    /// Independent owned-stage cleanup error, without replacing the original.
+    pub cleanup: Option<io::Error>,
 }
 impl JournalFailure {
     fn protocol(stage: &'static str, classification: Error) -> Self {
@@ -68,6 +68,7 @@ impl JournalFailure {
             stage,
             classification,
             io: None,
+            cleanup: None,
         }
     }
     fn io(stage: &'static str, error: io::Error) -> Self {
@@ -75,6 +76,7 @@ impl JournalFailure {
             stage,
             classification: Error::Storage,
             io: Some(error),
+            cleanup: None,
         }
     }
 }
@@ -210,58 +212,26 @@ impl Journal {
             .parent()
             .filter(|p| !p.as_os_str().is_empty())
             .unwrap_or(Path::new("."));
-        let parent = fs::canonicalize(parent).map_err(|_| Error::Storage)?;
-        let directory = OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
-            .open(&parent)
-            .map_err(|_| Error::Storage)?;
-        let directory_id = Inode::of(&directory.metadata().map_err(|_| Error::Storage)?);
-        let lock = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(parent.join(OWNER_FILE))
-            .map_err(|_| Error::Storage)?;
-        lock.try_lock().map_err(|_| Error::Conflict)?;
-        let lock_meta = lock.metadata().map_err(|_| Error::Storage)?;
-        if !lock_meta.is_file() {
-            return Err(Error::InvalidInput);
-        }
-        let authority = Arc::new(Authority {
-            parent: parent.clone(),
-            directory,
-            directory_id,
-            lock,
-            lock_id: Inode::of(&lock_meta),
-        });
-        authority.verify().map_err(|f| f.classification)?;
-        let path = parent.join(name);
-        let (snapshot, published_inode) = match open_data(&path) {
-            Ok(mut file) => {
-                let metadata = file.metadata().map_err(|_| Error::Storage)?;
-                if !metadata.is_file() || Inode::of(&metadata) == authority.lock_id {
-                    return Err(Error::InvalidInput);
-                }
-                let raw = read_bounded(&mut file).map_err(|f| f.classification)?;
-                (
-                    decode_snapshot(raw, hello_profiles.managed)?,
-                    Some(Inode::of(&metadata)),
-                )
-            }
-            Err(e) if e.kind() == io::ErrorKind::NotFound => (
+        let authority =
+            Arc::new(Authority::open(parent).map_err(|failure| failure.classification)?);
+        let path = authority.parent.join(name);
+        let (snapshot, published_inode) = match authority
+            .read(name)
+            .map_err(|failure| failure.classification)?
+        {
+            Some((raw, identity)) => (
+                decode_snapshot(raw, hello_profiles.managed)?,
+                Some(identity),
+            ),
+            None => (
                 Snapshot {
                     generation: 0,
                     highwater: 0,
                     rows: Vec::new(),
-                    raw: Vec::new(),
+                    raw: encode_snapshot(0, 0, &[])?,
                 },
                 None,
             ),
-            Err(_) => return Err(Error::Storage),
         };
         authority.verify().map_err(|f| f.classification)?;
         Ok(Self {
@@ -288,7 +258,12 @@ impl Journal {
     pub(super) fn records(&self) -> impl Iterator<Item = &Record> {
         self.snapshot.rows.iter().map(|s| &s.record)
     }
-    /// Number of known durable commits in this writer lifetime.
+    /// Native directory-barrier capability, separately from file sync and
+    /// transaction certainty. Windows explicitly reports Unavailable.
+    pub fn directory_sync(&self) -> gnunet_native::DirectorySync {
+        self.authority.barrier
+    }
+    /// Number of completed original snapshot transactions.
     pub fn commits(&self) -> u64 {
         self.commits
     }
@@ -564,14 +539,30 @@ impl Journal {
             .is_some_and(|p| p.id == transaction.id)
             && Arc::ptr_eq(&self.authority, &transaction._authority)
     }
+    fn not_committed_stage(
+        &mut self,
+        transaction: &mut Transaction,
+        mut temporary: Temporary,
+        mut failure: JournalFailure,
+    ) -> CommitOutcome {
+        failure.cleanup = temporary.discard().err();
+        self.not_committed(transaction, failure)
+    }
     fn not_committed(
         &mut self,
         transaction: &mut Transaction,
-        failure: JournalFailure,
+        mut failure: JournalFailure,
     ) -> CommitOutcome {
+        if let Some(mut pending) = self.pending.take()
+            && let Some(mut temporary) = pending.temporary.take()
+        {
+            failure.cleanup = temporary.discard().err();
+        }
         let outcome = CommitOutcome::NotCommitted(failure.classification);
         if transaction.failure.is_none() {
             transaction.failure = Some(failure);
+        } else {
+            transaction.recovery_failure = Some(failure);
         }
         self.pending = None;
         transaction.outcome = Some(outcome);
@@ -662,7 +653,7 @@ impl Journal {
                 JournalFailure::protocol("changed-predecessor", Error::Conflict),
             );
         }
-        let mut temporary = match temporary_file(&self.authority.parent) {
+        let mut temporary = match Temporary::create(self.authority.clone()) {
             Ok(t) => t,
             Err(f) => return self.not_committed(transaction, f),
         };
@@ -672,14 +663,22 @@ impl Journal {
                 JournalFailure::protocol("missing-original", Error::Stale),
             );
         };
-        if let Err(e) = temporary.file.write_all(&pending.candidate.raw) {
-            return self.not_committed(transaction, JournalFailure::io("write", e));
+        if let Err(e) = write_original(&mut temporary.file, &pending.candidate.raw) {
+            return self.not_committed_stage(
+                transaction,
+                temporary,
+                JournalFailure::io("write", e),
+            );
         }
         if let Err(e) = temporary.file.sync_all() {
-            return self.not_committed(transaction, JournalFailure::io("file-sync", e));
+            return self.not_committed_stage(
+                transaction,
+                temporary,
+                JournalFailure::io("file-sync", e),
+            );
         }
         if let Err(f) = self.verify_authority() {
-            return self.not_committed(transaction, f);
+            return self.not_committed_stage(transaction, temporary, f);
         }
         let Some(pending) = self.pending.as_mut() else {
             return self.not_committed(
@@ -700,7 +699,7 @@ impl Journal {
             .pending
             .as_ref()
             .and_then(|pending| pending.temporary.as_ref())
-            .map(|temporary| fs::rename(&temporary.path, &self.path))
+            .map(|temporary| temporary.publish(self.path.file_name().unwrap_or_default()))
         else {
             return self.unknown(
                 transaction,
@@ -729,26 +728,15 @@ impl Journal {
         self.committed(transaction)
     }
     fn read_current(&self) -> Result<Option<(Vec<u8>, Inode)>, JournalFailure> {
-        match open_data(&self.path) {
-            Ok(mut file) => {
-                let metadata = file
-                    .metadata()
-                    .map_err(|e| JournalFailure::io("readback-metadata", e))?;
-                if !metadata.is_file() || Inode::of(&metadata) == self.authority.lock_id {
-                    return Err(JournalFailure::protocol("readback-kind", Error::Conflict));
-                }
-                Ok(Some((read_bounded(&mut file)?, Inode::of(&metadata))))
-            }
-            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(JournalFailure::io("readback-open", e)),
-        }
+        let name = self
+            .path
+            .file_name()
+            .ok_or_else(|| JournalFailure::protocol("missing-filename", Error::InvalidInput))?;
+        self.authority.read(name)
     }
     fn finish_candidate(&mut self) -> Result<(), JournalFailure> {
         self.verify_authority()?;
-        self.authority
-            .directory
-            .sync_all()
-            .map_err(|e| JournalFailure::io("directory-sync", e))?;
+        self.authority.sync()?;
         let current = self.read_current()?;
         let pending = self
             .pending
@@ -807,28 +795,23 @@ impl Journal {
             }
             return self.committed(transaction);
         }
-        let predecessor_matches = current == pending.predecessor;
-        let original_temporary_present = pending.temporary.as_ref().is_some_and(|t| {
-            fs::symlink_metadata(&t.path).is_ok_and(|m| m.is_file() && Inode::of(&m) == t.inode)
-        });
-        if !pending.renamed && predecessor_matches && original_temporary_present {
-            if let Err(e) = self.authority.directory.sync_all() {
-                return self.unknown(
-                    transaction,
-                    JournalFailure::io("recovery-predecessor-sync", e),
-                );
+        let renamed = pending.renamed;
+        let predecessor_matches = match self.predecessor_present(&current) {
+            Ok(value) => value,
+            Err(failure) => return self.unknown(transaction, failure),
+        };
+        if !renamed && predecessor_matches {
+            if let Err(failure) = self.authority.sync() {
+                return self.unknown(transaction, failure);
             }
             let current = match self.read_current() {
                 Ok(current) => current,
                 Err(failure) => return self.unknown(transaction, failure),
             };
-            let unchanged = self.pending.as_ref().is_some_and(|pending| {
-                current == pending.predecessor
-                    && pending.temporary.as_ref().is_some_and(|t| {
-                        fs::symlink_metadata(&t.path)
-                            .is_ok_and(|m| m.is_file() && Inode::of(&m) == t.inode)
-                    })
-            });
+            let unchanged = match self.predecessor_present(&current) {
+                Ok(value) => value,
+                Err(failure) => return self.unknown(transaction, failure),
+            };
             if !unchanged {
                 return self.unknown(
                     transaction,
@@ -848,6 +831,23 @@ impl Journal {
             JournalFailure::protocol("unresolved-bytes", Error::Conflict),
         )
     }
+    fn predecessor_present(
+        &self,
+        current: &Option<(Vec<u8>, Inode)>,
+    ) -> Result<bool, JournalFailure> {
+        let pending = self
+            .pending
+            .as_ref()
+            .ok_or_else(|| JournalFailure::protocol("missing-original", Error::Stale))?;
+        if current != &pending.predecessor {
+            return Ok(false);
+        }
+        pending.temporary.as_ref().map_or(Ok(false), |temporary| {
+            temporary
+                .present()
+                .map_err(|cause| JournalFailure::io("recovery-stage-name", cause))
+        })
+    }
     /// No syscall worker survives these synchronous calls. Quiescence is
     /// independent of whether an Unknown outcome has been resolved.
     pub fn io_quiescent(&self, transaction: &Transaction) -> bool {
@@ -861,10 +861,22 @@ use codec::{
     check_partitions, clone_rows, copy_bytes, decode_snapshot, encode_snapshot, input_record_bytes,
     validate_hello,
 };
-use fence::{Authority, Inode, Temporary, open_data, read_bounded, temporary_file};
+use fence::{Authority, Inode, Temporary};
 #[cfg(test)]
 #[expect(
     clippy::panic_in_result_fn,
     reason = "Assertions check real filesystem bytes, original transaction fences and publication certainty"
 )]
 mod tests;
+
+fn write_original(file: &mut std::fs::File, bytes: &[u8]) -> io::Result<()> {
+    let mut offset = 0;
+    while offset < bytes.len() {
+        let count = file.write(&bytes[offset..])?;
+        if count == 0 {
+            return Err(io::ErrorKind::WriteZero.into());
+        }
+        offset += count;
+    }
+    Ok(())
+}

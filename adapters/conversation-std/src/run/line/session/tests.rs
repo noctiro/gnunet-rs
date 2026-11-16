@@ -139,3 +139,73 @@ fn failed_initialization_cannot_publish_identity_or_reuse_brand() -> Result<(), 
         Err(Fault::Conflict)
     ))
 }
+
+#[test]
+fn actual_observer_loss_pauses_the_same_core_and_rejects_foreign_successors() -> Result<(), Fault> {
+    let mut source = client::Instance::new();
+    let mut observer = Observer::new(&mut source, Profile::Reference029, HELLO)?;
+    let epoch = observer.begin_connection(AbsoluteTime::from_micros(10))?;
+    let initial = announce(&mut observer, 7, 10)?;
+    let mut instance = Instance::new();
+    let mut owner = LineSession::new(&mut instance);
+    owner.observe(initial, Limits::default(), 10)?;
+    let core = owner.core_mut().ok_or(Fault::NotReady)?;
+    let identity = core.identity();
+    core.client_request(
+        &identity,
+        Message::Register {
+            reserved: 0,
+            port: &[9; 64],
+        },
+        10,
+        100,
+    )?;
+    let pending = core.effect().ok_or(Fault::NotReady)?.id();
+    core.admit_effect(pending)?;
+    let loss = observer.prepare_connection_lost(epoch)?;
+    check(loss.retained() == 0 && loss.feeds().next().is_none())?;
+    owner.pause(epoch)?;
+    observer.register_retry(AbsoluteTime::from_micros(10))?;
+    check(owner.waiting() && owner.observed().is_none() && owner.previous() == Some(initial))?;
+    check(
+        owner
+            .core()
+            .ok_or(Fault::NotReady)?
+            .effect()
+            .ok_or(Fault::NotReady)?
+            .id()
+            == pending,
+    )?;
+
+    let mut foreign_source = client::Instance::new();
+    let mut foreign = Observer::new(&mut foreign_source, Profile::Reference029, HELLO)?;
+    let foreign_epoch = foreign.begin_connection(AbsoluteTime::from_micros(10))?;
+    announce(&mut foreign, 8, 10)?;
+    foreign.connection_lost(foreign_epoch, AbsoluteTime::from_micros(10))?;
+    foreign.begin_connection(AbsoluteTime::from_micros(11))?;
+    let unrelated = announce(&mut foreign, 8, 11)?;
+    check(unrelated.epoch().value() > epoch.value())?;
+    check(matches!(
+        owner.pause(unrelated.epoch()),
+        Err(Fault::StaleGeneration)
+    ))?;
+    check(matches!(
+        owner.observe(unrelated, Limits::default(), 11),
+        Err(Fault::StaleGeneration)
+    ))?;
+    check(matches!(
+        owner.observe(initial, Limits::default(), 11),
+        Err(Fault::StaleGeneration)
+    ))?;
+
+    let next_epoch = observer.begin_connection(AbsoluteTime::from_micros(12))?;
+    let next = announce(&mut observer, 8, 12)?;
+    check(next_epoch.is_successor_of(epoch) && !unrelated.epoch().is_successor_of(epoch))?;
+    check(owner.observe(next, Limits::default(), 12)? == Observation::SourceReplaced)?;
+    check(!owner.waiting() && owner.observed() == Some(next))?;
+    let core = owner.core().ok_or(Fault::NotReady)?;
+    check(core.identity() == Identity::new(*next.peer().as_bytes(), next_epoch.value())?)?;
+    let effect = core.effect().ok_or(Fault::NotReady)?;
+    check(effect.id() == pending && effect.admitted())?;
+    check(matches!(owner.pause(epoch), Err(Fault::StaleGeneration)))
+}

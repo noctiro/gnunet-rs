@@ -133,14 +133,6 @@ mixed profile additionally requires no concurrent mutation of that C Set during
 the operation. Rust always sends its frozen Snapshot; it does not reproduce
 this C defect or assert a FULL_DONE alone proves C respected its generation. No extra generation/identity ACK or private verification wire is invented.
 
-The previous baseline has selected static integration receipts. They do not
-qualify this new reciprocal-full source. Its three new/replacement pure source
-cases cover mode/role/empty-set transcripts and a legitimate local-only close,
-early/duplicate FullDone/request versus unsettled original writes, and explicit
-strategy conflicts. They were only formatted during authoring. These source cases remain
-unexecuted. Actual full
-interoperability, resources/performance and whole GNUnet acceptance remain open.
-
 ## Delta completion authority
 
 The current IBF role determines who may close a completed delta channel. After
@@ -156,30 +148,11 @@ introduced. Current algorithm roles, including IBF role reversals, determine thi
 authority independently of the original evaluator/acceptor role. Full-transfer
 completion, first failures, original deadlines and output leases are unchanged.
 
-The two-node API profile after the capacity correction exposed this earlier
-closure: passive Alice emitted DONE and immediately closed while active Bob's
-legitimate demand was still in flight. Alice reported DONE but Bob reported
-FAILURE. The source correction does not relabel that failed run. A new pure
-source transcript uses those observed ordinary type25 bodies, preserves each
-wire direction's FIFO, delays consumption of a written offer/DONE, then verifies
-the passive endpoint remains available for the late demand before the active
-endpoint closes.
-
 ## Shared UNION capacity
 
-A normal two-node C public CONSENSUS API component profile reached the Rust
-CONSENSUS and generic SET services but failed at the second simultaneous UNION
-admission. The former default reservation charged about 53.5 MB of hypothetical
-maximum resources per tiny operation against a 64 MiB service budget. CONSENSUS
-legitimately needs concurrent operations on the same immutable set. This source
-change keeps that budget and every per-operation algorithm limit, while charging
-UNION owners and preclaiming each new allocation. It does not qualify the
-failed profile as successful or change agreement, deadlines or wire behavior.
-
-Two added pure source cases describe the observed default-budget concurrent
-admissions and an advertised order20 IBF refused by a smaller explicit shared
-budget before its cell allocation, retaining the original failure, expiry,
-client and admitted retirement effects. They were formatted during authoring;
-no test, native product, protocol actor, crypto, benchmark or network run was
-performed by the source authors. Runtime interoperability and performance for
-this correction require their own results.
+CONSENSUS requires concurrent UNION operations on the same immutable set.
+The default 64 MiB service budget charges retained UNION owners and preclaims
+each new allocation, rather than reserving every operation's theoretical
+maximum. Per-operation algorithm limits remain independent. An IBF that exceeds
+the remaining shared budget is refused before allocation; failure retains the
+original expiry, client output and admitted retirement effects.

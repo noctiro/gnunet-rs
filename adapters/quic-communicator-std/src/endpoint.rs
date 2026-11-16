@@ -136,6 +136,11 @@ impl Endpoint {
         let mut drivers = Drivers::new(limits.connections, gate.clone())?;
         // No socket is created before all pool/limit reservations and TLS setup.
         let socket = std::net::UdpSocket::bind(address)?;
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsSocket;
+            gnunet_native::network::suppress_udp_connection_resets(socket.as_socket())?;
+        }
         socket.set_nonblocking(true)?;
         let driver = drivers.reserve()?;
         let inner = match drivers.construct(&driver, |runtime| {

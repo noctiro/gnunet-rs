@@ -24,10 +24,5 @@ Native close APIs report original owner retirement/known IO cause, without a sep
 
 Pinned `did_core.c` creates TXT16 but resolves DID_DOCUMENT65561. Rust publishes the registered DID_DOCUMENT at `didd`; bounded ANY lookup plus matching-ID TXT admission provides interoperability with the **current release producer**, not migration from a private protocol. C CLI removal clears unrelated `@`; Rust removes only the bound records at `didd`. C replace callback is empty and library remove/replace declarations lack corresponding definitions; Rust implements scoped operations through existing official NAMESTORE messages. The unused CLI1day macro is not the default: the invoked library constant is365days. These are source facts, not a claim that every C DID operation works or that C bugs are Rust protocol requirements.
 
-
-Central integration subsequently passed strict affected compilation and the
-single public format model. Actual key/entropy/native/store paths remain
-compile-only; no prior component receipt is promoted to DID interoperability.
-
 Ordinary resolve already uses this
 same host path; no new public wire or dependency edge is introduced.

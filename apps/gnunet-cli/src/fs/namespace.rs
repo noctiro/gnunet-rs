@@ -21,12 +21,12 @@ use std::{
     error::Error,
     ffi::OsStr,
     io::{self, Write},
-    os::unix::ffi::OsStrExt,
     path::Path,
 };
 fn row(out: &mut impl Write, value: &Value) -> io::Result<()> {
     serde_json::to_writer(&mut *out, value).map_err(io::Error::other)?;
-    writeln!(out)
+    writeln!(out)?;
+    out.flush()
 }
 fn sks(public: [u8; 32], label: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
     let uri = Uri::Namespace(Namespace::new(EddsaPublicKey::from_bytes(public), label)?);
@@ -60,7 +60,7 @@ fn view(out: &mut impl Write, record: StoredRecord<'_>) -> io::Result<()> {
 }
 pub(super) fn create(
     args: &[impl AsRef<OsStr>],
-    out: &mut impl Write,
+    out: &mut super::Output<'_, impl Write>,
 ) -> Result<(), Box<dyn Error>> {
     let key = KeyFile::create(Path::new(args[0].as_ref()))?;
     // If graph creation later fails, the already durable generated key remains
@@ -82,7 +82,10 @@ pub(super) fn create(
     )?;
     Ok(())
 }
-pub(super) fn list(args: &[impl AsRef<OsStr>], out: &mut impl Write) -> Result<(), Box<dyn Error>> {
+pub(super) fn list(
+    args: &[impl AsRef<OsStr>],
+    out: &mut super::Output<'_, impl Write>,
+) -> Result<(), Box<dyn Error>> {
     let key = KeyFile::open(Path::new(args[0].as_ref()))?;
     let mut graph = Graph::open(
         Path::new(args[1].as_ref()),
@@ -94,7 +97,9 @@ pub(super) fn list(args: &[impl AsRef<OsStr>], out: &mut impl Write) -> Result<(
     let mut ids = Vec::new();
     ids.try_reserve_exact(count)?;
     match args.get(2) {
-        Some(identifier) => ids.extend(graph.children(identifier.as_ref().as_bytes())),
+        Some(identifier) => {
+            ids.extend(graph.children(crate::argument::wire_bytes(identifier.as_ref())?))
+        }
         None => {
             for id in graph.roots()? {
                 let identifier = graph
@@ -136,16 +141,20 @@ pub(super) fn list(args: &[impl AsRef<OsStr>], out: &mut impl Write) -> Result<(
         view(out, record)?;
     }
     out.write_all(b"]}\n")?;
+    out.flush()?;
     Ok(())
 }
 
 pub(super) fn publish(
     args: &[impl AsRef<OsStr>],
-    out: &mut impl Write,
+    out: &mut super::Output<'_, impl Write>,
 ) -> Result<(), Box<dyn Error>> {
     let parsed =
         super::publish::settings::metadata_arguments(args, 5, 5, &[b"--update", b"--timeout"])?;
-    let update = parsed.value(b"--update").map(OsStr::as_bytes);
+    let update = parsed
+        .value(b"--update")
+        .map(crate::argument::wire_bytes)
+        .transpose()?;
     let timeout = parsed.value(b"--timeout");
     let args = parsed.positional;
     let key = KeyFile::open(Path::new(args[1]))?;
@@ -155,11 +164,13 @@ pub(super) fn publish(
         Limits::default(),
         store::Limits::default(),
     )?;
-    let identifier = args[3].as_bytes();
-    let uri = Uri::parse(args[4].as_bytes(), UriLimits::default())?;
+    let identifier = crate::argument::wire_bytes(args[3])?;
+    let uri = Uri::parse(crate::argument::wire_bytes(args[4])?, UriLimits::default())?;
     let source = EndpointSource::unix(Path::new(args[0]).to_path_buf());
+    let interval = duration(timeout.as_ref())?;
+    out.interval(interval)?;
     let options = UblockOptions::new(
-        target(&source, duration(timeout.as_ref())?)?,
+        target(&source, interval)?,
         parsed.publication.select(source.clock().as_ref())?,
     );
     let mut metadata = super::publish::settings::RecordMetadata::new(parsed.manual)?;

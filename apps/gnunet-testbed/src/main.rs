@@ -1,5 +1,7 @@
 //! Actual active v0.29.1 TESTBED configuration-generation PROGRAM utility.
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
+mod early;
+mod generate;
 use std::{
     error::Error,
     io::{self, Write},
@@ -15,11 +17,6 @@ fn main() -> ExitCode {
         }
     }
 }
-#[cfg(not(unix))]
-fn run() -> Result<(), Failure> {
-    Err("TESTBED native configuration generator requires Unix".into())
-}
-#[cfg(unix)]
 fn run() -> Result<(), Failure> {
     use gnunet_program_host::{
         getopt::Options,
@@ -29,11 +26,8 @@ fn run() -> Result<(), Failure> {
         shared_clock::SharedClock,
     };
     use gnunet_testbed_host::{self as host, core};
-    use std::{
-        ffi::OsString,
-        path::{Path, PathBuf},
-        sync::Arc,
-    };
+    use std::{path::PathBuf, sync::Arc};
+    let early = early::capture()?;
     let number = Target::new(0u32);
     let template = Target::new(Filename {
         path: None,
@@ -114,7 +108,24 @@ fn run() -> Result<(), Failure> {
     )?;
     let clock = SharedClock::native(4)?;
     let mut logger = Logger::new(b"gnunet-testbed", std::process::id(), false)?;
-    let prepared=program::prepare(config,Invocation{binary_name:b"gnunet-testbed",help:Some(b"Create actual unique GNUnet configurations; active v0.29.1 TESTBED system/port utility. No controller IPC, peer launcher, key importer or topology protocol."),select_default_filename:true,defaults:Defaults::Native},options,std::env::args_os(),&program::Environment::capture(),&mut NlsDisabled,&mut logger,&clock,&mut io::stdout().lock(),&mut io::stderr().lock())?;
+    let invocation = Invocation {
+        binary_name: b"gnunet-testbed",
+        help: Some(b"Generate isolated GNUnet configurations with distinct home paths and checked port assignments."),
+        select_default_filename: true,
+        defaults: Defaults::Native,
+    };
+    let prepared = program::prepare(
+        config,
+        invocation,
+        options,
+        std::env::args_os(),
+        &program::Environment::capture(),
+        &mut NlsDisabled,
+        &mut logger,
+        &clock,
+        &mut io::stdout().lock(),
+        &mut io::stderr().lock(),
+    )?;
     let prepared = match prepared {
         Preparation::Ready(p) => p,
         Preparation::Stopped(s) => {
@@ -157,10 +168,6 @@ fn run() -> Result<(), Failure> {
             "configuration batch needs more distinct ports than the requested range".into(),
         );
     }
-    let mut slots = Vec::new();
-    slots.try_reserve_exact(total.max(1))?;
-    slots.resize_with(total.max(1), core::PortSlot::empty);
-    let instance = core::Instance::new();
     let prefix = prefix.get()?;
     if let Some(error) = prefix.error {
         return Err(format!("invalid prefix filename: {error}").into());
@@ -183,62 +190,18 @@ fn run() -> Result<(), Failure> {
         limits: bounds,
         ..Default::default()
     };
-    let mut system = host::System::create(&instance, &mut slots, native)?;
-    let mut stdout = io::stdout().lock();
-    writeln!(
-        stdout,
-        "TESTBED root={} configurations={count} port-proof=bind-observation-only peer-ready=unclaimed",
-        system.directory().display()
-    )?;
-    let name = path
+    let basename = path
         .file_name()
-        .filter(|p| !p.is_empty())
-        .ok_or("template has no safe basename")?;
-    let outcome = (|| -> Result<(), Failure> {
-        for n in 0..count {
-            let generated = system.configuration_create(&loaded)?;
-            // ARM.CONFIG and DEFAULTCONFIG must point to actual bytes, independently of
-            // the exported caller-selected filename. Neither write starts a process.
-            let canonical = system.write_configuration(
-                &generated,
-                &generated.default_config(),
-                host::Replace::NewOnly,
-            )?;
-            writeln!(
-                stdout,
-                "CANONICAL number={n} path={} bytes={} durable=actual-fsync",
-                canonical.path().display(),
-                canonical.bytes()
-            )?;
-            let mut output_name = OsString::from(format!("{n:04}-"));
-            output_name.push(name);
-            let destination = output.join(output_name);
-            let published = system.write_configuration(
-                &generated,
-                Path::new(&destination),
-                host::Replace::Allowed,
-            )?;
-            writeln!(
-                stdout,
-                "CONFIG number={n} path={} bytes={} logical-ports={} durable=actual-fsync service-ready=unclaimed",
-                published.path().display(),
-                published.bytes(),
-                generated.ports().count()
-            )?;
-        }
-        stdout.flush()?;
-        Ok(())
-    })();
-    let cleanup = system.destroy(false);
-    match (outcome, cleanup) {
-        (Ok(()), Ok(kept)) => {
-            writeln!(stdout, "STOPPED paths={kept:?} processes-started=0")?;
-            Ok(())
-        }
-        (Err(first), Ok(_)) => Err(first),
-        (Ok(()), Err(error)) => Err(error.into()),
-        (Err(first), Err(cleanup)) => {
-            Err(format!("{first}; independent TESTBED cleanup failure: {cleanup}").into())
-        }
-    }
+        .filter(|name| !name.is_empty())
+        .ok_or("template has no safe basename")?
+        .to_owned();
+    generate::run(generate::Batch {
+        count,
+        total_ports: total,
+        basename,
+        output,
+        configuration: loaded,
+        options: native,
+        parent: early.parent,
+    })
 }

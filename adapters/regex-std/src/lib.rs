@@ -1,6 +1,5 @@
 //! Actual official REGEX MQ ownership over the supplied distributed Core.
 //! No hidden DHT/PILS service, ACK, DONE or private cancel frame is created.
-#![cfg(unix)]
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 /// Actual caller-owned DHT source contract; no default/network implementation.

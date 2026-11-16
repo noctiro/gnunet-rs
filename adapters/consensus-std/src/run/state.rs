@@ -202,14 +202,14 @@ impl<'id, 'pils, 'a> State<'id, 'pils, 'a> {
                     self.report.connect_retries = self.report.connect_retries.saturating_add(1);
                     self.report.last_retry = Some(error);
                 }
-                set::SetProgress::Result { status, .. } => match status {
-                    set::Status::Done => {
+                set::SetProgress::Result { value, .. } => match value {
+                    set::ResultValue::Done => {
                         self.report.set_done = self.report.set_done.saturating_add(1)
                     }
-                    set::Status::Failure => {
+                    set::ResultValue::Failure => {
                         self.report.set_failed = self.report.set_failed.saturating_add(1)
                     }
-                    set::Status::HalfDone => {
+                    set::ResultValue::HalfDone => {
                         self.report.set_half_done = self.report.set_half_done.saturating_add(1)
                     }
                     _ => {}

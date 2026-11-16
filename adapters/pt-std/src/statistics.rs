@@ -97,13 +97,18 @@ impl<'a> Publisher<'a> {
             Poll::Ready(Err(error)) => Poll::Ready(Err(self.retire(error.into()))),
         }
     }
-    /// Start actual destroy(sync_first), while the shared Resolver remains live.
-    pub fn destroy(&mut self) -> Result<(), Failure> {
+    /// Request actual processing confirmation on the original connection, even
+    /// after its setters have been written. Keep the foreground's original bound.
+    pub fn destroy(&mut self, until: Instant) -> Result<(), Failure> {
         self.destroying = true;
-        if let Some(handle) = &mut self.handle
-            && let Err(error) = handle.destroy(true)
-        {
-            return Err(self.retire(error.into()));
+        if let Some(handle) = &mut self.handle {
+            let remaining = until
+                .checked_duration_since(Instant::now())
+                .filter(|remaining| remaining.as_micros() != 0)
+                .ok_or(gnunet_types::Error::Deadline)?;
+            if let Err(error) = handle.confirm_and_destroy(remaining) {
+                return Err(self.retire(error.into()));
+            }
         }
         Ok(())
     }

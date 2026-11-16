@@ -7,67 +7,21 @@ use crate::{
 };
 use gnunet_program_host::{program::Prepared, reporting::Reporter, shared_clock::SharedClock};
 use gnunet_service_runtime::clock::RuntimeClock;
-use gnunet_service_startup::{ControlReceiver, ParentControl};
+use gnunet_service_startup::{ClientStartup, StopSignals};
 use std::{
     cell::RefCell,
     future::{Future, poll_fn},
     rc::Rc,
     sync::Arc,
-    task::{Context, Poll},
+    task::Poll,
 };
-use tokio::signal::unix::{Signal, SignalKind};
-/// Original once-adopted parent control stream; PT does not bind SERVICE sockets.
-pub struct Inherited {
-    /// Actual parent control descriptor, never a copied FD.
-    pub parent: Option<ParentControl>,
-}
-struct Signals {
-    parent: Option<ControlReceiver>,
-    interrupt: Signal,
-    terminate: Signal,
-}
-impl Signals {
-    fn new(parent: Option<ParentControl>) -> Result<Self, Failure> {
-        Ok(Self {
-            parent: parent
-                .map(|p| p.register().map_err(|e| e.error))
-                .transpose()?,
-            interrupt: tokio::signal::unix::signal(SignalKind::interrupt())?,
-            terminate: tokio::signal::unix::signal(SignalKind::terminate())?,
-        })
-    }
-    fn poll(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Failure>> {
-        if let Some(parent) = &mut self.parent {
-            match parent.poll_signal(cx) {
-                Poll::Ready(Ok(Some(s)))
-                    if i32::from(s) == SignalKind::interrupt().as_raw_value()
-                        || i32::from(s) == SignalKind::terminate().as_raw_value() =>
-                {
-                    return Poll::Ready(Ok(()));
-                }
-                Poll::Ready(Ok(Some(_))) => cx.waker().wake_by_ref(),
-                Poll::Ready(Ok(None)) => self.parent = None,
-                Poll::Ready(Err(e)) => return Poll::Ready(Err(e.into())),
-                Poll::Pending => {}
-            }
-        }
-        for signal in [&mut self.interrupt, &mut self.terminate] {
-            match signal.poll_recv(cx) {
-                Poll::Ready(Some(())) => return Poll::Ready(Ok(())),
-                Poll::Ready(None) => return Poll::Ready(Err("PT signal stream ended".into())),
-                Poll::Pending => {}
-            }
-        }
-        Poll::Pending
-    }
-}
 /// Run the configured PRE/DHT/CADET and POST/VPN paths under one shared PROGRAM
 /// scheduler, Resolver and canonical clock. Disabled sources start no native IO.
 pub async fn scheduled(
     prepared: Prepared,
     clock: SharedClock,
     settings: Settings,
-    inherited: Inherited,
+    startup: ClientStartup,
     reports: Reporter,
 ) -> Result<(), Failure> {
     if reports.failed() {
@@ -101,7 +55,7 @@ pub async fn scheduled(
                     config,
                     live,
                     settings,
-                    inherited,
+                    startup,
                     resolver,
                     runtime_clock,
                     task_reports,
@@ -148,14 +102,14 @@ async fn run(
     config: gnunet_config::Configuration,
     live: gnunet_client_host::LiveConfiguration,
     settings: Settings,
-    inherited: Inherited,
+    startup: ClientStartup,
     mut resolver: gnunet_resolver_broker::Driver<64, 1024>,
     clock: Arc<dyn RuntimeClock>,
     reports: Reporter,
 ) -> Result<(), Failure> {
     let stats_resolution = resolver.context().resolution_context();
     let initialized = (|| -> Result<_, Failure> {
-        let signals = Signals::new(inherited.parent)?;
+        let signals = StopSignals::for_client(startup.parent)?;
         let resolution = resolver.context().resolution_context();
         let endpoint = |service: &'static [u8]| -> Result<_, Failure> {
             Ok(gnunet_client_host::EndpointSource::configuration(
@@ -197,20 +151,25 @@ async fn run(
     let mut vpn_id = gnunet_vpn_client_host::Instance::new();
     let mut cadet_id = gnunet_cadet_host::Instance::new();
     let mut dht_id = gnunet_dht_client_host::Instance::new();
-    let mut discovery = startup(
+    let mut discovery = setup_result(
         dht.map(|source| discovery::Native::new(&mut dht_id, source))
             .transpose(),
         &mut resolver,
     )?;
     let mut ports: [gnunet_cadet_host::PortSlot; 0] = [];
     let mut channels = Vec::new();
-    startup(
+    let channel_count = if cadet.is_some() {
+        settings.core.tunnels
+    } else {
+        0
+    };
+    setup_result(
         channels
-            .try_reserve_exact(settings.core.tunnels)
+            .try_reserve_exact(channel_count)
             .map_err(|_| gnunet_types::Error::Capacity.into()),
         &mut resolver,
     )?;
-    channels.resize_with(settings.core.tunnels, gnunet_cadet_host::ChannelSlot::new);
+    channels.resize_with(channel_count, gnunet_cadet_host::ChannelSlot::new);
     let owner = Owner::new(
         Identities {
             core: &core,
@@ -296,12 +255,24 @@ async fn run(
                 if reports.failed() {
                     return Poll::Ready(Ok(Turn::Stop));
                 }
-                if let Poll::Ready(r) = signals.poll(cx) {
-                    return Poll::Ready(r.map(|()| Turn::Stop));
+                if let Poll::Ready(r) = signals.poll_stop(cx) {
+                    return Poll::Ready(
+                        r.map(|()| Turn::Stop)
+                            .map_err(|error| Box::new(error) as Failure),
+                    );
                 }
                 // Always check/drive the actual PT owner's original native hard
                 // targets before any statistics admission, clock wait or IO.
-                let owning = owner.poll(cx);
+                let owning = match owner.poll(cx) {
+                    Poll::Ready(Err(original)) => return Poll::Ready(Err(original)),
+                    Poll::Ready(Ok(Event::CleanupFailure(error))) => {
+                        return Poll::Ready(Ok(Turn::Owner(Event::CleanupFailure(error))));
+                    }
+                    other => other,
+                };
+                if reports.failed() {
+                    return Poll::Ready(Ok(Turn::Stop));
+                }
                 if let Err(error) = stats.admit(owner.metrics()) {
                     stats_errors.push(error);
                 }
@@ -315,14 +286,13 @@ async fn run(
                 };
                 let resolving = resolving.as_mut().poll(cx);
                 if let Poll::Ready(Err(error)) = resolving {
-                    let mut cleanup = Vec::new();
-                    if let Poll::Ready(Err(original)) = owning {
-                        cleanup.push(original);
-                    }
                     return Poll::Ready(Err(Box::new(Failures {
                         original: Some(Box::new(error)),
-                        cleanup,
+                        cleanup: Vec::new(),
                     }) as Failure));
+                }
+                if reports.failed() {
+                    return Poll::Ready(Ok(Turn::Stop));
                 }
                 if let Poll::Ready(result) = owning {
                     return Poll::Ready(result.map(Turn::Owner));
@@ -364,22 +334,12 @@ async fn run(
     let mut cleanup = owner.stop();
     cleanup.extend(stats_errors);
     drop(owner);
-    // Three signed i64 chunks cover a complete u64 delta for each of nine names.
-    for _ in 0..27 {
-        match stats.admit(metrics) {
-            Ok(true) => {}
-            Ok(false) => break,
-            Err(e) => {
-                cleanup.push(e);
-                break;
-            }
-        }
-    }
-    if let Err(e) = stats.destroy() {
-        cleanup.push(e);
-        if let Err(e) = stats.abort() {
-            cleanup.push(e);
-        }
+    // Failure never creates new statistics work or samples a clock to drain it.
+    // The original mutation source retires without replaying attempted deltas.
+    if (outcome.is_err() || reports.failed())
+        && let Err(error) = stats.abort()
+    {
+        cleanup.push(error);
     }
     let native = tokio::time::Instant::now();
     let hard = match native.checked_add(settings.native.control_timeout) {
@@ -389,6 +349,36 @@ async fn run(
             native
         }
     };
+    // Three signed i64 chunks cover a complete u64 delta for each of nine names.
+    // The same original hard bound includes final admission and destruction.
+    if !stats.closed() {
+        for _ in 0..27 {
+            if reports.failed() || tokio::time::Instant::now() >= hard {
+                break;
+            }
+            match stats.admit(metrics) {
+                Ok(true) => {}
+                Ok(false) => break,
+                Err(e) => {
+                    cleanup.push(e);
+                    break;
+                }
+            }
+        }
+        if tokio::time::Instant::now() >= hard {
+            cleanup.push(gnunet_types::Error::Deadline.into());
+        }
+        if reports.failed() || tokio::time::Instant::now() >= hard {
+            if let Err(error) = stats.abort() {
+                cleanup.push(error);
+            }
+        } else if let Err(original) = stats.destroy(hard) {
+            cleanup.push(original);
+            if let Err(error) = stats.abort() {
+                cleanup.push(error);
+            }
+        }
+    }
     let mut hard_alarm = Box::pin(tokio::time::sleep_until(hard));
     while !stats.closed() {
         let result = {
@@ -398,7 +388,11 @@ async fn run(
                     format_args!("PT shutdown Resolver: {e:?}")
                 )));
             poll_fn(|cx| {
-                if hard_alarm.as_mut().poll(cx).is_ready() {
+                reports.register(cx);
+                if reports.failed() {
+                    return Poll::Ready(stats.abort());
+                }
+                if tokio::time::Instant::now() >= hard || hard_alarm.as_mut().poll(cx).is_ready() {
                     let cleanup = stats.abort().err().into_iter().collect();
                     return Poll::Ready(Err(Box::new(Failures {
                         original: Some(Box::new(gnunet_types::Error::Deadline)),
@@ -408,8 +402,15 @@ async fn run(
                 if let Poll::Ready(r) = stats.poll(cx, Some(hard)) {
                     return Poll::Ready(r);
                 }
-                if let Poll::Ready(r) = resolving.as_mut().poll(cx) {
-                    return Poll::Ready(r.map(|_| ()).map_err(|e| Box::new(e) as Failure));
+                let resolving = resolving.as_mut().poll(cx);
+                if let Poll::Ready(Err(error)) = resolving {
+                    return Poll::Ready(Err(Box::new(error) as Failure));
+                }
+                if reports.failed() {
+                    return Poll::Ready(stats.abort());
+                }
+                if let Poll::Ready(Ok(_)) = resolving {
+                    return Poll::Ready(Ok(()));
                 }
                 Poll::Pending
             })
@@ -445,7 +446,7 @@ async fn run(
 
 // A refused constructor has started no PT IO, but the one original shared
 // Resolver still needs its explicit physical disconnect on every startup exit.
-fn startup<T>(
+fn setup_result<T>(
     result: Result<T, Failure>,
     resolver: &mut gnunet_resolver_broker::Driver<64, 1024>,
 ) -> Result<T, Failure> {

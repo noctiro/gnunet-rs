@@ -8,11 +8,11 @@ autoexamples = false
 
 [features]
 default = []
-service = ["dep:gnunet-program-host", "dep:gnunet-service-startup"]
+service = ["dep:gnunet-program-host"]
 
 [dependencies]
 gnunet-program-host = { workspace = true, optional = true, features = ["service-runtime"] }
-gnunet-service-startup = { workspace = true, optional = true }
+gnunet-service-startup.workspace = true
 
 gnunet-config.workspace = true
 gnunet-arm-service-core.workspace = true
@@ -21,8 +21,12 @@ gnunet-service-runtime.workspace = true
 gnunet-native.workspace = true
 tokio = { workspace = true, features = ["rt", "net", "time", "io-util", "signal"] }
 socket2.workspace = true
-nix = { workspace = true, features = ["poll"] }
+
+[target.'cfg(unix)'.dependencies]
 libc.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros"] }
 
 [[bin]]
 name = "gnunet-arm-listener-child-fixture"
@@ -34,3 +38,8 @@ path = "examples/reactor_daemon.rs"
 
 [lints]
 workspace = true
+
+[[test]]
+name = "windows_reactor"
+path = "tests/windows_reactor.rs"
+harness = false

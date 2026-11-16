@@ -1,7 +1,6 @@
 //! Actual DV actor ↔ existing TRANSPORT native/Engine ports. This owns no MQ,
 //! worker, key, entropy source, Flow implementation or background task. The
 //! caller polls its same actual Server and Runtime, then dispatches their facts.
-#![cfg(unix)]
 #![forbid(unsafe_code)]
 use gnunet_transport::{PeerId, Signer, Times, dv_bridge as engine};
 use gnunet_transport_dv_runtime_host::{self as runtime, Runtime, Token};

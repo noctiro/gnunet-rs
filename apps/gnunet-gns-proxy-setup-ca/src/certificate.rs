@@ -11,8 +11,8 @@ pub(super) struct Generated {
     pub certificate: Zeroizing<String>,
     pub private_key: Zeroizing<String>,
 }
-pub(super) fn generate(budget: &Budget) -> Result<Generated, Cause> {
-    budget.check()?;
+pub(super) async fn generate(budget: &Budget) -> Result<Generated, Cause> {
+    budget.check().await?;
     let now = time::OffsetDateTime::now_utc();
     let mut name = DistinguishedName::new();
     name.push(DnType::CountryName, "ZZ");
@@ -40,9 +40,9 @@ pub(super) fn generate(budget: &Budget) -> Result<Generated, Cause> {
     ];
     params.use_authority_key_identifier_extension = true;
     let key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256)?;
-    budget.check()?;
+    budget.check().await?;
     let certificate = params.self_signed(&key)?;
-    budget.check()?;
+    budget.check().await?;
     let private_der = Zeroizing::new(key.serialize_der());
     let generated = Generated {
         certificate: pem("CERTIFICATE", certificate.der().as_ref())?,
@@ -51,7 +51,7 @@ pub(super) fn generate(budget: &Budget) -> Result<Generated, Cause> {
     if generated.certificate.len() > 16 * 1024 || generated.private_key.len() > 16 * 1024 {
         return Err("generated CA exceeds the local PEM profile".into());
     }
-    budget.check()?;
+    budget.check().await?;
     Ok(generated)
 }
 

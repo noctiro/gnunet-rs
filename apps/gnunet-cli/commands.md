@@ -173,6 +173,14 @@ gnunet-cli fs unindex-task-status new-task
 gnunet-cli fs jobs-add catalog unindex new-task --slice 300 --quota 32 --repeat 1
 ```
 
+For a task that still needs native extraction, pass its original native-library
+and plugin selection again through `-c`, `--extractor-library` and `--extractors`.
+The current explicit CLI/config-file selection grants execution authority;
+stored task settings grant none. Native selection must match the task exactly.
+Status, cancellation and already retained keyword selection require no library
+load. Resume accepts these metadata options after the optional timeout; `--`
+preserves literal positional names. Unindex tasks reject manual `-m` annotations.
+
 Resume rehashes the original file and distinguishes old accepted receipts from
 current responses. The quota counts only this run's REMOVE STATUS replies;
 a zero status still carries the service's absence/backend-error ambiguity. An
@@ -450,7 +458,7 @@ gnunet-cli vpn service /path/to/vpn.sock PEER service-name tcp --lease-ms foreve
 `service` accepts `tcp` or `udp`; the descriptor hashes the exact UTF-8 name
 bytes using the official service-name algorithm. Default lease duration is five
 minutes and the independent response timeout is ten seconds. `--family any`
-sends AF_UNSPEC. `--af-profile native|linux|darwin` explicitly selects the service
+sends AF_UNSPEC. `--af-profile native|linux|darwin|freebsd|windows` explicitly selects the service
 endpoint's C family constants, with native as default. No DNS name resolution is
 performed for a numeric Internet target.
 

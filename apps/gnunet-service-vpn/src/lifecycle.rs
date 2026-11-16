@@ -20,7 +20,12 @@ pub(super) enum Stage {
     ObservedIpc = 8,
     ObservedControl = 9,
     ObservedTun = 10,
+    #[cfg(windows)]
+    Readiness = 11,
 }
+#[cfg(windows)]
+const N: usize = 12;
+#[cfg(unix)]
 const N: usize = 11;
 const NAMES: [&str; N] = [
     "REGEX close",
@@ -34,6 +39,8 @@ const NAMES: [&str; N] = [
     "observed IPC cleanup",
     "actual control failure",
     "actual TUN loss",
+    #[cfg(windows)]
+    "parent readiness notification",
 ];
 #[derive(Debug)]
 struct Both {
@@ -87,6 +94,10 @@ impl TunFact {
             LossCause::WriteZero => ("WriteZero", None),
             LossCause::Closed => ("Closed", None),
             LossCause::Capacity => ("Capacity", None),
+            #[cfg(windows)]
+            LossCause::SessionRestart => ("SessionRestart", None),
+            #[cfg(windows)]
+            LossCause::InterfaceMissing => ("InterfaceMissing", None),
         };
         Self {
             epoch: loss.epoch.clone(),
@@ -142,7 +153,25 @@ impl fmt::Display for Facts {
 struct State {
     errors: [Option<Failure>; N],
     facts: Option<Facts>,
+    #[cfg(windows)]
+    packet_recovery: Option<crate::recovery::Report>,
+    #[cfg(unix)]
     helper: Option<gnunet_tun_host::helper::Report>,
+}
+impl State {
+    fn helper_failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        #[cfg(unix)]
+        {
+            self.helper
+                .as_ref()
+                .filter(|report| report.failed())
+                .map(|report| report as &(dyn std::error::Error + 'static))
+        }
+        #[cfg(windows)]
+        {
+            None
+        }
+    }
 }
 #[derive(Clone, Default)]
 pub(super) struct Cleanup(Rc<RefCell<State>>);
@@ -158,11 +187,14 @@ impl fmt::Debug for Failed {
 impl Failed {
     fn fmt_display(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "VPN original={:?}", self.original)?;
+        #[cfg(windows)]
+        write!(f, "; packet recovery={:?}", self.state.packet_recovery)?;
         for (name, error) in NAMES.iter().zip(&self.state.errors) {
             if let Some(error) = error {
                 write!(f, "; {name}: {error}")?;
             }
         }
+        #[cfg(unix)]
         if let Some(helper) = &self.state.helper {
             write!(f, "; original helper={helper:?}")?;
         }
@@ -182,16 +214,15 @@ impl std::error::Error for Failed {
         self.original
             .as_deref()
             .or_else(|| self.state.errors.iter().find_map(Option::as_deref))
-            .or_else(|| {
-                self.state
-                    .helper
-                    .as_ref()
-                    .filter(|report| report.failed())
-                    .map(|report| report as &(dyn std::error::Error + 'static))
-            })
+            .or_else(|| self.state.helper_failure())
     }
 }
 impl Cleanup {
+    #[cfg(windows)]
+    pub fn packet_recovery(&self, report: crate::recovery::Report) {
+        self.0.borrow_mut().packet_recovery = Some(report);
+    }
+    #[cfg(unix)]
     pub fn helper(&self, report: gnunet_tun_host::helper::Report) {
         self.0.borrow_mut().helper = Some(report);
     }
@@ -220,18 +251,19 @@ impl Cleanup {
             .as_ref()
             .ok_or_else(|| io::Error::other("VPN original close facts missing"))?;
         let mut out = io::stdout().lock();
-        writeln!(
-            out,
-            "STOPPED vpn {facts}; helper={:?}; actual independent errors retained separately",
-            state.helper
-        )?;
+        write!(out, "STOPPED vpn {facts}")?;
+        #[cfg(windows)]
+        write!(out, "; packet recovery={:?}", state.packet_recovery)?;
+        #[cfg(unix)]
+        write!(out, "; helper={:?}", state.helper)?;
+        writeln!(out, "; actual independent errors retained separately")?;
         out.flush()
     }
     pub fn finish<T>(&self, result: Result<T, Failure>) -> Result<T, Failure> {
         let state = std::mem::take(&mut *self.0.borrow_mut());
         if result.is_ok()
             && state.errors.iter().all(Option::is_none)
-            && state.helper.as_ref().is_none_or(|report| !report.failed())
+            && state.helper_failure().is_none()
         {
             result
         } else {

@@ -101,9 +101,9 @@ fn isolated_receive_error_preserves_original_send_and_actual_udp_source() -> Res
 
         // Model the native result through the production receive branch. This
         // does not claim that this host emitted Linux's asynchronous UDP error.
-        let event = client.inject_receive_error(io::Error::from_raw_os_error(libc::ECONNREFUSED))?;
+        let event = client.inject_receive_error(io::Error::from(io::ErrorKind::ConnectionRefused))?;
         assert!(matches!(event, Some(Event::ReceiveError { local, error })
-            if local == destination && error.raw_os_error() == Some(libc::ECONNREFUSED)));
+            if local == destination && error.kind() == io::ErrorKind::ConnectionRefused));
         assert!(matches!(client.cancel(send), Err(Error::Protocol(Fault::StaleGeneration))));
         assert!(client.request_available(peer, bytes.len())?);
         let mut incoming = [2; 32].to_vec();
@@ -119,9 +119,9 @@ fn isolated_receive_error_preserves_original_send_and_actual_udp_source() -> Res
 
         // Resource/descriptor failures are not granted the isolated-error
         // contract. The same buffer loan and branch preserve each native cause.
-        for code in [libc::ENOBUFS, libc::ENOMEM, libc::EBADF] {
-            assert!(matches!(client.inject_receive_error(io::Error::from_raw_os_error(code)),
-                Err(Error::Io(error)) if error.raw_os_error() == Some(code)));
+        for kind in [io::ErrorKind::OutOfMemory, io::ErrorKind::ResourceBusy, io::ErrorKind::InvalidInput] {
+            assert!(matches!(client.inject_receive_error(io::Error::from(kind)),
+                Err(Error::Io(error)) if error.kind() == kind));
         }
         assert!(matches!(client.inject_receive_error(io::Error::other("opaque registration failure")),
             Err(Error::Io(error)) if error.to_string() == "opaque registration failure"));

@@ -4,6 +4,8 @@ use crate::{
     ConnectError, ConnectGuard, live_configuration::LiveConfiguration, resolution::PortError,
 };
 use gnunet_config::{Configuration, ProcessEnvironment};
+#[cfg(any(unix, windows))]
+use gnunet_service_runtime::local::Stream as UnixStream;
 use std::{
     future::{Future, poll_fn},
     io,
@@ -14,8 +16,6 @@ use std::{
     time::Duration,
 };
 use tokio::net::TcpStream;
-#[cfg(unix)]
-use tokio::net::UnixStream;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 type SocketFuture = Pin<
     Box<dyn Future<Output = io::Result<gnunet_service_runtime::connection::Connection>> + Send>,
@@ -370,7 +370,7 @@ fn native_guard(guard: &Option<ConnectGuard>) -> io::Result<()> {
         None => Ok(()),
     }
 }
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 async fn connect_unix(
     path: PathBuf,
     guard: Option<ConnectGuard>,
@@ -385,7 +385,7 @@ async fn connect_unix(
     .await
     .map(gnunet_service_runtime::connection::Connection::from_unix)
 }
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 async fn connect_unix(
     _: PathBuf,
     guard: Option<ConnectGuard>,

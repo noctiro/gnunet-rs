@@ -2,7 +2,7 @@
 //! The shared public CLIENT transport façade preserves native endpoint selection.
 //! No libgnunet production FFI or private wire exists.
 #![deny(unsafe_code, missing_docs)]
-#![cfg(unix)]
+#![cfg(any(unix, windows))]
 use gnunet_client_host::ConnectError as IpcError;
 /// Shared caller configuration with no implicit reconnect or callback authority.
 pub use gnunet_client_host::LiveConfiguration;

@@ -27,7 +27,7 @@ impl NativeConnect {
         socket.set_tcp_nodelay(true)?;
         match socket.connect(&address.into()) {
             Ok(()) => {}
-            Err(e) if e.raw_os_error() == Some(libc::EINPROGRESS) => {}
+            Err(e) if gnunet_native::network::connect_in_progress(&e) => {}
             Err(e) => return Err(e),
         }
         let stream = TcpStream::from_std(socket.into())?;

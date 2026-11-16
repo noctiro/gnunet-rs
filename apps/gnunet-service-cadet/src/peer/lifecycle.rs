@@ -119,6 +119,11 @@ impl<'p> Shutdown<'p> {
             *latest = Some(identity);
         }
     }
+    pub fn observer_lost(&mut self) {
+        if let Self::Replacing { latest, .. } = self {
+            *latest = None;
+        }
+    }
     pub fn latest(&self) -> Option<Identity<'p>> {
         if let Self::Replacing { latest, .. } = self {
             *latest
@@ -179,22 +184,56 @@ fn provider_failed<const O: usize>(progress: &gnunet_pils_host::client::Progress
             | Progress::Closed
     )
 }
-/// Only typed actual key/identity observations request replacement. Other source
-/// errors stay failures; a generic Authentication error is never guessed to be
-/// a benign address update. A hint itself grants no observer identity.
+pub(super) fn provider_recoverable<const O: usize>(
+    progress: &gnunet_pils_host::client::Progress<'_, O>,
+) -> bool {
+    use gnunet_pils_host::client::Progress;
+    match progress {
+        Progress::Lost { cause, .. } => cause.is_connection_loss(),
+        Progress::ConnectRetry { .. } => true,
+        _ => false,
+    }
+}
+pub(super) struct SourceHint {
+    pub changed: bool,
+    pub losses: [Option<Box<dyn std::error::Error>>; 2],
+}
+impl SourceHint {
+    fn loss<const O: usize>(
+        &mut self,
+        index: usize,
+        original: gnunet_pils_host::client::Progress<'_, O>,
+        failures: &mut Failures,
+    ) {
+        let recoverable = provider_recoverable(&original);
+        let cause = crate::identity::provider_loss(original);
+        if recoverable {
+            self.changed = true;
+            self.losses[index] = Some(cause);
+        } else {
+            failures.record(Stage::Peer, cause);
+        }
+    }
+}
+/// Typed key/identity changes and physical socket losses request replacement.
+/// Protocol, resource and provider refusals remain failures; Authentication is
+/// never guessed to be an address update. A hint grants no observer identity.
 pub(super) fn source_hint<const O: usize>(
     sign: &mut Option<Result<node::SigningProgress<'_, '_, O>, node::Error>>,
     node: &mut Option<Result<node::Step<'_, '_, '_, '_, O>, node::Error>>,
     retiring: bool,
     failures: &mut Failures,
-) -> bool {
-    let mut hint = false;
+) -> SourceHint {
+    let mut hint = SourceHint {
+        changed: false,
+        losses: [None, None],
+    };
     if let Some(Ok(node::SigningProgress::Native(step))) = sign {
         match step {
             signing::Step::IdentityChanged {
                 same_epoch: true, ..
             }
-            | signing::Step::KeyChanged { .. } => hint = true,
+            | signing::Step::KeyChanged { .. } => hint.changed = true,
             signing::Step::IdentityChanged {
                 same_epoch: false, ..
             } => failures.record(Stage::Identity, Box::new(ProtocolError::StaleGeneration)),
@@ -213,7 +252,7 @@ pub(super) fn source_hint<const O: usize>(
             identity_dh::Step::IdentityChanged {
                 same_epoch: true, ..
             }
-            | identity_dh::Step::KeyChanged { .. } => hint = true,
+            | identity_dh::Step::KeyChanged { .. } => hint.changed = true,
             identity_dh::Step::IdentityChanged {
                 same_epoch: false, ..
             } => failures.record(Stage::Identity, Box::new(ProtocolError::StaleGeneration)),
@@ -233,7 +272,7 @@ pub(super) fn source_hint<const O: usize>(
     ) && let Some(Ok(node::SigningProgress::Native(signing::Step::Lost { original, .. }))) =
         sign.take()
     {
-        failures.record(Stage::Peer, crate::identity::provider_loss(original));
+        hint.loss(0, original, failures);
     }
     if matches!(
         node,
@@ -241,20 +280,20 @@ pub(super) fn source_hint<const O: usize>(
     ) && let Some(Ok(node::Step::IdentityDh(identity_dh::Step::Lost { original, .. }))) =
         node.take()
     {
-        failures.record(Stage::Peer, crate::identity::provider_loss(original));
+        hint.loss(1, original, failures);
     }
     if let Some(Ok(node::SigningProgress::Native(signing::Step::Native(progress)))) = sign
         && provider_failed(progress)
         && let Some(Ok(node::SigningProgress::Native(signing::Step::Native(original)))) =
             sign.take()
     {
-        failures.record(Stage::Peer, crate::identity::provider_loss(original));
+        hint.loss(0, original, failures);
     }
     if let Some(Ok(node::Step::IdentityDh(identity_dh::Step::Native(progress)))) = node
         && provider_failed(progress)
         && let Some(Ok(node::Step::IdentityDh(identity_dh::Step::Native(original)))) = node.take()
     {
-        failures.record(Stage::Peer, crate::identity::provider_loss(original));
+        hint.loss(1, original, failures);
     }
     if matches!(
         node,
@@ -262,7 +301,7 @@ pub(super) fn source_hint<const O: usize>(
             gnunet_cadet_host::connection::Step::IdentityMismatch { .. }
         )))
     ) {
-        hint = true;
+        hint.changed = true;
     }
     hint
 }

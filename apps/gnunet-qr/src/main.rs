@@ -6,9 +6,7 @@ use std::{
     process::ExitCode,
 };
 type Failure = Box<dyn Error>;
-#[cfg(unix)]
 mod run;
-#[cfg(unix)]
 mod settings;
 #[derive(Debug)]
 struct SelectedFailure {
@@ -42,25 +40,14 @@ fn main() -> ExitCode {
         }
     }
 }
-#[cfg(not(unix))]
-fn entry() -> Result<(), Failure> {
-    Err("native QR provider/URI dispatcher requires Unix".into())
-}
-#[cfg(unix)]
 #[expect(
     unsafe_code,
-    reason = "Unique first-exec inherited descriptor transfer before any logger, runtime, scan/provider or other resource owner"
+    reason = "Once-only native inheritance capture before logger, runtime or scan/provider owners"
 )]
-fn capture() -> Result<gnunet_service_startup::CapturedStartup, Failure> {
-    // SAFETY: called only as the first operation of this fresh executable entry;
-    // no earlier FD/env capture, thread, runtime or competing descriptor owner.
-    Ok(unsafe {
-        gnunet_service_startup::capture_from_environment(
-            gnunet_service_startup::InheritedMode::CloseAfterConfiguredBind,
-        )?
-    })
+fn capture() -> Result<gnunet_service_startup::ClientStartup, Failure> {
+    // SAFETY: first startup action before logger, files, runtime or workers.
+    Ok(unsafe { gnunet_service_startup::ClientStartup::capture() }?)
 }
-#[cfg(unix)]
 fn entry() -> Result<(), Failure> {
     use gnunet_program_host::{
         logging::Logger,
@@ -69,24 +56,8 @@ fn entry() -> Result<(), Failure> {
         reporting::Reporter,
         shared_clock::SharedClock,
     };
-    use gnunet_service_startup::InheritedResources;
     use std::sync::Arc;
     let captured = capture()?;
-    match captured.inherited {
-        InheritedResources::CloseAfterBind(hold) => {
-            let offered = !hold.is_empty();
-            let actual = hold.abort();
-            if offered {
-                return Err(format!(
-                    "QR PROGRAM has no listener; actual offered descriptors retired: {actual:?}"
-                )
-                .into());
-            }
-        }
-        InheritedResources::Listeners(_) => {
-            return Err("unexpected QR listener activation mode".into());
-        }
-    }
     let clock = SharedClock::native(64)?;
     let config = gnunet_config::Configuration::create(
         Arc::new(gnunet_config::ProjectData::default()),
@@ -94,7 +65,7 @@ fn entry() -> Result<(), Failure> {
     )?;
     let arguments = settings::Arguments::new();
     let mut logger = Logger::new(b"gnunet-qr", std::process::id(), false)?;
-    let help: &[u8] = b"Scan actual QR/barcode input then perform the configured [uri] handler action. --png FILE selects bounded PNG; otherwise --device DEVICE selects the actual platform ZBar camera (default /dev/video0), --no-display disables its optional native window. Standard PROGRAM -c/-L/-l and --timeout DURATION. Uses standard libpng1.6/libzbar, no GNUnet C library, shell or decoder fallback. Provider/device absence is a real error. One original whole target covers scan and actual handler; independent physical cleanup remains observable.";
+    let help: &[u8] = b"Decode a PNG (--png FILE) or selected ZBar camera (--device DEVICE), then run the configured GNUnet URI action. --no-display disables the camera window; --timeout bounds scanning and handler exit. [qr-rust] selects provider paths, device and resource limits. Windows requires explicit LIBPNG/LIBZBAR DLL paths and camera device selection. See README configuration examples.";
     let prepared = program::prepare(
         config,
         Invocation {
@@ -113,7 +84,8 @@ fn entry() -> Result<(), Failure> {
         &mut io::stderr().lock(),
     );
     let reporter = Reporter::new(logger, clock.clone());
-    if let Some(notice) = captured.control_notice {
+    #[cfg(unix)]
+    if let Some(notice) = captured.notice {
         reporter.debug(
             "qr.parent.notice",
             format_args!("original parent control declaration: {notice:?}"),
@@ -143,7 +115,7 @@ fn entry() -> Result<(), Failure> {
             canonical,
             selection,
             reporter.clone(),
-            captured.parent_control,
+            captured.parent,
         ))
     })();
     if let Err(error) = &result {

@@ -564,7 +564,7 @@ impl<'id, 'store, 'bytes> Engine<'id, 'store, 'bytes> {
         } else if !t.routes.is_borrowed() && t.routing.is_some_and(|w| w.queued) {
             t.routes = RouteState::Unknown;
         }
-        if t.routing_action == RouteAction::Install
+        if t.routing_action != RouteAction::Remove
             && let Some(w) = t.routing.as_mut()
         {
             w.revoked = true;
@@ -654,9 +654,13 @@ impl<'id, 'store, 'bytes> Engine<'id, 'store, 'bytes> {
         self.store.flows[r.row].state = None;
         Ok(())
     }
-    /// Retire the old TUN tombstone only after its original OS route job and all
-    /// independent channels/packets quiesced; permits bounded safe device reuse.
-    pub fn retire_tun(&mut self, tun: Tun<'id>) -> Result<(), Error> {
+    /// Check original source, routing, flow and packet retirement debt without
+    /// consuming the tombstone or granting replacement readiness.
+    ///
+    /// # Errors
+    /// Returns WouldBlock while original work or route effects remain, and
+    /// StaleGeneration for a source that does not own this tombstone.
+    pub fn can_retire_tun(&self, tun: Tun<'id>) -> Result<(), Error> {
         let t = self.tun_ref(tun, false)?;
         if !t.dead
             || !matches!(t.routes, RouteState::Absent | RouteState::BorrowedReleased)
@@ -666,6 +670,12 @@ impl<'id, 'store, 'bytes> Engine<'id, 'store, 'bytes> {
         {
             return Err(Error::WouldBlock);
         }
+        Ok(())
+    }
+    /// Retire the old TUN tombstone only after its original OS route job and all
+    /// independent channels/packets quiesced; permits bounded safe device reuse.
+    pub fn retire_tun(&mut self, tun: Tun<'id>) -> Result<(), Error> {
+        self.can_retire_tun(tun)?;
         self.tun = None;
         Ok(())
     }

@@ -4,7 +4,6 @@
     reason = "Physical FIFO assertions accompany fallible local setup"
 )]
 use crate::framed::Framed;
-use gnunet_service_runtime::connection::Connection;
 use std::{
     future::{Future, poll_fn},
     pin::Pin,
@@ -21,15 +20,11 @@ impl BorrowedCaseAdapter for Framed {
     }
 }
 #[tokio::test(flavor = "current_thread")]
-async fn actual_short_write_reclaims_remaining_budget_without_changing_original_fifo()
+async fn actual_bounded_prefix_reclaims_remaining_budget_without_changing_original_fifo()
 -> Result<(), Box<dyn std::error::Error>> {
-    let (a, b) = std::os::unix::net::UnixStream::pair()?;
-    a.set_nonblocking(true)?;
-    b.set_nonblocking(true)?;
-    socket2::SockRef::from(&a).set_send_buffer_size(1024)?;
-    socket2::SockRef::from(&b).set_recv_buffer_size(1024)?;
-    let connection = Connection::from_unix(tokio::net::UnixStream::from_std(a)?);
-    let mut peer = tokio::net::UnixStream::from_std(b)?;
+    let (connection, mut peer) = crate::test_support::pair().await?;
+    socket2::SockRef::from(&connection).set_send_buffer_size(1024)?;
+    socket2::SockRef::from(&peer).set_recv_buffer_size(1024)?;
     let mut io = Framed::new(connection, 65535)?;
     let mut first = vec![0x5a; 65535];
     first[..4].copy_from_slice(&[255, 255, 0, 99]);
@@ -48,7 +43,7 @@ async fn actual_short_write_reclaims_remaining_budget_without_changing_original_
     }
     assert!(
         prefix.len() >= 4 && prefix.len() < first.len(),
-        "real native short prefix required, got {}",
+        "bounded original native prefix required, got {}",
         prefix.len()
     );
     let next = [0, 4, 0, 100];

@@ -1,6 +1,8 @@
 # Official DV boxed-payload crypto material
 
-Default noalloc, caller buffers and explicit entropy/identity/source/clock values. No IO, provider tasks, hidden RNG, private-key file, native/C dependency or crypto execution is introduced by source preparation. This is KEM/AEAD/signature production code, not a successful CryptoPort stub.
+Allocation-free DV cryptography with caller-owned buffers and explicit entropy,
+identity, source and clock inputs. The crate provides KEM, AEAD and signature
+operations without native I/O or an implicit random source.
 
 `Instance::source(local,now,until)` brands one caller-observed original source. Its checked Cell allocation counter permits bounded source-slot reuse while old Token values remain distinct; no global or implicit Atomic64 exists. Source::task(stamp,now,until) fixes one original task/expiry/source. The stamp is source-monotonic, not recipient UTC. `Source::retire` invalidates every retained task; expiry never extends. This pure constructor is not an attestation that a live MQ exists.
 

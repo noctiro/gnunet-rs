@@ -9,7 +9,7 @@ use gnunet_service_runtime::{
     Activation, BoundListeners, accepted::SocketEvent, clock::RuntimeClock,
     credentials::UnixAccess, service::ShutdownMode, service_options,
 };
-use gnunet_service_startup::{Identity, configured_user, resolve_user};
+
 use std::{
     error::Error,
     future::{Future, poll_fn},
@@ -73,17 +73,25 @@ pub fn unix_access(config: &Configuration) -> Result<UnixAccess, gnunet_config::
 /// preparation or starting service tasks/workers. This function only checks
 /// actual primary real/effective IDs; it never mutates a process identity from an async context.
 pub fn verify_configured_identity(config: &Configuration) -> Result<(), Box<dyn Error>> {
-    if let Some(name) = configured_user(config, b"PILS")? {
-        let plan = resolve_user(&name)?;
-        let actual = Identity::current();
-        if actual.uid != plan.uid()
-            || actual.euid != plan.uid()
-            || actual.gid != plan.gid()
-            || actual.egid != plan.gid()
-        {
-            return Err(io::Error::new(io::ErrorKind::PermissionDenied, format!(
-                "PILS USERNAME requires uid={} gid={} before private-root preparation/service tasks; actual={actual:?}", plan.uid(), plan.gid()
-            )).into());
+    #[cfg(windows)]
+    gnunet_service_startup::verify_configured_identity(config, b"PILS")?;
+    #[cfg(unix)]
+    {
+        use gnunet_service_startup::{Identity, configured_user, resolve_user};
+        if let Some(name) = configured_user(config, b"PILS")? {
+            let plan = resolve_user(&name)?;
+            let actual = Identity::current();
+            if actual.uid != plan.uid()
+                || actual.euid != plan.uid()
+                || actual.gid != plan.gid()
+                || actual.egid != plan.gid()
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "PILS configured identity must be applied before private-root preparation",
+                )
+                .into());
+            }
         }
     }
     Ok(())
@@ -146,7 +154,19 @@ pub async fn foreground(
     observe_progress: impl FnMut(&Progress) -> io::Result<()>,
 ) -> Result<Report, Box<dyn Error>> {
     verify_configured_identity(&prepared.config)?;
+    #[cfg(unix)]
     let bound = BoundListeners::bind(&prepared.config, b"PILS", activation).await?;
+    #[cfg(windows)]
+    let bound = if activation.is_empty() {
+        BoundListeners::bind_configured(
+            &prepared.config,
+            b"PILS",
+            unix_access(&prepared.config)?.into(),
+        )
+        .await?
+    } else {
+        BoundListeners::from_activation(activation)?
+    };
     run_listening(
         prepared,
         bound,

@@ -1,7 +1,7 @@
 //! Absolute-coordinate selected output and cache-backed selected revalidation.
 use super::{
     FileIdentity, ObservedFailure, OutputDir, RevalidateFailure, RevalidateStage, components,
-    existing::{REGULAR, Stamp, stabilize},
+    existing::{Stamp, stabilize},
     invalid_name,
     observed::{FinalName, OutputObservation, finish},
 };
@@ -12,8 +12,7 @@ use gnunet_fs::{
     Content,
     content::{RangeReader, VerifiedChunk},
 };
-use nix::{fcntl::openat, sys::stat::Mode};
-use std::{fs::File, io, ops::Range, os::unix::fs::FileExt, path::Path};
+use std::{fs::File, io, ops::Range, path::Path};
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 
 /// Actual selected authentication and output barriers, never a VerifiedFile.
@@ -88,18 +87,18 @@ impl OutputDir {
             .parent_existing(ancestors)
             .map_err(ObservedFailure::operation)?;
         super::ensure_absent(&parent, name).map_err(ObservedFailure::operation)?;
-        let parent_id = FileIdentity::of(&parent)
+        let parent_id = FileIdentity::of(parent.as_file())
             .map_err(Error::from)
             .map_err(ObservedFailure::operation)?;
         let staging_parent = staging
             .root
-            .try_clone()
+            .duplicate()
             .map_err(Error::from)
             .map_err(ObservedFailure::operation)?;
-        let staging_id = FileIdentity::of(&staging_parent)
+        let staging_id = FileIdentity::of(staging_parent.as_file())
             .map_err(Error::from)
             .map_err(ObservedFailure::operation)?;
-        if staging_id.device != parent_id.device {
+        if !staging_id.same_volume(parent_id) {
             return Err(ObservedFailure::operation(invalid_name()));
         }
         let mut temporary = staging
@@ -223,11 +222,11 @@ impl OutputDir {
             let parts = components(relative)?;
             let (name, ancestors) = parts.split_last().ok_or_else(invalid_name)?;
             let parent = self.parent_existing(ancestors)?;
-            let parent_id = FileIdentity::of(&parent)?;
+            let parent_id = FileIdentity::of(parent.as_file())?;
             if expected_parent.is_some_and(|expected| expected != parent_id) {
                 return Err(Error::SourceChanged);
             }
-            let file = File::from(openat(&parent, *name, REGULAR, Mode::empty())?);
+            let file = parent.open_file_for_sync(name)?;
             let original = Stamp::file(&file)?;
             identity = Some(original.identity);
             if original.identity != expected_identity || original.bytes != content.size {
@@ -251,10 +250,10 @@ impl OutputDir {
             let mut check = |source_boundary, name_boundary| -> Result<()> {
                 original.check(&file, source_boundary, &mut fence)?;
                 let current_parent = self.parent_existing(ancestors)?;
-                if FileIdentity::of(&current_parent)? != parent_id {
+                if FileIdentity::of(current_parent.as_file())? != parent_id {
                     return Err(Error::SourceChanged);
                 }
-                let current = File::from(openat(&current_parent, *name, REGULAR, Mode::empty())?);
+                let current = current_parent.open_file(name)?;
                 original.check(&current, name_boundary, &mut fence)?;
                 Ok(())
             };
@@ -266,13 +265,16 @@ impl OutputDir {
                 query: content.query,
                 source,
             })?;
-            parent.sync_all().map_err(|source| Error::CommitUnknown {
+            let directory_sync = parent.sync().map_err(|source| Error::CommitUnknown {
                 query: content.query,
                 source,
             })?;
             check("source-after-sync", "name-after-sync")?;
             Ok(RevalidatedRange {
-                read,
+                read: ReadRange {
+                    directory_sync: Some(directory_sync),
+                    ..read
+                },
                 identity: original.identity,
                 parent: parent_id,
                 source_attempts: 1,
@@ -299,6 +301,7 @@ fn compare_selection(
     selection: Range<u64>,
     control: &mut impl FnMut(Progress) -> Control,
 ) -> Result<ReadRange> {
+    let file = gnunet_native::filesystem::FileReader::from_file(file)?;
     let mut progress = Progress::default();
     let mut delivered_bytes = 0;
     let mut delivered_chunks = 0;
@@ -332,6 +335,7 @@ fn compare_selection(
         Completion::Verified(reader.completion().ok_or(Error::Corrupt)?)
     };
     Ok(ReadRange {
+        directory_sync: None,
         content,
         selection,
         completion,

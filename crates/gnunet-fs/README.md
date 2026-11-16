@@ -6,6 +6,8 @@ caller's output. KSK terms decode lazily and explicit term lists borrow caller
 storage. No OS, native runtime, service client, C FFI or implicit allocator is
 part of the production dependency closure.
 
+## URI types
+
 `Content` retains both64-byte hashes and a u64 file size. `Namespace` retains the
 32-byte namespace key and the literal remainder, including empty identifiers,
 slashes and literal percent characters. `Keywords` preserves order, duplicates
@@ -47,6 +49,8 @@ that state before writing. Encoding never silently changes a signed timestamp. A
 unsafe quote-count behavior are not emulated. Fully explicit byte lengths reject
 raw embedded NUL, rather than silently accepting a hidden suffix.
 
+## Metadata and directories
+
 The SDK exposes `gnunet::fs`. The `metadata` module provides bounded v2 record
 parsing, explicit reference-prefix recovery, value import and full/partial
 serialization planning. Real zlib codecs live in the separate pure Rust
@@ -56,6 +60,8 @@ metadata extraction and normalization, service IPC,
 and network/Node ownership remain separate required work. URI artifacts alone confer no complete FS, network interoperability, platform
 or performance-completion credit.
 
+## Peer transfer
+
 The pure `gap` owner also handles official FS peer GET137/PUT138 traffic. Incoming
 GET Bloom hints contain a four-byte native nonce followed by the complete
 power-of-two filter, from8 through32768 bytes. Small groups are inline. Optional
@@ -64,6 +70,8 @@ the default remains allocation-free and returns Capacity for oversized groups. E
 charged until release. Ordinary local search IPC uses 64-byte seen hashes
 instead. Normal outgoing peer hints are empty to accommodate the pinned C
 checker's contradictory whole-tail length test.
+
+## Content trees
 
 The `content` module adds local DBLOCK and IBLOCK encode/open operations. The
 plaintext hash derives the XChaCha20-Poly1305 key and nonce using the pinned
@@ -101,6 +109,8 @@ consumes those chunks directly with the streaming directory parser and returns
 cannot manufacture that source binding. Neither reader buffers or re-encodes
 the complete file; the host supplies block retrieval and retains output as needed.
 
+## Checks
+
 Rust tests distinguish file encoding and byte recovery through8MiB+1
 from synthetic full-u64 geometry and selected authenticated paths with fake,
 unvisited sibling references. Synthetic cases do not prove complete enormous
@@ -115,6 +125,8 @@ artifact parsing and construction, explicit partial recovery and inline
 CHK verification. Its recursive walker owns bounded jobs, shared content,
 namespace resolution requests, retries and cancellation over verified source
 entries. See [directory ownership](DIRECTORY.md).
+
+## Keyword and namespace blocks
 
 The `ublock` module constructs and verifies official keyword/namespace results,
 including raw-byte labels, derived EdDSA signatures, query derivation, AEAD and

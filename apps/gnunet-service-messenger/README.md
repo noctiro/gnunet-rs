@@ -1,10 +1,22 @@
 # Standard MESSENGER SERVICE
 
-`gnunet-service-messenger -c gnunet.conf` uses the shared standard SERVICE
-options (`-d`, `-L`, `-l`, `-h`, `-v`), selected logger, inherited listener and
-parent-control owners, configured USERNAME, ACL/kernel Unix credentials, signals,
-one shared Resolver/clock, one CADET MQ, one public/signing PILS MQ and one
-explicit history worker. It does not wrap the service in a second PROGRAM task. No C identity or history file is opened or migrated.
+`gnunet-service-messenger -c gnunet.conf` runs the official application IPC,
+CADET relay, public/signing PILS client and committed history owner. One explicit
+history worker performs storage work outside socket polling.
+
+## Startup and configuration
+
+The shared [native SERVICE driver](../../adapters/program-std/README.md#service-startup)
+provides standard options, selected diagnostics, configured process identity,
+listeners and original parent control/readiness. Unix prebinds inherited/TCP
+listeners before privilege changes, then completes local paths under the selected
+identity. Windows verifies the process token, imports native activation, and uses
+managed console detachment or qualified standalone re-exec.
+
+Missing Unix credential options default to UID=YES/GID=NO on Unix and NO/NO on
+Windows. Explicit Unix credential checks remain unsupported on Windows; native
+endpoint ACLs retain their separate policy. Validated settings transfer their
+layout policy directly into the server, without cloning source declarations.
 
 Node-wide `[PILS] PROFILE` selects `reference029` (also `reference-0.29.1`, the
 default) or official conditional `deterministic`. An optional `PILS_PROFILE`
@@ -18,20 +30,18 @@ CADET MQ. Healthy identity changes require no port-close/reopen exchange or
 invented PID acknowledgement. A fresh OPEN reply carries the applied current
 identity; immutable old notices and signed authors retain their original bytes.
 
-The daemon split occurs before NSS/runtime/path guards or workers. The parent
-waits on the original ready byte; EOF is failed startup. Original activation and
-TCP preparation precede USER; newly created Unix paths are finished under the
-target identity using the configured access mode. Existing activated
-listeners are adopted, never rebound. Filesystem mode is not a substitute for
-the existing kernel Unix-credential admission check.
+## Readiness and shutdown
 
 The selected logger receives provider events, readiness, original errors
 and cleanup failures. Its first failure permanently fences fresh work, wakes the
 original service loop and is retained independently through cleanup. READY is
-flushed and logged before ChildReady is written, after public PILS
+flushed and logged before the original readiness capability is submitted, after public PILS
 identity, CADET attachment, live listeners and the initial/current committed
-history cut. Standard C SERVICE_OPTION_NONE gives immediate shutdown by default;
+history cut. The final stop check precedes output; the bounded notification wait
+also observes the same native/parent stop and selected diagnostics. Standard C SERVICE_OPTION_NONE gives immediate shutdown by default;
 an explicitly configured soft mode retains the existing finite grace path.
+
+## Durable history
 
 Durable history is the default. `[messenger-rust] HISTORY_DIRECTORY` selects a
 new final private directory or the exact marked Rust namespace. Its parent must
@@ -54,7 +64,9 @@ is not commit. New notifications, relay payloads and CADET receive_done are held
 until the original cut is actually committed; already queued original partial
 writes still drain. Unknown storage results latch failure and are not replayed.
 
-The existing finite native/Core settings remain: MAX_CLIENTS16, MAX_ROOMS4,
+## Resource policy
+
+The finite native/Core settings include: MAX_CLIENTS16, MAX_ROOMS4,
 ROOMS_PER_CLIENT4, MAX_TUNNELS16, DELIVERY_RELATIONS512, SIGNATURE_JOBS16,
 CONTROLS_PER_CLIENT8, IO_SLICE_BYTES65535, CONTACTS256, SESSIONS_PER_ROOM64,
 MESSAGES_PER_ROOM128, EPOCHS_PER_ROOM64, GROUPS_PER_EPOCH8,

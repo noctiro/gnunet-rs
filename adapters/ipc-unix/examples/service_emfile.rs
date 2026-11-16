@@ -2,7 +2,7 @@
 #![forbid(unsafe_code)]
 use gnunet_config::{Configuration, ProcessEnvironment};
 use gnunet_ipc_unix::server::{self, Listener, ServiceEvent, ServiceOptions};
-use gnunet_service_runtime::accepted::SocketEvent;
+use gnunet_service_runtime::{BoundListeners, LocalListenerAccess, accepted::SocketEvent};
 use gnunet_statistics::Statistics;
 use std::{
     error::Error,
@@ -10,10 +10,7 @@ use std::{
     net::Ipv4Addr,
     time::Duration,
 };
-use tokio::{
-    io::AsyncReadExt,
-    net::{TcpListener, UnixListener},
-};
+use tokio::{io::AsyncReadExt, net::TcpListener};
 fn emit(value: &str) -> io::Result<()> {
     let mut out = io::stdout().lock();
     writeln!(out, "{value}")?;
@@ -22,13 +19,22 @@ fn emit(value: &str) -> io::Result<()> {
 async fn run(cfg: Configuration) -> Result<(), Box<dyn Error>> {
     let path = cfg.get_filename(b"statistics", b"UNIXPATH", &ProcessEnvironment)?;
     let port = u16::try_from(cfg.get_number(b"statistics", b"PORT")?)?;
-    let unix = UnixListener::bind(&path)?;
+    let mut local = Configuration::default();
+    local.set_value(
+        b"statistics",
+        b"UNIXPATH",
+        Some(gnunet_native::os_bytes::encode(path.as_os_str()).as_ref()),
+    )?;
+    local.set_number(b"statistics", b"PORT", 0)?;
+    let mut unix =
+        BoundListeners::bind_configured(&local, b"statistics", LocalListenerAccess::Owner).await?;
     let tcp = TcpListener::bind((Ipv4Addr::LOCALHOST, port)).await?;
     let mut core = Statistics::<1, 32, 1100, 0, 16>::new();
     let mut observation_failure = None;
-    emit("READY")?;
-    let report = server::serve_statistics_on(
-        &[Listener::Unix(&unix), Listener::Tcp(&tcp)],
+    let mut listeners = unix.listeners();
+    listeners.push(Listener::Tcp(&tcp));
+    let report = server::serve_statistics_controlled(
+        &listeners,
         &mut core,
         server::Limits {
             max_connections: 1100,
@@ -36,12 +42,18 @@ async fn run(cfg: Configuration) -> Result<(), Box<dyn Error>> {
             max_pending_bytes: 64,
             idle_timeout: Duration::MAX,
         },
-        &ServiceOptions::default(),
+        server::ServeContext {
+            options: &ServiceOptions::default(),
+            unix_access: Default::default(),
+            clock: None,
+            shutdown_grace: None,
+        },
         async {
             let mut stdin = tokio::io::stdin();
             let mut byte = [0];
             let _result = stdin.read_exact(&mut byte).await;
         },
+        || emit("READY").map_err(Into::into),
         |event| {
             let result = match event {
                 ServiceEvent::ForcedShutdown => emit("FORCED_SHUTDOWN"),
@@ -75,9 +87,10 @@ async fn run(cfg: Configuration) -> Result<(), Box<dyn Error>> {
         "REPORT|{}|{}|{}|{}",
         report.accepted, report.admitted, report.rejected, report.closed
     ))?;
-    drop(unix);
+    drop(listeners);
     drop(tcp);
-    std::fs::remove_file(path)?;
+    unix.close()
+        .map_err(|errors| io::Error::other(format!("{errors:?}")))?;
     Ok(())
 }
 fn main() -> Result<(), Box<dyn Error>> {

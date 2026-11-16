@@ -2,10 +2,12 @@
 mod config;
 mod discovery;
 mod lifecycle;
+mod startup;
 mod transport;
 use crate::{
-    foreground::{Diagnostics, Failures, Ready, Stage},
-    identity::{self, Dependencies},
+    foreground::{Diagnostics, Failures, Stage},
+    identity::{self, Dependencies, IdentityUpdate},
+    readiness::Ready,
     settings::Settings as ApplicationSettings,
 };
 pub(crate) use config::Settings;
@@ -27,9 +29,9 @@ use gnunet_client_host::EndpointSource;
 use gnunet_crypto::Entropy as EntropyPort;
 use gnunet_pils::{
     HelloLimits,
-    client::{Identity, Inbound, Instance as PilsInstance},
+    client::{Identity, Instance as PilsInstance},
 };
-use gnunet_pils_host::client::{Limits as PilsLimits, Progress as PilsProgress};
+use gnunet_pils_host::client::Limits as PilsLimits;
 use gnunet_service_runtime::service::Listener;
 use gnunet_types::Error as ProtocolError;
 use std::{
@@ -76,193 +78,6 @@ fn hello() -> HelloLimits {
         maximum_addresses: 128,
     }
 }
-fn startup_progress<const O: usize>(
-    progress: Result<PilsProgress<'_, O>, gnunet_cadet_host::Error>,
-) -> Result<bool, Box<dyn Error>> {
-    match progress? {
-        PilsProgress::Inbound(Inbound::Identity { .. }) => Ok(true),
-        PilsProgress::Lost { cause, .. } => {
-            Err(io::Error::other(format!("original peer PILS startup MQ lost: {cause:?}")).into())
-        }
-        PilsProgress::Unavailable(error) => Err(Box::new(error)),
-        PilsProgress::Closed => Err(ProtocolError::Closed.into()),
-        _ => Ok(false),
-    }
-}
-/// Retain both original connecting owners while polling the same observer,
-/// resolver and process controls. No operation is submitted before verification.
-async fn startup<'p>(
-    dh: &mut dh::Connecting<'_, PILS_OPERATIONS>,
-    signer: &mut signing::Connecting<'_, PILS_OPERATIONS>,
-    dependencies: &mut Dependencies<'p, '_>,
-    anchor: Anchor<'p>,
-    timebase: &Timebase,
-    settings: &ApplicationSettings,
-    failures: &mut Failures,
-) -> Result<Startup<'p>, Box<dyn Error>> {
-    let Anchor {
-        identity,
-        hard: recovery_hard,
-    } = anchor;
-    let delay = u64::try_from(settings.pils_startup_timeout.as_micros())
-        .map_err(|_| ProtocolError::Overflow)?;
-    let target = timebase
-        .sample()?
-        .monotonic
-        .after(gnunet_types::Duration(delay))?;
-    // Freeze the local startup target once in the same native epoch. Logical
-    // corrections cannot renew it, and source refusals remain independent.
-    let startup_hard = timebase.native_bound(target)?;
-    let hard = recovery_hard.map_or(startup_hard, |hard| hard.min(startup_hard));
-    let mut limit = std::pin::pin!(tokio::time::sleep_until(hard));
-    let mut dh_ready = false;
-    let mut signer_ready = false;
-    let mut mismatch = false;
-    let mut refusals = lifecycle::StartupFailure {
-        reason: ProtocolError::Deadline,
-        dh: None,
-        signing: None,
-    };
-    let reporter = dependencies.reporter.clone();
-    while !(dh_ready && signer_ready) {
-        let mut stop = None;
-        let mut expired = None;
-        let mut observer = None;
-        let mut resolver = None;
-        let mut dh_result = None;
-        let mut sign_result = None;
-        {
-            let mut identity_work = std::pin::pin!(dependencies.pils.drive(None));
-            let mut resolving = std::pin::pin!(
-                dependencies
-                    .resolver
-                    .drive_waiting(None, |event| identity::resolver_event(&reporter, event))
-            );
-            poll_fn(|cx| {
-                reporter.register(cx);
-                if reporter.failed() {
-                    stop = Some(Ok(()));
-                    return Poll::Ready(());
-                }
-                if let Poll::Ready(result) = dependencies.signals.poll(cx) {
-                    stop = Some(result);
-                    return Poll::Ready(());
-                }
-                let guarded = dependencies.statistics.native_guard(cx).is_ready();
-                if reporter.failed() {
-                    dependencies.statistics.abort();
-                    stop = Some(Ok(()));
-                    return Poll::Ready(());
-                }
-                if guarded {
-                    return Poll::Ready(());
-                }
-                if let Err(reason) = timebase.sample() {
-                    expired = Some(Err(reason));
-                    return Poll::Ready(());
-                }
-                if limit.as_mut().poll(cx).is_ready() {
-                    expired = Some(Ok(()));
-                    return Poll::Ready(());
-                }
-                let stats_progress = dependencies.statistics.poll(cx).is_ready();
-                if reporter.failed() {
-                    dependencies.statistics.abort();
-                    stop = Some(Ok(()));
-                    return Poll::Ready(());
-                }
-                if let Poll::Ready(result) = identity_work.as_mut().poll(cx) {
-                    let fatal = Dependencies::fatal(&result, identity);
-                    observer = Some(result);
-                    if fatal {
-                        return Poll::Ready(());
-                    }
-                }
-                if let Poll::Ready(result) = resolving.as_mut().poll(cx) {
-                    let fatal = result.is_err();
-                    resolver = Some(result);
-                    if fatal {
-                        return Poll::Ready(());
-                    }
-                }
-                if reporter.failed() {
-                    stop = Some(Ok(()));
-                    return Poll::Ready(());
-                }
-                if !mismatch
-                    && !dh_ready
-                    && let Poll::Ready(result) = dh.poll(cx, None)
-                {
-                    dh_result = Some(result);
-                }
-                if !mismatch
-                    && !signer_ready
-                    && let Poll::Ready(result) = signer.poll(cx, None)
-                {
-                    sign_result = Some(result);
-                }
-                if stats_progress
-                    || observer.is_some()
-                    || resolver.is_some()
-                    || dh_result.is_some()
-                    || sign_result.is_some()
-                {
-                    Poll::Ready(())
-                } else {
-                    Poll::Pending
-                }
-            })
-            .await;
-        }
-        dependencies.native_resolver_diagnostics();
-        if let Some(result) = stop {
-            result?;
-            return Ok(Startup::Stopped);
-        }
-        if let Some(result) = expired {
-            if let Err(reason) = result {
-                refusals.reason = reason;
-            }
-            return Err(Box::new(refusals));
-        }
-        if let Some(result) = observer
-            && let Some(observed) = dependencies.observe_identity_update(result, identity, failures)
-            && (observed.peer() != identity.peer() || mismatch && observed != identity)
-        {
-            return Ok(Startup::Replace {
-                identity: observed,
-                hard,
-            });
-        }
-        if let Some(Err(error)) = resolver {
-            failures.record(Stage::Resolver, Box::new(error));
-        }
-        if !failures.is_empty() || reporter.failed() {
-            return Err(ProtocolError::Closed.into());
-        }
-        if let Some(result) = dh_result {
-            if dh.identity_mismatch().is_some() {
-                mismatch = true;
-                if let Err(error) = result {
-                    refusals.dh = Some(error);
-                }
-            } else {
-                dh_ready |= startup_progress(result)?;
-            }
-        }
-        if let Some(result) = sign_result {
-            if signer.identity_mismatch().is_some() {
-                mismatch = true;
-                if let Err(error) = result {
-                    refusals.signing = Some(error);
-                }
-            } else {
-                signer_ready |= startup_progress(result)?;
-            }
-        }
-    }
-    Ok(Startup::Ready)
-}
 
 async fn generation<'p>(
     settings: &ApplicationSettings,
@@ -281,7 +96,7 @@ async fn generation<'p>(
         history,
     } = continuity;
     if recovery_hard.is_some_and(|hard| tokio::time::Instant::now() >= hard) {
-        return Err(ProtocolError::Deadline.into());
+        return Err(dependencies.observer_recovery.timeout());
     }
     let Setup { endpoints, ready } = setup;
     let reporter = dependencies.reporter.clone();
@@ -351,7 +166,7 @@ async fn generation<'p>(
     {
         return Err(ProtocolError::Conflict.into());
     }
-    match startup(
+    match startup::run(
         &mut dh_connecting,
         &mut sign_connecting,
         dependencies,
@@ -524,8 +339,15 @@ async fn generation<'p>(
     let mut diagnostics = Diagnostics::new(reporter.clone());
     // Readiness failure stays in this same actual Node cleanup path rather than
     // returning through Drop with opaque original port/effect retirement facts.
-    if let Err(error) = ready.announce(local, Some(limits.payload_memory)) {
-        failures.record(Stage::Output, Box::new(error));
+    if let Err(error) = ready
+        .announce(
+            local,
+            Some(limits.payload_memory),
+            &mut dependencies.signals,
+        )
+        .await
+    {
+        failures.record(Stage::Output, error);
     }
     let mut shutdown = Shutdown::Running;
     let mut recovery = recovery_hard.map(lifecycle::Bound::at);
@@ -659,6 +481,10 @@ async fn generation<'p>(
                     stop = Some(result);
                     return Poll::Ready(());
                 }
+                if let Some(cause) = dependencies.observer_recovery.poll_expired(cx) {
+                    failures.record(Stage::Identity, cause);
+                    return Poll::Ready(());
+                }
                 if recovery
                     .as_mut()
                     .is_some_and(|bound| bound.poll_expired(cx))
@@ -778,13 +604,21 @@ async fn generation<'p>(
         }
         dependencies.native_resolver_diagnostics();
         let mut next_identity = None;
-        if let Some(result) = observer
-            && let Some(observed) = dependencies.observe_identity_update(result, identity, failures)
-        {
-            if observed.peer() != identity.peer() || shutdown.replacing() {
-                next_identity = Some(observed);
-            } else {
-                identity = observed;
+        let mut observer_waiting = false;
+        if let Some(result) = observer {
+            match dependencies.observe_identity_update(result, identity, failures) {
+                IdentityUpdate::Ready(observed) => {
+                    if observed.peer() != identity.peer()
+                        || observed.epoch() != identity.epoch()
+                        || shutdown.replacing()
+                    {
+                        next_identity = Some(observed);
+                    } else {
+                        identity = observed;
+                    }
+                }
+                IdentityUpdate::Waiting => observer_waiting = true,
+                IdentityUpdate::Activity => {}
             }
         }
         let source_hint = lifecycle::source_hint(
@@ -793,13 +627,26 @@ async fn generation<'p>(
             !shutdown.running(),
             failures,
         );
+        for cause in source_hint.losses.into_iter().flatten() {
+            dependencies.begin_observer_recovery(cause, failures);
+        }
         if shutdown.replacing()
             && let Some(observed) = next_identity
         {
             shutdown.observe(observed);
         }
-        if shutdown.running() && (next_identity.is_some() || source_hint) && failures.is_empty() {
-            match lifecycle::replacement_bound(settings, recovery_hard) {
+        if observer_waiting {
+            shutdown.observer_lost();
+        }
+        if shutdown.running()
+            && (next_identity.is_some() || observer_waiting || source_hint.changed)
+            && failures.is_empty()
+        {
+            let inherited = recovery_hard
+                .into_iter()
+                .chain(dependencies.identity_recovery_hard())
+                .min();
+            match lifecycle::replacement_bound(settings, inherited) {
                 Ok(bound) => {
                     reporter.debug(
                         "cadet.identity.retire",
@@ -821,7 +668,11 @@ async fn generation<'p>(
                     }
                     reporter.debug("cadet.identity.retire.sources", format_args!("original CORE, DH, signing, discovery and TRANSPORT sources physically retired; metadata drain remains"));
                     shutdown = Shutdown::Replacing {
-                        latest: next_identity.or(Some(identity)),
+                        latest: if observer_waiting {
+                            None
+                        } else {
+                            next_identity.or(Some(identity))
+                        },
                         bound,
                     };
                     recovery = None;
@@ -917,7 +768,8 @@ async fn generation<'p>(
         {
             break;
         }
-        if node.ready() && recovery.is_some() {
+        if shutdown.running() && node.ready() && recovery.is_some() {
+            dependencies.identity_recovered(identity)?;
             recovery = None;
             recovery_hard = None;
             reporter.debug(
@@ -926,7 +778,7 @@ async fn generation<'p>(
             );
         }
         if grace_done && (shutdown.running() || shutdown.replacing()) {
-            failures.record(Stage::Identity, Box::new(ProtocolError::Deadline));
+            failures.record(Stage::Identity, dependencies.observer_recovery.timeout());
         }
         if shutdown.running() && (shutdown_requested || !failures.is_empty()) {
             if let Err(error) = discovery.close() {
@@ -1005,7 +857,7 @@ async fn generation<'p>(
             format_args!("cadet original channel input time-domain=native-elapsed observations={observation:?}"),
         );
     }
-    reporter.message(gnunet_program_host::policy::Level::INFO,"cadet.peer.summary",format_args!("cadet peer summary={:?} first-refusal={:?} signer={:?} final-sign-retirements={} coordinator-quiescent={}",node.report(),first_refusal,signer.report(),sign_retired.iter().flatten().count(),node.quiescent()));
+    reporter.message(gnunet_program_host::policy::Level::INFO,"cadet.peer.summary",format_args!("cadet peer summary={:?} core={:?} first-refusal={:?} signer={:?} final-sign-retirements={} coordinator-quiescent={}",node.report(),node.connection_report(),first_refusal,signer.report(),sign_retired.iter().flatten().count(),node.quiescent()));
     if failures.is_empty()
         && !reporter.failed()
         && let Some((identity, hard)) = shutdown.take_replacement()

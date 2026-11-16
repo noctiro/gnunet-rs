@@ -60,22 +60,9 @@ impl Default for Limits {
         }
     }
 }
-/// Why an established original MQ was retired. Port refusals are not IO loss.
-#[derive(Debug)]
-pub enum LossCause {
-    /// Clean physical EOF between complete frames.
-    Eof,
-    /// Actual native error, including truncated-frame EOF.
-    Io(io::Error),
-    /// A known PILS frame/announcement failed validation.
-    Protocol(ProtocolError),
-    /// Bounded setup or received-frame storage resources were refused.
-    Resource(ProtocolError),
-    /// Native output setup/admission failed; original MQ is explicitly retired.
-    Setup(Error),
-    /// Caller explicitly retired the original MQ to reconnect.
-    Requested,
-}
+mod loss;
+pub use loss::{ConnectionLoss, LossCause};
+
 /// One owned event. Secret completions have no Debug/Clone and erase on drop.
 #[expect(
     clippy::large_enum_variant,

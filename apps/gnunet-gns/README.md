@@ -1,13 +1,57 @@
 # GNUnet GNS command
 
-`gnunet-gns -u NAME [-t TYPE] [-T TIMEOUT] [-r] [-d]` is the standard PROGRAM consumer of the configured GNS and IDENTITY clients. Standard `-c`, `-L`, `-l`, `-h`, and `-v` are handled by the shared PROGRAM implementation. The command has no service, key-file reader, hidden Resolver, DNS fallback, or alternate wire protocol.
+Resolve names through the configured GNUnet GNS and IDENTITY clients. Linux,
+macOS, FreeBSD and Windows share name routing, record projection and cancellation.
 
-The pinned v0.29.1 command takes the name before the first colon. Type defaults to A; unrecognized type names warn and use ANY. `--dns` validates DNS format using the existing full IDNA backend and converts to UTF-8 before the unchanged with-TLD owner receives the name. It does not perform a DNS lookup. A real `NotGns` result exits 4. A zero-record GNS answer succeeds. Other setup, query, output or cleanup failures are nonzero; DNS validation and IDNA conversion preserve the reference exit classifications 3 and 4.
+## Usage and configuration
 
-The official default overall timeout is forever: there is no invented MAX native timer. A finite `-T` captures one native target before its first canonical sample and never renews that target for routing, connection retries, callbacks or stdout. Original native per-IO policies remain inside the existing clients. Ctrl-C, TERM, parent control and retained scheduler cancellation close the same query owners and the same Resolver. No exposed request is replayed by this front end.
+```sh
+gnunet-gns -c gnunet.conf -u NAME -t A
+gnunet-gns -c gnunet.conf -u NAME -t TXT -r -T '5 s'
+```
 
-Output uses the existing bounded record-text codec. Raw mode emits only values; normal mode also emits record type, supplemental flag, count and elapsed time. A record that cannot be converted is diagnosed and skipped, matching the normal reference policy. Records are structural observations from the selected GNS service; this command does not produce an independent zone-authentication receipt. Diagnostics contain lengths, causes and original close metadata rather than record bodies.
+Standard PROGRAM configuration, help, version and `-L/-l` options apply. The
+name before the first colon is used. Record type defaults to A; unknown type
+names warn and select ANY. `-d/--dns` validates DNS syntax and converts IDNA to
+UTF-8 before GNS routing; it does not perform a DNS fallback.
 
-The user name is bounded to 1024 bytes. Incoming GNS replies retain the existing 65535-byte/2048-record limits. A nonempty answer uses separate staging and formatted-text buffers, each bounded to 262140 bytes. Empty answers allocate neither buffer; `[gns-cli] MAX_OUTPUT_BYTES` limits the complete retained output (default 16 MiB, configurable from 1 byte through 64 MiB). Actual stdout writes use at most 512 bytes with a retained partial cursor and poll readiness every 25 ms while Resolver/control continue to be driven. No OFD flags are changed and no stdio thread/task is detached. A synchronous OS write, even after readiness, cannot be forcibly interrupted by an async deadline. Timeout, Stop or output failure can leave a partial prefix, which is reported separately from formatted records.
+A real NotGns classification exits 4. Empty GNS answers succeed. DNS validation
+and IDNA conversion retain the reference exit classifications 3 and 4. Setup,
+query, output and cleanup errors are nonzero.
 
-The command uses the independent `gnunet-gns-host::tld` API layer above the isolated native clients. Source contract: commit `346358e26d4dcc2dc4f51bef5d52dca29c7d8165`, `src/cli/gns/gnunet-gns.c` result callback 202–275, run 282–395 and options 404–437. This implementation uses the existing selected Reporter rather than reproducing the reference spinner/stderr layout or ARM presence probe; source errors remain failures.
+## Deadlines and output
+
+The default total timeout is forever. A finite `-T` captures one native target
+before its first canonical clock sample; routing, retries, callbacks and output
+cannot renew it. Native termination, parent control and PROGRAM cancellation
+close the same query and Resolver owners without replaying exposed requests.
+
+Raw mode prints values. Normal mode also prints record types, supplemental flags,
+count and elapsed time. Values that cannot be formatted are diagnosed and skipped.
+Records are observations from the selected service; zone authentication belongs
+to that service.
+
+The name is bounded to 1,024 bytes and replies to 65,535 bytes/2,048 records.
+Formatting uses two buffers of at most 262,140 bytes. `[gns-cli] MAX_OUTPUT_BYTES`
+bounds the complete output: default 16 MiB, configurable from 1 byte to 64 MiB.
+The output buffer grows geometrically within that bound.
+
+[Shared native I/O](../../adapters/program-std/BINARY_IO.md) admits one 16 KiB
+output chunk at a time. Windows consoles receive Unicode; redirected bytes stay
+exact. The foreground keeps driving query, Resolver, stop and deadline events
+while the original worker performs native output. No shared file-status flags
+are changed. Partial writes advance only their confirmed prefix.
+
+## Ownership and source layout
+
+`main.rs` composes PROGRAM and keeps output retirement outside its cancellable
+task. `early.rs` delegates to shared client startup; `control.rs` owns the stop
+latch and subscriptions. `run.rs` retains one with-TLD query and its independent
+cleanup results; `budget.rs` owns the original time bounds. `output.rs` projects
+records and drives output; `output/retirement.rs` retains actual transfers and
+flush/close observations under one separate one-second cleanup deadline.
+
+Canceling a wait does not cancel or replay an admitted native write. Late or
+unclaimed completions and native flush/close errors remain failures. Diagnostics
+exclude record bodies. The [with-TLD API](../../adapters/gns-api-std/README.md)
+retains protocol routing below the command.

@@ -5,6 +5,10 @@
     reason = "Finite OS ownership witnesses assert original EOF, exact refusal and namespace/fence boundaries."
 )]
 
+#[cfg(feature = "pils-client")]
+#[path = "support/local.rs"]
+mod local;
+mod support;
 use gnunet_crypto::Entropy;
 use gnunet_service_runtime::connection::Connection;
 use gnunet_types::Error;
@@ -21,7 +25,7 @@ use std::{
     task::Poll,
     time::Duration,
 };
-use tokio::{io::AsyncReadExt, net::UnixStream};
+use tokio::{io::AsyncReadExt, net::TcpStream};
 type Test = Result<(), Box<dyn std::error::Error>>;
 static NEXT: AtomicU64 = AtomicU64::new(0);
 struct Scratch(PathBuf);
@@ -32,7 +36,7 @@ impl Scratch {
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
-        std::fs::create_dir(&path)?;
+        support::private_directory(&path)?;
         Ok(Self(path))
     }
 }
@@ -47,10 +51,10 @@ impl Entropy for Random {
         getrandom::fill(bytes).map_err(|_| Error::Entropy)
     }
 }
-fn driver(local: &Identity) -> Result<(Driver, UnixStream), Box<dyn std::error::Error>> {
+async fn driver(local: &Identity) -> Result<(Driver, TcpStream), Box<dyn std::error::Error>> {
     let socket = DatagramSocket::bind("127.0.0.1:0".parse()?)?;
     let target = socket.local_address();
-    let (service, communicator) = UnixStream::pair()?;
+    let (service, communicator) = support::pair().await?;
     let configuration = Configuration {
         local: local.peer(),
         peer: Identity::from_seed([5; 32]).peer(),
@@ -64,7 +68,7 @@ fn driver(local: &Identity) -> Result<(Driver, UnixStream), Box<dyn std::error::
     };
     Ok((
         Driver::new(
-            Connection::from_unix(communicator),
+            Connection::from_tcp(communicator),
             socket,
             configuration,
             100,
@@ -72,7 +76,7 @@ fn driver(local: &Identity) -> Result<(Driver, UnixStream), Box<dyn std::error::
         service,
     ))
 }
-async fn original_closed(driver: &Driver, mut service: UnixStream) -> Test {
+async fn original_closed(driver: &Driver, mut service: TcpStream) -> Test {
     assert!(driver.is_quiescent());
     let mut wire = Vec::new();
     tokio::time::timeout(Duration::from_secs(2), service.read_to_end(&mut wire)).await??;
@@ -88,7 +92,7 @@ async fn foreign_identity_retires_original_mq_and_native_socket_before_old_outpu
     let scratch = Scratch::new()?;
     let local = Identity::from_seed([3; 32]);
     let foreign = Identity::from_seed([7; 32]);
-    let (mut driver, service) = driver(&local)?;
+    let (mut driver, service) = driver(&local).await?;
     let mut journal = Journal::open(&scratch.0, local.peer(), 2)?;
     let result = poll_fn(|cx| driver.poll_step(cx, &foreign, &mut journal, 100, &mut Random)).await;
     assert!(matches!(
@@ -102,7 +106,7 @@ async fn foreign_identity_retires_original_mq_and_native_socket_before_old_outpu
 async fn foreign_local_replay_namespace_retires_original_io_before_old_output() -> Test {
     let scratch = Scratch::new()?;
     let local = Identity::from_seed([3; 32]);
-    let (mut driver, service) = driver(&local)?;
+    let (mut driver, service) = driver(&local).await?;
     let mut journal = Journal::open(&scratch.0, Identity::from_seed([7; 32]).peer(), 2)?;
     let result = poll_fn(|cx| driver.poll_step(cx, &local, &mut journal, 100, &mut Random)).await;
     assert!(matches!(
@@ -116,7 +120,7 @@ async fn foreign_local_replay_namespace_retires_original_io_before_old_output() 
 async fn replaced_real_writer_fence_stops_all_io_until_original_inode_restored() -> Test {
     let scratch = Scratch::new()?;
     let local = Identity::from_seed([3; 32]);
-    let (mut driver, service) = driver(&local)?;
+    let (mut driver, service) = driver(&local).await?;
     let mut journal = Journal::open(&scratch.0, local.peer(), 2)?;
     let mut service = service.into_std()?;
     let lock = scratch.0.join(".gnunet-udp-replay-owner.lock");
@@ -156,8 +160,9 @@ async fn replaced_real_writer_fence_stops_all_io_until_original_inode_restored()
         },
     )
     .await?;
+    let mut service = TcpStream::from_std(service)?;
     let mut byte = [0; 1];
-    assert_eq!(std::io::Read::read(&mut service, &mut byte)?, 1);
+    tokio::time::timeout(Duration::from_secs(2), service.read_exact(&mut byte)).await??;
     assert_eq!(byte, [0]); // first original registration header byte
     driver.close();
     assert!(driver.is_quiescent());
@@ -170,9 +175,9 @@ async fn actual_pils_mq_eof_revokes_bound_driver_and_discards_cached_old_output(
     use gnunet_pils_host::client::{Client, EndpointSource, Limits, Progress};
     use gnunet_udp_communicator_host::{driver::Time, identity::IdentityEpoch};
     use gnunet_wire::official::AbsoluteTime;
-    use tokio::{io::AsyncWriteExt, net::UnixListener, time::Instant};
+    use tokio::{io::AsyncWriteExt, time::Instant};
     let scratch = Scratch::new()?;
-    let listener = UnixListener::bind(scratch.0.join("pils.sock"))?;
+    let listener = local::bind(&scratch.0.join("pils.sock"))?;
     let endpoint = EndpointSource::unix(scratch.0.join("pils.sock"));
     let clock = endpoint.clock();
     let now = clock.sample()?.now.as_micros();
@@ -204,7 +209,7 @@ async fn actual_pils_mq_eof_revokes_bound_driver_and_discards_cached_old_output(
         pils.drive(deadline).await?,
         Progress::Connected(_)
     ));
-    let (mut physical_pils, _) = listener.accept().await?;
+    let (mut physical_pils, _) = poll_fn(|cx| listener.poll_accept(cx)).await?;
     physical_pils.write_all(source.announcement()).await?;
     while pils.identity().is_none() {
         match pils.drive(deadline).await? {
@@ -214,7 +219,7 @@ async fn actual_pils_mq_eof_revokes_bound_driver_and_discards_cached_old_output(
     }
     let mut binding = IdentityEpoch::from_native(&pils, AbsoluteTime::from_micros(now))?;
     let local = binding.current_native(&pils, AbsoluteTime::from_micros(now))?;
-    let (mut driver, service) = driver(local)?;
+    let (mut driver, service) = driver(local).await?;
     let mut journal = Journal::open(&scratch.0, local.peer(), 2)?;
     drop(physical_pils);
     loop {
@@ -257,7 +262,7 @@ async fn finish_cancels_original_unsent_datagram_then_drains_failure_and_queue_e
     let remote = std::net::UdpSocket::bind("127.0.0.1:0")?;
     remote.set_nonblocking(true)?;
     let socket = DatagramSocket::bind("127.0.0.1:0".parse()?)?;
-    let (mut service, communicator) = UnixStream::pair()?;
+    let (mut service, communicator) = support::pair().await?;
     let configuration = Configuration {
         local: local.peer(),
         peer,
@@ -270,7 +275,7 @@ async fn finish_cancels_original_unsent_datagram_then_drains_failure_and_queue_e
         transmit: socket.profile().sender_policy(),
     };
     let mut driver = Driver::new(
-        Connection::from_unix(communicator),
+        Connection::from_tcp(communicator),
         socket,
         configuration,
         100,
@@ -305,7 +310,6 @@ async fn finish_cancels_original_unsent_datagram_then_drains_failure_and_queue_e
     .await??;
     assert_eq!(journal.commits(), 1); // original monotime reservation is durable
     driver.finish()?; // cancel before the original native send syscall is polled
-    let mut service = service.into_std()?;
     let mut wire = Vec::new();
     let mut eof = false;
     tokio::time::timeout(
@@ -326,17 +330,22 @@ async fn finish_cancels_original_unsent_datagram_then_drains_failure_and_queue_e
             }
             loop {
                 let mut bytes = [0; 512];
-                match std::io::Read::read(&mut service, &mut bytes) {
-                    Ok(0) => {
+                let mut read = tokio::io::ReadBuf::new(&mut bytes);
+                match tokio::io::AsyncRead::poll_read(
+                    std::pin::Pin::new(&mut service),
+                    cx,
+                    &mut read,
+                ) {
+                    Poll::Ready(Ok(())) if read.filled().is_empty() => {
                         eof = true;
                         break;
                     }
-                    Ok(n) => {
-                        wire.extend_from_slice(&bytes[..n]);
+                    Poll::Ready(Ok(())) => {
+                        wire.extend_from_slice(read.filled());
                         progress = true;
                     }
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
-                    Err(error) => return Poll::Ready(Err(error.into())),
+                    Poll::Pending => break,
+                    Poll::Ready(Err(error)) => return Poll::Ready(Err(error.into())),
                 }
             }
             if driver.is_quiescent() && eof {

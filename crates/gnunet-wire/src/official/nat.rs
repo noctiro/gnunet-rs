@@ -52,6 +52,15 @@ pub struct Profile {
     unix_len: u16,
 }
 impl Profile {
+    /// Windows Winsock sockaddr ABI; AF_INET6=23, sockaddr_un=110, no length byte.
+    pub const fn windows(endian: Endian) -> Self {
+        Self {
+            endian,
+            len_byte: false,
+            ipv6: 23,
+            unix_len: 110,
+        }
+    }
     /// Linux sockaddr ABI; AF_INET6=10, sockaddr_un=110.
     pub const fn linux(endian: Endian) -> Self {
         Self {

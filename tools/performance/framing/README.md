@@ -12,6 +12,8 @@ python3 -B tools/performance/framing/run.py --workspace /path/to/refactored-sour
   --admission owned --output /tmp/frame-after-NEW
 ```
 
+## Usage
+
 The only probe adapter difference is the old `queue(&bytes)` versus the new
 `queue_owned(bytes)` call. Each generated frame has a common GNUnet header and
 per-frame/per-round sequence fields. The peer checks every byte and ordering

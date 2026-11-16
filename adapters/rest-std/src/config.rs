@@ -20,6 +20,7 @@ use tokio::{
     time::Instant,
 };
 use zeroize::Zeroizing;
+mod target;
 pub mod worker;
 use worker::{Committed, Exposure, Job, Worker};
 /// Finite CONFIG representation/persistence resources.
@@ -67,7 +68,11 @@ impl Receipt {
     pub fn job(&self) -> &Job {
         self.committed.job()
     }
-    /// Actual generation after file+directory sync.
+    /// Actual directory barrier observation; Windows may report Unavailable.
+    pub const fn directory_sync(&self) -> gnunet_native::DirectorySync {
+        self.committed.directory_sync()
+    }
+    /// Actual generation after synchronized file publication.
     pub const fn generation(&self) -> u64 {
         self.committed.generation()
     }

@@ -1,6 +1,11 @@
-//! Exact source phases/results and native-byte C-locale output.
-use crate::options::Options;
-use gnunet_arm_core::wire::{RequestStatus, ResultCode, ServiceInfo};
+//! Source command phases with one retained locale and native-byte output.
+use crate::{locale::Locale, options::Options};
+use gnunet_arm_core::wire::{RequestStatus, ResultCode};
+use gnunet_program_host::format::Argument as Value;
+
+mod output;
+use output::OutputState;
+pub use output::{relative_time, req_string, ret_string};
 /// One outstanding command category; the host retains its real OperationId.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Kind {
@@ -52,39 +57,16 @@ pub struct State {
     pub stderr: Vec<u8>,
     /// Pending source warning messages for the logging sink.
     pub warnings: Vec<Vec<u8>>,
-}
-fn sentence(out: &mut Vec<u8>, prefix: &[u8], name: &[u8], suffix: &[u8]) {
-    out.extend_from_slice(prefix);
-    out.extend_from_slice(name);
-    out.extend_from_slice(suffix);
-}
-/// Original request-status string; it does not infer processing acknowledgement.
-pub fn req_string(status: u32) -> &'static [u8] {
-    match status {
-        0 => b"Message was sent successfully",
-        2 => b"We disconnected from ARM before we could send a request",
-        _ => b"Unknown request status",
-    }
-}
-/// Original ARM result string, including punctuation for an unknown future code.
-pub fn ret_string(result: u32) -> &'static [u8] {
-    match result {
-        0 => b"is stopped",
-        1 => b"is stopping",
-        2 => b"is starting",
-        3 => b"is starting already",
-        4 => b"is stopping already",
-        5 => b"is started already",
-        6 => b"is stopped already",
-        7 => b"service is not known to ARM",
-        8 => b"service failed to start",
-        9 => b"service cannot be manipulated because ARM is shutting down",
-        _ => b"Unknown result code.",
-    }
+    locale: Locale,
+    output: OutputState,
 }
 impl State {
     /// Initialize source globals from parsed options.
     pub fn new(options: Options) -> Self {
+        Self::with_locale(options, Locale::disabled())
+    }
+    /// Retain the same explicit PROGRAM locale as parsing and diagnostics.
+    pub fn with_locale(options: Options, locale: Locale) -> Self {
         let quiet = options.quiet;
         Self {
             options,
@@ -97,6 +79,8 @@ impl State {
             stdout: Vec::new(),
             stderr: Vec::new(),
             warnings: Vec::new(),
+            locale,
+            output: OutputState::Active,
         }
     }
     /// Advance source action_loop. Presence is queried at most once for a phase,
@@ -112,13 +96,13 @@ impl State {
                 0 => {
                     if let Some(name) = self.options.term.clone() {
                         if !presence() {
-                            sentence(
-                                &mut self.stderr,
-                                b"Cannot stop the `",
-                                &name,
-                                b"' service: ARM is not running.\n",
-                            );
-                            self.ret = 4;
+                            self.err(self.locale.format(
+                                b"Cannot stop the `%s' service: ARM is not running.\n",
+                                &[Value::Bytes(&name)],
+                            ));
+                            if !self.output_failed() {
+                                self.ret = 4;
+                            }
                             self.done = true;
                             return None;
                         }
@@ -159,13 +143,13 @@ impl State {
                 3 => {
                     if let Some(name) = self.options.init.clone() {
                         if !presence() {
-                            sentence(
-                                &mut self.stderr,
-                                b"Cannot start the `",
-                                &name,
-                                b"' service: ARM is not running.\n",
-                            );
-                            self.ret = 4;
+                            self.err(self.locale.format(
+                                b"Cannot start the `%s' service: ARM is not running.\n",
+                                &[Value::Bytes(&name)],
+                            ));
+                            if !self.output_failed() {
+                                self.ret = 4;
+                            }
                             self.done = true;
                             return None;
                         }
@@ -177,9 +161,13 @@ impl State {
                 4 => {
                     if self.options.list {
                         if !presence() {
-                            self.stderr
-                                .extend_from_slice(b"Cannot list services: ARM is not running.\n");
-                            self.ret = 4;
+                            self.err(
+                                self.locale
+                                    .text(b"Cannot list services: ARM is not running.\n"),
+                            );
+                            if !self.output_failed() {
+                                self.ret = 4;
+                            }
                             self.done = true;
                             return None;
                         }
@@ -191,8 +179,10 @@ impl State {
                 5 => {
                     if self.options.monitor {
                         if !self.quiet {
-                            self.stderr
-                                .extend_from_slice(b"Now only monitoring, press CTRL-C to stop.\n");
+                            self.err(
+                                self.locale
+                                    .text(b"Now only monitoring, press CTRL-C to stop.\n"),
+                            );
                         }
                         self.quiet = false;
                         self.monitoring = true;
@@ -218,6 +208,9 @@ impl State {
     }
     /// Source callbacks normally leave ret0 on failure; only list changes it to3.
     pub fn result(&mut self, kind: Kind, status: RequestStatus, result: Option<ResultCode>) {
+        if matches!(self.output, OutputState::Failed(_)) {
+            return;
+        }
         self.waiting = None;
         let sent = status == RequestStatus::SentOk;
         let value = result.map(|r| r.0).unwrap_or(0);
@@ -229,45 +222,7 @@ impl State {
                 Kind::List => false,
             };
         if !accepted {
-            let reason = if sent {
-                ret_string(value)
-            } else {
-                req_string(2)
-            };
-            match kind {
-                Kind::Start => {
-                    self.stdout
-                        .extend_from_slice(b"Failed to start the ARM service: ");
-                    self.stdout.extend_from_slice(reason);
-                    self.stdout.push(b'\n');
-                }
-                Kind::End => {
-                    self.stdout.extend_from_slice(if sent {
-                        b"Failed to stop the ARM service: "
-                    } else {
-                        b"Failed to send a stop request to the ARM service: "
-                    });
-                    self.stdout.extend_from_slice(reason);
-                    self.stdout.push(b'\n');
-                }
-                Kind::Init | Kind::Term => {
-                    let name = if kind == Kind::Init {
-                        self.options.init.as_deref().unwrap_or_default()
-                    } else {
-                        self.options.term.as_deref().unwrap_or_default()
-                    };
-                    let prefix: &[u8] = match (kind, sent) {
-                        (Kind::Init, true) => b"Failed to start the `",
-                        (Kind::Init, false) => b"Failed to send a request to start the `",
-                        (Kind::Term, true) => b"Failed to kill the `",
-                        _ => b"Failed to send a request to kill the `",
-                    };
-                    sentence(&mut self.stdout, prefix, name, b"' service: ");
-                    self.stdout.extend_from_slice(reason);
-                    self.stdout.push(b'\n');
-                }
-                Kind::List => self.list_disconnected(),
-            }
+            self.result_failure(kind, status, value);
             self.done = true;
             return;
         }
@@ -285,111 +240,6 @@ impl State {
             Kind::List => {}
         }
     }
-    /// Match the failed request plus NULL list callback path.
-    pub fn list_disconnected(&mut self) {
-        self.waiting = None;
-        self.stdout.extend_from_slice(b"Failed to request a list of services: We disconnected from ARM before we could send a request\n");
-        self.stderr
-            .extend_from_slice(b"Error communicating with ARM. ARM not running?\n");
-        self.ret = 3;
-        self.done = true;
-    }
-    /// Both list passes are intentional. Stopping/unknown rows print twice.
-    pub fn list(&mut self, rows: &[ServiceInfo<'_>], now: u64) {
-        self.waiting = None;
-        let mut counts = [0usize; 5];
-        for row in rows {
-            if let Some(n) = counts.get_mut(row.status.0 as usize) {
-                *n += 1;
-            }
-            if row.status.0 >= 4 {
-                self.row(row, now);
-            }
-        }
-        if !self.quiet {
-            self.stdout.extend_from_slice(if self.options.all {
-                b"All services:\n"
-            } else {
-                b"Services (excluding stopped services):\n"
-            });
-            if counts.iter().any(|n| *n != 0) {
-                self.stdout.push(b'(');
-                let mut first = true;
-                for (index, name) in [
-                    (1, "started"),
-                    (2, "failed"),
-                    (4, "stopping"),
-                    (0, "stopped"),
-                    (3, "finished"),
-                ] {
-                    if counts[index] != 0 {
-                        if !first {
-                            self.stdout.extend_from_slice(b" / ");
-                        }
-                        self.stdout
-                            .extend_from_slice(format!("{name}: {}", counts[index]).as_bytes());
-                        first = false;
-                    }
-                }
-                self.stdout.extend_from_slice(b")\n");
-            } else {
-                self.stdout
-                    .extend_from_slice(b"(No services configured.)\n");
-            }
-        }
-        for row in rows {
-            if row.status.0 != 0 || self.options.all {
-                self.row(row, now);
-            }
-        }
-    }
-    fn row(&mut self, row: &ServiceInfo<'_>, now: u64) {
-        sentence(&mut self.stdout, b"", row.name, b" (binary='");
-        self.stdout.extend_from_slice(row.binary);
-        self.stdout.extend_from_slice(b"', status=");
-        let name: &[u8] = match row.status.0 {
-            0 => b"stopped",
-            1 => b"started",
-            2 => b"failed",
-            3 => b"finished",
-            4 => b"stopping",
-            _ => b"unknown",
-        };
-        self.stdout.extend_from_slice(name);
-        if row.status.0 == 2 {
-            let remaining = if row.restart_at == u64::MAX {
-                u64::MAX
-            } else {
-                row.restart_at.saturating_sub(now)
-            };
-            self.stdout.extend_from_slice(
-                format!(
-                    ", exit_status={}, restart_delay='{}'",
-                    row.public_exit_status(),
-                    relative_time(remaining)
-                )
-                .as_bytes(),
-            );
-        }
-        self.stdout.extend_from_slice(b")\n");
-    }
-    /// MONITORING_STARTED is silent; quiet is force-cleared by the monitor phase.
-    pub fn monitor(&mut self, service: &[u8], status: u32) {
-        if status == 0 || self.quiet {
-            return;
-        }
-        match status {
-            1 => sentence(&mut self.stderr, b"Stopped ", service, b".\n"),
-            2 => sentence(&mut self.stderr, b"Starting ", service, b"...\n"),
-            3 => sentence(&mut self.stderr, b"Stopping ", service, b"...\n"),
-            _ => {
-                self.stderr
-                    .extend_from_slice(format!("Unknown status {status} for service ").as_bytes());
-                self.stderr.extend_from_slice(service);
-                self.stderr.extend_from_slice(b".\n");
-            }
-        }
-    }
     /// Source timeout task changes ret to2 and requests shutdown.
     pub fn timeout(&mut self) {
         self.ret = 2;
@@ -399,35 +249,4 @@ impl State {
     pub fn should_delete(&self) -> bool {
         self.options.end && self.options.delete
     }
-}
-/// Source relative_time_to_string(delta,YES), with original integer thresholds.
-pub fn relative_time(mut value: u64) -> String {
-    if value == u64::MAX {
-        return "forever".into();
-    }
-    if value == 0 {
-        return "0 ms".into();
-    }
-    let mut unit = "µs";
-    if value > 5000 || value.is_multiple_of(1000) {
-        value /= 1000;
-        unit = "ms";
-        if value > 5000 || value.is_multiple_of(1000) {
-            value /= 1000;
-            unit = "s";
-            if value > 300 || value.is_multiple_of(60) {
-                value /= 60;
-                unit = "m";
-                if value > 300 || value.is_multiple_of(60) {
-                    value /= 60;
-                    unit = "h";
-                    if value > 120 || value.is_multiple_of(24) {
-                        value /= 24;
-                        unit = if value == 1 { "day" } else { "days" };
-                    }
-                }
-            }
-        }
-    }
-    format!("{value} {unit}")
 }

@@ -11,7 +11,7 @@ gnunet-service-runtime.workspace = true
 gnunet-types.workspace = true
 gnunet-wire.workspace = true
 getrandom.workspace = true
-libc.workspace = true
+gnunet-native.workspace = true
 sha2.workspace = true
 tokio = { workspace = true, features = ["rt", "net", "time", "sync"] }
 

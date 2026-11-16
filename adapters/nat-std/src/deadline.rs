@@ -1,6 +1,8 @@
 //! Original logical/native dual bound with independent native alarms before
 //! canonical clock stabilization. A racing clock cannot starve hard shutdown.
 use crate::Error;
+/// Original process-clock and native targets shared with helper admission.
+pub use gnunet_service_runtime::clock::{Bounds, BoundsError};
 use gnunet_service_runtime::clock::{ClockSubscription, RuntimeClock};
 use gnunet_types::Error as Fault;
 use std::{
@@ -11,39 +13,6 @@ use std::{
     time::Duration,
 };
 use tokio::time::{Instant, Sleep};
-/// Original admitted bounds; copies preserve exact targets, never a fresh TTL.
-#[derive(Clone, Copy, Debug)]
-pub struct Bounds {
-    /// Absolute original process-clock expiry in microseconds.
-    pub expires: u64,
-    /// Independent original native hard bound.
-    pub hard: Instant,
-}
-impl Bounds {
-    /// Admit a finite relative request once, before any native work.
-    pub fn after(clock: &dyn RuntimeClock, timeout: Duration) -> Result<Self, Error> {
-        if timeout.is_zero() {
-            return Err(Fault::Deadline.into());
-        }
-        let now = clock.sample().map_err(Error::Clock)?.now.as_micros();
-        let delta = u64::try_from(timeout.as_micros()).map_err(|_| Fault::Overflow)?;
-        Ok(Self {
-            expires: now.checked_add(delta).ok_or(Fault::Overflow)?,
-            hard: Instant::now().checked_add(timeout).ok_or(Fault::Overflow)?,
-        })
-    }
-    /// Validate original targets without extending either.
-    pub fn check(self, clock: &dyn RuntimeClock) -> Result<u64, Error> {
-        if Instant::now() >= self.hard {
-            return Err(Fault::Deadline.into());
-        }
-        let now = clock.sample().map_err(Error::Clock)?.now.as_micros();
-        if now >= self.expires {
-            return Err(Fault::Deadline.into());
-        }
-        Ok(now)
-    }
-}
 /// One exclusive logical waiter plus exact native hard/earliest logical alarms.
 /// Every blocked IO must be polled through this owner; dropping it cancels only
 /// this logical waiter/timer, not some other original operation or socket.
@@ -84,7 +53,7 @@ impl Gate {
     }
     /// Immediate admission/receipt guard. Independent hard check is first.
     pub fn check(&self) -> Result<u64, Error> {
-        self.bounds.check(&*self.clock)
+        self.bounds.check(&*self.clock).map_err(Into::into)
     }
     /// Register hard alarm first, then stabilize the canonical source and
     /// register the absolute logical target (including actual rollback).
@@ -107,7 +76,7 @@ impl Gate {
             Poll::Pending => {}
         }
         self.revision = sample.revision;
-        if sample.now.as_micros() >= self.bounds.expires {
+        if Instant::now() >= self.bounds.hard || sample.now.as_micros() >= self.bounds.expires {
             return Poll::Ready(Err(Fault::Deadline.into()));
         }
         let wake = Instant::now()
@@ -156,4 +125,14 @@ impl Gate {
         })
         .await
     }
+}
+
+/// Whether a direct NAT/runtime failure is original expiry, rather than a
+/// clock source that itself failed with a Deadline-valued cause.
+pub fn is_expired(error: &(dyn std::error::Error + 'static)) -> bool {
+    error.downcast_ref::<Fault>() == Some(&Fault::Deadline)
+        || error.downcast_ref::<BoundsError>() == Some(&BoundsError::Deadline)
+        || error
+            .downcast_ref::<Error>()
+            .is_some_and(|error| matches!(error, Error::Protocol(Fault::Deadline)))
 }

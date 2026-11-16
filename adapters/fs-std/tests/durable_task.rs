@@ -1,6 +1,6 @@
 //! Durable extraction uses actual encrypted blocks, anchored output and real replay.
 //! A missing native endpoint makes unintended cache misses fail the operation.
-#![cfg(all(unix, feature = "service"))]
+#![cfg(all(any(unix, windows), feature = "service"))]
 #![expect(
     clippy::panic_in_result_fn,
     reason = "Fallible functional cases assert original durable state and authenticated physical output"
@@ -16,10 +16,10 @@ use gnunet_fs_host::{
     ipc::EndpointSource,
     network::{DownloadOptions, tree_download::TreeDownloadOptions},
 };
+use gnunet_native::filesystem::{Directory, EntryInfo, FileIdentity};
 use gnunet_types::AbsoluteTime;
 use std::{
     fs, io,
-    os::unix::fs::{MetadataExt, PermissionsExt},
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
     time::Duration,
@@ -35,7 +35,11 @@ impl Temporary {
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
-        fs::create_dir(&path)?;
+        let parent = Directory::open(&std::env::temp_dir())?;
+        drop(
+            parent
+                .create_private_directory(path.file_name().ok_or(io::ErrorKind::InvalidInput)?)?,
+        );
         Ok(Self(path))
     }
 }
@@ -209,7 +213,7 @@ fn regular_file_pause_reopen_and_complete_reuses_authenticated_cache() -> TestRe
             gnunet_fs_host::network::range::Destination::SinkCompleted
         );
         assert_eq!(fs::read(temporary.0.join("file"))?, bytes);
-        let identity = inode(&temporary.0.join("file"))?;
+        let identity = file_identity(&temporary.0.join("file"))?;
         let source = EndpointSource::unix(temporary.0.join("absent-fs.sock"));
         let until = deadline(&source)?;
         let checked = task
@@ -226,7 +230,7 @@ fn regular_file_pause_reopen_and_complete_reuses_authenticated_cache() -> TestRe
                 .destination,
             gnunet_fs_host::network::range::Destination::ExistingFileCompared
         );
-        assert_eq!(inode(&temporary.0.join("file"))?, identity);
+        assert_eq!(file_identity(&temporary.0.join("file"))?, identity);
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;
     Ok(())
@@ -234,7 +238,7 @@ fn regular_file_pause_reopen_and_complete_reuses_authenticated_cache() -> TestRe
 
 #[test]
 fn regular_file_loc_selection_reopens_without_claiming_unselected_bytes() -> TestResult {
-    use std::os::unix::fs::FileExt;
+    use std::io::{Seek, SeekFrom, Write};
     let temporary = Temporary::new()?;
     let bytes: Vec<u8> = (0..70_000).map(|index| (index % 239 + 1) as u8).collect();
     let mut buffers = Buffers::new();
@@ -294,7 +298,9 @@ fn regular_file_loc_selection_reopens_without_claiming_unselected_bytes() -> Tes
         let file = fs::OpenOptions::new()
             .write(true)
             .open(temporary.0.join("slice"))?;
-        assert_eq!(file.write_at(&[99], 0)?, 1);
+        let mut cursor = &file;
+        cursor.seek(SeekFrom::Start(0))?;
+        cursor.write_all(&[99])?;
         let source = EndpointSource::unix(temporary.0.join("absent-fs.sock"));
         let until = deadline(&source)?;
         let checked = task
@@ -309,7 +315,8 @@ fn regular_file_loc_selection_reopens_without_claiming_unselected_bytes() -> Tes
                 .destination,
             gnunet_fs_host::network::range::Destination::ExistingFileCompared
         );
-        assert_eq!(file.write_at(&[0], selection.start)?, 1);
+        cursor.seek(SeekFrom::Start(selection.start))?;
+        cursor.write_all(&[0])?;
         let source = EndpointSource::unix(temporary.0.join("absent-fs.sock"));
         let until = deadline(&source)?;
         let error = task
@@ -474,9 +481,12 @@ fn create(temporary: &Temporary, root: Content) -> TestResult<Task> {
         store::Limits::default(),
     )?)
 }
-fn inode(path: &Path) -> io::Result<(u64, u64)> {
-    let metadata = fs::symlink_metadata(path)?;
-    Ok((metadata.dev(), metadata.ino()))
+fn file_identity(path: &Path) -> io::Result<FileIdentity> {
+    let parent = Directory::open(path.parent().ok_or(io::ErrorKind::InvalidInput)?)?;
+    match parent.entry_info(path.file_name().ok_or(io::ErrorKind::InvalidInput)?)? {
+        EntryInfo::File(info) | EntryInfo::Directory(info) => Ok(info.identity),
+        EntryInfo::Other => Err(io::ErrorKind::InvalidInput.into()),
+    }
 }
 fn committed(temporary: &Temporary) -> TestResult<PathBuf> {
     let paths: Vec<_> = expected()
@@ -534,7 +544,7 @@ fn reopen_paused_tree_revalidates_original_inode_then_finishes_real_walk() -> Te
     runtime()?.block_on(async {
         let known = pause_after_first(&temporary, root).await?;
         let known_path = temporary.0.join("tree").join(&known);
-        let identity = inode(&known_path)?;
+        let identity = file_identity(&known_path)?;
         // The original Task and Repository have both been dropped: the stable
         // physical WAL lock and on-disk cache must be reopened, not reused.
         let mut task = Task::open(temporary.0.join("task"), store::Limits::default())?;
@@ -565,7 +575,7 @@ fn reopen_paused_tree_revalidates_original_inode_then_finishes_real_walk() -> Te
         let walk = done.walk.ok_or("complete output lacks real walk summary")?;
         assert_eq!(walk.tasks, 5);
         assert_eq!(walk.done, 5);
-        assert_eq!(inode(&known_path)?, identity);
+        assert_eq!(file_identity(&known_path)?, identity);
         for (path, bytes) in expected() {
             assert_eq!(fs::read(temporary.0.join("tree").join(path))?, bytes);
         }
@@ -584,12 +594,12 @@ fn same_size_same_inode_changed_plaintext_refuses_resume_without_overwrite() -> 
     runtime()?.block_on(async {
         let known = pause_after_first(&temporary, root).await?;
         let path = temporary.0.join("tree").join(&known);
-        let identity = inode(&path)?;
+        let identity = file_identity(&path)?;
         let mut changed = fs::read(&path)?;
         let first = changed.first_mut().ok_or("expected nonempty fixture")?;
         *first ^= 1;
         fs::write(&path, &changed)?;
-        assert_eq!(inode(&path)?, identity);
+        assert_eq!(file_identity(&path)?, identity);
         let mut task = Task::open(temporary.0.join("task"), store::Limits::default())?;
         task.attach(&mut OutputDir::open(&temporary.0)?)?;
         let mut cache = Repository::open(temporary.0.join("cache"))?;
@@ -612,7 +622,7 @@ fn same_size_same_inode_changed_plaintext_refuses_resume_without_overwrite() -> 
         assert_eq!(task.status()?.known_files, 1);
         assert_eq!(task.status()?.phase, Phase::Failed);
         assert_eq!(fs::read(&path)?, changed);
-        assert_eq!(inode(&path)?, identity);
+        assert_eq!(file_identity(&path)?, identity);
         Ok::<_, Box<dyn std::error::Error>>(())
     })
 }
@@ -637,7 +647,7 @@ fn unclaimed_output_is_retained_and_replaced_root_with_copied_owner_is_refused()
         drop(task);
         let orphan = temporary.0.join("tree/unclaimed.bin");
         fs::write(&orphan, b"caller-owned foreign file")?;
-        let orphan_id = inode(&orphan)?;
+        let orphan_id = file_identity(&orphan)?;
         let mut task = Task::open(temporary.0.join("task"), store::Limits::default())?;
         task.attach(&mut OutputDir::open(&temporary.0)?)?;
         let source = EndpointSource::unix(temporary.0.join("absent-fs.sock"));
@@ -657,11 +667,10 @@ fn unclaimed_output_is_retained_and_replaced_root_with_copied_owner_is_refused()
         assert_eq!(failed.progress.new_files, 0);
         assert_eq!(task.status()?.known_files, 3);
         assert_eq!(fs::read(&orphan)?, b"caller-owned foreign file");
-        assert_eq!(inode(&orphan)?, orphan_id);
+        assert_eq!(file_identity(&orphan)?, orphan_id);
         drop(task);
         fs::rename(temporary.0.join("tree"), temporary.0.join("original-tree"))?;
-        fs::create_dir(temporary.0.join("tree"))?;
-        fs::set_permissions(temporary.0.join("tree"), fs::Permissions::from_mode(0o700))?;
+        drop(Directory::open(&temporary.0)?.create_private_directory("tree".as_ref())?);
         let _copied = fs::copy(
             temporary.0.join("original-tree").join(OWNER_MARKER_NAME),
             temporary.0.join("tree").join(OWNER_MARKER_NAME),
@@ -743,7 +752,7 @@ fn pause_after_synced_intent_reconciles_absent_link_and_history_revalidation_can
         assert_eq!(done.disposition, Disposition::Complete);
         assert_eq!(done.progress.new_files, 1);
         assert_eq!(fs::read(temporary.0.join("tree/only.bin"))?, payload);
-        let identity = inode(&temporary.0.join("tree/only.bin"))?;
+        let identity = file_identity(&temporary.0.join("tree/only.bin"))?;
         drop(task);
         drop(cache);
         let mut task = Task::open(temporary.0.join("task"), store::Limits::default())?;
@@ -780,7 +789,7 @@ fn pause_after_synced_intent_reconciles_absent_link_and_history_revalidation_can
         assert_eq!(task.status()?.phase, Phase::Paused);
         assert_eq!(task.status()?.known_files, 1);
         assert_eq!(fs::read(temporary.0.join("tree/only.bin"))?, payload);
-        assert_eq!(inode(&temporary.0.join("tree/only.bin"))?, identity);
+        assert_eq!(file_identity(&temporary.0.join("tree/only.bin"))?, identity);
         Ok::<_, Box<dyn std::error::Error>>(())
     })
 }

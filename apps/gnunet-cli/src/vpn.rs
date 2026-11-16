@@ -90,7 +90,13 @@ fn parse(args: &[OsString]) -> Result<Command> {
                     "native" => AfProfile::native(),
                     "linux" => AfProfile::LINUX,
                     "darwin" => AfProfile::DARWIN,
-                    _ => return Err("AF profile must be native, linux or darwin".into()),
+                    "freebsd" => AfProfile::FREEBSD,
+                    "windows" => AfProfile::WINDOWS,
+                    _ => {
+                        return Err(
+                            "AF profile must be native, linux, darwin, freebsd or windows".into(),
+                        );
+                    }
                 }
             }
             "--lease-ms" => {
@@ -225,7 +231,7 @@ pub(super) fn run(args: &[OsString], out: &mut impl Write) -> Result<()> {
         )?;
         writeln!(
             out,
-            "Options: --family 4|6|any --lease-ms N|forever --timeout-ms N --af-profile native|linux|darwin"
+            "Options: --family 4|6|any --lease-ms N|forever --timeout-ms N --af-profile native|linux|darwin|freebsd|windows"
         )?;
         writeln!(
             out,

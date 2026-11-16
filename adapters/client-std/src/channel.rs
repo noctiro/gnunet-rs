@@ -247,6 +247,12 @@ impl<Origin: Copy> Channel<Origin> {
         self.port_error = PortError::from_io(&error).cloned();
         Poll::Ready(Err(Error::Io(error)))
     }
+    /// Drop only the original unattached connector. Existing stream cursors,
+    /// retry targets and explicit port refusals remain unchanged. The caller's
+    /// original operation deadline must still bound any later connector.
+    pub fn cancel_connect(&mut self) -> bool {
+        self.attempt.take().is_some()
+    }
     /// Recover the original explicit port refusal without replaying native IO.
     /// Permanent close cannot register another clock subscription or connection.
     pub fn recover_ports(&mut self) -> Result<(), Error> {

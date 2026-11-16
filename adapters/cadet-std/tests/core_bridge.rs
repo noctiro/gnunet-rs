@@ -487,6 +487,7 @@ use std::task::{Context, Poll, Waker};
 struct BudgetClockState {
     sample: ClockSample,
     failure: Option<Error>,
+    reads: usize,
     rows: [Option<Option<Waker>>; 8],
 }
 #[derive(Clone)]
@@ -499,6 +500,7 @@ impl BudgetClock {
                 revision: 0,
             },
             failure: None,
+            reads: 0,
             rows: core::array::from_fn(|_| None),
         })))
     }
@@ -537,10 +539,14 @@ impl BudgetClock {
         }
         Ok(())
     }
+    fn reads(&self) -> Result<usize, Error> {
+        Ok(self.0.lock().map_err(|_| Error::Io)?.reads)
+    }
 }
 impl RuntimeClock for BudgetClock {
     fn sample(&self) -> Result<ClockSample, Error> {
-        let state = self.0.lock().map_err(|_| Error::Io)?;
+        let mut state = self.0.lock().map_err(|_| Error::Io)?;
+        state.reads += 1;
         match state.failure {
             Some(reason) => Err(reason),
             None => Ok(state.sample),
@@ -574,6 +580,7 @@ impl ClockSubscription for BudgetSubscription {
             Ok(state) => state,
             Err(_) => return Poll::Ready(Err(Error::Io)),
         };
+        state.reads += 1;
         state.rows[self.slot] = Some(Some(cx.waker().clone()));
         if let Some(reason) = state.failure {
             Poll::Ready(Err(reason))
@@ -593,16 +600,27 @@ impl Drop for BudgetSubscription {
 }
 
 #[test]
-fn no_send_budget_preserves_logical_rollback_but_stops_actual_clock_failure() -> Result<(), Failure>
-{
+fn a_failed_clock_cannot_block_original_partial_send_retirement() -> Result<(), Failure> {
     let rt = runtime()?;
     let _entered = rt.enter();
     rt.block_on(tokio::time::timeout(Duration::from_secs(3), async {
         let (socket, listener) = Socket::new()?;
         let logical = BudgetClock::new(1_000_000);
+        let (prefix_tx, prefix_rx) = tokio::sync::oneshot::channel();
         let server = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await?;
             init(&mut stream, REMOTE).await?;
+            permit(&mut stream, REMOTE).await?;
+            let bytes = frame(&mut stream, None).await?;
+            assert!(matches!(Request::decode(&bytes)?, Request::Send { messages, .. }
+                if matches!(PeerMessage::decode(messages)?, PeerMessage::ConnectionCreate { connection, .. } if connection == [9; 32])));
+            traffic(&mut stream, REMOTE, PeerMessage::ConnectionCreateAck {
+                reserved: 0, connection: [9; 32],
+            }).await?;
+            permit(&mut stream, REMOTE).await?;
+            let mut prefix = [0; 1];
+            stream.read_exact(&mut prefix).await?;
+            prefix_tx.send(prefix).map_err(|_| "original prefix observer disappeared")?;
             let mut suffix = Vec::new();
             stream.read_to_end(&mut suffix).await?;
             Ok::<_, Failure>(suffix)
@@ -638,6 +656,7 @@ fn no_send_budget_preserves_logical_rollback_but_stops_actual_clock_failure() ->
             bridge::Limits {
                 core: native::Limits {
                     sends: 4,
+                    io_slice_bytes: 1,
                     ..native::Limits::default()
                 },
                 ..bridge::Limits::default()
@@ -660,21 +679,50 @@ fn no_send_budget_preserves_logical_rollback_but_stops_actual_clock_failure() ->
         assert!(timebase.sample()?.monotonic >= before);
         assert_eq!(book.current_neighbor(REMOTE.0), Some(original.neighbor()));
         assert_eq!(host.report().forced_reconnects, 0);
+        let path = [LOCAL.0, REMOTE.0];
+        let route = book.open(PathPeers::new(&path), [9; 32], Authentication::Unsigned,
+            timebase.sample()?.monotonic)?.route;
+        while observed.ready == 0 {
+            host.drive(&mut book, &mut observed, None).await?;
+        }
+        book.queue_payload(route, PeerMessage::KeyExchange {
+            connection: [9; 32], flags: 1, ephemeral_key: [3; 32], ratchet_key: [4; 32],
+        }, timebase.sample()?.monotonic)?;
+        let partial = loop {
+            if let Step::Writing { receipt, .. } = host.drive(&mut book, &mut observed, None).await? {
+                assert_eq!(receipt.previous(), 0);
+                assert_eq!(receipt.state().written(), 1);
+                break receipt.state();
+            }
+        };
+        assert_eq!(prefix_rx.await?, [0], "original CORE SEND header prefix");
         logical.fail(Some(Error::Unavailable))?;
         assert!(matches!(
             host.drive(&mut book, &mut observed, None).await,
             Err(gnunet_cadet_host::Error::Protocol(Error::Unavailable))
         ));
         assert_eq!(book.current_neighbor(REMOTE.0), Some(original.neighbor()));
-        logical.fail(None)?;
+        let reads = logical.reads()?;
+        assert!(matches!(host.close(&mut book, &mut observed)?, Some(Step::Lost { .. })), "the queued original loss must be returned exactly once");
+        let mut returned = false;
         loop {
-            if matches!(
-                host.drive(&mut book, &mut observed, None).await?,
-                Step::Core(native::Progress::Closed)
-            ) {
-                break;
+            match host.drive(&mut book, &mut observed, None).await? {
+                Step::Finished { binding: Some(binding), state, completion } => {
+                    assert_eq!(binding.source(), original);
+                    assert_eq!(state, partial);
+                    assert!(!state.complete());
+                    assert_ne!(completion.outcome, SendOutcome::Written);
+                    returned = true;
+                }
+                Step::Core(native::Progress::Closed) => break,
+                _ => {}
             }
         }
+        assert!(returned, "original partial source was not returned");
+        assert_eq!(observed.last_outcome, Some(connection::Outcome::Unknown));
+        assert_eq!(host.report().partial_retirements, 1);
+        assert_eq!(host.report().encrypted_partial_retirements, 0);
+        assert_eq!(logical.reads()?, reads, "closed-source drain sampled the refused logical source");
         assert_eq!(book.current_neighbor(REMOTE.0), None);
         assert_eq!(observed.retired, 1);
         assert!(host.take_cleanup_error().is_none());

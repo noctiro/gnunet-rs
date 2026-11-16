@@ -9,10 +9,11 @@ license.workspace = true
 name = "gnunet-nat-auto"
 path = "src/main.rs"
 
-[target.'cfg(unix)'.dependencies]
+[dependencies]
 gnunet-nat-test-host = { workspace = true, features = ["program"] }
 gnunet-config.workspace = true
-gnunet-program-host = { workspace = true, features = ["resolver-broker"] }
+gnunet-service-startup.workspace = true
+gnunet-program-host = { workspace = true, features = ["resolver-broker", "service-runtime"] }
 tokio = { workspace = true, features = ["rt", "net", "time", "signal"] }
 
 [lints]

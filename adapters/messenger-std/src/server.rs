@@ -33,6 +33,7 @@ mod relay;
 mod rooms;
 mod signer;
 mod statistics;
+mod transport;
 mod types;
 pub use statistics::Statistics;
 pub use types::*;
@@ -199,10 +200,24 @@ struct Receive<'c> {
 }
 struct PeerOutput<'c> {
     transmit: cadet::Transmit<'c>,
+    target: PeerTarget<'c>,
     sequence: u64,
     task: Option<u64>,
-    retire: Option<cadet::Channel<'c>>,
     until: Instant,
+}
+#[derive(Clone, Copy)]
+enum PeerTarget<'c> {
+    Channel(cadet::Channel<'c>),
+    CloseChannel(cadet::Channel<'c>),
+    Port,
+}
+impl<'c> PeerTarget<'c> {
+    const fn channel(self) -> Option<cadet::Channel<'c>> {
+        match self {
+            Self::Channel(channel) | Self::CloseChannel(channel) => Some(channel),
+            Self::Port => None,
+        }
+    }
 }
 struct ControlBudget<'c> {
     room: Room<'c>,
@@ -214,6 +229,12 @@ struct ControlBudget<'c> {
 struct OriginalSign<'p> {
     operation: pc::OperationId<'p>,
     identity: pc::Identity<'p>,
+}
+#[derive(Clone, Copy)]
+enum SignRetirement {
+    Core,
+    Room,
+    Operation,
 }
 #[derive(Clone, Copy)]
 enum SignPhase<'p> {
@@ -241,12 +262,45 @@ impl<'p> SignPhase<'p> {
 }
 struct Sign<'c, 'p> {
     room: Room<'c>,
+    kind: Kind,
     binding: Binding<'c>,
+    state: SignState<'p>,
+    until: Instant,
+    hard: Instant,
+}
+struct Signing<'p> {
     peer: [u8; 32],
     frame: OwnedBytes,
     phase: SignPhase<'p>,
-    until: Instant,
-    hard: Instant,
+}
+enum SignState<'p> {
+    Crypto(Signing<'p>),
+    /// Some(original) has actually quiesced; None never entered the SDK.
+    Retiring {
+        original: Option<OriginalSign<'p>>,
+        reason: Fault,
+        stage: SignRetirement,
+    },
+}
+impl<'p> Sign<'_, 'p> {
+    fn crypto(&self) -> Result<&Signing<'p>, Error> {
+        match &self.state {
+            SignState::Crypto(signing) => Ok(signing),
+            SignState::Retiring { .. } => Err(Fault::Conflict.into()),
+        }
+    }
+    fn crypto_mut(&mut self) -> Result<&mut Signing<'p>, Error> {
+        match &mut self.state {
+            SignState::Crypto(signing) => Ok(signing),
+            SignState::Retiring { .. } => Err(Fault::Conflict.into()),
+        }
+    }
+    fn original(&self) -> Option<OriginalSign<'p>> {
+        match &self.state {
+            SignState::Crypto(signing) => signing.phase.original(),
+            SignState::Retiring { original, .. } => *original,
+        }
+    }
 }
 /// One caller-driven daemon. All app, channel, output and signing capacities are
 /// fixed metadata pools; variable frames allocate only their actual lengths.
@@ -274,6 +328,7 @@ pub struct Server<'c, 'slots, 'p, E: Entropy, const O: usize = 16> {
     peer_output: Option<PeerOutput<'c>>,
     cadet_pending: Option<(cadet::Transmit<'c>, Instant)>,
     identity: identity::LocalIdentity<'p>,
+    pils_recovery_cause: Option<pils::ConnectionLoss>,
     domain: Rc<()>,
     next_client: u64,
     next_sequence: u64,
@@ -412,6 +467,7 @@ impl<'c, 'slots, 'p, E: Entropy, const O: usize> Server<'c, 'slots, 'p, E, O> {
             peer_output: None,
             cadet_pending: None,
             identity: identity::LocalIdentity::Awaiting { observed: None },
+            pils_recovery_cause: None,
             domain: Rc::new(()),
             next_client: 0,
             next_sequence: 0,
@@ -433,10 +489,11 @@ impl<'c, 'slots, 'p, E: Entropy, const O: usize> Server<'c, 'slots, 'p, E, O> {
             statistics: Statistics::default(),
         })
     }
-    /// Actual current local public identity, only after verified original PILS HELLO.
+    /// Current signing authority after verified PILS identity and bounded cleanup.
     #[must_use]
     pub fn local_peer(&self) -> Option<[u8; 32]> {
-        self.current_peer()
+        self.active_identity()
+            .map(|identity| *identity.peer().as_bytes())
     }
     /// Actual shared CADET native MQ attachment, no end-to-end channel claim.
     #[must_use]

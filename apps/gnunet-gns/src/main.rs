@@ -1,16 +1,10 @@
 //! Standard GNS user-name PROGRAM through the actual with-TLD client owner.
 #![deny(unsafe_code)]
-#[cfg(unix)]
 mod budget;
-#[cfg(unix)]
 mod control;
-#[cfg(unix)]
 mod early;
-#[cfg(unix)]
 mod options;
-#[cfg(unix)]
 mod output;
-#[cfg(unix)]
 mod run;
 use std::{
     error::Error,
@@ -18,31 +12,28 @@ use std::{
     process::ExitCode,
 };
 type Cause = Box<dyn Error>;
-#[cfg(unix)]
 #[derive(Debug)]
 struct SelectedFailure {
     code: u8,
     original: Option<Cause>,
     logging: Option<io::Error>,
+    output: Option<output::Close>,
 }
-#[cfg(unix)]
 impl std::fmt::Display for SelectedFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "GNS PROGRAM: {self:?}")
     }
 }
-#[cfg(unix)]
 impl Error for SelectedFailure {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         self.original
             .as_deref()
             .or_else(|| self.logging.as_ref().map(|error| error as _))
+            .or_else(|| self.output.as_ref().map(|error| error as _))
     }
 }
-#[cfg(unix)]
 #[derive(Debug)]
 struct PreparationFailure(gnunet_program_host::program::Stopped);
-#[cfg(unix)]
 impl std::fmt::Display for PreparationFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
@@ -52,7 +43,6 @@ impl std::fmt::Display for PreparationFailure {
         )
     }
 }
-#[cfg(unix)]
 impl Error for PreparationFailure {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         use gnunet_program_host::program::StoppedReason;
@@ -67,7 +57,6 @@ fn main() -> ExitCode {
     match execute() {
         Ok(code) => ExitCode::from(code),
         Err(error) => {
-            #[cfg(unix)]
             if let Some(selected) = error.downcast_ref::<SelectedFailure>() {
                 return ExitCode::from(selected.code);
             }
@@ -76,11 +65,6 @@ fn main() -> ExitCode {
         }
     }
 }
-#[cfg(not(unix))]
-fn execute() -> Result<u8, Cause> {
-    Err("native GNS PROGRAM requires Unix".into())
-}
-#[cfg(unix)]
 fn execute() -> Result<u8, Cause> {
     use gnunet_program_host::{
         foreground,
@@ -98,12 +82,26 @@ fn execute() -> Result<u8, Cause> {
     )?;
     let mut logger = Logger::new(b"gnunet-gns", std::process::id(), false)?;
     let selection = options::Selection::new();
-    let preparation=program::prepare(config,Invocation {
-        binary_name:b"gnunet-gns",
-        help:Some(b"Resolve -u/--lookup NAME with the configured GNUnet GNS service and official zTLD/configured/ego routing. -t/--type TYPE defaults to A; unknown type names warn and use ANY. -T/--timeout TIMEOUT defaults to forever, with Ctrl-C/TERM/parent cancellation; finite TIMEOUT is one original logical and native budget, including output. -r/--raw prints only formatted record values. -d/--dns validates DNS syntax and converts IDNA to UTF-8; it never falls back to DNS. A real non-GNS classification exits 4; an empty GNS answer succeeds. Standard -c/-L/-l/-h/-v select actual configuration and diagnostics."),
-        select_default_filename:true,defaults:Defaults::Native,
-    },selection.options(),std::env::args_os(),&program::Environment::capture(),&mut NlsDisabled,&mut logger,&clock,&mut io::stdout().lock(),&mut io::stderr().lock());
+    let invocation = Invocation {
+        binary_name: b"gnunet-gns",
+        help: Some(b"Resolve -u/--lookup NAME through GNUnet GNS. -t/--type selects records, -r/--raw prints values, and -T/--timeout bounds the complete operation. -d/--dns validates DNS syntax and IDNA without falling back to DNS. Non-GNS names exit 4; empty GNS answers succeed."),
+        select_default_filename: true,
+        defaults: Defaults::Native,
+    };
+    let preparation = program::prepare(
+        config,
+        invocation,
+        selection.options(),
+        std::env::args_os(),
+        &program::Environment::capture(),
+        &mut NlsDisabled,
+        &mut logger,
+        &clock,
+        &mut io::stdout().lock(),
+        &mut io::stderr().lock(),
+    );
     let reporter = Reporter::new(logger, clock.clone());
+    #[cfg(unix)]
     if let Some(notice) = early.notice {
         reporter.debug(
             "gns.parent.notice",
@@ -128,6 +126,7 @@ fn execute() -> Result<u8, Cause> {
         let configuration = prepared.main().config.duplicate()?;
         Ok(Some((prepared, settings, configuration)))
     })();
+    let retired = output::retained();
     let result = match selected {
         Ok(None) => Ok(0),
         Err(error) => Err(error),
@@ -163,11 +162,12 @@ fn execute() -> Result<u8, Cause> {
                         reporter: reporter.clone(),
                         stop: stop.clone(),
                         parent: early.parent,
-                        output: early.output,
+                        retired: retired.clone(),
                     });
-                    foreground::run(prepared, &mut context, clock.clone(), stop, product)
-                        .await
-                        .map(|report| report.code)
+                    let result =
+                        foreground::run(prepared, &mut context, clock.clone(), stop, product).await;
+                    output::settle(&retired).await;
+                    result.map(|report| report.code)
                 }),
             }
         }
@@ -180,12 +180,14 @@ fn execute() -> Result<u8, Cause> {
         .err()
         .and_then(|error| error.downcast_ref::<options::NameFailure>())
         .map_or(1, options::NameFailure::code);
-    match (result, reporter.take_error()) {
-        (Ok(code), None) => Ok(code),
-        (original, logging) => Err(Box::new(SelectedFailure {
+    let output = retired.borrow_mut().take();
+    match (result, reporter.take_error(), output) {
+        (Ok(code), None, None) => Ok(code),
+        (original, logging, output) => Err(Box::new(SelectedFailure {
             code,
             original: original.err(),
             logging,
+            output,
         })),
     }
 }

@@ -162,6 +162,8 @@ pub enum IoAction {
     PeerAddress,
     /// Bind a fresh scan socket without address/port reuse.
     Bind,
+    /// Configure asynchronous receive-error behavior on the original socket.
+    ReceivePolicy,
     /// Set nonblocking mode on a newly owned socket.
     Nonblocking,
     /// Attach a fresh nonblocking socket to the caller's Tokio I/O reactor.
@@ -316,6 +318,14 @@ pub struct Selection<'id> {
 
 /// Synchronous observation emitted during a foreground poll.
 pub enum Event<'a, 'id> {
+    /// An isolated receive error on this original scan socket. No datagram,
+    /// peer attribution, selection or source retirement is inferred.
+    ReceiveError {
+        /// Original scan socket token.
+        id: SocketId<'id>,
+        /// Exact native error borrowed for this observation only.
+        error: &'a io::Error,
+    },
     /// A complete probe was accepted by the local UDP socket only.
     Written {
         /// Original socket token.
@@ -347,6 +357,11 @@ pub enum Event<'a, 'id> {
 impl fmt::Debug for Event<'_, '_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::ReceiveError { id, error } => f
+                .debug_struct("ReceiveError")
+                .field("id", id)
+                .field("error", error)
+                .finish(),
             Self::Written { id, remote } => f
                 .debug_struct("Written")
                 .field("id", id)

@@ -5,8 +5,8 @@
 use super::*;
 use crate::replay::{DATA, LOCK};
 use gnunet_types::Error;
+use std::fs;
 use std::{
-    os::unix::fs::{DirBuilderExt, symlink},
     path::PathBuf,
     sync::atomic::{AtomicU64, Ordering},
 };
@@ -20,7 +20,7 @@ impl Scratch {
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
-        fs::DirBuilder::new().mode(0o700).create(&p)?;
+        crate::test_support::private_directory(&p)?;
         Ok(Self(p))
     }
 }
@@ -78,7 +78,7 @@ fn unsuffixed_snapshot_and_temporary_history_are_refused_without_replacement() -
     Ok(())
 }
 #[test]
-fn root_fence_replacement_revokes_live_child_and_symlink_child_is_refused() -> Test {
+fn root_fence_replacement_revokes_live_child_and_non_directory_child_is_refused() -> Test {
     let scratch = Scratch::new()?;
     let root = Namespace::open(&scratch.0)?;
     let child = root.journal([1; 32], 2)?;
@@ -91,9 +91,16 @@ fn root_fence_replacement_revokes_live_child_and_symlink_child_is_refused() -> T
     fs::remove_file(scratch.0.join(LOCK))?;
     fs::rename(scratch.0.join("original-lock"), scratch.0.join(LOCK))?;
     assert_eq!(child.latest([2; 32])?, None);
+    #[cfg(unix)]
     let other = Scratch::new()?;
     let name = format!("udp-{}", "04".repeat(32));
-    symlink(&other.0, scratch.0.join(name))?;
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&other.0, scratch.0.join(&name))?;
+    #[cfg(windows)]
+    fs::write(
+        scratch.0.join(&name),
+        b"ordinary file is not an identity directory",
+    )?;
     assert!(root.journal([4; 32], 2).is_err());
     Ok(())
 }

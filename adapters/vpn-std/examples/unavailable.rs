@@ -1,10 +1,11 @@
 //! Real IPC SERVICE without a configured TUN, for C public-API interoperability.
 //! It returns actual allocation failure; no lease or forwarding success is faked.
-#![cfg(unix)]
 use gnunet_service_runtime::{
+    BoundListeners, LocalListenerAccess,
     clock::{RuntimeClock, SystemClock},
     credentials::UnixAccess,
-    service::{Listener, ServiceOptions},
+    service::ServiceOptions,
+    signals::Termination,
 };
 use gnunet_vpn::{
     ClientSlot, Engine, FlowSlot, Instance, LeaseSlot, PacketSlot, RequestSlot, Storage,
@@ -14,54 +15,30 @@ use std::{
     error::Error,
     future::poll_fn,
     io::{self, Write},
-    os::unix::fs::MetadataExt,
     path::PathBuf,
     sync::Arc,
     task::Poll,
 };
-use tokio::{
-    net::UnixListener,
-    signal::unix::{SignalKind, signal},
-};
 type Failure = Box<dyn Error>;
-struct SocketPath {
-    path: PathBuf,
-    dev: u64,
-    ino: u64,
-}
-impl Drop for SocketPath {
-    fn drop(&mut self) {
-        if let Ok(metadata) = std::fs::symlink_metadata(&self.path)
-            && metadata.dev() == self.dev
-            && metadata.ino() == self.ino
-        {
-            let _cleanup = std::fs::remove_file(&self.path);
-        }
-    }
-}
 fn main() -> Result<(), Failure> {
     let mut args = std::env::args_os().skip(1);
     let path = PathBuf::from(
         args.next()
-            .ok_or("expected one owned new Unix socket path")?,
+            .ok_or("expected one owned new native local socket path")?,
     );
     if args.next().is_some() {
-        return Err("expected one owned new Unix socket path".into());
+        return Err("expected one owned new native local socket path".into());
     }
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?
         .block_on(async {
-            let listener = UnixListener::bind(&path)?;
-            let metadata = std::fs::symlink_metadata(&path)?;
-            let _owned_path = SocketPath {
-                path,
-                dev: metadata.dev(),
-                ino: metadata.ino(),
-            };
-            let listeners = [Listener::Unix(&listener)];
-            let mut interrupt = signal(SignalKind::interrupt())?;
-            let mut terminate = signal(SignalKind::terminate())?;
+            let bound = BoundListeners::bind_local(path, LocalListenerAccess::Owner).await?;
+            for warning in bound.failures() {
+                writeln!(io::stderr().lock(), "local endpoint preparation: {warning}")?;
+            }
+            let listeners = bound.listeners();
+            let mut termination = Termination::new()?;
             let mut instance = Instance::new();
             let mut clients = [ClientSlot::new(); 8];
             let mut requests = [RequestSlot::new(); 32];
@@ -93,7 +70,7 @@ fn main() -> Result<(), Failure> {
                 },
                 ServiceOptions::default(),
                 UnixAccess {
-                    match_uid: true,
+                    match_uid: cfg!(unix),
                     match_gid: false,
                 },
             )?;
@@ -103,8 +80,9 @@ fn main() -> Result<(), Failure> {
             )?;
             io::stdout().lock().flush()?;
             let result = poll_fn(|cx| {
-                if interrupt.poll_recv(cx).is_ready() || terminate.poll_recv(cx).is_ready() {
-                    return Poll::Ready(Ok::<(), Failure>(()));
+                match termination.poll_stop(cx) {
+                    Poll::Ready(result) => return Poll::Ready(result.map_err(Failure::from)),
+                    Poll::Pending => {}
                 }
                 match service.poll(cx, &listeners, None, &mut |_| {}) {
                     Poll::Ready(Err(error)) => Poll::Ready(Err(error.into())),

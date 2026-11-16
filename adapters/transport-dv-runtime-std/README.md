@@ -1,6 +1,6 @@
 # Actual DV runtime actor
 
-`Runtime` is a caller-driven Unix runtime library. It uses the admitted PILS client, DV crypto/cache, independent durable DV Provider, and BoxAdmission gate. It creates no hidden Tokio task, implicit Resolver, thread, socket, entropy provider or disk worker. The caller explicitly constructs/drives a fresh PILS client to its public identity, opens the independent marked `TransportDv` Provider (one explicit worker), supplies one crypto Source for that original local PILS epoch, and supplies all fixed route/cache/replay/loan storage. `new` verifies ready identity/epoch, no tracked logical operation/copied native output, and pointer equality of the original shared RuntimeClock Arc. The separate pure Source constructor is not itself an MQ authentication receipt.
+`Runtime` is a caller-driven native runtime library for Unix and Windows. It uses the admitted PILS client, DV crypto/cache, independent durable DV Provider, and BoxAdmission gate. It creates no hidden Tokio task, implicit Resolver, thread, socket, entropy provider or disk worker. The caller explicitly constructs/drives a fresh PILS client to its public identity, opens the independent marked `TransportDv` Provider (one explicit worker), supplies one crypto Source for that original local PILS epoch, and supplies all fixed route/cache/replay/loan storage. `new` verifies ready identity/epoch, no tracked logical operation/copied native output, and pointer equality of the original shared RuntimeClock Arc. The separate pure Source constructor is not itself an MQ authentication receipt.
 
 This actor is composed with the shared Engine through [transport-dv-bridge-std](../transport-dv-bridge-std/README.md). The standard [TRANSPORT service](../transport-service-std/README.md) constructs and drives that composition through `foreground` → `session` → `dv_program`, including the original physical input/FC leases, direct-neighbour generations, output receipts, authenticated final delivery, scheduling and durable sender stamps.
 
@@ -72,8 +72,6 @@ still required to distinguish staging, physical admission and packet callbacks.
 ## Runtime composition
 
 The bridge consumes original accepted physical frames and reassembled outer bodies with their queue generation, FC lease and first expiry. It tracks direct neighbours and maps immutable output admission, positive exposure, whole writes and loss through the existing Flow/reliability queues. Verified `Granted` bytes enter the shared fragment/control/CORE path with their authenticated ultimate sender. The service supplies bounded probe/forwarding scheduling and durable local sender-monotime reservations. Epoch retirement retains old physical output and input debt until settlement, closes the original PILS source and drains its provider before a replacement allocation.
-
-These source paths do not establish successful multi-hop deployment or unchanged-C/mixed-peer interoperability. Required runtime, failure/recovery, platform and measured resource/performance qualification remains outstanding; selected historical receipts retain their original source and execution scope.
 
 Independent original source IDs never enter wire. This actor owns its PILS and durable DV provider; external TRANSPORT, communicator and application owners retain their separate lifecycle and completion contracts.
 

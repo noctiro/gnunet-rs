@@ -8,13 +8,12 @@ license.workspace = true
 default = []
 h3-profile = ["dep:h3", "dep:h3-quinn", "dep:bytes", "dep:http"]
 fresh-tls = ["dep:rcgen"]
-program = ["fresh-tls", "dep:gnunet-config", "dep:gnunet-program-host", "dep:gnunet-resolver-broker", "dep:gnunet-service-startup", "dep:libc", "tokio/signal"]
-[target.'cfg(unix)'.dependencies]
+program = ["fresh-tls", "dep:gnunet-config", "dep:gnunet-program-host", "dep:gnunet-resolver-broker", "dep:gnunet-service-startup", "tokio/signal"]
+[dependencies]
 gnunet-config = { workspace = true, optional = true }
 gnunet-program-host = { workspace = true, optional = true, features = ["resolver-broker"] }
 gnunet-resolver-broker = { workspace = true, optional = true }
 gnunet-service-startup = { workspace = true, optional = true }
-libc = { workspace = true, optional = true, features = ["std"] }
 gnunet-transport-quic.workspace = true
 gnunet-wire.workspace = true
 gnunet-types.workspace = true

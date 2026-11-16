@@ -4,7 +4,6 @@ use gnunet_service_runtime::connection::Connection;
 use std::{
     collections::VecDeque,
     fmt, io,
-    os::fd::AsFd,
     pin::Pin,
     task::{Context, Poll},
 };
@@ -173,27 +172,16 @@ impl FramedConnection {
     /// Nonconsuming actual readiness for enabled ordinary RX/TX tasks. Empty TX
     /// does not request POLLOUT, so idle writable sockets cannot starve IDLE.
     pub fn ordinary_ready(&self) -> io::Result<bool> {
-        use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
-        let mut interest = if self.complete || self.failed {
-            PollFlags::empty()
-        } else {
-            PollFlags::POLLIN
+        use gnunet_service_runtime::readiness::SocketInterest;
+        let receive = !self.complete && !self.failed;
+        let transmit = !self.tx.is_empty() && !self.failed;
+        let interest = match (receive, transmit) {
+            (true, true) => SocketInterest::ReadWrite,
+            (true, false) => SocketInterest::Readable,
+            (false, true) => SocketInterest::Writable,
+            (false, false) => return Ok(false),
         };
-        if !self.tx.is_empty() && !self.failed {
-            interest |= PollFlags::POLLOUT;
-        }
-        if interest.is_empty() {
-            return Ok(false);
-        }
-        let mut descriptors = [PollFd::new(self.stream.as_fd(), interest)];
-        poll(&mut descriptors, PollTimeout::ZERO).map_err(io::Error::from)?;
-        let flags = descriptors[0].revents().unwrap_or(PollFlags::empty());
-        if flags.contains(PollFlags::POLLNVAL) {
-            return Err(io::Error::from_raw_os_error(
-                nix::errno::Errno::EBADF as i32,
-            ));
-        }
-        Ok(flags.intersects(interest | PollFlags::POLLHUP | PollFlags::POLLERR))
+        Ok(self.stream.level_readiness(interest)?.is_some())
     }
     /// A borrowed frame cannot remain live while its RX storage is consumed:
     ///

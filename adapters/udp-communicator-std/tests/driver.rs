@@ -1,7 +1,10 @@
-//! Real Unix MQ + UDP + durable replay + independent Rust TRANSPORT server.
+//! Real native local MQ + UDP + durable replay + independent Rust TRANSPORT server.
 //! ACKs travel through actual1212/1213/1220 production routing, never a test grant.
 #![cfg(feature = "transport")]
 
+#[path = "support/local_pair.rs"]
+mod local;
+mod support;
 use gnunet_crypto::{EddsaPrivateKey, Entropy};
 use gnunet_service_runtime::connection::Connection;
 use gnunet_transport::{Engine, Limits, PeerId, Signer};
@@ -21,7 +24,6 @@ use std::{
     task::Poll,
     time::Duration,
 };
-use tokio::net::UnixStream;
 type Test = Result<(), Box<dyn std::error::Error>>;
 static NEXT: AtomicU64 = AtomicU64::new(0);
 struct Scratch(PathBuf);
@@ -32,7 +34,7 @@ impl Scratch {
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
-        std::fs::create_dir(&path)?;
+        support::private_directory(&path)?;
         Ok(Self(path))
     }
 }
@@ -62,22 +64,45 @@ impl AddressStore for Store {
         Ok(())
     }
 }
-async fn actual_direct_peer(bind: SocketAddr) -> Test {
+#[derive(Clone, Copy)]
+enum Ipc {
+    Local,
+    Tcp,
+}
+async fn connection_pair(
+    ipc: Ipc,
+    path: &std::path::Path,
+) -> std::io::Result<(Connection, Connection)> {
+    match ipc {
+        Ipc::Local => {
+            let (service, client) = local::pair(path).await?;
+            Ok((
+                Connection::from_unix(service),
+                Connection::from_unix(client),
+            ))
+        }
+        Ipc::Tcp => {
+            let (service, client) = support::pair().await?;
+            Ok((Connection::from_tcp(service), Connection::from_tcp(client)))
+        }
+    }
+}
+async fn actual_direct_peer(bind: SocketAddr, ipc: Ipc) -> Test {
     let scratch = Scratch::new()?;
     let da = scratch.0.join("a");
     let db = scratch.0.join("b");
-    std::fs::create_dir(&da)?;
-    std::fs::create_dir(&db)?;
+    support::private_directory(&da)?;
+    support::private_directory(&db)?;
     let a = Identity::from_seed([3; 32]);
     let b = Identity::from_seed([5; 32]);
     let mut ak = Key(EddsaPrivateKey::from_seed([3; 32]));
     let mut bk = Key(EddsaPrivateKey::from_seed([5; 32]));
     let mut sa = Server::new(Engine::new(ak.identity(), Limits::default())?, 1, 262140)?;
     let mut sb = Server::new(Engine::new(bk.identity(), Limits::default())?, 1, 262140)?;
-    let (aservice, acommunicator) = UnixStream::pair()?;
-    let (bservice, bcommunicator) = UnixStream::pair()?;
-    sa.admit(Connection::from_unix(aservice))?;
-    sb.admit(Connection::from_unix(bservice))?;
+    let (aservice, acommunicator) = connection_pair(ipc, &scratch.0.join("a.sock")).await?;
+    let (bservice, bcommunicator) = connection_pair(ipc, &scratch.0.join("b.sock")).await?;
+    sa.admit(aservice)?;
+    sb.admit(bservice)?;
     let asocket = DatagramSocket::bind(bind)?;
     let bsocket = DatagramSocket::bind(bind)?;
     let atarget = bsocket.local_address();
@@ -89,7 +114,7 @@ async fn actual_direct_peer(bind: SocketAddr) -> Test {
         ..Capacity::default()
     };
     let mut adriver = Driver::new(
-        Connection::from_unix(acommunicator),
+        acommunicator,
         asocket,
         Configuration {
             local: a.peer(),
@@ -102,7 +127,7 @@ async fn actual_direct_peer(bind: SocketAddr) -> Test {
         100,
     )?;
     let mut bdriver = Driver::new(
-        Connection::from_unix(bcommunicator),
+        bcommunicator,
         bsocket,
         Configuration {
             local: b.peer(),
@@ -225,18 +250,35 @@ async fn actual_direct_peer(bind: SocketAddr) -> Test {
     Ok(())
 }
 #[tokio::test(flavor = "current_thread")]
-async fn actual_unix_ipc_ipv4_udp_backchannel_crypto_credit_and_original_teardown() -> Test {
+async fn actual_local_ipc_ipv4_udp_backchannel_crypto_credit_and_original_teardown() -> Test {
     tokio::time::timeout(
         Duration::from_secs(10),
-        actual_direct_peer("127.0.0.1:0".parse()?),
+        actual_direct_peer("127.0.0.1:0".parse()?, Ipc::Local),
     )
     .await?
 }
 #[tokio::test(flavor = "current_thread")]
-async fn actual_unix_ipc_ipv6_udp_backchannel_crypto_credit_and_original_teardown() -> Test {
+async fn actual_local_ipc_ipv6_udp_backchannel_crypto_credit_and_original_teardown() -> Test {
     tokio::time::timeout(
         Duration::from_secs(10),
-        actual_direct_peer("[::1]:0".parse()?),
+        actual_direct_peer("[::1]:0".parse()?, Ipc::Local),
+    )
+    .await?
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn actual_tcp_ipc_ipv4_udp_backchannel_crypto_credit_and_original_teardown() -> Test {
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        actual_direct_peer("127.0.0.1:0".parse()?, Ipc::Tcp),
+    )
+    .await?
+}
+#[tokio::test(flavor = "current_thread")]
+async fn actual_tcp_ipc_ipv6_udp_backchannel_crypto_credit_and_original_teardown() -> Test {
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        actual_direct_peer("[::1]:0".parse()?, Ipc::Tcp),
     )
     .await?
 }

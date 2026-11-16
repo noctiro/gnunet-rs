@@ -6,6 +6,8 @@ RuntimeClock and retained Framed transport. The primary source is pinned commit
 `346358e26d4dcc2dc4f51bef5d52dca29c7d8165`,
 `src/service/regex/{regex_ipc.h,regex_api_search.c,regex_api_announce.c}`. No production C FFI or new registry dependency is used.
 
+## Registration
+
 Each `Announcement` or `Search` retains one immutable registration intent. `new` validates/encodes and reserves clock ownership; it opens no socket. `drive` selects a Unix/TCP endpoint through the supplied EndpointSource. Actual
 EOF/native IO loss physically detaches the old MQ before `SourceLost` reports
 its original epoch, typed cause and zero/prefix/whole write exposure. The same
@@ -23,6 +25,8 @@ attachment gets fresh epoch/write identities; the logical Job never changes. Exh
 Overflow. No process-global allocator of identity or leaked per-job instance is
 needed. The caller chooses handle count; this library creates no threads/tasks.
 
+## Results and write observations
+
 `Progress::Queued` is emitted only after the exact immutable request entered its
 Framed TX queue, before any native first write. `Submitted` is a whole
 local write only. Announcements have no wire ACK; searches have no RID or DONE. A source loss, timeout, empty path or zero results never means a completed search. Neither local write nor an RESULT proves a DHT operation, peer reachability,
@@ -34,6 +38,8 @@ that frame without an ACK. `take_result` performs one combined-path allocation
 and copy, preserving original job, epoch, ordinal and observed-at read-turn
 sample; failed allocation leaves RX intact. Retained input applies backpressure. Caller-owned historical results never become fresh after another search starts. No unbounded internal result queue or automatic deduplication is present.
 
+## Deadlines
+
 Deadlines are absolute microseconds in the EndpointSource's original RuntimeClock. `send_until` bounds the first complete send, including endpoint selection and
 partial writes. Once discharged it is not restarted or repurposed for a new MQ. Every subsequent registration remains within the unchanged original job budget. A search additionally
 requires `first_result_until`; it ends local interest if no complete valid first
@@ -42,6 +48,8 @@ never extends on a result. The first-result target must be between send and job
 targets. Announcement first_result_until must be None. All targets are finite. Dropping a drive future retains attempts, RX/TX suffixes, identity and targets. A caller's optional Tokio observation deadline neither cancels nor extends work. Every active drive checks original clock and logical deadlines before returning
 an observation timeout or a still-borrowable result. Clock/subscription/timer
 failure closes the original MQ independently of the failed port.
+
+## Cancellation
 
 `cancel` and `close` immediately physically retire the original attempt/MQ without
 sampling clocks or inventing a CANCEL frame. `Submission` retains exact local
@@ -55,16 +63,10 @@ unwritten request is closed without sending. Repeating this call never renews
 its grace. No partial frame can be moved to another MQ. Drop also closes the
 original native owner without calling user code.
 
+## Limits
+
 Default logical resources per handle: one immutable registration frame and one
 frame of at most65535 bytes each for RX/TX, one result slot, one CLIENT attempt,
 at most two clock
 subscriptions while a Deadline is registered, and syscall quanta <=65535 bytes. `frame_bytes`, `path_entries`, syscall quantum and suffix grace are explicit. RX/TX buffers retain the shared framing zeroization behavior. The caller's
 explicit owned-result copies and shared Resolver limits are separate resources.
-
-The sole `tests/native.rs` model uses local Unix IPC with a controlled
-actor. Its synthetic RESULT records test exact peer/GET/PUT paths, a canceled
-wait across partial input, multiple results, exact search/announcement restoration on new physical epochs,
-unchanged deadlines, historical result identity, write without ACK,
-immediate partial-request cancel, clock-failure physical EOF and no connection
-after cancellation. It is not an
-REGEX service/DHT or full GNUnet qualification claim.

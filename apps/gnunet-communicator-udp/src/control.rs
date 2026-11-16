@@ -1,18 +1,15 @@
-//! Same PROGRAM stop latch, actual Unix signals and original parent receiver.
+//! Native stop events, original parent control and selected logger failure.
 use crate::Cause;
 use gnunet_program_host::reporting::Reporter;
-use gnunet_service_startup::{ControlReceiver, ParentControl};
+use gnunet_service_startup::{ParentControl, StopSignals};
 use std::{
     cell::Cell,
     io,
     rc::Rc,
     task::{Context, Poll},
 };
-use tokio::signal::unix::{Signal, SignalKind, signal};
 pub(super) struct Control {
-    interrupt: Signal,
-    terminate: Signal,
-    parent: Option<ControlReceiver>,
+    signals: StopSignals,
     stop: Rc<Cell<bool>>,
     reporter: Reporter,
 }
@@ -23,12 +20,7 @@ impl Control {
         reporter: Reporter,
     ) -> Result<Self, Cause> {
         Ok(Self {
-            interrupt: signal(SignalKind::interrupt())?,
-            terminate: signal(SignalKind::terminate())?,
-            parent: parent
-                .map(ParentControl::register)
-                .transpose()
-                .map_err(|failure| Box::new(failure.error) as Cause)?,
+            signals: StopSignals::for_client(parent)?,
             stop,
             reporter,
         })
@@ -39,44 +31,15 @@ impl Control {
     pub(super) fn poll(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         self.reporter.register(cx);
         if self.stopped() {
+            self.stop.set(true);
             return Poll::Ready(Ok(()));
         }
-        for signal in [&mut self.interrupt, &mut self.terminate] {
-            if let Poll::Ready(value) = signal.poll_recv(cx) {
+        match self.signals.poll_stop(cx) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(result) => {
                 self.stop.set(true);
-                return Poll::Ready(
-                    value.ok_or_else(|| io::Error::other("original signal stream ended")),
-                );
+                Poll::Ready(result.map_err(io::Error::other))
             }
         }
-        let mut consumed = 0;
-        for _ in 0..4 {
-            let Some(parent) = &mut self.parent else {
-                break;
-            };
-            match parent.poll_signal(cx) {
-                Poll::Ready(Ok(Some(code)))
-                    if i32::from(code) == nix::libc::SIGINT
-                        || i32::from(code) == nix::libc::SIGTERM =>
-                {
-                    self.stop.set(true);
-                    return Poll::Ready(Ok(()));
-                }
-                Poll::Ready(Ok(Some(_))) => consumed += 1,
-                Poll::Ready(Ok(None)) => {
-                    self.parent = None;
-                    break;
-                }
-                Poll::Ready(Err(error)) => {
-                    self.stop.set(true);
-                    return Poll::Ready(Err(error));
-                }
-                Poll::Pending => break,
-            }
-        }
-        if consumed == 4 {
-            cx.waker().wake_by_ref();
-        }
-        Poll::Pending
     }
 }

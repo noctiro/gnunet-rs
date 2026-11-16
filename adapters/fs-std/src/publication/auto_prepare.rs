@@ -3,19 +3,20 @@ use super::{Limits, Task, plan};
 use crate::{
     Buffers, Control, Progress,
     extraction::{
-        self, Budget, Context, MetadataSettings, Stamp, copy, decoded, keyword_bytes, terms, zeros,
+        self, Budget, Context, MetadataSettings, copy, decoded, descriptor_info, keyword_bytes,
+        terms, zeros,
     },
     input_tree::InputDir,
     network::BlockOptions,
 };
 use gnunet_fs::{Content, Keyword, Keywords, metadata as md};
+use gnunet_native::filesystem::Directory;
 use std::{
     cell::{Cell, RefCell},
     collections::HashMap,
     fmt,
-    fs::{self, File, OpenOptions},
+    fs::{self, File},
     io::Write,
-    os::unix::{ffi::OsStrExt, fs::OpenOptionsExt},
     path::{Path, PathBuf},
 };
 /// Publication-specific preparation policy and shared extraction selection.
@@ -221,6 +222,8 @@ pub struct Prepared {
     pub content_uri: Vec<u8>,
     /// Standard serialized metadata for every prepared object.
     pub metadata: Vec<MetadataArtifact>,
+    /// Actual group-directory naming barrier after metadata file synchronization.
+    pub directory_sync: gnunet_native::DirectorySync,
 }
 impl Prepared {
     /// Stable group-relative content task directory.
@@ -327,7 +330,7 @@ impl<'a, C: FnMut(Progress) -> Control> Extractor<'a, C> {
         let extra = if previous == 0 {
             relative
                 .as_os_str()
-                .as_bytes()
+                .as_encoded_bytes()
                 .len()
                 .checked_add(std::mem::size_of::<(PathBuf, Object)>())
                 .ok_or(plan::Error::Limit)?
@@ -361,9 +364,7 @@ impl<'a, C: FnMut(Progress) -> Control> Extractor<'a, C> {
         self.objects
             .try_reserve(1)
             .map_err(|_| plan::Error::Limit)?;
-        let key = PathBuf::from(std::ffi::OsStr::from_bytes(&copy(
-            relative.as_os_str().as_bytes(),
-        )?));
+        let key = crate::input::owned_path(relative)?;
         self.objects.insert(
             key,
             Object {
@@ -511,13 +512,8 @@ fn artifact_content(task: &Task) -> Result<Content, Failure> {
         _ => Err(Failure::Plan(plan::Error::Binding)),
     }
 }
-fn persist_metadata(root: &Path, name: &Path, wire: &[u8]) -> Result<(), Failure> {
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_CLOEXEC)
-        .open(root.join(name))?;
+fn persist_metadata(root: &Directory, name: &Path, wire: &[u8]) -> Result<(), Failure> {
+    let mut file = root.create_private_file(name.as_os_str())?;
     file.write_all(wire)?;
     file.sync_all()?;
     Ok(())
@@ -579,10 +575,8 @@ pub fn prepare_with_metadata(
         }),
     };
     context.check()?;
-    let group = fs::symlink_metadata(group_root)?;
-    if !group.is_dir() || group.file_type().is_symlink() {
-        return Err(Failure::Policy);
-    }
+    let group = Directory::open(group_root)?;
+    let group_id = crate::FileIdentity::of(group.as_file())?;
     let observed = fs::symlink_metadata(input)?;
     if observed.file_type().is_symlink() || (!observed.is_dir() && !observed.is_file()) {
         return Err(Failure::Policy);
@@ -636,21 +630,11 @@ pub fn prepare_with_metadata(
             )
             .map_err(Failure::Publication)?
         } else {
-            let mut file = File::from(
-                nix::fcntl::open(
-                    input,
-                    nix::fcntl::OFlag::O_RDONLY
-                        | nix::fcntl::OFlag::O_NOFOLLOW
-                        | nix::fcntl::OFlag::O_NONBLOCK
-                        | nix::fcntl::OFlag::O_CLOEXEC,
-                    nix::sys::stat::Mode::empty(),
-                )
-                .map_err(|e| std::io::Error::from_raw_os_error(e as i32))?,
-            );
+            let mut file = crate::input::open_exact(input)?;
             if !file.metadata()?.is_file() {
                 return Err(Failure::Policy);
             }
-            let stamp = Stamp::of(&file)?;
+            let stamp = descriptor_info(&file)?;
             extractor.extract(
                 &file,
                 Path::new(""),
@@ -688,7 +672,7 @@ pub fn prepare_with_metadata(
                 |manifest, bytes| context.admit_task(manifest, bytes),
             )
             .map_err(Failure::Publication)?;
-            if Stamp::of(&file)? != stamp {
+            if descriptor_info(&file)? != stamp {
                 return Err(Failure::Plan(crate::Error::SourceChanged.into()));
             }
             task
@@ -733,7 +717,10 @@ pub fn prepare_with_metadata(
                 plan::Artifact::Tree(t) => {
                     let object = &t.objects[i];
                     (
-                        Path::new(std::ffi::OsStr::from_bytes(&object.path)),
+                        Path::new(
+                            crate::output::from_protocol_name(&object.path)
+                                .map_err(plan::Error::from)?,
+                        ),
                         object.content,
                     )
                 }
@@ -759,14 +746,14 @@ pub fn prepare_with_metadata(
             // the final collection's extra names/target before any persistent write.
             let descriptor = relative
                 .as_os_str()
-                .as_bytes()
+                .as_encoded_bytes()
                 .len()
                 .checked_add(target_uri.capacity())
-                .and_then(|n| n.checked_add(name.as_os_str().as_bytes().len()))
+                .and_then(|n| n.checked_add(name.as_os_str().as_encoded_bytes().len()))
                 .ok_or(Failure::Policy)?;
             context.budget.borrow_mut().add(descriptor)?;
             context.check()?;
-            persist_metadata(group_root, &name, &object.wire)?;
+            persist_metadata(&group, &name, &object.wire)?;
             context.check()?;
             if policy.metadata.extract {
                 let keyword_name = PathBuf::from(format!("keyword-{}", keywords.len()));
@@ -780,7 +767,7 @@ pub fn prepare_with_metadata(
                     limits,
                     policy,
                     task_credit: keywords.len() < policy.max_keyword_tasks,
-                    name_bytes: keyword_name.as_os_str().as_bytes().len(),
+                    name_bytes: keyword_name.as_os_str().as_encoded_bytes().len(),
                 };
                 if let Some(task) = keyword_task(input, &context)? {
                     let plan::Artifact::Keywords { query_uri, .. } = &task.manifest().plan.artifact
@@ -802,9 +789,7 @@ pub fn prepare_with_metadata(
             context.budget.borrow_mut().replace(query_charge, 0)?;
             metadata.push(MetadataArtifact {
                 name,
-                relative: PathBuf::from(std::ffi::OsStr::from_bytes(&copy(
-                    relative.as_os_str().as_bytes(),
-                )?)),
+                relative: crate::input::owned_path(relative)?,
                 target: target_uri,
                 wire: object.wire,
                 provider: object.provider,
@@ -814,13 +799,17 @@ pub fn prepare_with_metadata(
             return Err(Failure::Plan(plan::Error::Binding));
         }
         context.check()?;
-        File::open(group_root)?.sync_all()?;
+        let directory_sync = group.sync()?;
+        if crate::FileIdentity::of(Directory::open(group_root)?.as_file())? != group_id {
+            return Err(Failure::Policy);
+        }
         context.check()?;
         Ok(Prepared {
             content,
             keywords,
             content_uri,
             metadata,
+            directory_sync,
         })
     })();
     finish(extractor.core.provider.take(), result)

@@ -105,14 +105,28 @@ impl<'id> Core<'id> {
             match result {
                 Ok(()) => {}
                 Err(Error::Protocol(Fault::NotReady | Fault::NotFound)) => {
+                    // Signature/causal completion is independent from a key or
+                    // epoch needed to interpret this authenticated vertex.
+                    // Its successors must not wait for an earlier epoch-key
+                    // control that can itself depend on those successors.
+                    let authenticated = self.rooms.get(r)?.nodes.get(slot)?.auth.is_some();
+                    let complete = authenticated && self.rooms.get(r)?.graph_complete(slot)?;
                     let n = self.rooms.get_mut(r)?.nodes.get_mut(slot)?;
-                    if n.auth.is_some() && n.phase == MessagePhase::Ready {
+                    let changed = complete && !n.complete;
+                    n.complete = complete;
+                    let hash = n.hash;
+                    let phase_changed = n.auth.is_some() && n.phase == MessagePhase::Ready;
+                    if phase_changed {
                         n.phase = MessagePhase::AwaitingEpoch;
-                        let hash = n.hash;
+                    }
+                    if changed {
+                        self.rooms.get_mut(r)?.queue_dependants(&hash)?;
+                    }
+                    if phase_changed || changed {
                         self.event(Event::MessageChanged(
                             room,
                             hash,
-                            MessagePhase::AwaitingEpoch,
+                            self.rooms.get(r)?.nodes.get(slot)?.phase,
                         ))?;
                     }
                 }

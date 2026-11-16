@@ -1,7 +1,7 @@
 //! Original computation and continuation receipts, never fabricated wire ACKs.
 use crate::{
     Bounds, Cause, CopyId, CopyTicket, ElementOwned, Epoch, Error, IterationId, MutationId,
-    OperationId, Status,
+    OperationId, ResultMode,
 };
 use crate::{prepared::Acceptance, session::TransportLoss};
 use std::sync::Arc;
@@ -40,6 +40,8 @@ pub struct OperationReceipt {
     pub id: OperationId,
     /// Original correlation on this Set MQ, never reused.
     pub request_id: u32,
+    /// Result mode bound to this original request.
+    pub mode: ResultMode,
     /// Actual request prefix written.
     pub written: usize,
     /// Actual whole Evaluate/Accept write, without a processing ACK.
@@ -145,7 +147,7 @@ pub enum SetProgress {
         /// Actual whole request write.
         complete: bool,
     },
-    /// One original result, including nonterminal HALF_DONE; status remains typed.
+    /// One original result. Empty application elements remain distinct from markers.
     Result {
         /// Original operation token.
         operation: OperationId,
@@ -153,10 +155,8 @@ pub enum SetProgress {
         epoch: Epoch,
         /// Actual service current_size.
         current_size: u64,
-        /// Actual public status.
-        status: Status,
-        /// Actual bytes, empty for status-only markers.
-        element: ElementOwned,
+        /// Typed element or status-only result, interpreted using the original mode.
+        value: crate::ResultValue,
         /// Original receipt only for actual DONE/FAILURE.
         terminal: Option<OperationReceipt>,
     },

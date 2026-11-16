@@ -2,17 +2,7 @@
 use super::{FileIdentity, OutputDir, components, invalid_name};
 use crate::{Buffers, Control, Error, Limits, Progress, ReadFile, Repository, Result};
 use gnunet_fs::Content;
-use nix::{
-    fcntl::{OFlag, openat},
-    sys::stat::Mode,
-};
-use std::{
-    fmt,
-    fs::{File, Metadata},
-    io,
-    os::unix::fs::MetadataExt,
-    path::Path,
-};
+use std::{fmt, fs::File, io, path::Path};
 
 /// Actual complete verification phase reached before a failure.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -56,7 +46,6 @@ impl<R> RevalidateFailure<R> {
                 expected != observed
                     && Stamp {
                         changed: observed.changed,
-                        changed_nanos: observed.changed_nanos,
                         ..expected
                     } == observed
             })
@@ -122,31 +111,30 @@ pub struct RevalidatedFile {
 pub(super) struct Stamp {
     pub(super) identity: FileIdentity,
     pub(super) bytes: u64,
-    modified: i64,
-    modified_nanos: i64,
-    changed: i64,
-    changed_nanos: i64,
+    modified: i128,
+    changed: i128,
 }
 pub(super) type Fence = Option<(&'static str, Stamp, Stamp)>;
 impl Stamp {
-    fn metadata(metadata: Metadata) -> Result<Self> {
+    pub(super) fn file(file: &File) -> Result<Self> {
+        let metadata = file.metadata()?;
         if !metadata.is_file() {
             return Err(invalid_name());
         }
+        #[cfg(unix)]
+        let times = gnunet_native::filesystem::FileTimes::from_metadata(&metadata);
+        #[cfg(windows)]
+        let times = gnunet_native::filesystem::file_times(file)?;
+        #[cfg(unix)]
+        let identity = FileIdentity::from_metadata(&metadata);
+        #[cfg(windows)]
+        let identity = FileIdentity::of(file)?;
         Ok(Self {
-            identity: FileIdentity {
-                device: metadata.dev(),
-                inode: metadata.ino(),
-            },
+            identity,
             bytes: metadata.len(),
-            modified: metadata.mtime(),
-            modified_nanos: metadata.mtime_nsec(),
-            changed: metadata.ctime(),
-            changed_nanos: metadata.ctime_nsec(),
+            modified: times.modified,
+            changed: times.changed,
         })
-    }
-    pub(super) fn file(file: &File) -> Result<Self> {
-        Self::metadata(file.metadata()?)
     }
     pub(super) fn check(
         self,
@@ -162,10 +150,6 @@ impl Stamp {
         Ok(())
     }
 }
-pub(super) const REGULAR: OFlag = OFlag::O_RDONLY
-    .union(OFlag::O_NOFOLLOW)
-    .union(OFlag::O_NONBLOCK)
-    .union(OFlag::O_CLOEXEC);
 impl OutputDir {
     /// Fully re-read an existing final name through its original regular FD,
     /// encode exact plaintext into the private cache, compare all Content fields
@@ -231,11 +215,11 @@ impl OutputDir {
             let parts = components(relative)?;
             let (name, ancestors) = parts.split_last().ok_or_else(invalid_name)?;
             let parent = self.parent_existing(ancestors)?;
-            let parent_id = FileIdentity::of(&parent)?;
+            let parent_id = FileIdentity::of(parent.as_file())?;
             if expected_parent.is_some_and(|expected| expected != parent_id) {
                 return Err(Error::SourceChanged);
             }
-            let mut file = File::from(openat(&parent, *name, REGULAR, Mode::empty())?);
+            let mut file = parent.open_file_for_sync(name)?;
             let original = Stamp::file(&file)?;
             identity = Some(original.identity);
             if original.identity != expected_identity || original.bytes != expected.size {
@@ -254,10 +238,10 @@ impl OutputDir {
             let mut check = |source_boundary, name_boundary| -> Result<()> {
                 original.check(&file, source_boundary, &mut fence)?;
                 let current_parent = self.parent_existing(ancestors)?;
-                if FileIdentity::of(&current_parent)? != parent_id {
+                if FileIdentity::of(current_parent.as_file())? != parent_id {
                     return Err(Error::SourceChanged);
                 }
-                let current = File::from(openat(&current_parent, *name, REGULAR, Mode::empty())?);
+                let current = current_parent.open_file(name)?;
                 original.check(&current, name_boundary, &mut fence)?;
                 Ok(())
             };
@@ -269,13 +253,16 @@ impl OutputDir {
                 query: expected.query,
                 source,
             })?;
-            parent.sync_all().map_err(|source| Error::CommitUnknown {
+            let directory_sync = parent.sync().map_err(|source| Error::CommitUnknown {
                 query: expected.query,
                 source,
             })?;
             check("source-after-sync", "name-after-sync")?;
             Ok(RevalidatedFile {
-                read,
+                read: ReadFile {
+                    directory_sync: Some(directory_sync),
+                    ..read
+                },
                 identity: original.identity,
                 parent: parent_id,
                 source_attempts: 1,

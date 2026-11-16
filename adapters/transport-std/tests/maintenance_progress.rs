@@ -4,6 +4,7 @@
     clippy::panic_in_result_fn,
     reason = "Native regressions assert original wire, owner and callback facts"
 )]
+mod support;
 use gnunet_crypto::{EddsaPrivateKey, Entropy};
 use gnunet_service_runtime::connection::Connection;
 use gnunet_transport::{
@@ -23,7 +24,7 @@ use std::{
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::UnixStream,
+    net::TcpStream,
     time::Instant,
 };
 
@@ -161,7 +162,7 @@ fn queue_frame(peer: PeerId, id: u32) -> Vec<u8> {
     bytes[64..].copy_from_slice(b"tcp-local\0");
     bytes
 }
-async fn read(stream: &mut UnixStream) -> Result<Vec<u8>, Failure> {
+async fn read(stream: &mut TcpStream) -> Result<Vec<u8>, Failure> {
     let mut header = [0; 4];
     stream.read_exact(&mut header).await?;
     let size = usize::from(u16::from_be_bytes([header[0], header[1]]));
@@ -173,7 +174,7 @@ async fn read(stream: &mut UnixStream) -> Result<Vec<u8>, Failure> {
     stream.read_exact(&mut bytes[4..]).await?;
     Ok(bytes)
 }
-async fn sent(stream: &mut UnixStream, original: &[u8]) -> Result<(), Failure> {
+async fn sent(stream: &mut TcpStream, original: &[u8]) -> Result<(), Failure> {
     let mut bytes = frame(1210, 52);
     bytes[4..8].copy_from_slice(&1u32.to_be_bytes());
     bytes[8..16].copy_from_slice(&original[8..16]);
@@ -221,11 +222,11 @@ struct Native {
     observer: Observer,
 }
 impl Native {
-    fn new() -> Result<(Self, UnixStream), Failure> {
+    async fn new() -> Result<(Self, TcpStream), Failure> {
         let key = Key(EddsaPrivateKey::from_seed([0x63; 32]));
         let mut server = Server::new(Engine::new(key.identity(), Limits::default())?, 1, 262140)?;
-        let (socket, comm) = UnixStream::pair()?;
-        server.admit(Connection::from_unix(socket))?;
+        let (socket, comm) = support::pair().await?;
+        server.admit(Connection::from_tcp(socket))?;
         Ok((
             Self {
                 server,
@@ -307,7 +308,7 @@ impl Native {
     }
     async fn validate(
         &mut self,
-        comm: &mut UnixStream,
+        comm: &mut TcpStream,
         remote: &Key,
         id: u32,
         block: bool,
@@ -353,7 +354,7 @@ impl Native {
     }
 }
 
-async fn register(comm: &mut UnixStream) -> Result<(), Failure> {
+async fn register(comm: &mut TcpStream) -> Result<(), Failure> {
     let mut bytes = frame(1211, 16);
     bytes[4..8].copy_from_slice(&1u32.to_be_bytes());
     bytes[12..].copy_from_slice(b"tcp\0");
@@ -364,7 +365,7 @@ async fn register(comm: &mut UnixStream) -> Result<(), Failure> {
 #[tokio::test(flavor = "current_thread")]
 async fn pending_store_preserves_fifo_but_allows_admitted_write_and_original_ack()
 -> Result<(), Failure> {
-    let (mut native, mut comm) = Native::new()?;
+    let (mut native, mut comm) = Native::new().await?;
     let a = Key(EddsaPrivateKey::from_seed([0x67; 32]));
     let b = Key(EddsaPrivateKey::from_seed([0x71; 32]));
     let c = Key(EddsaPrivateKey::from_seed([0x73; 32]));
@@ -472,7 +473,7 @@ async fn pending_store_preserves_fifo_but_allows_admitted_write_and_original_ack
 #[tokio::test(flavor = "current_thread")]
 async fn retiring_observer_yields_before_writing_an_already_admitted_parent() -> Result<(), Failure>
 {
-    let (mut native, mut comm) = Native::new()?;
+    let (mut native, mut comm) = Native::new().await?;
     let remote = Key(EddsaPrivateKey::from_seed([0x79; 32]));
     register(&mut comm).await?;
     native.validate(&mut comm, &remote, 7, false).await?;

@@ -83,7 +83,7 @@ pub(crate) async fn run(input: Inputs<'_, '_, '_>) -> End {
             peerstore: sources.peerstore.duplicate()?,
             nat: sources.nat.duplicate()?,
         };
-        Ok((monitors, sources, Entropy::open()?, Entropy::open()?))
+        Ok((monitors, sources, Entropy::new(), Entropy::new()))
     })();
     let (mut monitor_ids, sources, entropy, mut dv_entropy) = match constructing {
         Ok(v) => v,

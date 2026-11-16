@@ -1,21 +1,39 @@
-# gnunet-block
+# BLOCK
 
-Pure Rust, `no_std`, no allocator and no unsafe in the package. This workspace crate implements the fixed GNUnet BLOCK library and its nine currently installed plugin implementations, together with typed custom-plugin callbacks. It does not implement the DHT/FS/GNS/DNS/REGEX/REVOCATION services or claim whole-owner acceptance. Read [DESIGN.md](DESIGN.md) and [inventory.json](inventory.json) for API mappings, exact source profile, ownership decomposition, capacity and defined native differences.
+Allocation-free `no_std` block validation, key extraction, reply classification
+and group handling for the GNUnet BLOCK library and its installed plugins.
+The crate contains no unsafe code. The public facade exposes it as
+`gnunet::block`.
 
-Dependencies for production are gnunet-types, gnunet-crypto with its explicit `pow` feature, and gnunet-hello. The shared crypto primitive selects **argon2 =0.6.0**, with default features disabled and `zeroize` enabled. Necessary new locked registry versions are blake2 0.11.0 and base64ct 1.8.3. The package inherits workspace dependencies and lints, uses one workspace package identity, and is exported as `gnunet::block` by the default allocation-free SDK. The root and embedded fixture maintain their own locks.
+## Public interfaces
 
-`plugins::Context` selects builtin plugins, and `callbacks::CallbackContext<P,N>` owns arbitrary typed plugin implementations. Callers supply group byte storage, HELLO parsing limits/storage, operation-time UTC and explicit native byte-order/HELLO signature profiles. REV checking additionally needs `pow::MEMORY_BLOCKS` (1024) caller-owned aligned Argon2 blocks: exactly 1 MiB of main work memory. `pow` re-exports `gnunet_crypto::pow`; there is one implementation. Use `GroupSizing` for the official group create options and preserve the separate validation, key and reply stages. A successful key extraction does not imply signature validity. The normal HELLO profile authenticates metadata only; its addresses remain unauthenticated claims.
+`plugins::Context` selects builtin plugins.
+`callbacks::CallbackContext<P, N>` accepts typed custom plugins. Callers supply
+storage, HELLO limits, operation-time UTC, native byte order and an explicit
+HELLO signature profile. `GroupSizing` represents group-creation options.
 
-All C code is test-only. `tools/probe.c` calls the unchanged public normal C libraries. Its line controls are an oracle harness and are not a service protocol. `examples/probe.rs` calls the Rust APIs; `examples/vectors.rs` constructs signed blocks through the Rust signers. `tools/build_normal.py` creates a new isolated Meson build/prefix and copies its compiled libraries; it never patches upstream or existing receipts. Supply a verified normal build recipe receipt plus the reference source-state helper. Both profiles use the same clean source revision; deterministic adds the official compiler macro in CPPFLAGS while retaining all native include flags.
+Key extraction, block validation and reply validation are separate operations.
+A successfully extracted key does not establish signature validity. The normal
+HELLO profile authenticates metadata only; addresses remain unauthenticated
+claims.
 
-For fresh builds, replace the capitalized path arguments with paths. All outputs must be new and disjoint from the package, upstream, existing builds and receipts:
+## Memory and dependencies
+
+REV verification requires `pow::MEMORY_BLOCKS` caller-owned aligned Argon2 blocks,
+using 1 MiB of main work memory. `pow` re-exports `gnunet_crypto::pow`; the
+implementation is shared. Production dependencies are the workspace types,
+cryptography and HELLO crates. Dependency versions and features are maintained
+in the Cargo manifests and lockfiles.
+
+## Reference and tests
+
+[Design](DESIGN.md) documents wire behavior, resource contracts and reference
+quirks. [inventory.json](inventory.json) maps the selected reference interfaces.
+The [tool guide](tools/README.md) covers isolated C builds and comparisons.
+
+Run package checks from the repository root:
 
 ```sh
-python3 -B tools/build_normal.py --source UPSTREAM --baseline NORMAL_RECIPE_RECEIPT --reference-helper REFERENCE_HELPER --hello-profile normal --output NEW_NORMAL_BUILD
-python3 -B tools/build_normal.py --source UPSTREAM --baseline NORMAL_RECIPE_RECEIPT --reference-helper REFERENCE_HELPER --hello-profile deterministic --output NEW_DETERMINISTIC_BUILD
-python3 -B tools/verify.py --repository REPOSITORY --normal-receipt NEW_NORMAL_BUILD/result.json --deterministic-receipt NEW_DETERMINISTIC_BUILD/result.json --reference-helper REFERENCE_HELPER --audit-tool CARGO_AUDIT --audit-db FIXED_RUSTSEC_DB --audit-revision FIXED_DB_COMMIT --output NEW_PROOF
+cargo test -p gnunet-block --locked
+cargo clippy -p gnunet-block --all-targets --all-features --locked -- -D warnings
 ```
-
-The maintained verifier copies the complete workspace, all members/settings and both locks. It requires 18 named Rust tests, two lifetime docs, 19 tool controls, six reference rejection controls, both embedded fixture builds, the new registry archives and fixed no-fetch RustSec audits. It selects test and release executables from Cargo JSON. Normal C comparison has 867 core cases plus 1296 signed/group/config/REGEX cases for each HELLO profile, including C-built and Rust-built signed vectors. Complete compiler headers, libraries, dynamic providers, recipe inputs and actor identities are checked before and after execution. The final integrated run remains pending. See [tools/WORKSPACE-VALIDATION.md](tools/WORKSPACE-VALIDATION.md).
-
-The original stock3/det2 build recipes were not preserved as source blobs. Their historical component observations remain separate. New normal/deterministic build receipts bind the executed builder, imported common helper and reference helper before/after; the verifier also checks their bytes against the reviewed current role sources without rewriting the recorded execution paths.

@@ -1,6 +1,6 @@
 //! Actual Rust native service + official IPC + durable Rust storage.
 //! These local peers are not unmodified-C interoperability acceptance.
-#![cfg(all(unix, feature = "server"))]
+#![cfg(all(any(unix, windows), feature = "server"))]
 #![expect(
     clippy::panic_in_result_fn,
     reason = "Native service tests assert actual wire fields, worker settlement and durable restart"
@@ -15,7 +15,7 @@ use gnunet_datastore_host::{
     server::{Limits as ServerLimits, Progress, Server, UnixAccess},
 };
 use gnunet_service_runtime::{
-    Activation, BoundListeners,
+    BoundListeners, LocalListenerAccess,
     clock::SystemClock,
     service::{Listener, ServiceOptions, ShutdownMode},
 };
@@ -25,7 +25,6 @@ use std::{
     fs,
     future::{Future, poll_fn},
     io,
-    os::unix::{ffi::OsStrExt, fs::PermissionsExt},
     path::{Path, PathBuf},
     pin::pin,
     sync::{
@@ -37,7 +36,6 @@ use std::{
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::UnixStream,
     time::{Instant, timeout},
 };
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
@@ -48,12 +46,12 @@ impl Directory {
     fn new() -> io::Result<Self> {
         static NEXT: AtomicU64 = AtomicU64::new(1);
         let path = std::env::temp_dir().join(format!(
-            "gnunet-datastore-service-{}-{}",
+            "gds-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
-        fs::create_dir(&path)?;
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o700))?;
+        gnunet_native::filesystem::Directory::open(&std::env::temp_dir())?
+            .create_private_directory(path.file_name().ok_or(io::ErrorKind::InvalidInput)?)?;
         Ok(Self(path))
     }
     fn config(&self) -> TestResult<Configuration> {
@@ -61,7 +59,7 @@ impl Directory {
         config.set_value(
             b"datastore",
             b"UNIXPATH",
-            Some(self.0.join("service.sock").as_os_str().as_bytes()),
+            Some(gnunet_native::os_bytes::encode(self.0.join("service.sock").as_os_str()).as_ref()),
         )?;
         config.set_number(b"datastore", b"PORT", 0)?;
         Ok(config)
@@ -235,7 +233,9 @@ fn actual_client_roundtrip_selection_and_worker_joined_restart() -> TestResult {
     let body = b"\0native durable value\xff";
     let other = b"second value under the same key";
     runtime()?.block_on(async {
-        let bound = BoundListeners::bind(&config, b"datastore", Activation::default()).await?;
+        let bound =
+            BoundListeners::bind_configured(&config, b"datastore", LocalListenerAccess::Owner)
+                .await?;
         let listeners = bound.listeners();
         let mut service = server(Store::open(directory.store(), StoreLimits::default())?).await?;
         let original_uid = {
@@ -467,7 +467,9 @@ fn actual_client_roundtrip_selection_and_worker_joined_restart() -> TestResult {
 
         // A fresh worker and socket reopen the on-disk WAL after the old worker
         // actually joined. Returned UID and replication decrement survive.
-        let bound = BoundListeners::bind(&config, b"datastore", Activation::default()).await?;
+        let bound =
+            BoundListeners::bind_configured(&config, b"datastore", LocalListenerAccess::Owner)
+                .await?;
         let listeners = bound.listeners();
         let mut service = server(Store::open(directory.store(), StoreLimits::default())?).await?;
         let mut instance = pure::Instance::new();
@@ -539,7 +541,7 @@ fn frame(request: Request<'_>) -> Result<Vec<u8>, ProtocolError> {
     request.encode(&mut frame)?;
     Ok(frame)
 }
-async fn read_frame(socket: &mut UnixStream) -> io::Result<Vec<u8>> {
+async fn read_frame(socket: &mut gnunet_service_runtime::local::Stream) -> io::Result<Vec<u8>> {
     let mut header = [0; 4];
     socket.read_exact(&mut header).await?;
     let length = usize::from(u16::from_be_bytes([header[0], header[1]]));
@@ -558,13 +560,15 @@ fn same_mq_drop_has_no_ack_and_clears_only_at_actual_shutdown() -> TestResult {
     let key = [0x6b; 64];
     let body = b"DROP is deferred until service shutdown";
     runtime()?.block_on(async {
-        let bound = BoundListeners::bind(&config, b"datastore", Activation::default()).await?;
+        let bound =
+            BoundListeners::bind_configured(&config, b"datastore", LocalListenerAccess::Owner)
+                .await?;
         let listeners = bound.listeners();
         let mut service = server(Store::open(directory.store(), StoreLimits::default())?).await?;
         let mut socket = with_server(
             &mut service,
             &listeners,
-            UnixStream::connect(directory.socket()),
+            gnunet_service_runtime::local::Stream::connect(directory.socket()),
         )
         .await?;
         let input = frame(Request::Put(put(&key, body, 0)))?;

@@ -1,10 +1,17 @@
 # Bounded HTTP host
 
-This is the concrete HTTP/HTTPS transport mechanically extracted from the HOSTLIST candidate, with GET/HEAD and bounded SOAP POST. HOSTLIST and NAT consume this layer independently. It depends on the existing shared CLIENT Resolver/RuntimeClock/native stream boundary and the already approved Hyper/Rustls/URL stack. There is no HOSTLIST/NAT business dependency, production libgnunet FFI, global provider installation, hidden pool, task, resolver, cookie jar or process owner.
+Caller-driven HTTP/HTTPS GET/HEAD and bounded SOAP POST for HOSTLIST and NAT.
+The transport uses the shared CLIENT Resolver, RuntimeClock and native stream
+boundary with Hyper, Rustls and URL parsing. Request, response and cancellation
+owners are shared across Unix and Windows; TCP initialization borrows the
+original descriptor or Winsock socket. TLS uses AWS-LC and requires its supported
+native build toolchain on the selected target.
+
+## Public interfaces
 
 `Instance` is a caller-owned checked Rc allocation domain. `Request::{get,head,soap}` fixes a unique Job, exact URI, absolute logical target, method, safe redirect policy and one shared zeroizing body/action copy. Cloning shares that same immutable intent; `Client::new` allows it to be admitted only once. A new retry/recovery must construct an explicitly new Request. The owner takes an original caller native hard target; all DNS, proxy, TCP, TLS, HTTP and redirects retain the minimum original target. It never reconstructs a deadline from elapsed stages. The borrowed `Client::drive` future may be dropped while the same task/cursor remains in Client. `cancel` physically drops its exclusive connection and preserves original Progress without clock IO.
 
-API:
+The primary interface is:
 
 ```text
 Client::new(request, shared_resolution, tls, optional_proxy, limits, original_hard)
@@ -25,11 +32,14 @@ SOAP is always POST with exact quoted SOAPAction, bounded shared body, Content-T
 
 All six configured proxy modes from the original provider remain: HTTP, HTTP1.0, SOCKS4/4a and SOCKS5/local-DNS/hostname. Actual HTTP CONNECT, optional verified HTTPS proxy endpoints and bounded authentication are retained. Shared Resolver address effects are acknowledged only once an connection/proxy target effect is polled. A distinct SOCKS4 IPv4-only lookup capability is explicit. Numeric addresses alone enter native connect; no system-DNS fallback occurs. Physical socket/inner owners drop before their original Resolver connection leases retire. Original native initialization errors/warnings retain their probe ids. Proxy URI scheme/config kind should agree; exotic undocumented libcurl override behavior is not emulated.
 
+## Transport policy and bounds
+
 The explicit owned Rustls config uses the approved AWS-LC non-FIPS native/asm provider and webpki-roots1.0.11, with hostname/certificate validation, normal SystemTime X509 validity, no client key or insecure verifier, and resumption/early-data disabled. TLS trust time is deliberately separate from RuntimeClock operation deadlines. `Tls::with_roots` accepts explicitly caller-owned trust roots without disabling hostname/validity checks. No pure-Rust-cryptographic-primitive or FIPS claim is made.
 
 Bounds include URI8192, SOAP body1MiB, response16MiB, native64MiB per direction, bounded headers/parser buffers, frames, probes and redirects; profiles can be smaller. URI/body/action retained buffers are zeroizing/redacted. The mature libraries may retain transient parsed URL/header/TLS buffers; their complete wiping is not claimed. `bounded_io` exposes exact byte/expiry guards for an existing accepted-server owner without manufacturing HTTP or business receipts.
 
-Native proxy/TLS behavior, cancellation faults and mixed-service interoperability require central qualification. No new unrelated test matrix or generic HTTP framework is introduced.
+Native proxy/TLS, cancellation and mixed-service qualification are tracked in
+[implementation status](../../IMPLEMENTATION_STATUS.md).
 
 A transport failure observed after its connection future completes is returned
 with its original cause immediately. Complete response facts and their original

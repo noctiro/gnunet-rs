@@ -353,7 +353,7 @@ pub(super) async fn bootstrap<'id, S: Future<Output = io::Result<()>> + ?Sized>(
                 Err(error) => return Err(Box::new(error) as Failure),
             }
             let selected = {
-                let mut driving = std::pin::pin!(pils.drive(None));
+                let process_clock = clock.source();
                 let mut resolving =
                     std::pin::pin!(resolver.drive_waiting(None, &mut *observe_resolver));
                 poll_fn(|cx| {
@@ -370,10 +370,9 @@ pub(super) async fn bootstrap<'id, S: Future<Output = io::Result<()>> + ?Sized>(
                         let part = (cursor + offset) % 3;
                         let ready = match part {
                             0 => ledger.poll(cx).map(Turn::Ledger).map(Ok),
-                            1 => driving
-                                .as_mut()
-                                .poll(cx)
-                                .map(|r| r.map(Turn::Pils).map_err(|e| Box::new(e) as Failure)),
+                            1 => continuity
+                                .poll_source(pils, process_clock.as_ref(), cx)
+                                .map(|r| r.map(Turn::Pils)),
                             _ => resolving.as_mut().poll(cx).map(|r| {
                                 r.map(|_| Turn::Resolver)
                                     .map_err(|e| Box::new(e) as Failure)
@@ -412,7 +411,11 @@ pub(super) async fn bootstrap<'id, S: Future<Output = io::Result<()>> + ?Sized>(
                         return Err(Box::new(LedgerCause(error)) as Failure);
                     }
                 }
-                Turn::Pils(event) => identity::observe(event, observe_pils)?,
+                Turn::Pils(event) => {
+                    if continuity.observe(event, observe_pils, clock.source())? {
+                        return Ok(Done::Superseded);
+                    }
+                }
                 Turn::Resolver | Turn::Observation => {}
             }
             tokio::task::yield_now().await;

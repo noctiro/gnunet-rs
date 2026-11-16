@@ -1,23 +1,20 @@
 //! Official installed RPS command using actual stream-fed native sampling.
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
 use std::{
     error::Error,
     io::{self, Write},
     process::ExitCode,
 };
 type Failure = Box<dyn Error>;
-#[cfg(unix)]
+mod input;
 mod output;
-#[cfg(unix)]
 mod run;
-#[cfg(unix)]
 #[derive(Debug)]
 struct SelectedFailure {
     original: Option<Failure>,
     logging: Option<io::Error>,
     code: u8,
 }
-#[cfg(unix)]
 impl std::fmt::Display for SelectedFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if let Some(error) = &self.original {
@@ -29,7 +26,6 @@ impl std::fmt::Display for SelectedFailure {
         Ok(())
     }
 }
-#[cfg(unix)]
 impl Error for SelectedFailure {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         self.original
@@ -37,11 +33,18 @@ impl Error for SelectedFailure {
             .or_else(|| self.logging.as_ref().map(|e| e as _))
     }
 }
+#[expect(
+    unsafe_code,
+    reason = "Fresh executable captures original client inheritance before any competing native owner"
+)]
 fn main() -> ExitCode {
-    match run() {
+    // SAFETY: first and only initialization in this fresh single-threaded process.
+    let result = unsafe { gnunet_service_startup::ClientStartup::capture() }
+        .map_err(|error| Box::new(error) as Failure)
+        .and_then(run);
+    match result {
         Ok(code) => ExitCode::from(code),
         Err(error) => {
-            #[cfg(unix)]
             if let Some(selected) = error.downcast_ref::<SelectedFailure>() {
                 return ExitCode::from(selected.code);
             }
@@ -50,12 +53,7 @@ fn main() -> ExitCode {
         }
     }
 }
-#[cfg(not(unix))]
-fn run() -> Result<u8, Failure> {
-    Err("native RPS command requires Unix".into())
-}
-#[cfg(unix)]
-fn run() -> Result<u8, Failure> {
+fn run(startup: gnunet_service_startup::ClientStartup) -> Result<u8, Failure> {
     use gnunet_program_host::{
         getopt::Options,
         helpers::{self, Target},
@@ -97,28 +95,26 @@ fn run() -> Result<u8, Failure> {
     let mut logger = Logger::new(b"gnunet-rps", std::process::id(), false)?;
     let prepared=program::prepare(config,Invocation{binary_name:b"gnunet-rps",help:Some(b"Request random peer identities (optional N, default1). -s/--seed PEER_ID writes one standard seed frame locally, with no service acknowledgement. -V/--view [N] outputs actual view batches (default0, continuous). -S/--stream outputs explicitly biased stream batches. Exactly one mode. Uses selected ordinary rps configuration, shared PROGRAM Resolver/clock and finite original local resource deadlines. No service is spawned."),select_default_filename:true,defaults:Defaults::Native},options,std::env::args_os(),&program::Environment::capture(),&mut NlsDisabled,&mut logger,&clock,&mut io::stdout().lock(),&mut io::stderr().lock());
     let reporter = Reporter::new(logger, clock.clone());
+    #[cfg(unix)]
+    if let Some(notice) = startup.notice {
+        reporter.warning(
+            "client.parent.notice",
+            format_args!("Original parent-control declaration: {notice:?}"),
+        );
+    }
     let mut failure_code = 2;
     let outcome: Result<u8, Failure> = (|| {
         let prepared = match prepared? {
             Preparation::Ready(prepared) => *prepared,
-            Preparation::Stopped(stopped) => {
-                if stopped.code == 0 && matches!(&stopped.reason, program::StoppedReason::Options) {
-                    return Ok(0);
-                }
-                return Err(format!(
-                    "RPS PROGRAM stopped {:?} code={}",
-                    stopped.reason, stopped.code
-                )
-                .into());
-            }
+            Preparation::Stopped(stopped) => return Ok(if stopped.code == 0 { 0 } else { 2 }),
         };
-        let selection = run::Selection::read(
+        let selection = input::Selection::read(
             seed.get()?,
             view.get()? != 0,
             stream.get()? != 0,
             prepared.main().arguments,
         )?;
-        let settings = run::Settings::read(prepared.main().config, selection)?;
+        let settings = input::Settings::read(prepared.main().config, selection)?;
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
@@ -130,6 +126,7 @@ fn run() -> Result<u8, Failure> {
                 settings,
                 selection,
                 reporter.clone(),
+                startup,
             ))
             .map(|()| 0)
     })();

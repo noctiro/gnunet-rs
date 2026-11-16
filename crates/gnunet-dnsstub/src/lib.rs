@@ -6,6 +6,9 @@
 #![no_std]
 #![forbid(unsafe_code)]
 
+#[cfg(feature = "alloc")]
+extern crate alloc;
+
 use core::net::{IpAddr, SocketAddr};
 use gnunet_types::{Duration, Error, GenerationalId, MonoInstant};
 
@@ -183,8 +186,8 @@ struct Pending {
     phase: Phase,
     at: MonoInstant,
 }
-struct Slot<const N: usize> {
-    query: [u8; N],
+struct Slot<Q> {
+    query: Q,
     len: usize,
     current: u32,
     next_generation: u32,
@@ -197,27 +200,31 @@ struct Slot<const N: usize> {
     sockets: [Cache; 2],
     pending: Option<Pending>,
 }
-impl<const N: usize> Slot<N> {
-    const EMPTY: Self = Self {
-        query: [0; N],
-        len: 0,
-        current: 0,
-        next_generation: 0,
-        retired: false,
-        active: false,
-        next_server: None,
-        retry_at: None,
-        order: 0,
-        reading: [false; 2],
-        sockets: [Cache::EMPTY; 2],
-        pending: None,
-    };
+impl<Q> Slot<Q> {
+    fn new(query: Q) -> Self {
+        Self {
+            query,
+            len: 0,
+            current: 0,
+            next_generation: 0,
+            retired: false,
+            active: false,
+            next_server: None,
+            retry_at: None,
+            order: 0,
+            reading: [false; 2],
+            sockets: [Cache::EMPTY; 2],
+            pending: None,
+        }
+    }
 }
 /// All seven DNSSTUB operations with explicit request, byte and server bounds.
 /// R limits request-pool slots (up to two cached sockets each), N copied query
-/// bytes and S configured server entries. No allocator, global RNG or clock.
-pub struct DnsStub<const R: usize, const N: usize, const S: usize> {
-    slots: [Slot<N>; R],
+/// bytes and S configured server entries. The default query storage is inline;
+/// the optional heap profile changes storage without changing protocol behavior.
+/// No global RNG or clock is consulted.
+pub struct DnsStub<const R: usize, const N: usize, const S: usize, Q = [u8; N]> {
+    slots: [Slot<Q>; R],
     count: usize,
     servers: [Option<Server>; S],
     head: Option<usize>,
@@ -225,28 +232,67 @@ pub struct DnsStub<const R: usize, const N: usize, const S: usize> {
     order: u64,
     closed: bool,
 }
+/// Heap-backed query buffers with the same bounded DNSSTUB state machine.
+/// Allocations are per slot; constructing a maximum-packet profile does not put
+/// its entire query pool on the native thread stack.
+#[cfg(feature = "alloc")]
+pub type HeapDnsStub<const R: usize, const N: usize, const S: usize> =
+    DnsStub<R, N, S, alloc::boxed::Box<[u8]>>;
 impl<const R: usize, const N: usize, const S: usize> DnsStub<R, N, S> {
     /// Start using the full compile-time request-pool capacity.
     pub fn new() -> Result<Self, Error> {
         Self::start(R)
     }
-    /// Runtime `GNUNET_DNSSTUB_start` count within the explicit caller profile.
+    /// Start an inline, allocation-free request and query pool.
     pub fn start(num_sockets: usize) -> Result<Self, Error> {
+        Self::validate_count(num_sockets)?;
+        Ok(Self::with_slots(
+            num_sockets,
+            core::array::from_fn(|_| Slot::new([0; N])),
+        ))
+    }
+}
+#[cfg(feature = "alloc")]
+impl<const R: usize, const N: usize, const S: usize> DnsStub<R, N, S> {
+    /// Start the bounded heap-backed profile; allocation failure is explicit.
+    pub fn start_heap(num_sockets: usize) -> Result<HeapDnsStub<R, N, S>, Error> {
+        Self::validate_count(num_sockets)?;
+        let mut slots = alloc::vec::Vec::new();
+        slots.try_reserve_exact(R).map_err(|_| Error::Capacity)?;
+        for slot in 0..R {
+            let mut query = alloc::vec::Vec::new();
+            if slot < num_sockets {
+                query.try_reserve_exact(N).map_err(|_| Error::Capacity)?;
+                query.resize(N, 0);
+            }
+            slots.push(Slot::new(query.into_boxed_slice()));
+        }
+        let slots = slots.try_into().map_err(|_| Error::Capacity)?;
+        Ok(HeapDnsStub::with_slots(num_sockets, slots))
+    }
+}
+impl<const R: usize, const N: usize, const S: usize, Q: AsRef<[u8]> + AsMut<[u8]>>
+    DnsStub<R, N, S, Q>
+{
+    fn validate_count(num_sockets: usize) -> Result<(), Error> {
         if num_sockets == 0 || num_sockets > R {
             return Err(Error::Capacity);
         }
         if R > u32::MAX as usize || S > u32::MAX as usize {
             return Err(Error::TooLarge);
         }
-        Ok(Self {
-            slots: core::array::from_fn(|_| Slot::EMPTY),
-            count: num_sockets,
+        Ok(())
+    }
+    fn with_slots(count: usize, slots: [Slot<Q>; R]) -> Self {
+        Self {
+            slots,
+            count,
             servers: [None; S],
             head: None,
             retry: DEFAULT_RETRY,
             order: 0,
             closed: false,
-        })
+        }
     }
     fn open(&self) -> Result<(), Error> {
         if self.closed {
@@ -346,7 +392,7 @@ impl<const R: usize, const N: usize, const S: usize> DnsStub<R, N, S> {
         } else {
             slot.retired = true;
         }
-        slot.query[..request.len()].copy_from_slice(request);
+        slot.query.as_mut()[..request.len()].copy_from_slice(request);
         slot.len = request.len();
         slot.active = true;
         slot.next_server = Some(head);
@@ -374,7 +420,7 @@ impl<const R: usize, const N: usize, const S: usize> DnsStub<R, N, S> {
     /// Borrow the exact owned original bytes, not a rebuilt DNS packet.
     pub fn query(&self, id: RequestId) -> Result<&[u8], Error> {
         let i = self.request_index(id)?;
-        Ok(&self.slots[i].query[..self.slots[i].len])
+        Ok(&self.slots[i].query.as_ref()[..self.slots[i].len])
     }
     fn socket_index(&self, socket: SocketId) -> Result<(usize, usize), Error> {
         let i = socket.slot as usize;
@@ -387,6 +433,41 @@ impl<const R: usize, const N: usize, const S: usize> DnsStub<R, N, S> {
             return Err(Error::StaleGeneration);
         }
         Ok((i, family))
+    }
+    /// Whether this exact cache generation has a successful opening receipt.
+    pub fn owns_socket(&self, socket: SocketId) -> bool {
+        self.socket_index(socket)
+            .is_ok_and(|(slot, family)| self.slots[slot].sockets[family].state == SocketState::Open)
+    }
+    /// Reserve a cache generation during startup without inventing a query or
+    /// datagram send. The host must report its actual bind through socket_opened.
+    /// Active requests or an already opening/open cache refuse this operation.
+    pub fn prepare_socket(&mut self, slot: usize, family: Family) -> Result<SocketId, Error> {
+        self.open()?;
+        if slot >= self.count {
+            return Err(Error::InvalidInput);
+        }
+        if self.slots[slot].retired {
+            return Err(Error::Capacity);
+        }
+        if self.slots[..self.count]
+            .iter()
+            .any(|slot| slot.active || slot.pending.is_some())
+        {
+            return Err(Error::Conflict);
+        }
+        let cache = &mut self.slots[slot].sockets[family.index()];
+        if cache.state != SocketState::Closed {
+            return Err(Error::Conflict);
+        }
+        let generation = cache.generation.checked_add(1).ok_or(Error::Overflow)?;
+        cache.generation = generation;
+        cache.state = SocketState::Opening;
+        Ok(SocketId {
+            slot: slot as u32,
+            family,
+            generation,
+        })
     }
     /// Report an actual socket bind result. A late result cannot resurrect a
     /// closed token or send data for a retired request.

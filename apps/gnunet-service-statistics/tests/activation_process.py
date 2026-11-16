@@ -45,13 +45,16 @@ def main():
         assert digest(item["path"]) == item["sha256"], item["path"]
     inputs = [ROOT / "Cargo.toml", ROOT / "Cargo.lock",
               ROOT / "apps/gnunet-service-statistics/Cargo.toml",
-              ROOT / "apps/gnunet-service-statistics/src/main.rs",
-              ROOT / "apps/gnunet-service-statistics/src/host.rs",
+              *sorted((ROOT / "apps/gnunet-service-statistics/src").rglob("*.rs")),
               ROOT / "adapters/service-runtime/Cargo.toml",
               ROOT / "adapters/service-runtime/src/activation.rs",
+              *sorted((ROOT / "adapters/service-runtime/src/activation").rglob("*.rs")),
               ROOT / "adapters/service-runtime/src/lib.rs",
               ROOT / "adapters/service-runtime/src/listeners.rs",
               ROOT / "adapters/service-runtime/src/path.rs",
+              *sorted((ROOT / "adapters/service-runtime/src/path").rglob("*.rs")),
+              ROOT / "adapters/service-runtime/src/signals.rs",
+              *sorted((ROOT / "adapters/service-runtime/src/signals").rglob("*.rs")),
               ROOT / "apps/gnunet-service-statistics/examples/activation_probe.rs",
               Path(__file__).resolve(), ROOT / "apps/gnunet-service-statistics/ACTIVATION.md",
               ROOT / "apps/gnunet-service-statistics/tests/activation_abi.c"]

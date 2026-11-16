@@ -26,8 +26,11 @@ impl<'a> Selection<'a> {
 /// execution time are separate provider limitations, not measured by this cap.
 #[derive(Clone, Copy, Debug)]
 pub struct Limits {
-    /// Maximum actual regular-file extent admitted to the descriptor profile.
+    /// Maximum actual regular-file extent admitted to native extraction.
     pub source_bytes: u64,
+    /// Maximum Windows original-file view size, bounding virtual address space.
+    /// Mapped pages are demand-paged; this is not a resident-memory limit.
+    pub mapped_input_bytes: u64,
     /// Maximum separately selected in-memory input extent; no automatic fallback.
     pub memory_input_bytes: usize,
     /// Maximum original plugin config or absolute library-path length.
@@ -47,6 +50,7 @@ impl Default for Limits {
     fn default() -> Self {
         Self {
             source_bytes: 64 * 1024 * 1024 * 1024,
+            mapped_input_bytes: 64 * 1024 * 1024 * 1024,
             memory_input_bytes: 64 * 1024 * 1024,
             config_bytes: 4096,
             callbacks: 4096,
@@ -62,6 +66,8 @@ impl Limits {
     pub fn validate(self) -> Result<(), NativeError> {
         if self.source_bytes == 0
             || self.source_bytes > i64::MAX as u64
+            || self.mapped_input_bytes == 0
+            || self.mapped_input_bytes > i64::MAX as u64
             || self.memory_input_bytes == 0
             || self.memory_input_bytes as u64 > self.source_bytes
             || self.config_bytes == 0
@@ -211,16 +217,19 @@ pub enum NativeError {
         /// Original native error, not formatted into another error.
         source: io::Error,
     },
-    /// Actual POSIX dynamic loader failure with an immediate bounded diagnostic.
+    /// Native loader failure, including the original Win32 code or bounded
+    /// lossless POSIX diagnostic in the I/O error chain.
     Loader {
         /// Original loader operation.
         operation: &'static str,
-        /// Original diagnostic bytes; may be empty if allocation also failed.
-        diagnostic: Vec<u8>,
-        /// Native diagnostic was longer or its copy could not be retained.
-        truncated: bool,
+        /// Original native loader error, not converted to an empty load.
+        source: io::Error,
     },
-    /// Provider was already physically closed.
+    /// Configuration/snapshot data has no matching execution capability.
+    AuthorizationRequired,
+    /// A capability belongs to another exact library/plugin selection.
+    AuthorizationMismatch,
+    /// The provider owner no longer permits native calls.
     Closed,
     /// Original descriptor/namespace identity or extent/stamp changed.
     SourceChanged,
@@ -236,6 +245,12 @@ impl fmt::Display for NativeError {
             Self::Limit(s) => write!(f, "extractor limit: {s}"),
             Self::Io { operation, source } => write!(f, "{operation}: {source}"),
             Self::Loader { operation, .. } => write!(f, "native loader failed: {operation}"),
+            Self::AuthorizationRequired => {
+                f.write_str("native metadata execution requires explicit authorization")
+            }
+            Self::AuthorizationMismatch => {
+                f.write_str("native metadata authorization does not match the configured selection")
+            }
             Self::Closed => f.write_str("libextractor provider is closed"),
             Self::SourceChanged => f.write_str("original extraction source changed"),
             Self::CallbackPanicked(_) => f.write_str("original extractor callback panicked"),
@@ -248,7 +263,7 @@ impl fmt::Display for NativeError {
 impl Error for NativeError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            Self::Io { source, .. } => Some(source),
+            Self::Io { source, .. } | Self::Loader { source, .. } => Some(source),
             _ => None,
         }
     }
@@ -267,7 +282,7 @@ pub enum Cause<E> {
 pub struct Failure<E> {
     /// Primary original cause.
     pub cause: Cause<E>,
-    /// Independent provider cleanup failure, if physical close was attempted.
+    /// Independent native provider/input-view cleanup failure.
     pub cleanup: Option<NativeError>,
     /// Independent original file-position restoration failure.
     pub restore: Option<io::Error>,
@@ -310,6 +325,6 @@ impl<E: Error + 'static> Error for Failure<E> {
 pub struct Cleanup {
     /// The original opaque list's void release function was called once.
     pub plugin_release_called: bool,
-    /// dlclose returned zero for the original library handle.
-    pub library_close_returned_zero: bool,
+    /// The original native loader release call succeeded; physical unloading is not implied.
+    pub library_close_succeeded: bool,
 }

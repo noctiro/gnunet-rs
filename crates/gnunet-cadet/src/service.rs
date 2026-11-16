@@ -197,6 +197,7 @@ struct ClientRecord<'id> {
     next_incoming: Option<u32>,
     pending: Option<Pending<'id>>,
     cursor: usize,
+    retiring: bool,
 }
 /// Caller-owned accepted-MQ metadata; no native transport is created here.
 #[derive(Clone, Copy)]
@@ -742,6 +743,7 @@ impl<'id, 'slots, 'bytes> Service<'id, 'slots, 'bytes> {
             next_incoming: Some(0),
             pending: None,
             cursor: 0,
+            retiring: false,
         });
         self.next_client = serial;
         Ok(self.client(reference))
@@ -911,7 +913,9 @@ impl<'id, 'slots, 'bytes> Service<'id, 'slots, 'bytes> {
         client: Client<'id>,
         request: Request<'_>,
     ) -> Result<Event<'id>, Error> {
-        self.client_record(client)?;
+        if self.client_record(client)?.retiring {
+            return Err(Error::Closed);
+        }
         request.encoded_len()?;
         match request {
             Request::PortOpen { port: hash } => {
@@ -1356,7 +1360,7 @@ impl<'id, 'slots, 'bytes> Service<'id, 'slots, 'bytes> {
     }
     fn choice(&self, client: ClientRef) -> Option<Choice> {
         let current = self.clients.get(client.slot)?.record?;
-        if current.serial != client.serial || current.pending.is_some() {
+        if current.serial != client.serial || current.pending.is_some() || current.retiring {
             return None;
         }
         for (slot, channel) in self.channels.iter().enumerate() {
@@ -1802,20 +1806,49 @@ impl<'id, 'slots, 'bytes> Service<'id, 'slots, 'bytes> {
             self.channels[channel.slot].record = None;
         }
     }
+    fn revoke_ports(&mut self, client: ClientRef) {
+        for port in self.ports.iter_mut() {
+            if port.record.is_some_and(|port| port.client == client) {
+                port.record = None;
+            }
+        }
+    }
+    /// Stop ingress on this original MQ before preserving accepted explicit
+    /// Destroy drains. Ports revoke immediately and all other channel work is
+    /// canceled/closed. Existing outgoing drain effects retain their original
+    /// owners; no new response, request or remote open is admitted for this MQ.
+    /// The native owner must enforce the original drain bounds and later detach.
+    pub fn retire_ingress(&mut self, client: Client<'id>) -> Result<(), Error> {
+        self.client_record(client)?;
+        self.clients[client.reference.slot]
+            .record
+            .as_mut()
+            .ok_or(Error::StaleGeneration)?
+            .retiring = true;
+        self.revoke_ports(client.reference);
+        for slot in 0..self.channels.len() {
+            if let Some(record) = self.channels[slot].record
+                && record.client == client.reference
+                && !record.draining
+            {
+                let channel = Self::channel_ref(slot, record);
+                if record.phase == Phase::Closing {
+                    self.close_one(channel, false);
+                } else {
+                    self.close_channel(channel, false)?;
+                }
+                self.cleanup(channel);
+            }
+        }
+        Ok(())
+    }
     /// Retire only after this exact native MQ and its original immutable cursor
     /// stopped. Ports revoke, loop partners get real destroy intents, and remote
     /// close/cancel effects remain explicit. No old output reaches a new epoch.
     pub fn detach(&mut self, client: Client<'id>) -> Result<Loss<'id>, Error> {
         let original = *self.client_record(client)?;
         self.clients[client.reference.slot].record = None;
-        for port in self.ports.iter_mut() {
-            if port
-                .record
-                .is_some_and(|port| port.client == client.reference)
-            {
-                port.record = None;
-            }
-        }
+        self.revoke_ports(client.reference);
         let channels = self
             .channels
             .iter()

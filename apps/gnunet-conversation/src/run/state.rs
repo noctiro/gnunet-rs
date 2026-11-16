@@ -932,8 +932,11 @@ impl<'id, 'p> State<'id, 'p> {
         }
         self.audio.clear();
     }
+    pub fn begin_cleanup(&mut self, hard: std::time::Instant) {
+        self.terminal.begin_close(hard);
+    }
     pub fn cleanup_done(&self) -> bool {
-        self.media.pending_children() == 0 && (self.output_failed || self.terminal.drained())
+        self.media.settled() && self.terminal.closed()
     }
     pub fn poll_cleanup(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Failure>> {
         let mut activity = false;
@@ -964,6 +967,10 @@ impl<'id, 'p> State<'id, 'p> {
                 Poll::Pending => {}
             }
         }
+        let was_closed = self.terminal.closed();
+        if self.terminal.poll_close(cx) && !was_closed {
+            activity = true;
+        }
         // An error from one native cleanup source never skips the other
         // original owner. The outer fixed native grace remains the final fence.
         if activity {
@@ -984,9 +991,7 @@ impl<'id, 'p> State<'id, 'p> {
         }
         let report = self.terminal.close();
         let mut facts = self.facts.borrow_mut();
-        facts.cleanup_failed |= !report.output_drained
-            || report.input_restore.is_some()
-            || report.output_restore.is_some();
+        facts.cleanup_failed |= !report.successful();
         facts.terminal = Some(report);
     }
 }

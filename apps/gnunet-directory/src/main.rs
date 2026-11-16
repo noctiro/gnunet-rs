@@ -6,13 +6,9 @@ use std::{
     process::ExitCode,
 };
 type Failure = Box<dyn Error>;
-#[cfg(unix)]
 mod display;
-#[cfg(unix)]
 mod input;
-#[cfg(unix)]
 mod options;
-#[cfg(unix)]
 mod run;
 #[derive(Debug)]
 struct SelectedFailure {
@@ -46,25 +42,14 @@ fn main() -> ExitCode {
         }
     }
 }
-#[cfg(not(unix))]
-fn entry() -> Result<(), Failure> {
-    Err("this ordinary directory inspection file/PROGRAM profile requires Unix".into())
-}
-#[cfg(unix)]
 #[expect(
     unsafe_code,
-    reason = "Unique first-exec inherited descriptor transfer before any logger, runtime or file-input owner"
+    reason = "Once-only native inheritance capture before logger, runtime or file-input owners"
 )]
-fn capture() -> Result<gnunet_service_startup::CapturedStartup, Failure> {
-    // SAFETY: the first operation of this fresh executable, before any competing
-    // descriptor/env capture, thread, runtime, logger or file operation.
-    Ok(unsafe {
-        gnunet_service_startup::capture_from_environment(
-            gnunet_service_startup::InheritedMode::CloseAfterConfiguredBind,
-        )?
-    })
+fn capture() -> Result<gnunet_service_startup::ClientStartup, Failure> {
+    // SAFETY: first startup action, before files, logger, runtime or workers.
+    Ok(unsafe { gnunet_service_startup::ClientStartup::capture() }?)
 }
-#[cfg(unix)]
 fn entry() -> Result<(), Failure> {
     use gnunet_program_host::{
         logging::Logger,
@@ -73,24 +58,8 @@ fn entry() -> Result<(), Failure> {
         reporting::Reporter,
         shared_clock::SharedClock,
     };
-    use gnunet_service_startup::InheritedResources;
     use std::sync::Arc;
     let captured = capture()?;
-    match captured.inherited {
-        InheritedResources::CloseAfterBind(hold) => {
-            let offered = !hold.is_empty();
-            let closed = hold.abort();
-            if offered {
-                return Err(format!(
-                    "directory inspection has no listener; original offered descriptors retired: {closed:?}"
-                )
-                .into());
-            }
-        }
-        InheritedResources::Listeners(_) => {
-            return Err("unexpected directory inspection activation mode".into());
-        }
-    }
     let clock = SharedClock::native(8)?;
     let configuration = gnunet_config::Configuration::create(
         Arc::new(gnunet_config::ProjectData::default()),
@@ -117,7 +86,8 @@ fn entry() -> Result<(), Failure> {
         &mut io::stderr().lock(),
     );
     let reporter = Reporter::new(logger, clock.clone());
-    if let Some(notice) = captured.control_notice {
+    #[cfg(unix)]
+    if let Some(notice) = captured.notice {
         reporter.debug(
             "directory.parent.notice",
             format_args!("original parent-control declaration: {notice:?}"),
@@ -148,7 +118,7 @@ fn entry() -> Result<(), Failure> {
             settings,
             canonical,
             reporter.clone(),
-            captured.parent_control,
+            captured.parent,
         ))
     })();
     if let Err(error) = &outcome {

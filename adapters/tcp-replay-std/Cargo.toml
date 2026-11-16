@@ -10,7 +10,7 @@ gnunet-snapshot-host.workspace = true
 gnunet-tcp-communicator-core.workspace = true
 gnunet-crypto.workspace = true
 gnunet-types.workspace = true
-libc.workspace = true
+gnunet-native.workspace = true
 zeroize = { workspace = true, features = ["alloc"] }
 
 [lints]

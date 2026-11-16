@@ -32,11 +32,13 @@ pub enum Error {
     /// Source identity, length, contents or metadata changed during verification,
     /// or input contains bytes beyond its declared file length.
     SourceChanged,
-    /// The final file is known durable, but temporary cleanup needs attention.
+    /// The final file was retained, but temporary cleanup needs attention.
     CleanupAfterCommit {
         /// Original file query; the destination belongs to the caller.
         query: [u8; 64],
-        /// Actual temporary cleanup failure after confirmed final durability.
+        /// Actual file and namespace retention, without a fabricated barrier.
+        retention: crate::Retention,
+        /// Actual temporary cleanup failure after confirmed final retention.
         source: io::Error,
     },
     /// Original failure plus inability to remove its owned temporary.
@@ -50,7 +52,7 @@ pub enum Error {
     CommitUnknown {
         /// Original file/block query; named outputs also require their destination.
         query: [u8; 64],
-        /// Actual failure after the object link was created.
+        /// Actual failed publication request or post-link identity/barrier check.
         source: io::Error,
     },
 }
@@ -73,7 +75,7 @@ impl fmt::Display for Error {
             Self::Corrupt => f.write_str("FS stored block is corrupt"),
             Self::SourceChanged => f.write_str("FS source changed or exceeds its declared size"),
             Self::CleanupAfterCommit { source, .. } => {
-                write!(f, "FS file committed; temporary cleanup failed: {source}")
+                write!(f, "FS file retained; temporary cleanup failed: {source}")
             }
             Self::CleanupFailed { cause, source } => {
                 write!(f, "{cause}; FS temporary cleanup also failed: {source}")
@@ -110,6 +112,7 @@ impl From<io::Error> for Error {
         Self::Io(e)
     }
 }
+#[cfg(unix)]
 impl From<nix::errno::Errno> for Error {
     fn from(e: nix::errno::Errno) -> Self {
         Self::Io(io::Error::from_raw_os_error(e as i32))

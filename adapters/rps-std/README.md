@@ -8,6 +8,8 @@ second network stack is created. `Server::new` takes the original pure Service,
 CADET client, Limits, ServiceOptions and UnixAccess; `poll`/`drive` retain all
 partial cursors when an observation future is canceled.
 
+## Public interface
+
 Each branded port maps to its original GroupId. Each channel retains its
 original CADET channel, group and channel-supplied peer. Incoming data is decoded
 from that original Received envelope, one nested message per turn. The actual
@@ -25,6 +27,8 @@ service send credit. Written is reported only from the original complete
 Framed/CADET write token. A zero-exposure original source loss is Unsent; partial
 or uncertain exposure is Lost. A locally absent/retired port is not given a fake
 port-close Written. Native causes and original terminal metadata remain separate. No sampler-result, request ID, protocol ACK or END frame is invented.
+
+## Limits
 
 Default bounds are 64 IPC sources, 16 group ports, 256 channels and 4096
 retained public discovery facts. IPC frames are at most65535bytes with four

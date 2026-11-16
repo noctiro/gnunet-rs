@@ -1,7 +1,10 @@
 # GNUnet threshold mathematics
 
-This new no_std crate implements fixed-v0.29.1 threshold arithmetic. It is
-not the missing DKG/CONSENSUS/native service or complete SECRETSHARING support.
+Threshold arithmetic for the selected GNUnet v0.29.1 profile. The
+[native service](../../adapters/secretsharing-std/README.md) composes these jobs
+with identity, consensus and IPC owners.
+
+## Public interface
 
 The default profile uses fixed stack storage and no heap/OS/ambient entropy. `alloc` adds owned polynomial, exponentiated coefficients, roster and actual
 verified-partial vectors. Every Vec is fallibly admitted against its actual
@@ -9,6 +12,8 @@ capacity. Jobs that retain an existing input plus a new allocation check their
 combined capacity. Fixed job storage, caller objects and simultaneous independent
 jobs must also be included by their enclosing owner's aggregate admission; this
 is not a measured process RSS bound or a global allocator quota.
+
+## Group and value types
 
 `Group` uses the public header's exact1024-bit P/Q/G. `MembershipJob` performs
 the order-q check. `Element` records a canonical residue without falsely
@@ -25,11 +30,13 @@ restriction on c2. Local encryption emits the canonical C producer format. `Plai
 bytes and i64::MIN, reducing the exponent one byte per step. Actual encryption
 uses rejection-sampled0<nonce<q and both exponentiations.
 
+## Polynomial generation and aggregation
+
 Shamir generation samples nonzero original coefficients, without substituting a
 constant after entropy failure. Secret Horner evaluation and exponentiated
 Horner evaluation both use original_index+1, including65536, not a shortened
 roster offset or floating-point pow. Exponentiated coefficients and their exact
-round1 presecret SHA512 commitment are available to a future DKG owner.
+round1 presecret SHA512 commitment are available to the DKG owner.
 
 `AggregateJob` owns final-aggregation mathematics. A caller explicitly selects
 `AggregateContribution` owners: peer, original index, subgroup coefficient vector
@@ -57,6 +64,8 @@ layer infers no signature, source closure, FAIR knowledge/range proof or dealer
 qualification from arithmetic; the host owns those protocol decisions. General
 FAIR production and complete authenticated multi-participant780→783 remain open.
 
+## FAIR construction
+
 `FairProver` implements a checked original-domain construction attempt. It owns
 the scalar and the Paillier encryption witness, samples the full
 original2048-bit beta and a bounded unit randomizer, and computes the exact
@@ -77,6 +86,8 @@ without self-reference, secret clones or a second algorithm. Actual retained
 input capacity follows that owner; failure/cancel immediately erases and
 releases owned coefficients, while borrowed inputs remain with their caller.
 
+## Partial decryption
+
 `PartialProver` validates sigma=g^share, computes c1^share, samples beta, computes
 both commitments and the exact original SHA512 challenge over bytes72..744. It constructs the response `(challenge*share+beta) modq`. A completed proof
 can be signed by an explicitly supplied EdDSA key; alternatively
@@ -95,6 +106,8 @@ sigma product equals the original aggregate public key before returning the
 Zp plaintext. Partial/empty quorum cannot be encoded as successful math. Native consensus conclusion, original request timeout and source cancellation
 remain the enclosing protocol owner's separate gates.
 
+## Work and memory
+
 Each advance has explicit1..64 work units. One unit is an exponent bit, scalar
 draw, fixed-size multiply/add or original index/association comparison. Secret
 power state uses a fixed-capacity two-product pattern per bit. Public Paillier
@@ -102,6 +115,8 @@ unit validation uses fixed-size2048/4096-bit GCD primitives. Cancellation/failur
 erases job-owned coefficients, nonce, exponent, plaintext and power state; a
 borrowed exponent/polynomial remains its caller's erasure responsibility. No
 claim is made about compiler spills, caller copies or whole-system constant time.
+
+## Reference differences
 
 The fixed C fair-encryption producer/consumer is actually active but internally
 inconsistent. Its128-byte z stores `(r+e*x) modq`, while the Paillier equation
@@ -114,15 +129,11 @@ conditions and two equations, but returns only `FairEquationResult`. It is delib
 proof producer, zero-knowledge/range/security theorem or full DKG is implemented. No challenge shortening, extra field or private wire is introduced to conceal
 that unfinished requirement. See the source review and primary-paper references.
 
-Next layers still require an established interoperable fair-proof construction,
-original roster/round qualification, DKG consensus, authenticated native lifecycle,
-IPC/client ownership, original deadlines and source cleanup. The C
-share-size overflow, missing threshold, reduced-roster index mistakes and unchecked
-partial quorum are not reproduced as memory bugs or fabricated successes.
-
 The no-allocation VerifiedPartial exposes its
 original ciphertext and share commitment without permitting construction or
 retargeting.
+
+## Receiver-side recovery
 
 `FairRecoveryJob` implements the separate receiver-side bounded-rational
 mathematics from Fouque--Stern section3.2. It adopts the original Paillier

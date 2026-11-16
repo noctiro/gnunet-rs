@@ -1,8 +1,9 @@
-//! Real partial Unix input and source-refusal ownership, independent of C hosting.
+//! Real partial native input and source-refusal ownership, independent of C hosting.
 #![expect(
     clippy::panic_in_result_fn,
     reason = "Actual socket ownership assertions"
 )]
+mod support;
 use gnunet_crypto::{EddsaPrivateKey, Entropy};
 use gnunet_service_runtime::connection::Connection;
 use gnunet_transport::{Engine, Limits, PeerId, Signer, application::Preference};
@@ -14,7 +15,7 @@ use gnunet_types::Error;
 use std::{cell::Cell, num::NonZeroUsize, rc::Rc, time::Duration};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::UnixStream,
+    net::TcpStream,
 };
 struct Key(EddsaPrivateKey);
 impl Signer for Key {
@@ -73,7 +74,7 @@ fn registration() -> [u8; 16] {
     b[12..].copy_from_slice(b"tcp\0");
     b
 }
-async fn frame(s: &mut UnixStream) -> Result<Vec<u8>, std::io::Error> {
+async fn frame(s: &mut TcpStream) -> Result<Vec<u8>, std::io::Error> {
     let mut h = [0; 4];
     s.read_exact(&mut h).await?;
     let n = usize::from(u16::from_be_bytes([h[0], h[1]]));
@@ -95,7 +96,7 @@ fn original_source_error_after_admission_retains_one_create_and_cancel_retires_o
 -> Result<(), Box<dyn std::error::Error>> {
     runtime()?.block_on(async{
   let mut key=Key(EddsaPrivateKey::from_seed([1;32]));let mut server=Server::new(Engine::new(key.identity(),Limits::default())?,8,65535)?;
-  let(a,mut app)=UnixStream::pair()?;let(c,mut comm)=UnixStream::pair()?;server.admit(Connection::from_unix(a))?;server.admit(Connection::from_unix(c))?;
+  let(a,mut app)=support::pair().await?;let(c,mut comm)=support::pair().await?;server.admit(Connection::from_tcp(a))?;server.admit(Connection::from_tcp(c))?;
   let done=Rc::new(Cell::new(false));let canceled=Rc::new(Cell::new(false));let requests=Rc::new(Cell::new(usize::MAX));let creates=Rc::new(Cell::new(usize::MAX));let calls=Rc::new(Cell::new(0));let errors=Rc::new(Cell::new(0));
   let mut source=Source{calls:calls.clone(),fail_once:true};let mut rng=Random;let mut store=Store;
   let driver=async{let mut now=100_u64;let mut timer=tokio::time::interval(Duration::from_millis(1));while !done.get(){
@@ -121,7 +122,7 @@ fn partial_application_eof_does_not_issue_demand_and_later_full_request_has_new_
 -> Result<(), Box<dyn std::error::Error>> {
     runtime()?.block_on(async{
   let mut key=Key(EddsaPrivateKey::from_seed([1;32]));let mut server=Server::new(Engine::new(key.identity(),Limits::default())?,8,65535)?;
-  let(a,mut old)=UnixStream::pair()?;let(b,mut fresh)=UnixStream::pair()?;let(c,mut comm)=UnixStream::pair()?;server.admit(Connection::from_unix(a))?;server.admit(Connection::from_unix(b))?;server.admit(Connection::from_unix(c))?;
+  let(a,mut old)=support::pair().await?;let(b,mut fresh)=support::pair().await?;let(c,mut comm)=support::pair().await?;server.admit(Connection::from_tcp(a))?;server.admit(Connection::from_tcp(b))?;server.admit(Connection::from_tcp(c))?;
   let calls=Rc::new(Cell::new(0));let mut source=Source{calls:calls.clone(),fail_once:false};let mut rng=Random;let mut store=Store;let done=Rc::new(Cell::new(false));let retired=Rc::new(Cell::new(false));
   let driver=async{let mut timer=tokio::time::interval(Duration::from_millis(1));while !done.get(){server.discover(100,100,&mut source,NonZeroUsize::MIN)?;tokio::select!{r=server.step(None,100,&mut key,&mut rng,&mut store)=>{r?;},_=timer.tick()=>{}}if retired.get(){assert_eq!(server.engine().snapshot().application_suggestions,0);retired.set(false);}}Ok::<(),Box<dyn std::error::Error>>(())};
   let scenario=async{comm.write_all(&registration()).await?;old.write_all(&[0]).await?;drop(old);retired.set(true);while retired.get(){tokio::task::yield_now().await;}assert_eq!(calls.get(),0);
@@ -135,7 +136,7 @@ fn full_suggestion_quota_closes_only_refused_application_not_shared_service()
 -> Result<(), Box<dyn std::error::Error>> {
     runtime()?.block_on(async{
   let mut key=Key(EddsaPrivateKey::from_seed([1;32]));let mut server=Server::new(Engine::new(key.identity(),Limits{peers:1,..Limits::default()})?,8,65535)?;
-  let(a,mut accepted)=UnixStream::pair()?;let(b,mut refused)=UnixStream::pair()?;let(c,mut comm)=UnixStream::pair()?;server.admit(Connection::from_unix(a))?;server.admit(Connection::from_unix(b))?;server.admit(Connection::from_unix(c))?;
+  let(a,mut accepted)=support::pair().await?;let(b,mut refused)=support::pair().await?;let(c,mut comm)=support::pair().await?;server.admit(Connection::from_tcp(a))?;server.admit(Connection::from_tcp(b))?;server.admit(Connection::from_tcp(c))?;
   let calls=Rc::new(Cell::new(0));let mut source=Source{calls:calls.clone(),fail_once:false};let mut rng=Random;let mut store=Store;let done=Rc::new(Cell::new(false));let cancel_sent=Rc::new(Cell::new(false));let count=Rc::new(Cell::new(usize::MAX));
   let driver=async{let mut now=100;let mut timer=tokio::time::interval(Duration::from_millis(1));while !done.get(){server.discover(now,100,&mut source,NonZeroUsize::MIN)?;count.set(server.engine().snapshot().application_suggestions);if cancel_sent.get()&&count.get()==0 {done.set(true);break;}tokio::select!{r=server.step(None,now,&mut key,&mut rng,&mut store)=>{r?;},_=timer.tick()=>{now+=100_000;}}}Ok::<(),Box<dyn std::error::Error>>(())};
   let scenario=async{comm.write_all(&registration()).await?;let p=Preference{priority:0,bandwidth:0,peer:PeerId([9;32])};let mut raw=[0;44];p.encode(false,&mut raw)?;accepted.write_all(&raw).await?;let original=frame(&mut comm).await?;assert_eq!(&original[8..40],&p.peer.0);

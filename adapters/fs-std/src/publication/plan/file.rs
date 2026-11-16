@@ -10,39 +10,7 @@ use std::{
     fs::File,
     io::{self, Seek},
     mem::size_of,
-    os::unix::fs::MetadataExt,
 };
-#[derive(Clone, Copy, Eq, PartialEq)]
-struct Stamp {
-    device: u64,
-    inode: u64,
-    bytes: u64,
-    modified: i64,
-    modified_nanos: i64,
-    changed: i64,
-    changed_nanos: i64,
-}
-impl Stamp {
-    fn file(file: &File) -> Result<Self, Error> {
-        let m = file.metadata()?;
-        if !m.is_file() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "publication source must be a regular file",
-            )
-            .into());
-        }
-        Ok(Self {
-            device: m.dev(),
-            inode: m.ino(),
-            bytes: m.len(),
-            modified: m.mtime(),
-            modified_nanos: m.mtime_nsec(),
-            changed: m.ctime(),
-            changed_nanos: m.ctime_nsec(),
-        })
-    }
-}
 fn count(layout: Layout) -> Result<usize, Error> {
     let total = (0..layout.levels()).try_fold(0u64, |total, level| {
         total
@@ -116,14 +84,14 @@ pub fn prepare_file(
     limits: Limits,
     control: impl FnMut(Progress) -> Control,
 ) -> Result<Plan, Error> {
-    let original = Stamp::file(input)?;
+    let original = crate::input::file_info(input)?;
     let nodes = preflight(Layout::new(original.bytes), limits)?;
     input.rewind()?;
     let mut rows = Vec::new();
     rows.try_reserve_exact(nodes).map_err(|_| Error::Limit)?;
     let mut sink = Sink { repo, rows };
     let published = buffers.publish(input, original.bytes, &mut sink, limits.file, control)?;
-    if Stamp::file(input)? != original {
+    if crate::input::file_info(input)? != original {
         return Err(crate::Error::SourceChanged.into());
     }
     let plan = Plan {

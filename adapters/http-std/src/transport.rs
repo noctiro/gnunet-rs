@@ -398,9 +398,16 @@ async fn tcp(
         };
         match acknowledge(&mut *lookup, attempt).await {
             Ok(socket) => {
+                #[cfg(unix)]
                 use std::os::fd::AsFd;
+                #[cfg(windows)]
+                use std::os::windows::io::AsSocket;
+                #[cfg(unix)]
+                let native = socket.as_fd();
+                #[cfg(windows)]
+                let native = socket.as_socket();
                 let diagnostics = match gnunet_native::network::initialize_reactor_stream(
-                    socket.as_fd(),
+                    native,
                     gnunet_native::network::StreamKind::Tcp,
                 ) {
                     Ok(diagnostics) => diagnostics,

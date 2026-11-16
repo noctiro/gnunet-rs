@@ -9,58 +9,107 @@ use std::{
     time::Duration,
 };
 use tokio::time::{Instant, Sleep};
+pub(super) struct Snapshot {
+    rows: Vec<InterfaceAddress>,
+    advertised: Vec<SocketAddr>,
+    discovery: Option<Vec<gnunet_udp_communicator_host::discovery::Interface>>,
+}
+impl Snapshot {
+    fn new(rows: Vec<InterfaceAddress>, bound: &[SocketAddr], discovery: bool) -> io::Result<Self> {
+        let mut snapshot = Self {
+            rows,
+            advertised: Vec::new(),
+            discovery: None,
+        };
+        snapshot.advertised = snapshot.advertised_addresses(bound)?;
+        if discovery {
+            snapshot.discovery = Some(snapshot.discovery_interfaces(bound)?);
+        }
+        Ok(snapshot)
+    }
+    fn classify(&self, address: SocketAddr) -> u32 {
+        interfaces::classify(&self.rows, address)
+    }
+    /// Prepare both consumers before committing either one. The guards retain
+    /// the original owners, and their commits perform no fallible work or I/O.
+    fn install(
+        self,
+        addresses: &mut crate::addresses::Addresses<'_, '_>,
+        comm: &mut gnunet_udp_communicator_host::communicator::Communicator<'_>,
+    ) -> Result<Vec<InterfaceAddress>, crate::Cause> {
+        let addresses = addresses
+            .prepare_interfaces(&self.advertised, &mut |address| Ok(self.classify(address)))?;
+        let discovery = self
+            .discovery
+            .as_ref()
+            .map(|rows| comm.prepare_interfaces(rows))
+            .transpose()?;
+        addresses.commit();
+        if let Some(discovery) = discovery {
+            discovery.commit();
+        }
+        Ok(self.rows)
+    }
+}
+
 pub(super) struct Scanner {
     rows: Vec<InterfaceAddress>,
-    valid: bool,
+    discovery: bool,
     alarm: Pin<Box<Sleep>>,
 }
 impl Scanner {
-    pub fn new() -> io::Result<Self> {
+    pub fn new(
+        bound: &[SocketAddr],
+        discovery: bool,
+        addresses: &mut crate::addresses::Addresses<'_, '_>,
+        comm: &mut gnunet_udp_communicator_host::communicator::Communicator<'_>,
+    ) -> Result<Self, crate::Cause> {
+        let snapshot = Snapshot::new(interfaces::snapshot(Default::default())?, bound, discovery)?;
         Ok(Self {
-            rows: interfaces::snapshot(Default::default())?,
-            valid: true,
+            rows: snapshot.install(addresses, comm)?,
+            discovery,
             alarm: Box::pin(tokio::time::sleep(Duration::from_secs(300))),
         })
     }
+    pub fn install(
+        &mut self,
+        replacement: Snapshot,
+        addresses: &mut crate::addresses::Addresses<'_, '_>,
+        comm: &mut gnunet_udp_communicator_host::communicator::Communicator<'_>,
+    ) -> Result<(), crate::Cause> {
+        self.rows = replacement.install(addresses, comm)?;
+        Ok(())
+    }
     pub fn classify(&self, address: SocketAddr) -> io::Result<u32> {
-        if address.ip().is_loopback() {
-            return Ok(1);
-        }
-        if !self.valid {
-            return Err(io::Error::new(
-                io::ErrorKind::NotConnected,
-                "original interface snapshot unavailable",
-            ));
-        }
         Ok(interfaces::classify(&self.rows, address))
     }
-    pub fn poll_refresh(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+    pub fn poll_refresh(
+        &mut self,
+        cx: &mut Context<'_>,
+        bound: &[SocketAddr],
+    ) -> Poll<io::Result<Snapshot>> {
         if self.alarm.as_mut().poll(cx).is_pending() {
             return Poll::Pending;
         }
         self.alarm
             .as_mut()
             .reset(Instant::now() + Duration::from_secs(300));
-        match interfaces::snapshot(Default::default()) {
-            Ok(rows) => {
-                self.rows = rows;
-                self.valid = true;
-                Poll::Ready(Ok(()))
-            }
-            Err(error) => Poll::Ready(Err(error)),
-        }
+        Poll::Ready(
+            interfaces::snapshot(Default::default())
+                .and_then(|rows| Snapshot::new(rows, bound, self.discovery)),
+        )
     }
 }
 
-impl Scanner {
-    pub fn advertised(&self, bound: &[SocketAddr]) -> io::Result<Vec<SocketAddr>> {
+impl Snapshot {
+    fn advertised_addresses(&self, bound: &[SocketAddr]) -> io::Result<Vec<SocketAddr>> {
         let mut addresses = Vec::new();
         addresses.try_reserve_exact(128).map_err(io::Error::other)?;
         for local in bound {
             for row in self
                 .rows
                 .iter()
-                .filter(|row| row.is_up() && row.address.is_ipv4() == local.is_ipv4())
+                .filter(|row| row.is_usable() && row.address.is_ipv4() == local.is_ipv4())
             {
                 if !local.ip().is_unspecified() && row.address.ip() != local.ip() {
                     continue;
@@ -77,7 +126,7 @@ impl Scanner {
         }
         Ok(addresses)
     }
-    pub fn discovery(
+    fn discovery_interfaces(
         &self,
         bound: &[SocketAddr],
     ) -> io::Result<Vec<gnunet_udp_communicator_host::discovery::Interface>> {
@@ -88,7 +137,7 @@ impl Scanner {
         for row in self
             .rows
             .iter()
-            .filter(|row| row.is_up() && !row.is_loopback() && row.index != 0)
+            .filter(|row| row.is_usable() && !row.is_loopback() && row.index != 0)
         {
             let Some(local) = bound.iter().find(|local| {
                 local.is_ipv4() == row.address.is_ipv4()
@@ -97,9 +146,7 @@ impl Scanner {
                 continue;
             };
             let broadcast = match (row.address.ip(), row.netmask) {
-                (IpAddr::V4(ip), Some(IpAddr::V4(mask)))
-                    if row.flags & (nix::libc::IFF_BROADCAST as u32) != 0 =>
-                {
+                (IpAddr::V4(ip), Some(IpAddr::V4(mask))) if row.supports_ipv4_broadcast() => {
                     Some(Ipv4Addr::from(u32::from(ip) | !u32::from(mask)))
                 }
                 (IpAddr::V4(_), _) => continue,
@@ -125,3 +172,6 @@ impl Scanner {
         Ok(interfaces)
     }
 }
+
+#[cfg(test)]
+mod tests;

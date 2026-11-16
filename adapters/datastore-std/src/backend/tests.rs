@@ -20,7 +20,8 @@ impl Directory {
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
-        fs::create_dir(&path)?;
+        gnunet_native::filesystem::Directory::open(&std::env::temp_dir())?
+            .create_private_directory(path.file_name().ok_or(io::ErrorKind::InvalidInput)?)?;
         Ok(Self(path))
     }
 }

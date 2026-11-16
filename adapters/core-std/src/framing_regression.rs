@@ -16,7 +16,7 @@ async fn write_step(link: &mut Link) -> std::io::Result<()> {
 #[tokio::test(flavor = "current_thread")]
 async fn actual_partial_original_survives_cancellation_and_later_frame_admission()
 -> Result<(), Box<dyn std::error::Error>> {
-    let (connection, mut peer) = pair()?;
+    let (connection, mut peer) = pair().await?;
     let mut link = Link::new(connection, 65535, 4, 1)?;
     let first = message(1);
     let removed = message(2);
@@ -56,7 +56,7 @@ async fn actual_partial_original_survives_cancellation_and_later_frame_admission
 #[tokio::test(flavor = "current_thread")]
 async fn actual_split_header_and_retained_complete_frame_survive_dropped_waits()
 -> Result<(), Box<dyn std::error::Error>> {
-    let (connection, mut peer) = pair()?;
+    let (connection, mut peer) = pair().await?;
     let mut link = Link::new(connection, 65535, 4, 1)?;
     let first = message(5);
     let next = message(6);
@@ -132,7 +132,7 @@ async fn clock_failure_prevents_physical_start_write_and_recovery_keeps_original
     )?;
     host.connect_now = false;
     host.retry_at = u64::MAX;
-    let (connection, mut peer) = pair()?;
+    let (connection, mut peer) = pair().await?;
     host.attach_transport(connection)?;
     clock.change(100, true)?;
     let mut cx = Context::from_waker(Waker::noop());

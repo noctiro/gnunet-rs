@@ -387,11 +387,9 @@ where
             .try_reserve(1)
             .map_err(|_| ProtocolError::Capacity)?;
         persistence.store.check_append(96)?;
-        let exists = nix::sys::stat::fstatat(
-            persistence.store.directory(),
-            selected.as_os_str(),
-            nix::fcntl::AtFlags::AT_SYMLINK_NOFOLLOW,
-        );
+        let directory =
+            gnunet_native::filesystem::Directory::from_file(persistence.store.directory())?;
+        let exists = directory.entry_info(&selected);
         let task = match exists {
             Ok(_) => {
                 let task = probe_task::Task::open_at(
@@ -408,16 +406,18 @@ where
                 }
                 task
             }
-            Err(nix::errno::Errno::ENOENT) => probe_task::Task::create_at(
-                persistence.store.directory(),
-                &selected,
-                uri,
-                expected,
-                persistence.limits,
-                Some(origin),
-            )
-            .map_err(Error::Task)?,
-            Err(error) => return Err(Error::Io(error.into())),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                probe_task::Task::create_at(
+                    persistence.store.directory(),
+                    &selected,
+                    uri,
+                    expected,
+                    persistence.limits,
+                    Some(origin),
+                )
+                .map_err(Error::Task)?
+            }
+            Err(error) => return Err(Error::Io(error)),
         };
         if task.manifest().origin != Some(origin)
             || task.manifest().uri != record.raw_uri()

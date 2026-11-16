@@ -13,6 +13,10 @@ gnunet-wire.workspace = true
 zeroize = { workspace = true, features = ["alloc"] }
 tokio = { workspace = true, features = ["rt", "net", "time", "sync"] }
 [dev-dependencies]
+gnunet-native.workspace = true
 tokio = { workspace = true, features = ["io-util"] }
+[target.'cfg(windows)'.dev-dependencies]
+socket2.workspace = true
+
 [lints]
 workspace = true

@@ -333,9 +333,10 @@ fn reservations_are_connection_owned_and_preflighted_and_duplicates_consume_budg
             service.handle(a, duplicate, &mut backend, &mut output, now(), &mut random)?,
             &output
         )?,
-        -1
+        1
     );
-    assert_eq!(backend.puts, 2);
+    assert_eq!(backend.puts, 3);
+    assert_eq!(service.accounting(&backend)?.reserved_bytes, 0);
     assert_eq!(
         code(
             service.handle(
@@ -835,5 +836,145 @@ fn remove_unknown_keeps_original_cause_and_fences_without_status() -> TestResult
         Err(Error::OutcomeUnknown)
     ));
     assert_eq!(output, original);
+    Ok(())
+}
+
+#[test]
+fn underestimated_reservations_use_ordinary_quota_without_spending_another_clients_guarantee()
+-> TestResult {
+    let mut identity = Instance::new();
+    let mut clients = [ClientSlot::default(); 2];
+    let mut reservations = [ReservationSlot::default(); 2];
+    let mut service = Service::new(
+        &mut identity,
+        &mut clients,
+        &mut reservations,
+        Config {
+            quota_bytes: 1024,
+            ..Config::default()
+        },
+    )?;
+    let a = service.connect()?;
+    let b = service.connect()?;
+    let mut backend = Memory::default();
+    let mut random = Random(0);
+    let mut output = [0; STATUS_BUFFER_BYTES];
+    let mut reserve = |client, amount| -> Result<u32, Box<dyn std::error::Error>> {
+        Ok(code(
+            service.handle(
+                client,
+                Request::Reserve { amount, entries: 1 },
+                &mut backend,
+                &mut output,
+                now(),
+                &mut random,
+            )?,
+            &output,
+        )? as u32)
+    };
+    let arid = reserve(a, 3)?;
+    let brid = reserve(b, 100)?;
+    assert_eq!(service.accounting(&backend)?.reserved_bytes, 615);
+    let akey = [1; 64];
+    let bkey = [2; 64];
+    let extra = [3; 64];
+    // Foreign connection ownership is still mandatory, even for exhausted IDs.
+    assert_eq!(
+        code(
+            service.handle(
+                b,
+                Request::Put(data(&akey, &[1; 32], arid)),
+                &mut backend,
+                &mut output,
+                now(),
+                &mut random
+            )?,
+            &output
+        )?,
+        -1
+    );
+    assert_eq!(backend.puts, 0);
+    // Real C FS publication can omit AEAD tag bytes from its size estimate.
+    // The larger PUT consumes the original total guarantee, then normal quota.
+    assert_eq!(
+        code(
+            service.handle(
+                a,
+                Request::Put(data(&akey, &[1; 32], arid)),
+                &mut backend,
+                &mut output,
+                now(),
+                &mut random
+            )?,
+            &output
+        )?,
+        1
+    );
+    assert_eq!(service.accounting(&backend)?.reserved_bytes, 356);
+    assert_eq!(
+        code(
+            service.handle(
+                a,
+                Request::Put(data(&extra, &[3; 300], arid)),
+                &mut backend,
+                &mut output,
+                now(),
+                &mut random
+            )?,
+            &output
+        )?,
+        -1
+    );
+    assert_eq!(service.accounting(&backend)?.reserved_bytes, 356);
+    assert_eq!(backend.values.len(), 1);
+    // The other client's entire original guarantee remains usable.
+    assert_eq!(
+        code(
+            service.handle(
+                b,
+                Request::Put(data(&bkey, &[2; 100], brid)),
+                &mut backend,
+                &mut output,
+                now(),
+                &mut random
+            )?,
+            &output
+        )?,
+        1
+    );
+    assert_eq!(service.accounting(&backend)?.reserved_bytes, 0);
+    // Exhausting an estimate does not revoke the same connection's RID.
+    assert_eq!(
+        code(
+            service.handle(
+                a,
+                Request::Put(data(&extra, &[3; 16], arid)),
+                &mut backend,
+                &mut output,
+                now(),
+                &mut random
+            )?,
+            &output
+        )?,
+        1
+    );
+    assert_eq!(backend.usage().charged()?, 916);
+    assert_eq!(
+        code(
+            service.handle(
+                a,
+                Request::Put(data(&[4; 64], &[4; 64], arid)),
+                &mut backend,
+                &mut output,
+                now(),
+                &mut random
+            )?,
+            &output
+        )?,
+        -1
+    );
+    assert_eq!(backend.values.len(), 3);
+    assert_eq!(service.disconnect(a)?, 0);
+    assert_eq!(service.disconnect(b)?, 0);
     Ok(())
 }

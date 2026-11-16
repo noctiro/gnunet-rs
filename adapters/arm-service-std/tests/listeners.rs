@@ -1,5 +1,6 @@
 //! Actual owned local listeners and checked core leases. Child fixture uses real
 //! inherited fd0 and shared early capture; no host-side accept consumes backlog.
+#![cfg(unix)]
 #![expect(
     clippy::expect_used,
     reason = "Finite owned-resource fixtures require each actual setup/outcome"
@@ -158,8 +159,13 @@ fn queued_unix_connection_survives_readiness_cancel_disarm_and_actual_child_inhe
         runtime().block_on(async {
             let mut host = ManagedListeners::new(1);
             assert!(matches!(
-                host.bind_address(0, Address::Unix(path.clone()), 0o700)
-                    .expect("bounded bind"),
+                host.bind_address(
+                    0,
+                    Address::Unix(path.clone()),
+                    gnunet_service_runtime::LocalListenerAccess::Owner
+                )
+                .await
+                .expect("bounded bind"),
                 BindOutcome::Bound { .. }
             ));
             assert!(host.failures().is_empty());
@@ -237,8 +243,13 @@ fn actual_tcp_child_receives_queued_data_and_v6_is_v6only() {
             runtime().block_on(async {
                 let mut host = ManagedListeners::new(1);
                 assert!(matches!(
-                    host.bind_address(0, Address::Tcp(endpoint), 0o777)
-                        .expect("bounded TCP bind"),
+                    host.bind_address(
+                        0,
+                        Address::Tcp(endpoint),
+                        gnunet_service_runtime::LocalListenerAccess::Everyone
+                    )
+                    .await
+                    .expect("bounded TCP bind"),
                     BindOutcome::Bound { .. }
                 ));
                 assert!(
@@ -298,13 +309,23 @@ fn sibling_disarm_and_every_actual_close_precede_term_admission() {
         runtime().block_on(async {
             let mut host = ManagedListeners::new(2);
             assert!(matches!(
-                host.bind_address(0, Address::Unix(path.clone()), 0o777)
-                    .expect("Unix"),
+                host.bind_address(
+                    0,
+                    Address::Unix(path.clone()),
+                    gnunet_service_runtime::LocalListenerAccess::Everyone
+                )
+                .await
+                .expect("Unix"),
                 BindOutcome::Bound { .. }
             ));
             assert!(matches!(
-                host.bind_address(0, Address::Tcp((Ipv4Addr::LOCALHOST, 0).into()), 0o777)
-                    .expect("TCP"),
+                host.bind_address(
+                    0,
+                    Address::Tcp((Ipv4Addr::LOCALHOST, 0).into()),
+                    gnunet_service_runtime::LocalListenerAccess::Everyone
+                )
+                .await
+                .expect("TCP"),
                 BindOutcome::Bound { .. }
             ));
             assert!(host.failures().is_empty());
@@ -384,8 +405,13 @@ fn adopted_parent_listener_and_replaced_owned_path_are_never_unlinked() {
         host.adopt(0, ActivatedSocket::Unix(duplicate))
             .expect("owned offer");
         assert!(matches!(
-            host.bind_address(0, Address::Unix(own.clone()), 0o777)
-                .expect("own path"),
+            host.bind_address(
+                0,
+                Address::Unix(own.clone()),
+                gnunet_service_runtime::LocalListenerAccess::Everyone
+            )
+            .await
+            .expect("own path"),
             BindOutcome::Bound { .. }
         ));
         assert!(host.failures().is_empty());
@@ -438,18 +464,33 @@ fn stale_socket_only_precheck_regular_and_live_entries_are_preserved() {
     runtime().block_on(async {
         let mut host = ManagedListeners::new(3);
         assert!(matches!(
-            host.bind_address(0, Address::Unix(stale.clone()), 0o770)
-                .expect("bounded"),
+            host.bind_address(
+                0,
+                Address::Unix(stale.clone()),
+                gnunet_service_runtime::LocalListenerAccess::Group
+            )
+            .await
+            .expect("bounded"),
             BindOutcome::Bound { .. }
         ));
         assert!(matches!(
-            host.bind_address(0, Address::Unix(regular.clone()), 0o777)
-                .expect("nonfatal bind failure"),
+            host.bind_address(
+                0,
+                Address::Unix(regular.clone()),
+                gnunet_service_runtime::LocalListenerAccess::Everyone
+            )
+            .await
+            .expect("nonfatal bind failure"),
             BindOutcome::Failed
         ));
         assert!(matches!(
-            host.bind_address(0, Address::Unix(live.clone()), 0o777)
-                .expect("nonfatal active failure"),
+            host.bind_address(
+                0,
+                Address::Unix(live.clone()),
+                gnunet_service_runtime::LocalListenerAccess::Everyone
+            )
+            .await
+            .expect("nonfatal active failure"),
             BindOutcome::Failed
         ));
         assert_eq!(host.len(), 1);
@@ -516,6 +557,7 @@ fn registry_cross_section_binding_and_permission_precedence_follow_source() {
     runtime().block_on(async {
         let mut host = ManagedListeners::new(4);
         host.bind_registry(&config, &registry, &Env, 4)
+            .await
             .expect("complete collection");
         assert_eq!(host.len(), 1);
         assert!(
@@ -544,13 +586,23 @@ fn partial_attachment_capacity_retains_native_owners_until_explicit_drop() {
         runtime().block_on(async {
             let mut host = ManagedListeners::new(2);
             assert!(matches!(
-                host.bind_address(0, Address::Unix(a.clone()), 0o777)
-                    .expect("a"),
+                host.bind_address(
+                    0,
+                    Address::Unix(a.clone()),
+                    gnunet_service_runtime::LocalListenerAccess::Everyone
+                )
+                .await
+                .expect("a"),
                 BindOutcome::Bound { .. }
             ));
             assert!(matches!(
-                host.bind_address(1, Address::Unix(b.clone()), 0o777)
-                    .expect("b"),
+                host.bind_address(
+                    1,
+                    Address::Unix(b.clone()),
+                    gnunet_service_runtime::LocalListenerAccess::Everyone
+                )
+                .await
+                .expect("b"),
                 BindOutcome::Bound { .. }
             ));
             assert!(host.failures().is_empty());
@@ -611,13 +663,23 @@ fn foreign_owner_is_rejected_before_leasing_or_retiring_original_readiness() {
         let mut ha = ManagedListeners::new(1);
         let mut hb = ManagedListeners::new(1);
         assert!(matches!(
-            ha.bind_address(0, Address::Unix(first.clone()), 0o700)
-                .expect("bound a"),
+            ha.bind_address(
+                0,
+                Address::Unix(first.clone()),
+                gnunet_service_runtime::LocalListenerAccess::Owner
+            )
+            .await
+            .expect("bound a"),
             BindOutcome::Bound { .. }
         ));
         assert!(matches!(
-            hb.bind_address(0, Address::Unix(second.clone()), 0o700)
-                .expect("bound b"),
+            hb.bind_address(
+                0,
+                Address::Unix(second.clone()),
+                gnunet_service_runtime::LocalListenerAccess::Owner
+            )
+            .await
+            .expect("bound b"),
             BindOutcome::Bound { .. }
         ));
         ha.attach(&mut a).expect("attach a");

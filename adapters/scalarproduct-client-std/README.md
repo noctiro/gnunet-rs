@@ -5,6 +5,8 @@ installed official scalarproduct IPC. `Role::Alice` selects the ordinary
 `scalarproduct-alice` section and `Role::Bob` selects `scalarproduct-bob`. ECC/Paillier service implementation is selected by configuration; the caller
 adds no private negotiation, alternative frame or computation implementation.
 
+## Public interface
+
 Construct `Client::new(source, role, encoded_elements, limits, original_bounds)`
 inside an entered Tokio runtime with IO/time enabled. The caller drives its
 explicit Resolver. Elements are exact72-byte public key64/signed-BEi64
@@ -33,6 +35,8 @@ GCRYMPI_FMT_STD product bytes. Only status2 is success; this SDK does not turn
 any other word or local write into success. The SDK does not parse MPI values,
 compute a scalar product, verify cryptography or authenticate the selected
 service's mathematics. The raw response remains available through `as_wire`.
+
+## Limits
 
 Limits separately bound vector/count, frame, exact result and syscall sizes. The original source/operation deadline is immutable. Initial, each queued
 frame and partial-response targets are finite native/canonical bounds clamped

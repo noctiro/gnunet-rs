@@ -204,7 +204,6 @@ impl<'a> Engine<'a> {
         if self.stopping {
             return Err(Error::Closed);
         }
-        self.tun_close_issued = false;
         if self.tun.is_some() {
             return Err(Error::Conflict);
         }
@@ -212,6 +211,7 @@ impl<'a> Engine<'a> {
             owner: self.stamp.clone(),
             serial: self.serial()?,
         };
+        self.tun_close_issued = false;
         self.tun = Some(tun.clone());
         Ok(tun)
     }

@@ -1,7 +1,12 @@
 # gnunet-abd
 
 Ordinary `PROGRAM` command for the installed ABD API, with the standard `-c`,
-`-L`, `-l`, help/version and `GNUNET_ARGS` handling. Select exactly one action:
+`-L`, `-l`, help/version and `GNUNET_ARGS` handling. The command uses the same PROGRAM and protocol code on Linux, macOS, FreeBSD
+and Windows.
+
+## Actions
+
+Select exactly one action:
 
 | Action | Required arguments | Actual operation |
 | --- | --- | --- |
@@ -10,6 +15,8 @@ Ordinary `PROGRAM` command for the installed ABD API, with the standard `-c`,
 | `-S`, `--signSubjectSide` | `-e EGO -a ROLE -s 'PUBLIC_KEY [ROLE]' -T ABSOLUTE` | Issue a purpose28 credential with the ego's PKEY/EDKEY and print standard DEL text. |
 | `-g`, `--collect` | `-e EGO -i ISSUER -a ROLE` | Submit one original native COLLECT request using the ego secret. |
 | `-V`, `--verify` | `-s SUBJECT -i ISSUER -a ROLE [-d 'DEL,...']` | Submit one original native VERIFY request. No supplied leaves is valid for direct GNS resolution. |
+
+## Records and authority
 
 `-P` sets PRIVATE on the newly stored record. `-F` and `-B` select resolution
 directions for collect/verify; their default is both. Existing stored records
@@ -35,8 +42,15 @@ the PROGRAM absolute-time grammar, and `never`. Signing accepts only absolute
 time or `never`. Bare absolute numeric timestamps follow the existing helper's
 epoch-seconds convention; DEL text retains its exact u64 UTC-microseconds field. Signing does not convert a relative TTL into a credential timestamp.
 
+## Native lifecycle
+
+Fresh client startup captures and releases inherited SERVICE resources before
+other native owners are created. Original parent control and native termination
+subscriptions share one stop source; Windows retains its qualified original
+parent pipe and console subscription.
+
 One original `--timeout` (default120s) covers identity, text processing, lookup,
-store/caller and output; no phase renews it. Endpoint choices are captured
+Resolver construction, store/caller and output; no phase renews it. Endpoint choices are captured
 coherently and then fixed. Every wait drives the same explicit Resolver and
 checks the original native/canonical targets, signals and selected Logger. The original source is physically closed on cancellation/error, its actual
 partial/whole exposure and already queued terminal facts are retained, and no
@@ -48,6 +62,8 @@ request encoder, and dropped on every path. Codec work/results, collected leaf
 transport and output buffers are zeroizing. Signed credentials on the ordinary
 command line are public signed capabilities; the standard PROGRAM/OS argv is
 not an erased secret storage API.
+
+## Resource settings
 
 The `abd-command-rust` configuration section has finite resource settings:
 

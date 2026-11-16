@@ -14,6 +14,16 @@ pub(super) use macos::{apply, open, verify};
 #[cfg(target_os = "freebsd")]
 mod freebsd;
 #[cfg(target_os = "freebsd")]
+pub use freebsd::InterfaceCleanupError;
+#[cfg(target_os = "freebsd")]
+pub(crate) use freebsd::discover_allocation;
+#[cfg(target_os = "freebsd")]
+pub(crate) use freebsd::recovery;
+#[cfg(target_os = "freebsd")]
+pub(crate) use freebsd::{
+    CreationFailure, InterfaceLease, interface_fib, open_exclusive, open_recorded,
+};
+#[cfg(target_os = "freebsd")]
 pub(super) use freebsd::{SIOCGIFFLAGS, SIOCGIFMTU, SIOCGIFNETMASK};
 #[cfg(target_os = "freebsd")]
 pub(super) use freebsd::{apply, open_existing, verify};

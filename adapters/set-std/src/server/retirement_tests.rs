@@ -1,8 +1,8 @@
-//! One actual private Unix partial-input expiry. No remote SET or CADET peer
+//! Native local-stream partial-input expiry and channel retirement. No remote SET or CADET peer
 //! success is scripted: the real original MQ is physically detached by guards.
 use super::*;
+use gnunet_service_runtime::local::{Listener, Stream};
 use std::{error::Error as StdError, path::PathBuf};
-use tokio::net::UnixListener;
 type Failure = Box<dyn StdError>;
 struct Directory(PathBuf);
 impl Drop for Directory {
@@ -40,7 +40,7 @@ fn actual_partial_input_detach_retains_forced_trigger_beside_requested() -> Resu
                 );
                 std::fs::create_dir(&directory.0)?;
                 let path = directory.0.join("c");
-                let listener = UnixListener::bind(&path)?;
+                let listener = Listener::bind(&path)?;
                 let mut set_instance = gnunet_set::Instance::new();
                 let core = Service::new(
                     &mut set_instance,
@@ -74,7 +74,7 @@ fn actual_partial_input_detach_retains_forced_trigger_beside_requested() -> Resu
                     .await?
                 {
                     cadet::Step::Connected(epoch) => epoch,
-                    _ => return Err(Failure::from("original Unix MQ did not attach")),
+                    _ => return Err(Failure::from("original local MQ did not attach")),
                 };
                 let (peer, _) = listener.accept().await?;
                 peer.writable().await?;
@@ -123,7 +123,7 @@ fn actual_partial_input_detach_retains_forced_trigger_beside_requested() -> Resu
         })
 }
 
-async fn send_bytes(peer: &tokio::net::UnixStream, bytes: &[u8]) -> Result<(), Failure> {
+async fn send_bytes(peer: &Stream, bytes: &[u8]) -> Result<(), Failure> {
     let mut at = 0;
     while at < bytes.len() {
         peer.writable().await?;
@@ -136,7 +136,7 @@ async fn send_bytes(peer: &tokio::net::UnixStream, bytes: &[u8]) -> Result<(), F
     }
     Ok(())
 }
-async fn frame(peer: &tokio::net::UnixStream) -> Result<Vec<u8>, Failure> {
+async fn frame(peer: &Stream) -> Result<Vec<u8>, Failure> {
     let mut bytes = Vec::new();
     let mut length = 4;
     loop {
@@ -159,7 +159,7 @@ async fn frame(peer: &tokio::net::UnixStream) -> Result<Vec<u8>, Failure> {
 }
 async fn hold_data<'id>(
     server: &mut Server<'id, '_>,
-    peer: &tokio::net::UnixStream,
+    peer: &Stream,
     channel: cadet::Channel<'id>,
 ) -> Result<Instant, Failure> {
     let mut bytes = [0; 16];
@@ -206,7 +206,7 @@ async fn two_channel_retirement() -> Result<(), Failure> {
         Directory(std::env::temp_dir().join(format!("set-two-{}-{stamp:x}", std::process::id())));
     std::fs::create_dir(&directory.0)?;
     let path = directory.0.join("c");
-    let listener = UnixListener::bind(&path)?;
+    let listener = Listener::bind(&path)?;
     let now = cadet::clock::SystemClock.sample()?.now.as_micros();
     let mut set_instance = gnunet_set::Instance::new();
     let mut core = Service::new(

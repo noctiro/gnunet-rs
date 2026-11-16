@@ -64,16 +64,9 @@ pub struct ClientSlot {
 pub struct ReservationSlot {
     client: u64,
     rid: u32,
-    amount: u64,
-    entries: u32,
-}
-impl ReservationSlot {
-    fn charge(self) -> Result<u64, Error> {
-        u64::from(self.entries)
-            .checked_mul(ENTRY_OVERHEAD)
-            .and_then(|cost| cost.checked_add(self.amount))
-            .ok_or(Error::Overflow)
-    }
+    // One quota guarantee covers content and per-entry storage overhead.
+    // Entry counts are sizing inputs, not a separate PUT permission counter.
+    remaining: u64,
 }
 /// Service policy. Cache space follows the official quota/8 policy.
 #[derive(Clone, Copy, Debug)]
@@ -235,7 +228,7 @@ impl<'id, 'slots> Service<'id, 'slots> {
             serial,
         })
     }
-    /// Release all remaining bytes/items of this actual retired connection.
+    /// Release all remaining quota of this actual retired connection.
     /// This remains available while fenced; it sends no fabricated service ACK.
     pub fn disconnect(&mut self, client: ClientId<'id>) -> Result<u64, Error> {
         let index = self.index(client)?;
@@ -243,7 +236,7 @@ impl<'id, 'slots> Service<'id, 'slots> {
         for slot in &*self.reservations {
             if slot.rid != 0 && slot.client == client.serial {
                 released = released
-                    .checked_add(slot.charge()?)
+                    .checked_add(slot.remaining)
                     .ok_or(Error::Overflow)?;
             }
         }
@@ -396,8 +389,7 @@ impl<'id, 'slots> Service<'id, 'slots> {
         self.reservations[index] = ReservationSlot {
             client: client.serial,
             rid,
-            amount,
-            entries,
+            remaining: cost,
         };
         self.reserved = total;
         self.reservation_serial = rid;
@@ -449,7 +441,7 @@ impl<'id, 'slots> Service<'id, 'slots> {
                 };
                 let remaining = self
                     .reserved
-                    .checked_sub(self.reservations[index].charge()?)
+                    .checked_sub(self.reservations[index].remaining)
                     .ok_or(Error::InvalidInput)?;
                 self.reservations[index] = ReservationSlot::default();
                 self.reserved = remaining;
@@ -466,27 +458,22 @@ impl<'id, 'slots> Service<'id, 'slots> {
                             None,
                         );
                     };
-                    let amount = data.value.len() as u64;
-                    let slot = self.reservations[index];
-                    if slot.entries == 0 || slot.amount < amount {
-                        return self.status(
-                            output,
-                            -1,
-                            Some(b"Reservation budget exhausted\0"),
-                            hint,
-                            None,
-                        );
-                    }
-                    let remaining = self
+                    let charge = (data.value.len() as u64)
+                        .checked_add(ENTRY_OVERHEAD)
+                        .ok_or(Error::Overflow)?;
+                    // The reservation guarantees only its remaining quota.
+                    // Normal clients may underestimate encoded block sizes;
+                    // surplus is an ordinary PUT, still constrained by the
+                    // backend ceiling and every other live reservation.
+                    let spent = self.reservations[index].remaining.min(charge);
+                    self.reserved = self
                         .reserved
-                        .checked_sub(amount + ENTRY_OVERHEAD)
+                        .checked_sub(spent)
                         .ok_or(Error::InvalidInput)?;
-                    self.reservations[index].entries -= 1;
-                    self.reservations[index].amount -= amount;
-                    self.reserved = remaining;
+                    self.reservations[index].remaining -= spent;
                 }
-                // As in the real service, each accepted PUT consumes a reservation
-                // entry even when the backend fails or updates an existing item.
+                // An admitted PUT consumes its covered quota even when the
+                // backend fails or updates an existing item.
                 if data.value.len() > self.config.max_value_bytes {
                     return self.status(output, -1, Some(b"Data too large\0"), hint, None);
                 }

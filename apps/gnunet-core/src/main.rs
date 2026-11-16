@@ -6,19 +6,12 @@ use std::{
     process::ExitCode,
 };
 type Failure = Box<dyn Error>;
-#[cfg(unix)]
 mod bounds;
-#[cfg(unix)]
 mod control;
-#[cfg(unix)]
 mod early;
-#[cfg(unix)]
 mod foreground;
-#[cfg(unix)]
 mod output;
-#[cfg(unix)]
 mod reporting;
-#[cfg(unix)]
 mod settings;
 fn main() -> ExitCode {
     match run() {
@@ -26,7 +19,6 @@ fn main() -> ExitCode {
         Err(error) => {
             // Selected diagnostics (including filtered or failed writes) have
             // already used their sole Logger. Do not bypass -L/-l on return.
-            #[cfg(unix)]
             if reporting::was_reported(&error) {
                 return ExitCode::FAILURE;
             }
@@ -35,11 +27,6 @@ fn main() -> ExitCode {
         }
     }
 }
-#[cfg(not(unix))]
-fn run() -> Result<(), Failure> {
-    Err("CORE native CLI requires Unix".into())
-}
-#[cfg(unix)]
 fn run() -> Result<(), Failure> {
     use gnunet_program_host::{
         getopt::Options,
@@ -50,7 +37,9 @@ fn run() -> Result<(), Failure> {
     };
     use std::sync::Arc;
     // A standalone PROGRAM owns no listener/readiness endpoint and no private key.
-    let mut inherited = early::capture()?;
+    let inherited = early::capture()?;
+    #[cfg(unix)]
+    let mut inherited = inherited;
     let clock = SharedClock::native(128)?;
     let config = gnunet_config::Configuration::create(
         Arc::new(gnunet_config::ProjectData::default()),
@@ -72,7 +61,25 @@ fn run() -> Result<(), Failure> {
         monitor.clone(),
     ));
     let mut logger = Logger::new(b"gnunet-core", std::process::id(), false)?;
-    let preparation=program::prepare(config,Invocation{binary_name:b"gnunet-core",help:Some(b"Print actual connected-peer/key-exchange information from the configured CORE service. -s/--connection-status waits for the genuine initial iteration marker; -m/--monitor continues on current typed source generations until SIGINT/SIGTERM or its explicit finite profile. Both flags select continuous monitoring. [core-cli-rust] bounds original operation, snapshot, partial frame, work and resources. No private keys, hidden service or forged snapshot completion."),select_default_filename:true,defaults:Defaults::Native},options,std::env::args_os(),&program::Environment::capture(),&mut NlsDisabled,&mut logger,&clock,&mut io::stdout().lock(),&mut io::stderr().lock());
+    let invocation = Invocation {
+        binary_name: b"gnunet-core",
+        help: Some(b"Show CORE connections. -s prints the initial status snapshot; -m continues monitoring. Both flags select continuous monitoring."),
+        select_default_filename: true,
+        defaults: Defaults::Native,
+    };
+    let environment = program::Environment::capture();
+    let preparation = program::prepare(
+        config,
+        invocation,
+        options,
+        std::env::args_os(),
+        &environment,
+        &mut NlsDisabled,
+        &mut logger,
+        &clock,
+        &mut io::stdout().lock(),
+        &mut io::stderr().lock(),
+    );
     if matches!(&preparation, Ok(Preparation::Stopped(s)) if s.code == 0 && matches!(&s.reason, program::StoppedReason::Options))
     {
         return Ok(());
@@ -83,6 +90,7 @@ fn run() -> Result<(), Failure> {
         Ok(Preparation::Stopped(s)) => return reports.stopped(s),
         Err(error) => return reports.finish(Err(error.into())),
     };
+    #[cfg(unix)]
     if let Some(notice) = inherited.notice.take() {
         reports.warning(
             "core-cli.parent.declaration",
@@ -100,8 +108,8 @@ fn run() -> Result<(), Failure> {
             return Err("No argument given: select -s or -m".into());
         }
         let settings = settings::Settings::read(prepared.main().config, monitor.get()? != 0)?;
-        // The ordinary CLI remains under its calling UID, as the public C client;
-        // configuring the CORE daemon's USERNAME is not permission to change it.
+        // The CLI runs as the invoking process. The daemon's USERNAME setting
+        // does not authorize changing this client's identity.
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?

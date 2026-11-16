@@ -5,22 +5,12 @@ use gnunet_fs::{
 };
 use std::io::{Read, Write};
 
-/// Open a caller-selected regular input through its actual descriptor. The
-/// nonblocking open permits type refusal of FIFOs without waiting for a writer.
+/// Open a caller-selected ordinary disk input through its actual native handle.
+/// Unix opens nonblocking before refusing FIFOs; Windows refuses device paths,
+/// alternate streams and non-file handles before reading content. Selected
+/// filesystem symlinks resolve normally. Native filesystem I/O can still block.
 pub fn open_input(path: impl AsRef<std::path::Path>) -> Result<std::fs::File> {
-    let file = std::fs::File::from(nix::fcntl::open(
-        path.as_ref(),
-        nix::fcntl::OFlag::O_RDONLY | nix::fcntl::OFlag::O_NONBLOCK | nix::fcntl::OFlag::O_CLOEXEC,
-        nix::sys::stat::Mode::empty(),
-    )?);
-    if !file.metadata()?.is_file() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "FS input must be a regular file",
-        )
-        .into());
-    }
-    Ok(file)
+    Ok(crate::input::open(path.as_ref())?)
 }
 
 /// File operation limits, checked before growing frontier storage or reading.
@@ -75,6 +65,10 @@ pub struct ReadFile {
     pub verified: VerifiedFile,
     /// Completed retrieval/decryption/output work.
     pub progress: Progress,
+    /// File-data synchronization and checked final naming completed when Some.
+    /// The value separately reports native directory-barrier availability.
+    /// Generic caller writers make no filesystem observation and return None.
+    pub directory_sync: Option<crate::DirectorySync>,
 }
 /// Reusable bounded host buffers. There is no per-block allocation or whole-file
 /// copy. Directory record carry grows only when its actual parser requests it.
@@ -148,7 +142,7 @@ impl Buffers {
                 encoder.emit_index(&mut self.index, &mut self.encoded)?
             };
             let length = encoded.block().bytes().len();
-            if sink.insert_block(encoded)? == Insert::Created {
+            if matches!(sink.insert_block(encoded)?, Insert::Created(_)) {
                 created_blocks += 1;
             }
             progress.blocks += 1;
@@ -203,6 +197,7 @@ impl Buffers {
             progress.encoded_bytes += length as u128;
         }
         Ok(ReadFile {
+            directory_sync: None,
             verified: reader.completion().ok_or(Error::Corrupt)?,
             progress,
         })

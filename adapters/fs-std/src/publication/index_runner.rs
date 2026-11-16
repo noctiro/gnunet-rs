@@ -191,11 +191,12 @@ impl NativeIndexResult {
     }
 }
 pub(super) fn request_hash(source: &plan::indexed::Source) -> Result<[u8; 64], Cause> {
+    let filename = crate::input::protocol_filename(source.path()).map_err(plan::Error::from)?;
     let request = IndexRequest::IndexStart {
         device: 0,
         inode: 0,
         file_id: source.file_id,
-        filename: &source.path,
+        filename: &filename,
     };
     let mut bytes = vec![0; request.encoded_len()?];
     request.encode(&mut bytes)?;

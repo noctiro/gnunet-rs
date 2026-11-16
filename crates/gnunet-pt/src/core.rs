@@ -13,6 +13,7 @@ use core::{cell::Cell, fmt};
 pub struct Instance {
     next: Cell<u64>,
 }
+
 impl Instance {
     /// New explicit state domain.
     pub const fn new() -> Self {
@@ -75,7 +76,8 @@ pub struct Limits {
     pub requests: usize,
     /// Maximum original DNS payload.
     pub packet_bytes: usize,
-    /// All retained request payload/response capacity.
+    /// Retained request and reply capacity, reserved before VPN allocation or
+    /// CADET query work and held through original write/source loss.
     pub payload_bytes: usize,
     /// Maximum records in a packet, also plan slots.
     pub records: usize,
@@ -157,6 +159,7 @@ enum Phase<'a> {
     SendReady(Attempt<'a>, Tunnel<'a>, u16),
     SendQueued(Attempt<'a>, Tunnel<'a>, u16),
     Waiting(Attempt<'a>, Tunnel<'a>, u16),
+    TransformReady,
     ReplyReady,
     ReplyQueued,
     DropReady,
@@ -375,6 +378,13 @@ impl<'a> Core<'a> {
     /// Standalone callers must mint finite targets once and retain an independent
     /// original native hard bound. A later logical rollback never remints them;
     /// `limits.timeout` is admission policy for that caller, not a fresh TTL here.
+    /// POST reserves the transformed reply; PRE reserves the configured maximum
+    /// reply and query envelope in one reusable buffer before emitting work.
+    /// Capacity refusal leaves no admitted request.
+    ///
+    /// # Errors
+    /// Rejects a stale source, repeated original service ID, invalid packet or
+    /// deadline, exhausted request/payload budget or failed bounded allocation.
     pub fn admit(
         &mut self,
         source: Source<'a>,
@@ -424,15 +434,33 @@ impl<'a> Core<'a> {
             Phase::PreReady
         };
         replacements.clear();
+        let reply_bytes = match phase {
+            Phase::AllocReady => dns.len(),
+            Phase::PreReady => self
+                .limits
+                .packet_bytes
+                .max(dns.len().checked_add(4).ok_or(Error::Overflow)?),
+            _ => 0,
+        };
+        self.charge(dns.len().checked_add(reply_bytes).ok_or(Error::Overflow)?)?;
         let packet = copy(dns)?;
-        let bytes = self.charge(packet.capacity())?;
+        let mut output = vector(reply_bytes)?;
+        if phase == Phase::AllocReady {
+            output.resize(reply_bytes, 0);
+        }
+        let bytes = self.charge(
+            packet
+                .capacity()
+                .checked_add(output.capacity())
+                .ok_or(Error::Overflow)?,
+        )?;
         let request = Request(self.brand()?);
         self.rows.push(Row {
             request,
             source,
             id,
             packet,
-            output: Vec::new(),
+            output,
             plan,
             replacements,
             until: expires,
@@ -563,11 +591,9 @@ impl<'a> Core<'a> {
         for r in &mut self.rows {
             if matches!(r.phase,Phase::SendReady(_,t,_)|Phase::SendQueued(_,t,_)|Phase::Waiting(_,t,_) if t==tunnel)
             {
-                self.bytes = self
-                    .bytes
-                    .checked_sub(r.output.capacity())
-                    .ok_or(Error::Conflict)?;
-                r.output = Vec::new();
+                // Retry reuses the original query/reply reservation. Releasing
+                // it here could admit new work before this callback can finish.
+                r.output.clear();
                 r.phase = if r.attempts >= self.limits.attempts {
                     Phase::DropReady
                 } else {
@@ -586,6 +612,12 @@ impl<'a> Core<'a> {
     }
     /// Actual same-family VPN allocation completes exactly one original job.
     /// None/failed allocation yields a drop, never an invented address result.
+    /// Completion fills preallocated slots. Final transformation is deferred to
+    /// [`Self::next_work`] and cannot be bypassed by [`Self::reply_queued`].
+    ///
+    /// # Errors
+    /// Rejects stale jobs, elapsed original deadlines, a different address family
+    /// or an allocation expiry different from the original requested lease.
     pub fn allocation(
         &mut self,
         job: Job<'a>,
@@ -614,42 +646,16 @@ impl<'a> Core<'a> {
         {
             return Err(Error::Authentication);
         }
-        let last = self.rows[i].replacements.len() + 1 == self.rows[i].plan.len();
-        let mut output = if last {
-            let n = self.rows[i].packet.len();
-            self.charge(n)?;
-            let mut out = vector(n)?;
-            out.resize(n, 0);
-            out
+        // The plan, replacement slots and reply capacity were reserved before
+        // exposing any VPN job. This completion only fills its original slot;
+        // next_work validates and encodes the final immutable TTL-zero reply.
+        let row = &mut self.rows[i];
+        row.replacements.push(value);
+        row.phase = if row.replacements.len() == row.plan.len() {
+            Phase::TransformReady
         } else {
-            Vec::new()
+            Phase::AllocReady
         };
-        self.charge(output.capacity())?;
-        self.rows[i].replacements.push(value);
-        if !last {
-            self.rows[i].phase = Phase::AllocReady;
-            return Ok(());
-        }
-        let row = &self.rows[i];
-        match packet::rewrite(
-            &row.packet,
-            &row.plan,
-            &row.replacements,
-            now,
-            packet::RewriteBuffers {
-                output: &mut output,
-                original: &mut self.scratch_a,
-                transformed: &mut self.scratch_b,
-            },
-            self.limits.dns(),
-        ) {
-            Ok(_) => {
-                self.bytes = self.charge(output.capacity())?;
-                self.rows[i].output = output;
-                self.rows[i].phase = Phase::ReplyReady;
-            }
-            Err(_) => self.rows[i].phase = Phase::DropReady,
-        }
         Ok(())
     }
     /// Real local send admission retains original attempt identity and cannot be
@@ -721,30 +727,26 @@ impl<'a> Core<'a> {
         )? {
             return Err(Error::Authentication);
         }
-        let old = self.rows[i].output.capacity();
-        let new = dns.len();
-        self.bytes
-            .checked_sub(old)
-            .and_then(|v| v.checked_add(new))
-            .filter(|v| *v <= self.limits.payload_bytes)
-            .ok_or(Error::Capacity)?;
-        self.charge(new)?;
-        let mut output = copy(dns)?;
-        self.charge(output.capacity())?;
-        output[..2].copy_from_slice(&self.rows[i].packet[..2]);
-        self.bytes = self
-            .bytes
-            .checked_sub(old)
-            .and_then(|v| v.checked_add(output.capacity()))
-            .filter(|v| *v <= self.limits.payload_bytes)
-            .ok_or(Error::Capacity)?;
-        self.rows[i].output = output;
-        self.rows[i].phase = Phase::ReplyReady;
+        // Validation caps the DNS payload at packet_bytes. Admission already
+        // charged that full capacity, independently of other in-flight replies.
+        let row = &mut self.rows[i];
+        if dns.len() > row.output.capacity() {
+            return Err(Error::Conflict);
+        }
+        row.output.clear();
+        row.output.extend_from_slice(dns);
+        row.output[..2].copy_from_slice(&row.packet[..2]);
+        row.phase = Phase::ReplyReady;
         self.exits[e].answered = self.exits[e].answered.saturating_add(1);
         Ok(true)
     }
     /// Mark a real original DNS reply queue admission. It cannot free the
     /// callback or reassign it; only the matching actual whole write can do so.
+    /// [`Self::next_work`] must first expose the validated reply decision.
+    ///
+    /// # Errors
+    /// Rejects stale requests and phases without a prepared reply decision,
+    /// including a POST response whose final transformation has not run.
     pub fn reply_queued(&mut self, request: Request<'a>) -> Result<(), Error> {
         let i = self.row(request)?;
         self.rows[i].phase = match self.rows[i].phase {
@@ -805,13 +807,18 @@ impl<'a> Core<'a> {
         self.exits.retain(|e| e.until > now || e.tunnel.is_some());
         Ok(())
     }
-    /// Earliest retained absolute original target.
-    pub fn next_deadline(&self) -> Option<u64> {
+    /// Earliest future original deadline or channel retry target. Ready business
+    /// work is selected by `next_work`; old targets cannot mask later wakeups.
+    pub fn next_wakeup(&self, now: u64) -> Option<u64> {
         self.rows
             .iter()
             .map(|r| r.until)
             .chain(self.exits.iter().map(|e| e.until))
+            .chain(self.exits.iter().filter_map(|exit| {
+                (exit.tunnel.is_none() && exit.until > now).then_some(exit.retry)
+            }))
             .chain(self.discovery.map(|(_, n)| n))
+            .filter(|target| *target > now)
             .min()
     }
     /// Actual bounded live request count.
@@ -825,6 +832,50 @@ impl<'a> Core<'a> {
         if let Some(e) = self.exits.iter().find(|e| e.closing && e.tunnel.is_some()) {
             return Ok(Some(Work::Close {
                 tunnel: e.tunnel.ok_or(Error::Conflict)?,
+            }));
+        }
+        // Drain already prepared decisions before admitting another remote
+        // allocation, channel or query. Original write retirement frees storage.
+        if let Some(index) = self.rows.iter().position(|row| {
+            matches!(
+                row.phase,
+                Phase::TransformReady | Phase::ReplyReady | Phase::DropReady | Phase::ForwardReady
+            )
+        }) {
+            let dns_limits = self.limits.dns();
+            let r = &mut self.rows[index];
+            if r.phase == Phase::TransformReady {
+                r.phase = if packet::rewrite_uncached(
+                    &r.packet,
+                    &r.plan,
+                    &r.replacements,
+                    now,
+                    packet::RewriteBuffers {
+                        output: &mut r.output,
+                        original: &mut self.scratch_a,
+                        transformed: &mut self.scratch_b,
+                    },
+                    dns_limits,
+                )
+                .is_ok()
+                {
+                    Phase::ReplyReady
+                } else {
+                    Phase::DropReady
+                };
+            }
+            let decision = match r.phase {
+                Phase::ReplyReady => gnunet_wire::official::dns::Decision::Answer(&r.output),
+                Phase::DropReady => gnunet_wire::official::dns::Decision::Drop,
+                Phase::ForwardReady => gnunet_wire::official::dns::Decision::Forward,
+                _ => return Err(Error::Conflict),
+            };
+            return Ok(Some(Work::Reply {
+                request: r.request,
+                source: r.source,
+                id: r.id,
+                decision,
+                expires: r.until,
             }));
         }
         let live = self.exits.iter().filter(|e| e.tunnel.is_some()).count();
@@ -863,6 +914,14 @@ impl<'a> Core<'a> {
         if let Some(i) = self.rows.iter().position(|r| r.phase == Phase::PreReady) {
             if self.rows[i].attempts >= self.limits.attempts {
                 self.rows[i].phase = Phase::DropReady;
+                let row = &self.rows[i];
+                return Ok(Some(Work::Reply {
+                    request: row.request,
+                    source: row.source,
+                    id: row.id,
+                    decision: gnunet_wire::official::dns::Decision::Drop,
+                    expires: row.until,
+                }));
             } else {
                 let mut chosen = None;
                 let mut best = 0u64;
@@ -902,88 +961,41 @@ impl<'a> Core<'a> {
                         .len()
                         .checked_add(4)
                         .ok_or(Error::Overflow)?;
-                    self.charge(n)?;
-                    let mut output = vector(n)?;
-                    output.resize(n, 0);
-                    crate::exit::encode_query(&self.rows[i].packet, &mut output)?;
-                    output[4..6].copy_from_slice(&id.to_be_bytes());
                     let attempt = Attempt(self.brand()?);
-                    self.bytes = self.charge(output.capacity())?;
-                    self.rows[i].output = output;
-                    self.rows[i].phase = Phase::SendReady(attempt, tunnel, id);
-                    self.rows[i].attempts += 1;
+                    let row = &mut self.rows[i];
+                    if n > row.output.capacity() {
+                        return Err(Error::Conflict);
+                    }
+                    row.output.resize(n, 0);
+                    crate::exit::encode_query(&row.packet, &mut row.output)?;
+                    row.output[4..6].copy_from_slice(&id.to_be_bytes());
+                    row.phase = Phase::SendReady(attempt, tunnel, id);
+                    row.attempts += 1;
                     self.exits[e].next_id = u32::from(id) + 1;
                     self.exits[e].ready = false;
                     self.cursor = (e + 1) % self.exits.len();
                 }
             }
         }
-        let dns_limits = self.limits.dns();
-        for r in &mut self.rows {
-            match r.phase {
-                Phase::SendReady(attempt, tunnel, _) => {
-                    return Ok(Some(Work::Send {
-                        attempt,
-                        request: r.request,
-                        tunnel,
-                        message: &r.output,
-                        expires: r.until,
-                    }));
-                }
-                Phase::ReplyReady => {
-                    if !r.plan.is_empty()
-                        && packet::rewrite_uncached(
-                            &r.packet,
-                            &r.plan,
-                            &r.replacements,
-                            now,
-                            packet::RewriteBuffers {
-                                output: &mut r.output,
-                                original: &mut self.scratch_a,
-                                transformed: &mut self.scratch_b,
-                            },
-                            dns_limits,
-                        )
-                        .is_err()
-                    {
-                        r.phase = Phase::DropReady;
-                        return Ok(Some(Work::Reply {
-                            request: r.request,
-                            source: r.source,
-                            id: r.id,
-                            decision: gnunet_wire::official::dns::Decision::Drop,
-                            expires: r.until,
-                        }));
-                    }
-                    return Ok(Some(Work::Reply {
-                        request: r.request,
-                        source: r.source,
-                        id: r.id,
-                        decision: gnunet_wire::official::dns::Decision::Answer(&r.output),
-                        expires: r.until,
-                    }));
-                }
-                Phase::DropReady => {
-                    return Ok(Some(Work::Reply {
-                        request: r.request,
-                        source: r.source,
-                        id: r.id,
-                        decision: gnunet_wire::official::dns::Decision::Drop,
-                        expires: r.until,
-                    }));
-                }
-                Phase::ForwardReady => {
-                    return Ok(Some(Work::Reply {
-                        request: r.request,
-                        source: r.source,
-                        id: r.id,
-                        decision: gnunet_wire::official::dns::Decision::Forward,
-                        expires: r.until,
-                    }));
-                }
-                _ => {}
-            }
+        if let Some(row) = self
+            .rows
+            .iter()
+            .find(|row| matches!(row.phase, Phase::SendReady(..)))
+        {
+            let Phase::SendReady(attempt, tunnel, _) = row.phase else {
+                return Err(Error::Conflict);
+            };
+            return Ok(Some(Work::Send {
+                attempt,
+                request: row.request,
+                tunnel,
+                message: &row.output,
+                expires: row.until,
+            }));
         }
         Ok(None)
     }
 }
+
+#[cfg(test)]
+mod tests;

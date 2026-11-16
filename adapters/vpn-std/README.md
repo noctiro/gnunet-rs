@@ -5,7 +5,10 @@ VPN Engine. It owns canonically accepted Unix/TCP MQs and official client
 frames202/203 and response204, using the existing shared service runtime. It
 creates no listener itself. The separate [coordinator](COORDINATOR.md) composes
 TUN, route and CADET owners on the caller's runtime. The `unavailable`
-example is a local IPC harness with no TUN; it is not a VPN foreground. No private protocol, private-key access or GNUnet C FFI is used.
+example uses native local IPC and stop sources on Unix and Windows, with no
+TUN. It restricts the endpoint to its owner; Windows uses native ACLs, while
+Unix additionally checks the peer UID. No private protocol, private-key access
+or GNUnet C FFI is used.
 
 The foreground/coordinator constructs `gnunet_vpn::Engine` with its external
 Instance, ClientSlot/RequestSlot/LeaseSlot/FlowSlot/PacketSlot pools, then moves
@@ -107,6 +110,15 @@ physically close; expiry or Immediate forces all physical closes. `Stopped` and
 TUN/routing jobs, CADET channels and discovery work remain coordinator-owned.
 
 ## Composition and limits
+
+On Windows, `Device::from_wintun` consumes an actual explicitly provisioned
+session. The first session of a Created adapter permits configuration; restarted
+and Opened sessions use unchanged-plan verification. The
+[shared Wintun reactor](../tun-std/WINDOWS.md)
+provides whole packets, actual native administrative returns, route queries and
+DAD samples. Unix helper variants remain specific to their process/pipe backend.
+The [coordinator recovery contract](COORDINATOR.md#session-recovery) preserves
+the original route scope when replacing a packet session on the same adapter.
 
 `engine()` exposes pure facts; `engine_mut()` is the explicit coordinator port for
 TUN attachment, original routing receipts, discovery/CADET work and

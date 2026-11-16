@@ -5,6 +5,8 @@ its generic SET codec and the existing shared CLIENT/Framed transport. It does n
 or invent acknowledgements. Drive owners from an entered Tokio runtime with
 IO/time enabled; the caller also drives its explicitly selected Resolver.
 
+## Source ownership
+
 Create `Factory` from a configured `EndpointSource`. It fallibly freezes that
 selector's configuration once and retains the same clock and Resolver. Related
 Set, Listener and copy MQs share a local factory-domain token. Accept/copy also
@@ -32,10 +34,21 @@ EOF/native socket loss can restore the read-only registration after its old
 physical source retires, within the same original Bounds. Port/config/clock or
 malformed-input refusal is terminal; it cannot become an immediate retry loop.
 
-Results retain size, status, type and bytes. HALF_DONE is nonterminal;
-only DONE or FAILURE terminate. A canceled/unknown RID is consumed without a
+## Results and cancellation
+
+Results retain size and a `ResultValue`: an ordinary element, local addition,
+remote addition, HALF_DONE, DONE or FAILURE. Element variants preserve the exact
+type and bytes, including type zero and zero-length data. Status-only variants
+carry no element; as in the C API, their wire element fields are ignored.
+Each operation retains its original result mode. FULL, REMOVED and ADDED deliver
+ordinary elements; SYMMETRIC delivers local/remote additions. A contradictory
+element status retires the source with `Error::UnexpectedResult` and all original
+unfinished receipts. HALF_DONE is nonterminal; only DONE or FAILURE terminate.
+A canceled/unknown RID is consumed without a
 replacement callback. CANCEL completion is local whole write, not remote ACK. Zero-written operations are actually removed; cancelling a partial request
 retires the original MQ and reports every unfinished original owner.
+
+## Iteration and copies
 
 One iteration is active per Set. Each element requires an explicit IterAck. Cancel while an element awaits ACK queues0; its whole write advances the local
 wire generation and reports local cancellation. There is no cancellation END
@@ -50,6 +63,8 @@ CopyLazyPrepare admits one outstanding cookie query. Its exact raw four bytes
 produce a single-use CopyTicket, which a same-factory new MQ echoes in
 CopyLazyConnect. Failed local copy admission returns the unchanged ticket. The service performs the lazy membership fork on connect; the SDK does
 not pretend that the earlier cookie receipt was an eager content snapshot. The original source must remain known-live until the copy initializer writes.
+
+## Resource policy
 
 Limits select an explicit C ABI (native order and uint64 alignment4/8), frame,
 queued wire-byte/frame, live operation and syscall budgets. Initializer, partial
@@ -72,21 +87,17 @@ original targets. Queue bytes are retained **wire** accounting, not an exact RSS
 promise. Metadata grows on demand within frame/operation count caps. No background
 task or hidden timeout worker is created.
 
-Complete C↔Rust interoperability, all profiles,
-native failure timing and measured memory/performance remain unaccepted. Local-only operation0 is represented as the public enum declares;
+Local-only operation0 is represented as the public enum declares;
 fixed C's create-handler restriction to1/2 remains a separate counterpart
 profile limitation, not a reason to alter wire fields or claim acceptance.
+
+## Failure provenance
 
 Before shared Set/Listener physical retirement, TransportLoss captures the exact
 current Framed input prefix, including malformed headers whose native read
 failed before ReadStep::Progress. It takes the maximum of the observed head
 counter and the retained head extent, rather than adding two views of
-the same bytes. No clock, IO, retry, epoch or public API is introduced. Prepared
-native-source cases exercise Factory Set and Listener attachments and
-whole initializers, then malformed four-byte headers read in one slice or four
-one-byte slices. Both must report exactly4, without doubling an already observed
-prefix. These are focused native ownership checks, not whole-node or unchanged-C
-interoperability acceptance.
+the same bytes. Loss capture samples no clock and performs no I/O.
 
 Focused private Unix timer fixtures prepare CREATE/Evaluate/Iterate writes
 and keep the peer silent under a fixed logical clock. They cover a later operation

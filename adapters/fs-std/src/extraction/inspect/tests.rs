@@ -5,11 +5,10 @@
     reason = "Assertions identify actual local descriptor fixture failures; filesystem and host errors remain returned to the test harness."
 )]
 use super::*;
+use std::fs::{self, OpenOptions};
 use std::{
     error::Error as StdError,
-    fs::OpenOptions,
     io::{Seek, Write},
-    os::unix::fs::{DirBuilderExt, OpenOptionsExt},
     sync::atomic::{AtomicU64, Ordering},
 };
 
@@ -22,7 +21,11 @@ impl Directory {
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
-        fs::DirBuilder::new().mode(0o700).create(&path)?;
+        let parent = gnunet_native::filesystem::Directory::open(&std::env::temp_dir())?;
+        let name = path
+            .file_name()
+            .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
+        drop(parent.create_private_directory(name)?);
         Ok(Self(path))
     }
 }
@@ -37,12 +40,8 @@ fn sparse_file_uses_shared_metadata_and_terms_without_payload_artifacts()
 -> Result<(), Box<dyn StdError>> {
     let directory = Directory::new()?;
     let path = directory.0.join("Archive Title.html");
-    let mut input = OpenOptions::new()
-        .create_new(true)
-        .read(true)
-        .write(true)
-        .mode(0o600)
-        .open(&path)?;
+    let root = gnunet_native::filesystem::Directory::open(&directory.0)?;
+    let mut input = root.create_private_file(std::ffi::OsStr::new("Archive Title.html"))?;
     input.write_all(b"<html><title>Actual title</title></html>")?;
     input.set_len(1024 * 1024 * 1024)?;
     input.seek(std::io::SeekFrom::Start(17))?;

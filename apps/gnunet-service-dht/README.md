@@ -2,9 +2,16 @@
 
 `gnunet-service-dht` uses the common SERVICE configuration/options, selected `-L`/`-l` Logger/Reporter and explicit daemon/parent control. It prepares TCP/inherited listeners before USER and completes new Unix listeners with configured access after identity selection. The native DHT owner shares one Broker/SharedClock for the enabled selectors. PILS supplies the public identity and signatures. The GNUnet underlay enables CORE/NSE/PEERSTORE/TRANSPORT; IP-only startup does not require their connections. No private key is read by this app; when CORE is enabled its identity must agree with PILS.
 
-READY stdout is completely flushed only after host readiness, and only then notifies the original ChildReady. Stop, parent/signal failure, Logger, Resolver and host failures retain the same owner through physical close and a once-captured native drain target. Clock failure cannot suppress original CORE source-return retirement. Forced/expired cleanup preserves unresolved prefixes and fails instead of claiming completion. Independent output, Resolver-close and logging errors retain the typed report. No worker, implicit Resolver, detached task or C process is created.
+## Native startup and lifetime
 
-The official DHT bucket/cache/try-connect configuration is consumed; additional `dht-rust` resource limits are explicit. Registry-only revocation settings are used only when both WORKBITS and EPOCH_DURATION exist. Key/crypto/native/product execution was not performed. This entry does not claim autonomous neighbour discovery/refresh or full peer interoperability complete merely because the sources are connected.
+Unix owns descriptor transfer and identity changes; Windows owns native
+activation/bootstrap, SID verification and qualified parent registration. Both
+entries drive the same foreground and real DHT host. Native stop subscriptions
+and one bounded parent acknowledgement retain their original owners.
+
+READY stdout is completely flushed only after host readiness, and only then notifies the original parent. Stop, parent/signal failure, Logger, Resolver and host failures retain the same owner through physical close and a once-captured native drain target. Clock failure cannot suppress original CORE source-return retirement. Forced/expired cleanup preserves unresolved prefixes and fails instead of claiming completion. Independent output, Resolver-close and logging errors retain the typed report. No worker, implicit Resolver, detached task or C process is created.
+
+The official DHT bucket/cache/try-connect configuration is consumed; additional `dht-rust` resource limits are explicit. Registry-only revocation settings are used only when both WORKBITS and EPOCH_DURATION exist.
 
 ## Underlay selection
 
@@ -18,3 +25,10 @@ backend's wildcard binding. `IP_BIND` with the IP backend disabled is refused. T
 remote reachability. The original `[dht] DISABLE_TRY_CONNECT` gates new HELLO
 candidate dialing through either backend. Runtime use remains subject to the
 platform socket/interface results.
+
+## Direct IP host
+
+Interface snapshots retain native scope and prefix information. Windows excludes
+tentative/duplicate addresses from local source candidates and disables ICMP
+port-unreachable receive resets on the original UDP socket. Isolated datagram
+errors do not retire the shared underlay or authenticate an earlier send.

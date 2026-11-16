@@ -1,8 +1,8 @@
-# Scoped bounded ARM service core
+# ARM service core
 
-This workspace package implements pure official ARM server state; it is not a
-complete native ARM daemon, CLI, configuration loader or testing framework. The fixed official source inventory and earlier candidate proofs are retained;
-integrating this core awards no full ARM compatibility status.
+This package implements pure ARM server state. The
+[native host](../../adapters/arm-service-std/README.md) supplies configuration,
+listeners, child processes and the daemon reactor.
 
 The production graph remains no_std/noalloc/forbid unsafe: only existing ARM wire/types dependencies, caller-owned service/client/listener slots and distinct exclusive frame buffers. No libgnunet FFI, sockets, spawn, DNS, global random source, AtomicU64, global ID allocation or invented protocol is present.
 
@@ -18,7 +18,7 @@ an old service token renewed spawn, listener or child authority.
 
 Register managed listeners only after the host really owns each successfully bound socket. Configuration phase permits this, not client admission. Drive `startup_next` through every initial spawn attempt until it returns false; the phase becomes Serving and only then `connect` succeeds. No initial STARTING replay/snapshot is invented. A refused forced preparation does not advance its startup/scan cursor or skip into successful Serving.
 
-## effects and host-input boundaries
+## Effects and host input
 
 `NativeEffect::Spawn` is an unexecuted request. Disarm all source service readiness first, perform native fork-admission-equivalent creation, retain native capability under scoped ChildId, then call `spawned`. C's exec-confirming spawn mismatch remains a host prerequisite. `SpawnOutcome::Admitted` does not mean application ready. Native leases are taken once, retained across future cancellation and checked with `native_current` before I/O; stale attempt epochs cannot acknowledge a later TERM on the same child.
 
@@ -43,23 +43,24 @@ Final listener Close, timer Cancel, final child ShutdownTerm and generic shutdow
 
 Optional monitor status is dropped by official policy only at logical MQ length>1024. If a source-eligible status cannot fit caller storage, the recipient is explicitly flagged for host closure, not silently counted as an official optional drop. `ReapReport.resource_closures` and `resource_closures()` make this bounded-resource profile visible. Host must actually close/disconnect these clients; resource-closing clients admit no more requests. This is a resource-exhaustion policy, not evidence that C with unbounded successful allocation behaves identically under that artificial limit.
 
-## References
+## Reference and verification
 
-`UPSTREAM.md` binds pinned daemon source and references all121 original design obligations without removing CLI/native/testing requirements. Current core covers source request/monitor/list, startup, actual-effect ownership, stop/reap, source restart arithmetic/scans and manual cleanup ordering. The source's ASCII byte-folding case profile is explicit; arbitrary locale behavior is not certified.
+[UPSTREAM.md](UPSTREAM.md) records the pinned source behavior, explicit wire ABI
+and host scheduling contract. Name comparison uses ASCII byte folding; it does
+not select the host's locale implicitly.
 
-The workspace also composes host registry/listener preparation, the shared native
-process owner, daemon reactor, ordinary ARM SERVICE and ARM CLI. Their
-source and finite component evidence remain separate from this pure core. Complete
-current scheduler/clock, native-platform and unchanged-official-C interoperability
-profiles remain unqualified. Testing support is assessed by required active public
-behavior, not by reproducing C helper signatures. Pure tests inject applied/native
-wait outcomes; they do not execute a native daemon or certify these host paths. Runtime must settle each source synchronous control body/resumable scan before
-polling an unrelated external callback, preserving C callback ordering.
+The host must settle each synchronous control body or resumable scan before
+polling an unrelated external callback. Pure tests inject applied effects and
+owned-child wait results; normal service execution exercises the native host.
 
-`verify.py --repository /absolute/gnunet-rs --upstream /absolute/pinned-gnunet
---output <new external directory>` executes Rust1.99.1 locked/offline, jobs2,
-exact named36 tests+2docs, E0499 frame/scope negatives with positive controls,
-all copied root lints/Clippy/rustdoc, M0/M4 and a feature-empty production graph. It compares the generated independent manifest with the workspace package
-and checks all22 declared official source hashes. Source file sets and hashes are
-rediscovered before/after; all outputs remain external. The121 source obligations
-remain inventoried, including pending host, CLI and testing behavior.
+```sh
+python3 crates/gnunet-arm-service-core/verify.py \
+  --repository /absolute/gnunet-rs \
+  --upstream /absolute/pinned-gnunet \
+  --output /absolute/fresh-output
+```
+
+The verifier checks source bindings, manifest/dependency equality, core
+transitions, scope/frame compile failures with positive controls, workspace
+lints and allocation-free target builds. Generated output stays in the selected
+directory. See [the test guide](../../tests/README.md) for workspace execution.

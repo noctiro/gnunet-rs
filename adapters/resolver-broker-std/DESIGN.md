@@ -1,8 +1,9 @@
 # Shared process Resolver broker
 
-The pinned official source hashes and complete public/behavior inventory are in
-inventory.json. The shared broker is integrated into workspace constructors;
-full subsystem acceptance still requires the remaining recorded obligations.
+[inventory.json](inventory.json) records the selected public/behavior interfaces
+and reference source anchors.
+
+## Contract
 
 One `broker::<R,N>` returns cloned `Context` admissions and a unique `Driver`. All clones share the gnunet-client ResolverHandle, remote FIFO, counter,
 backoff and timer state. One driver owns the MQ stream, original connect

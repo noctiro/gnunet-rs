@@ -1,17 +1,47 @@
-# Actual DNS monitor/redirector utilities
+# DNS monitoring and redirection
 
-`gnunet-dns-monitor` and `gnunet-dns-redirector` are thin PROGRAM entry points sharing this bounded host implementation. They consume the already-admitted `gnunet-dns-client-host`, DNSPARSER, same explicit process Resolver/live configuration/clock, and ordinary signals. They do not start DNS SERVICE, a helper, TUN, routes, a DNSSTUB, background worker or another resolver implementation.
+`gnunet-dns-monitor` and `gnunet-dns-redirector` share PROGRAM configuration,
+DNS client IPC, Resolver scheduling and native parent/stop control on Linux,
+macOS, Windows and FreeBSD. They require a running DNS interception service.
 
-Monitor supports official `-i/--inbound-only`, `-o/--outbound-only`, `-v/--verbose`; default monitors both query and final response. It validates complete packets, displays original question/answer names, classes, types, TTLs and typed RDATA, escapes binary/terminal-control octets, and sends Forward on that original callback. Malformed/bounded-refused input is forwarded unchanged as in the C utility. No DNS header AD flag is strengthened into verified data.
+## Commands and configuration
 
-Redirector supports `-4/--ipv4`, `-6/--ipv6`, `-v/--verbose` and subscribes POST_RESOLUTION. It replaces only correctly sized A/AAAA RDATA in the answer section. Complete packet validation precedes output mutation/admission. Same-width byte replacement keeps original header, flags, TTL, question bytes, compression pointers and every unrelated record intact. It does not repack the whole message into C's arbitrary1024-byte output ceiling. No change means Forward; valid changes send Answer. A refused/truncated/bounded packet is forwarded untouched. DNSSEC validity is not invented after a test rewrite.
+Monitor accepts `-i/--inbound-only`, `-o/--outbound-only` and `-v/--verbose`.
+It displays validated question and record data, escapes terminal control bytes,
+and forwards each original callback. By default it observes queries and responses.
 
-Shared extra options: standard PROGRAM `-c/--config` and help/version/logging, `--socket` for an explicit Unix endpoint, `--duration-ms` (default300000,1..86400000), `--max-packets` (default0, duration-only), `--max-entries` (default/max16384), `--io-slice-bytes`1..65535. No positional input is accepted.64 callback metadata rows and4MiB retained-source budget are fixed; parser arena66300-ish bytes and65519-byte output slab are reused, not allocated per record. DNSPARSER bounded streaming work avoids counted arrays.
+Redirector accepts `-4/--ipv4`, `-6/--ipv6` and `-v/--verbose`.
+It subscribes to post-resolution callbacks and replaces only answer-section
+A/AAAA addresses of the correct width. Header flags, TTLs, compression pointers
+and unrelated records retain their original bytes. Unchanged or malformed
+packets are forwarded. Rewriting an address does not establish DNSSEC validity.
 
-MQ attachment, INIT whole-write, local reply admission, reply whole-write, timeout-generated Drop, original source loss and unavailable/retry are distinct observations. A callback dropped by the caller is not silently forwarded. Finite duration and SIGINT/SIGTERM actually close the source before disconnecting its Resolver. The packet limit permits up to five seconds within the original total deadline for reply writes, then physically retires that original source; newly observed callbacks while stopping are retired with that source. Reconnect explicitly resubscribes flags on a new epoch, never reuses a retired callback or replays replies. Standard stdout is a bounded synchronous CLI sink; arbitrary kernel/output latency is not claimed cancellable or bounded by these MQ policies.
+Both use standard PROGRAM options, including `-c/--config`, help, version and
+logging. `--socket PATH` selects an explicit local stream endpoint. Otherwise
+the shared configuration selects the service endpoint, including TCP.
 
-## Public pinned-source differences
+```sh
+gnunet-dns-monitor -c node.conf --duration-ms 30000
+gnunet-dns-redirector -c node.conf --ipv4 192.0.2.10 --max-packets 10
+```
 
-Current Meson accidentally assigns `gnunetdnsmonitor_src` to the redirector C file and `gnunetdnsredirector_src` to the monitor C file, and both binaries are install:false. The source monitor implements -i/-o while source redirector implements -4/-6; the latter also declares its -6 long option as duplicate `ipv4`. Rust exposes the documented/functional utility names and a working --ipv6 spelling, rather than copying these build/option defects. No external IPC or DNS protocol is altered. Actual C utility source behavior (monitor forwarding and answer-only address replacement) is retained.
+Additional limits are `--duration-ms` (default 300000, maximum 86400000),
+`--max-packets` (default 0, duration only), `--max-entries` (maximum 16384) and
+`--io-slice-bytes` (1–65535). The client retains at most 64 callbacks and 4 MiB
+of source data. Packet parsing and replacement reuse fixed-capacity buffers.
 
-No Cargo/compiler/model/test, network/socket/helper/privilege, key/entropy/crypto, storage, worker or C execution was performed. These tools require a configured external DNS interception SERVICE; their successful process exit does not prove interception installation, remote reply delivery or a registration ACK (none exists).
+## Ownership and shutdown
+
+Option preparation, foreground scheduling, native control and callback handling
+live in separate modules. The selected Reporter is shared with the caller's
+PROGRAM scheduler; output failure permanently stops new reply admission.
+
+Callback admission, whole local writes, timeout drops and source loss are
+separate observations. Stop closes the original client before disconnecting
+its Resolver. A packet limit allows a five-second reply drain within the
+original total deadline. Reconnection resubscribes on a new source and never
+replays replies or reuses old callback tokens.
+
+Standard output remains synchronous; these network deadlines cannot preempt
+an operating-system output call. Utility success does not establish interception
+installation or delivery beyond the local IPC connection.

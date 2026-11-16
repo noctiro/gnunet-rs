@@ -1,7 +1,6 @@
 //! Actual caller-polled SERVICE, original providers and diagnostic publisher.
-use crate::{Failure, control::Signals, settings::Settings};
-use gnunet_config::Configuration;
-use gnunet_program_host::{policy::Level, reporting::Reporter};
+use crate::{Failure, settings::Settings};
+use gnunet_program_host::{policy::Level, reporting::Reporter, service::native::Context};
 use gnunet_reclaim_host::{
     EndpointSource, SystemProviders, gns, namestore,
     server::{self, Event, Progress, Server},
@@ -9,11 +8,10 @@ use gnunet_reclaim_host::{
 };
 use gnunet_resolver_broker::{Driver as ResolverDriver, LiveConfiguration};
 use gnunet_service_runtime::{
-    BoundListeners,
     clock::RuntimeClock,
     service::{Listener, ShutdownMode},
 };
-use gnunet_service_startup::{ParentControl, daemon::ChildReady};
+use gnunet_service_startup::StopSignals;
 use std::{
     fmt,
     future::{Future, poll_fn},
@@ -152,7 +150,7 @@ enum Turn {
 }
 async fn turn(
     owners: &mut Owners<'_, '_, '_>,
-    signals: &mut Signals,
+    signals: &mut StopSignals,
     listeners: &[Listener<'_>],
     until: Option<Instant>,
     cursor: &mut usize,
@@ -185,7 +183,7 @@ async fn turn(
         if reporter.failed() {
             return Poll::Ready(Ok(Turn::Signal));
         }
-        if let Poll::Ready(result) = signals.poll(cx) {
+        if let Poll::Ready(result) = signals.poll_stop(cx) {
             return Poll::Ready(result.map(|()| Turn::Signal).map_err(Into::into));
         }
         // Independent original statistics native hard is registered before any
@@ -247,23 +245,18 @@ async fn turn(
     })
     .await
 }
-pub(super) async fn run(
-    config: Configuration,
-    settings: Settings,
-    bound: BoundListeners,
-    parent: Option<ParentControl>,
-    clock: Arc<dyn RuntimeClock>,
-    reporter: Reporter,
-    child: &mut ChildReady,
-) -> Result<(), Failure> {
-    let mut signals = Signals::new(parent)?;
-    for failure in bound.failures() {
-        reporter.warning(
-            "reclaim.listener.alternate",
-            format_args!("RECLAIM alternate listener {failure}"),
-        );
-    }
-    let live = LiveConfiguration::new(config);
+pub(super) async fn run(context: Context<'_, Settings>) -> Result<(), Failure> {
+    let Context {
+        config,
+        settings,
+        listeners: bound,
+        mut signals,
+        clock,
+        reports: reporter,
+        readiness: notification,
+    } = context;
+    let clock: Arc<dyn RuntimeClock> = Arc::new(clock);
+    let live = LiveConfiguration::new(config.duplicate()?);
     let (context, resolver) = gnunet_resolver_broker::broker::<8, 256>(
         live.clone(),
         settings.resolver,
@@ -275,9 +268,9 @@ pub(super) async fn run(
     let gns_source = EndpointSource::live(live.clone(), b"gns", resolution.clone());
     let ns_instance = namestore::Instance::new();
     let mut gns_instance = gns::Instance::new();
-    // Original actual OS provider, after target UID/listeners. No entropy or
-    // private-key operation is performed by source preparation of this code.
-    let providers = SystemProviders::open()?;
+    // Select the native provider after configured identity/listener setup.
+    // Entropy is requested only by an admitted identifier operation.
+    let providers = SystemProviders::native();
     let server = Server::new(
         &ns_instance,
         &mut gns_instance,
@@ -319,32 +312,44 @@ pub(super) async fn run(
         },
         done: false,
     };
-    let ready = (|| -> io::Result<()> {
+    let ready: Result<bool, Failure> = async {
+        let stopped = poll_fn(|cx| {
+            Poll::Ready(match signals.poll_stop(cx) {
+                Poll::Ready(result) => result.map(|()| true),
+                Poll::Pending => Ok(false),
+            })
+        }).await?;
+        if stopped {
+            return Ok(false);
+        }
         if reporter.failed() {
             return Err(io::Error::other(
                 "RECLAIM selected logger failed before readiness; original error retained",
-            ));
+            ).into());
         }
         reporter.message(Level::INFO,"reclaim.ready",format_args!("RECLAIM actual listener/Server/OS provider owners prepared; configured NAMESTORE/GNS clients attach asynchronously"));
         if reporter.failed() {
             return Err(io::Error::other(
                 "RECLAIM readiness diagnostic failed; original error retained",
-            ));
+            ).into());
         }
-        let mut out = io::stdout().lock();
-        writeln!(
-            out,
-            "READY reclaim wire=0.29.1 ipc=listening namestore=client-not-yet-attached gns=client-not-yet-attached credentials=jwt-unverified keys=ipc-only disk-workers=0"
-        )?;
-        out.flush()?;
-        child.ready()
-    })();
+        {
+            let mut out = io::stdout().lock();
+            writeln!(
+                out,
+                "READY reclaim wire=0.29.1 ipc=listening namestore=client-not-yet-attached gns=client-not-yet-attached credentials=jwt-unverified keys=ipc-only disk-workers=0"
+            )?;
+            out.flush()?;
+        }
+        notification.signal(&mut signals, &reporter).await?;
+        Ok(true)
+    }.await;
     let mut cursor = 0;
     let mut turns = 0u8;
     let mut stop_at = None;
     if let Err(error) = ready {
-        errors.original = Some(Box::new(error));
-    } else {
+        errors.original = Some(error);
+    } else if matches!(ready, Ok(true)) {
         let listeners = bound.listeners();
         loop {
             turns = turns.wrapping_add(1);
@@ -480,7 +485,6 @@ pub(super) async fn run(
     owners.done = true;
     drop(owners);
     drop(context);
-    drop(bound);
     let stopped = (|| -> io::Result<()> {
         let mut out = io::stdout().lock();
         writeln!(

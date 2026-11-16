@@ -409,3 +409,44 @@ fn untracked_vector_write_uses_one_real_progress_quantum_and_preserves_partial_t
         Ok(())
     })
 }
+
+#[test]
+fn write_shutdown_preserves_original_drain_and_independent_receive_half()
+-> Result<(), Box<dyn std::error::Error>> {
+    runtime()?.block_on(async {
+        let (connection, mut peer) = pair().await?;
+        let mut io = Framed::new(connection, limits(Accounting::Retained, 3, 64, 4))?;
+        let original = frame(7);
+        io.enqueue_copy(&original, 41_u8, Class::Ordinary)?;
+        let refused = poll_fn(|cx| io.poll_shutdown(cx)).await;
+        assert!(matches!(refused, Err(error) if error.kind() == io::ErrorKind::WouldBlock));
+        assert_eq!(io.remaining_bytes(), original.len());
+        let mut written = 0;
+        while io.queued_frames() != 0 {
+            let progress = poll_fn(|cx| io.poll_write(cx)).await?;
+            assert_eq!(progress.origin, 41);
+            written += progress.bytes;
+        }
+        assert_eq!(written, original.len());
+        poll_fn(|cx| io.poll_shutdown(cx)).await?;
+        poll_fn(|cx| io.poll_shutdown(cx)).await?;
+        assert!(!io.capacity(8, Class::Ordinary));
+        let rejected = match io.enqueue_owned(OwnedFrame::new(frame(9)), 42, Class::Ordinary) {
+            Err(rejected) => rejected,
+            Ok(()) => return Err("shutdown admitted a new frame".into()),
+        };
+        assert_eq!(rejected.reason, Error::Closed);
+        assert_eq!(rejected.value.1, 42);
+        assert_eq!(rejected.value.0.bytes(), frame(9));
+        let mut observed = Vec::new();
+        tokio::time::timeout(std::time::Duration::from_secs(2), peer.read_to_end(&mut observed)).await??;
+        assert_eq!(observed, original);
+        let response = frame(8);
+        peer.write_all(&response).await?;
+        tokio::time::timeout(std::time::Duration::from_secs(2), rx(&mut io)).await??;
+        assert_eq!(io.frame(), Some(response.as_slice()));
+        io.retire();
+        assert!(matches!(poll_fn(|cx| io.poll_shutdown(cx)).await, Err(error) if error.kind() == io::ErrorKind::NotConnected));
+        Ok(())
+    })
+}

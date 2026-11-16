@@ -24,7 +24,6 @@ use std::{
     ffi::OsStr,
     fmt,
     io::{self, Write},
-    os::unix::ffi::OsStrExt,
     path::Path,
 };
 
@@ -89,7 +88,7 @@ fn failure_row(value: &task::Failure) -> Value {
         "query_failures":value.query_failures.iter().map(|failure|json!({"query_id":failure.query.index(),"cause":failure.cause.to_string()})).collect::<Vec<_>>(),
         "deadline_observation":value.deadline_observation.as_ref().map(ToString::to_string),"error":value.to_string()})
 }
-fn failed(out: &mut impl Write, error: Box<task::Failure>) -> Box<dyn Error> {
+fn failed(out: &mut super::Output<'_, impl Write>, error: Box<task::Failure>) -> Box<dyn Error> {
     let _diagnostic = row(out, &failure_row(&error));
     error
 }
@@ -114,7 +113,11 @@ fn record(value: &ResultRecord) -> Value {
         "source_namespace_query_id":value.source_namespace_query().map(|id|id.index()),
         "followed_update_query_id":value.continuation().map(|id|id.index()),"metadata":metadata})
 }
-fn observed(out: &mut impl Write, value: Progress, event: Event<'_>) -> io::Result<()> {
+fn observed(
+    out: &mut super::Output<'_, impl Write>,
+    value: Progress,
+    event: Event<'_>,
+) -> io::Result<()> {
     match event {
         Event::Tick => Ok(()),
         Event::Restored {
@@ -266,7 +269,7 @@ fn create_arguments<T: AsRef<OsStr>>(args: &[T]) -> Result<CreateArguments<'_>, 
     let mut at = 0;
     while at < args.len() {
         let value = args[at].as_ref();
-        let raw = value.as_bytes();
+        let raw = value.as_encoded_bytes();
         if !literal && raw == b"--" {
             literal = true;
             at += 1;
@@ -295,10 +298,13 @@ fn create_arguments<T: AsRef<OsStr>>(args: &[T]) -> Result<CreateArguments<'_>, 
 }
 pub(super) fn create(
     args: &[impl AsRef<OsStr>],
-    out: &mut impl Write,
+    out: &mut super::Output<'_, impl Write>,
 ) -> Result<(), Box<dyn Error>> {
     let selected = create_arguments(args)?;
-    let query = Uri::parse(selected.query.as_bytes(), UriLimits::default())?;
+    let query = Uri::parse(
+        crate::argument::wire_bytes(selected.query)?,
+        UriLimits::default(),
+    )?;
     if !matches!(query, Uri::Keywords(_) | Uri::Namespace(_)) {
         return Err("search-task-create requires a KSK or SKS URI".into());
     }
@@ -323,7 +329,7 @@ pub(super) fn create(
 }
 pub(super) fn status_command(
     args: &[impl AsRef<OsStr>],
-    out: &mut impl Write,
+    out: &mut super::Output<'_, impl Write>,
 ) -> Result<(), Box<dyn Error>> {
     let task = Task::open(Path::new(args[0].as_ref()), store::Limits::default())
         .map_err(|error| failed(out, error))?;
@@ -336,13 +342,17 @@ pub(super) fn status_command(
     )?;
     Ok(())
 }
-pub(super) fn run(args: &[impl AsRef<OsStr>], out: &mut impl Write) -> Result<(), Box<dyn Error>> {
+pub(super) fn run(
+    args: &[impl AsRef<OsStr>],
+    out: &mut super::Output<'_, impl Write>,
+) -> Result<(), Box<dyn Error>> {
     let interval = duration(args.get(2))?;
     let path = Path::new(args[1].as_ref());
     let mut task =
         Task::open(path, store::Limits::default()).map_err(|error| failed(out, error))?;
     let limit = quota(args.get(3), task.manifest().options.limits.results)?;
     let source = ipc::EndpointSource::unix(Path::new(args[0].as_ref()).to_path_buf());
+    out.interval(interval)?;
     let deadline = target(&source, interval)?;
     row(
         out,
@@ -366,6 +376,7 @@ pub(super) fn run(args: &[impl AsRef<OsStr>], out: &mut impl Write) -> Result<()
                 Control::Continue
             }
         }));
+    out.cleanup()?;
     match result {
         Ok(done) => {
             let diagnostic=row(out,&json!({"event":if done.reason==StopReason::Cancelled{"fs_search_task_cancelled"}else{"fs_search_task_paused"},
@@ -396,7 +407,7 @@ pub(super) fn run(args: &[impl AsRef<OsStr>], out: &mut impl Write) -> Result<()
 }
 pub(super) fn cancel(
     args: &[impl AsRef<OsStr>],
-    out: &mut impl Write,
+    out: &mut super::Output<'_, impl Write>,
 ) -> Result<(), Box<dyn Error>> {
     let mut task = Task::open(Path::new(args[0].as_ref()), store::Limits::default())
         .map_err(|error| failed(out, error))?;

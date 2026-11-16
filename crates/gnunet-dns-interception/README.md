@@ -1,11 +1,49 @@
 # DNS interception core
 
-This module implements the active v0.29.1 DNS interception SERVICE business flow. It is distinct from `gnunet-dns` packet parsing, DNSSTUB UDP resolution, and the already-admitted DNS native client. The default feature has only checked official DNS_HELPER/TUN_PI encode/decode; `alloc` enables the bounded phase owner.
+The core implements official DNS interception phases independently of native
+IPC, packet devices and DNSSTUB. The default feature provides checked
+DNS_HELPER/TUN_PI framing; `alloc` enables the bounded phase owner.
 
-An helper source supplies checksum-checked IPv4/IPv6 UDP/53 queries. The owner advances REQUEST_MONITOR, PRE_RESOLUTION, resolver, POST_RESOLUTION, RESPONSE_MONITOR, and original helper output. Each phase freezes eligible original client allocations; newest connections run first as in the pinned C DLL. PRE answers terminate remaining PRE providers; a QR response bypasses external resolution, while a rewritten query goes to the resolver. Monitoring cannot replace packets. Unknown old request IDs are ignored; wrong client/current output is refused. Official INIT has no ACK and REPLY has no cancel/credit extension.
+## Interfaces and packet flow
 
-Client/source/request/resolve/output tokens bind a stable caller `Instance`, owner allocation, row and checked non-reused serial. Nothing is encoded beyond the official opaque eight-byte request identifier. A helper loss cannot discharge an application MQ callback. Whole local writing, physical source retirement, resolver cancellation, expiry and application decisions are separate ports. Helper pipe completion does not prove a TUN write or remote DNS delivery; there is no such official ACK.
+`Engine` receives validated IPv4/IPv6 UDP port-53 queries from a caller-owned
+source. It advances request monitoring, pre-resolution, resolution,
+post-resolution, response monitoring and output. Each phase freezes eligible
+client allocations, visiting the most recently connected client first.
+Monitoring cannot replace packets. A pre-resolution answer terminates remaining
+providers; a rewritten query continues through the resolver.
 
-Metadata directories have explicit client/request limits; 1..64 clients use a phase bitmap plus an original allocation high-water mark. Payloads share one actual-capacity budget, are allocated only for admitted live requests, and zeroize on retirement/replacement. Smaller replacements reuse allocation; larger replacements must fit the conservative transient budget while the old bytes remain held. Fixed directories and allocator overhead are separately bounded by their configured counts, not falsely included in the payload-byte limit. No per-client/per-request maximum-size eager packet buffers are allocated. DNSSTUB results match the original transaction ID, opcode and checked DNS questions; this is unverified UDP data, not DNSSEC or source authentication.
+`prepare_client` builds official IPC callbacks. `prepare_helper` builds a
+checksummed reply with the official helper envelope. `prepare_packet` builds the
+same raw IP/UDP reply for native packet devices. Both packet paths share one
+encoder and the same output ownership rules. No platform framing enters client
+IPC or DNS data.
 
-`model.rs` is one public synthetic packet/phase/ownership fixture. There is no implicit socket, resolver, thread, process, clock or filesystem access in the core. Fragment reassembly/TCP DNS interception is not invented; unsupported packet layouts use the shared bounded IP parser's explicit refusal.
+Unknown old request identifiers are ignored; a wrong client or current output is
+refused. Official INIT has no acknowledgement, and REPLY has no added credit or
+cancellation extension. TCP interception and fragment reassembly remain outside
+the supported packet layouts.
+
+## Ownership and errors
+
+Client, source, request, resolver and output tokens bind the caller's `Instance`,
+allocation, row and checked serial. Only the official opaque eight-byte request
+identifier enters IPC. A source loss does not discharge an application callback.
+Rejecting prepared output invalidates that attempt before another can be minted.
+
+Queue admission, positive local exposure, complete local writes, physical source
+retirement, resolver cancellation and expiry are separate inputs. A helper pipe
+write and a native packet submission establish different transport facts;
+neither acknowledges remote delivery. DNSSTUB responses must match transaction
+ID, opcode and questions. These checks do not establish DNSSEC authentication.
+
+## Resource bounds
+
+Client/request directories have explicit limits. Phase membership uses a bitmap
+for at most 64 clients and an allocation high-water mark. Payloads share an
+actual-capacity budget and zeroize on replacement or retirement. Smaller updates
+reuse allocation; growth must fit while the previous allocation remains held.
+Directory and allocator overhead are separate from the payload-byte bound.
+
+The core creates no socket, resolver, process, task, clock or filesystem owner.
+The [native host](../../adapters/dns-service-std/README.md) supplies those ports.

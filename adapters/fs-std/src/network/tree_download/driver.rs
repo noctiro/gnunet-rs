@@ -86,7 +86,7 @@ pub(crate) async fn run<T: Target>(
     content: Content,
     buffers: &mut Buffers,
     mut cache: Option<&mut Repository>,
-    options: TreeDownloadOptions,
+    mut options: TreeDownloadOptions,
     mut control: impl FnMut(TreeDownloadProgress) -> Control,
 ) -> Result<DownloadedTree, Box<Failure<T::Failure>>> {
     let mut failed_path = relative.to_path_buf();
@@ -102,6 +102,14 @@ pub(crate) async fn run<T: Target>(
         {
             return Err(Error::from(ProtocolError::InvalidInput).into());
         }
+        let time = super::super::TimeLimit::new(
+            source.clock(),
+            options.transfer.deadline,
+            options.transfer.native_deadline,
+        )
+        .map_err(Error::from)?;
+        options.transfer.native_deadline = time.native_deadline();
+        let mut last = Some(time.now);
         let capacity = options.max_entries.checked_add(1).ok_or(Error::Limit)?;
         let mut slots = Vec::new();
         crate::resize(&mut slots, capacity, walk::Slot::empty())?;
@@ -139,10 +147,9 @@ pub(crate) async fn run<T: Target>(
             parent: None,
             kind: walk::Kind::Directory,
         });
-        let mut last = None;
         checkpoint(
             &source,
-            options.transfer.deadline,
+            &options.transfer,
             &mut last,
             progress,
             &mut control,
@@ -156,7 +163,7 @@ pub(crate) async fn run<T: Target>(
                 failed_path = relative.join(path.as_ref());
                 checkpoint(
                     &source,
-                    options.transfer.deadline,
+                    &options.transfer,
                     &mut last,
                     progress,
                     &mut control,
@@ -189,7 +196,7 @@ pub(crate) async fn run<T: Target>(
                 let inline = {
                     let mut guarded = |_| match checkpoint(
                         &source,
-                        options.transfer.deadline,
+                        &options.transfer,
                         &mut last,
                         progress,
                         &mut control,
@@ -222,7 +229,7 @@ pub(crate) async fn run<T: Target>(
                     // fresh borrowing control for this actual read.
                     let mut guarded = |_| match checkpoint(
                         &source,
-                        options.transfer.deadline,
+                        &options.transfer,
                         &mut last,
                         progress,
                         &mut control,
@@ -268,7 +275,7 @@ pub(crate) async fn run<T: Target>(
                 } else {
                     let mut guarded = |_| match checkpoint(
                         &source,
-                        options.transfer.deadline,
+                        &options.transfer,
                         &mut last,
                         progress,
                         &mut control,
@@ -307,7 +314,7 @@ pub(crate) async fn run<T: Target>(
             }
             checkpoint(
                 &source,
-                options.transfer.deadline,
+                &options.transfer,
                 &mut last,
                 progress,
                 &mut control,

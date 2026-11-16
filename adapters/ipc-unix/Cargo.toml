@@ -19,10 +19,13 @@ gnunet-service-runtime.workspace = true
 tokio = { workspace = true, features = ["net", "time", "io-util", "rt"] }
 
 [dev-dependencies]
-nix.workspace = true
+gnunet-native.workspace = true
 socket2.workspace = true
 gnunet-resolver-broker.workspace = true
 tokio = { workspace = true, features = ["rt", "io-std", "sync"] }
+
+[target.'cfg(unix)'.dev-dependencies]
+nix.workspace = true
 
 [lints]
 workspace = true

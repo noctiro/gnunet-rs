@@ -2,6 +2,7 @@
 #![cfg(unix)]
 #![forbid(unsafe_code)]
 use gnunet_config::Configuration;
+use gnunet_service_runtime::LocalListenerAccess;
 use gnunet_service_runtime::service::{Listener, ShutdownMode};
 use gnunet_service_runtime::{
     ActivatedSocket, Activation, BoundListeners, CreatedPath, private_parents, service_options,
@@ -118,6 +119,40 @@ fn runtime() -> io::Result<tokio::runtime::Runtime> {
 fn free_v4_port() -> io::Result<u16> {
     let socket = StdTcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
     Ok(socket.local_addr()?.port())
+}
+
+#[test]
+fn configured_access_modes_and_explicit_close_preserve_parent_ownership()
+-> Result<(), Box<dyn Error>> {
+    let own = OwnedDirectory::new()?;
+    runtime()?.block_on(async {
+        for (name, access, socket_mode, parent_mode) in [
+            ("owner", LocalListenerAccess::Owner, 0o700, 0o700),
+            ("group", LocalListenerAccess::Group, 0o770, 0o750),
+            ("everyone", LocalListenerAccess::Everyone, 0o777, 0o755),
+        ] {
+            let path = own.join(name).join("service.sock");
+            let config = unix_config(b"service", &path)?;
+            let mut bound = BoundListeners::bind_configured(&config, b"service", access).await?;
+            verify_eq!(
+                fs::metadata(&path)?.permissions().mode() & 0o777,
+                socket_mode
+            );
+            verify_eq!(
+                fs::metadata(own.join(name))?.permissions().mode() & 0o777,
+                parent_mode
+            );
+            bound
+                .close()
+                .map_err(|errors| io::Error::other(format!("{errors:?}")))?;
+            verify!(bound.listeners().is_empty());
+            verify_eq!(bound.unix_paths().count(), 0);
+            verify!(!path.exists());
+            verify!(own.join(name).is_dir());
+        }
+        verify_eq!(fs::metadata(&own.0)?.permissions().mode() & 0o777, 0o700);
+        Ok(())
+    })
 }
 
 #[test]

@@ -3,6 +3,14 @@
 `gnunet-rps` uses the official RPS native SDK and ordinary selected
 PROGRAM configuration. It creates no service or separate worker. Default mode
 requests one random public peer; optional positional `N` requests that many.
+Linux, macOS, FreeBSD and Windows use the same command and client implementation.
+
+## Commands
+
+```sh
+gnunet-rps -c gnunet.conf 8
+gnunet-rps -c gnunet.conf --view 3
+```
 
 - `-s/--seed PEER_ID`: require the full52-character Crockford public identity,
   send one standard seed frame, then print `Seed submitted: <PEER_ID>`.
@@ -11,6 +19,8 @@ requests one random public peer; optional positional `N` requests that many.
   positive N completes only after exactly that many SDK frames and output flushes.
 - `-S/--stream`: observe biased input batches. Its help identifies the biased
   input; ordinary stdout remains PeerID lines.
+
+## Results and cancellation
 
 Exactly one mode is selected. Sampling retains all N shared-core sampler
 results from the same original source before admitting one complete stdout
@@ -21,10 +31,15 @@ epochs, batch counters and byte counts are retained internally for guards and
 diagnostics without entering data stdout. No fake wire END, request ID, seed acceptance or remote receipt is introduced.
 
 The command uses one SharedClock, selected Logger/Reporter, live selected
-configuration and shared Resolver through the prepared PROGRAM scheduler. Ctrl-C/SIGTERM closes its source and Resolver; parent PROGRAM cancellation
+configuration and shared Resolver through the prepared PROGRAM scheduler.
+`ClientStartup` captures original inheritance before other native owners; shared
+stop subscriptions observe parent control and Unix signals or Windows console
+notifications. Native stop closes the source and Resolver; parent PROGRAM cancellation
 also physically closes the retained native owner and records cleanup facts. A canceled finite request fails rather than claiming a full sample/quota. Continuous mode can stop cleanly on a signal only with no incomplete stdout
 result. EOF, source failure, expired original bounds, logging, Resolver and
 stdout errors remain failures. No automatic cross-epoch sample/replay exists.
+
+## Configuration
 
 Local resource policy is read from `[rps-client-rust]`:
 
@@ -44,6 +59,8 @@ These finite local policies do not alter public message fields or renew the
 original native/canonical command targets. The service endpoint comes from the
 ordinary `[rps]` configuration. No subgroup CLI option is invented; the native
 SDK separately supports same-MQ subgroup operation.
+
+## Output ownership
 
 Stdout retains one bounded result and offers at most512 bytes per turn. Positive
 progress is driven immediately; WouldBlock uses a finite10 ms cadence while the

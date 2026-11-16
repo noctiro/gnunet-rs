@@ -5,6 +5,10 @@
 )]
 use super::*;
 use gnunet_types::Error as ProtocolError;
+use std::{
+    fs::{self, OpenOptions},
+    io::Write,
+};
 struct Directory(PathBuf);
 impl Directory {
     fn new() -> io::Result<Self> {
@@ -16,7 +20,8 @@ impl Directory {
             "gnrs-cadet-monotime-{}-{nanos}",
             std::process::id()
         ));
-        fs::create_dir(&path)?;
+        gnunet_native::filesystem::Directory::open(&std::env::temp_dir())?
+            .create_private_directory(path.file_name().ok_or(io::ErrorKind::InvalidInput)?)?;
         Ok(Self(path))
     }
 }
@@ -51,6 +56,48 @@ fn identity_namespaces_restore_original_floor_and_hold_original_range_lock()
 }
 
 #[test]
+fn copied_state_cannot_replace_a_live_original_and_linked_locks_are_refused()
+-> Result<(), Box<dyn std::error::Error>> {
+    let dir = Directory::new()?;
+    let path = dir.0.join("floor");
+    let mut store = Store::open(path.clone(), [3; 32])?;
+    assert_eq!(store.next(10)?, 10);
+    let bytes = fs::read(&path)?;
+    let retained = dir.0.join("retained-floor");
+    fs::rename(&path, &retained)?;
+    let root = gnunet_native::filesystem::Directory::open(&dir.0)?;
+    let mut foreign = root.create_private_file("floor".as_ref())?;
+    foreign.write_all(&bytes)?;
+    foreign.sync_all()?;
+    assert!(matches!(
+        store.high_water(),
+        Err(Error {
+            outcome: Outcome::Unknown,
+            ..
+        })
+    ));
+    assert!(matches!(
+        store.reserve(0, 1),
+        Err(Error {
+            outcome: Outcome::Unknown,
+            ..
+        })
+    ));
+    assert_eq!(fs::read(&retained)?, bytes);
+    assert_eq!(fs::read(&path)?, bytes);
+    drop(store);
+    let mut reopened = Store::open(path, [3; 32])?;
+    assert_eq!(reopened.next(0)?, 11);
+    let lock = dir.0.join("floor.cadet-monotime-lock");
+    let alias = dir.0.join("linked-lock");
+    fs::hard_link(&lock, &alias)?;
+    assert!(reopened.high_water().is_err());
+    drop(reopened);
+    assert!(Store::open(dir.0.join("floor"), [3; 32]).is_err());
+    Ok(())
+}
+
+#[test]
 fn durable_reservations_survive_rollback_burn_unknown_and_refuse_foreign_peer()
 -> Result<(), Box<dyn std::error::Error>> {
     let dir = Directory::new()?;
@@ -61,6 +108,10 @@ fn durable_reservations_survive_rollback_burn_unknown_and_refuse_foreign_peer()
     assert_eq!(store.high_water()?, None);
     assert!(Store::open(path.clone(), local).is_err());
     let mut reserved = store.reserve(100, 4)?;
+    #[cfg(unix)]
+    assert_eq!(reserved.directory_sync(), DirectorySync::Synchronized);
+    #[cfg(windows)]
+    assert_eq!(reserved.directory_sync(), DirectorySync::Unavailable);
     assert_eq!(reserved.local(), local);
     assert_eq!(reserved.remaining(), 4);
     assert_eq!(reserved.take_next()?, 100);
@@ -87,6 +138,7 @@ fn durable_reservations_survive_rollback_burn_unknown_and_refuse_foreign_peer()
             ..
         })
     ));
+    assert_eq!(store.directory_sync(), None);
     assert!(matches!(
         store.high_water(),
         Err(Error {
@@ -140,5 +192,60 @@ fn durable_reservations_survive_rollback_burn_unknown_and_refuse_foreign_peer()
     assert_eq!(retained.take_next()?, 22);
     let mut reopened = Store::open(ordered_path, local)?;
     assert_eq!(reopened.next(0)?, 23);
+    Ok(())
+}
+
+#[test]
+fn a_swapped_staging_name_is_refused_before_commit_and_never_cleaned_as_owned()
+-> Result<(), Box<dyn std::error::Error>> {
+    let dir = Directory::new()?;
+    let mut store = Store::open(dir.0.join("floor"), [4; 32])?;
+    assert_eq!(store.next(10)?, 10);
+    let mut temporary = store.files.temporary()?;
+    temporary.write(
+        &State {
+            local: [4; 32],
+            high: 20,
+        }
+        .bytes(),
+    )?;
+    let mut staged = None;
+    for entry in fs::read_dir(&dir.0)? {
+        let entry = entry?;
+        if entry
+            .file_name()
+            .as_encoded_bytes()
+            .starts_with(b"floor.cadet-new-")
+        {
+            staged = Some(entry.path());
+        }
+    }
+    let staged = staged.ok_or("owned staging file missing")?;
+    let retained = dir.0.join("retained-staging");
+    fs::rename(&staged, &retained)?;
+    let root = gnunet_native::filesystem::Directory::open(&dir.0)?;
+    let mut foreign =
+        root.create_private_file(staged.file_name().ok_or("missing staging leaf")?)?;
+    foreign.write_all(b"foreign staging sentinel")?;
+    foreign.sync_all()?;
+    let failure = store
+        .files
+        .prepare(&mut temporary)
+        .err()
+        .ok_or("swapped candidate accepted")?;
+    assert_eq!(failure.outcome, Outcome::NotCommitted);
+    assert!(store.unknown.is_none());
+    drop(temporary);
+    assert_eq!(fs::read(&staged)?, b"foreign staging sentinel");
+    assert_eq!(
+        fs::read(&retained)?,
+        State {
+            local: [4; 32],
+            high: 20
+        }
+        .bytes()
+    );
+    assert_eq!(store.high_water()?, Some(10));
+    assert_eq!(store.next(0)?, 11);
     Ok(())
 }

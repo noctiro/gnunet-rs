@@ -28,3 +28,8 @@ tokio = { workspace = true, features = ["macros"] }
 
 [lints]
 workspace = true
+
+[[test]]
+name = "windows_process"
+path = "tests/windows_process.rs"
+harness = false

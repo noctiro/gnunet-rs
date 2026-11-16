@@ -113,7 +113,8 @@ pub fn address(value: Address<'_>) -> Result<Vec<u8>, gnunet_types::Error> {
             }
         }
         Unix { path, length } => {
-            let family = std::mem::size_of::<libc::sa_family_t>();
+            let layout = gnunet_native::network::unix_address_layout();
+            let family = layout.family_bytes;
             if length <= family {
                 return Ok(b"<unbound UNIX client>".to_vec());
             }
@@ -137,7 +138,7 @@ pub fn address(value: Address<'_>) -> Result<Vec<u8>, gnunet_types::Error> {
                 result.push(b'@');
             }
             result.extend_from_slice(&path[..length]);
-            let capacity = (46usize + 8).max(1 + std::mem::size_of::<libc::sockaddr_un>() - family);
+            let capacity = (46usize + 8).max(1 + layout.sockaddr_bytes - family);
             result.truncate(capacity - 1);
             result
         }

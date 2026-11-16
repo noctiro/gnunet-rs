@@ -20,16 +20,11 @@ use std::{
     fmt,
     future::{Future, poll_fn},
     io::{self, Write},
-    os::unix::ffi::OsStrExt,
     path::Path,
     rc::Rc,
-    task::Poll,
     time::Duration,
 };
-use tokio::{
-    signal::unix::{SignalKind, signal},
-    time::Instant,
-};
+use tokio::time::Instant;
 
 struct Arguments<'a> {
     positional: Vec<&'a OsStr>,
@@ -67,7 +62,7 @@ fn arguments<T: AsRef<OsStr>>(args: &[T]) -> Result<Arguments<'_>, Box<dyn Error
     let mut index = 0;
     while index < args.len() {
         let value = args[index].as_ref();
-        let raw = value.as_bytes();
+        let raw = value.as_encoded_bytes();
         if !literal && raw == b"--" {
             literal = true;
             index += 1;
@@ -78,14 +73,13 @@ fn arguments<T: AsRef<OsStr>>(args: &[T]) -> Result<Arguments<'_>, Box<dyn Error
         }
         let selected = if !literal && raw == b"--keywords" {
             index += 1;
-            Some(
+            Some(crate::argument::wire_bytes(
                 args.get(index)
                     .ok_or("--keywords requires a KSK URI")?
-                    .as_ref()
-                    .as_bytes(),
-            )
+                    .as_ref(),
+            )?)
         } else if !literal && raw.starts_with(b"--keywords=") {
-            Some(&raw[11..])
+            Some(&crate::argument::wire_bytes(value)?[11..])
         } else {
             None
         };
@@ -159,13 +153,17 @@ impl Error for Failure {
             .or_else(|| self.output.as_ref().map(|e| e as _))
     }
 }
-pub(super) fn run(args: &[impl AsRef<OsStr>], out: &mut impl Write) -> Result<(), Box<dyn Error>> {
+pub(super) fn run(
+    args: &[impl AsRef<OsStr>],
+    out: &mut super::Output<'_, impl Write>,
+) -> Result<(), Box<dyn Error>> {
     let selection = arguments(args)?;
     let args = &selection.positional;
     let interval = duration(args.get(3))?;
     let hard = Instant::now()
         .checked_add(Duration::from_micros(interval))
         .ok_or("unindex native deadline is too large")?;
+    out.deadline(hard);
     let fs_source = EndpointSource::unix(Path::new(args[0]).to_path_buf());
     let store_source =
         EndpointSource::unix_with_clock(Path::new(args[1]).to_path_buf(), fs_source.clock());
@@ -180,7 +178,7 @@ pub(super) fn run(args: &[impl AsRef<OsStr>], out: &mut impl Write) -> Result<()
     options.extra_keywords = &refs;
     options.metadata = metadata;
     tokio::runtime::Builder::new_current_thread().enable_all().build()?.block_on(async{
-        let mut interrupt=signal(SignalKind::interrupt())?;let mut terminate=signal(SignalKind::terminate())?;
+        let mut signals=super::stop::StopEvents::new()?;
         let stop=Rc::new(Cell::new(false));let mut signal_error=None;
         let mut identity=gnunet::datastore_host::Instance::new();
         let mut wire=Vec::new();wire.try_reserve_exact(65535)?;wire.resize(65535,0);
@@ -194,14 +192,9 @@ pub(super) fn run(args: &[impl AsRef<OsStr>], out: &mut impl Write) -> Result<()
                 if running.get(){Control::Cancel}else{Control::Continue}
             }));
             poll_fn(|cx|{
-                if !stop.get(){
-                    for signals in [&mut interrupt,&mut terminate]{
-                        if let Poll::Ready(value)=signals.poll_recv(cx){
-                            stop.set(true);
-                            if value.is_none() && signal_error.is_none(){signal_error=Some(io::Error::new(io::ErrorKind::UnexpectedEof,"unindex signal stream closed"));}
-                            break;
-                        }
-                    }
+                if !stop.get() && signals.poll(cx) {
+                    stop.set(true);
+                    signal_error=signals.take_failure();
                 }
                 // Retain and drive the original future through its real cancel,
                 // operation settlement and physical closes. Never recreate it.
@@ -214,6 +207,7 @@ pub(super) fn run(args: &[impl AsRef<OsStr>], out: &mut impl Write) -> Result<()
             "report":value(report),"cause":outcome.as_ref().err().map(ToString::to_string),
             "failure_facts":outcome.as_ref().err().map(|e|format!("{e:?}")),"stop_requested":stop.get(),
             "signal_error":signal_error.as_ref().map(ToString::to_string)});
+        out.cleanup()?;
         let output=(||->io::Result<()>{serde_json::to_writer(&mut *out,&row).map_err(io::Error::other)?;writeln!(out)?;out.flush()})().err();
         if outcome.is_err() || signal_error.is_some() || output.is_some(){return Err(Box::new(Failure{outcome,signal:signal_error,output}) as Box<dyn Error>);}
         Ok(())

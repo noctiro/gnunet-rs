@@ -15,8 +15,7 @@ gnunet-pils = { path = "../../crates/gnunet-pils", default-features = false }
 gnunet-types.workspace = true
 gnunet-wire.workspace = true
 getrandom.workspace = true
-libc.workspace = true
-nix = { workspace = true, features = ["user"] }
+gnunet-native.workspace = true
 zeroize = { workspace = true, features = ["alloc"] }
 
 gnunet-config = { workspace = true, optional = true }

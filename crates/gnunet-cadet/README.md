@@ -1,67 +1,66 @@
 # CADET protocol owners
 
-`client::Client` implements the official CADET application IPC state machine
-using caller-owned port/channel slots. It is `no_std`, allocation-free and
-independent of sockets, scheduling or Resolver services. `Instance`, `Epoch`,
+Allocation-free `no_std` owners implement the official application IPC, local
+service and reliable peer channels. Callers supply tables, buffers, clocks and
+physical I/O. The [native adapter](../../adapters/cadet-std/) composes them with
+sockets, authenticated tunnels, discovery and routing.
+
+## Application client
+
+`client::Client` uses caller-owned port and channel slots. `Instance`, `Epoch`,
 `Port`, `Channel`, `Transmit` and `Delivery` tokens identify their original owner;
 wire channel integers never replace that authority.
 
-Prepare writes into caller output, retain those bytes immutably, report actual
-physical exposure, then report the complete original write. Only a service
-ACK grants send credit. A received packet requires its original single-use
-`Delivery` when calling receive_done. Physical loss retires all channels and
-retains logical listening ports for reannouncement; application data is never
-replayed automatically.
+Prepare writes into caller storage, retain those bytes immutably, report actual
+physical exposure, then report the complete original write. Only a service ACK
+grants send credit. Receive completion requires the original single-use Delivery.
+Physical loss retires channels and retains logical listening ports for explicit
+reannouncement. Application data is never replayed automatically.
 
-The service releases an application's raw channel number on explicit Destroy,
-including while that original peer channel drains. The C API can immediately
-reuse the number. The old typed peer owner, accepted sends and close receipts
-keep their original slot and generation until retirement; they never
-become the replacement endpoint. An active duplicate remains a conflict. Original immutable application output or an unissued remote-close notification
-for the same number temporarily blocks a new CREATE with `WouldBlock`, using the
-native adapter's existing retained-input retry. Explicit Destroy may cancel only
-an unissued notification. A later peer failure during a locally requested drain
-cannot queue an old raw Destroy for the replacement.
+## Service lifecycle
 
-The service source cases cover raw-number reuse before original open/peer-close
-retirement, original ACK/expiry/failure settlement, and frozen output pressure. They are source cases, separate from normal C/Rust interoperability acceptance.
+Explicit Destroy releases the application's raw channel number while the
+original peer channel can still drain. A replacement uses a new typed slot and
+generation. An active duplicate is a conflict. Original immutable output or an
+unissued remote-close notification for that number temporarily refuses a new
+CREATE with WouldBlock. Destroy may cancel only an unissued notification; a
+later failure cannot issue an old raw Destroy for the replacement endpoint.
 
-`peer::ChannelOwner` implements reliable peer-channel endpoints using caller
-send/receive buffers: OPEN proof, wrapping message numbers, ordering, selective
-ACKs, application receive credit and original-message retransmission. Its tunnel
-port must supply authenticated input and retain immutable output through
-physical settlement. Peer acceptance does not mean remote application delivery.
+`Service::retire_ingress` fences an original lost MQ before its previously
+accepted Destroy drains finish. It rejects new commands, revokes ports and
+closes other channel work. Existing drain effects keep their original owners;
+new client output and remote opens are not admitted. The native owner enforces
+the original finite drain bounds, stops physical I/O and eventually calls detach.
+Detachment preserves original pending-output and exposure facts. No clock,
+socket or replacement source is created by these transitions.
 
-`Service::next_send_where` considers only each ready channel's oldest
-unadmitted payload before applying its caller's eligibility predicate, then
-preserves the original global order among those candidates. The existing four
-TX records supply this check without a new queue or metadata allocation. `send_admitted` independently checks that queued head again. A head already
-copied to its peer owner stays in that owner's reliable FIFO; another
-window slot can admit the following payload without serializing every
-channel to one outstanding packet. A full peer window on one channel cannot
-hold unrelated ready channels. Pure source cases use Service/ChannelOwner
-transitions, original DATA/MIDs and ACK inputs to check the one-slot blocked case
-and the two-slot pipeline; their caller emission observations are not native
-writes, tunnel authentication or interoperability acceptance. No historical
-normal-run failure is attributed to this defect without new runtime evidence.
+## Peer channels and send selection
 
-The native application adapter is `gnunet-cadet-host`. The independent
-peer-facing CADET service, encrypted tunnels and discovery/routing remain
-incomplete; the pure channel engine alone supplies none of those operations.
+`peer::ChannelOwner` uses caller send/receive buffers for OPEN proof, wrapping
+message numbers, ordering, selective ACKs, application credit and original-message
+retransmission. Its tunnel port supplies authenticated input and retains
+immutable output through physical settlement. Peer acceptance is separate from
+remote application delivery.
 
-The standard `CADET_DROP_CADET_MESSAGE` diagnostic request is accepted on the
-ordinary application MQ for its original channel. The pure/native client API
-retains its original immutable transmit token and has no service ACK or replay
-across source loss. One bounded opaque two-byte selector replaces the previous
-selector; zero clears it, unknown channels are ignored, and the next matching
-peer plaintext is discarded before encryption or CORE queueing. The fixed
-C daemon compares these bytes directly against the encoded peer header; they are
-preserved without a host/network-order reinterpretation. Local loopback traffic
-and unrelated channels/packet types do not consume it.
+`Service::next_send_where` considers each ready channel's oldest unadmitted
+payload, applies caller eligibility and preserves global order among candidates.
+`send_admitted` checks that queued head again. The four existing TX records avoid
+an additional queue. A head copied to its peer owner remains in that reliable
+FIFO; later window slots can admit subsequent payloads. One full peer window
+does not block unrelated ready channels.
 
-An explicit `Emission::Dropped` is separate from `Sent` and physical failure;
-exposed attempts cannot be relabeled dropped. Reliable DATA/OPEN retain their
-original MID/payload and bounded retry; dropped ACK/OPEN_ACK/DESTROY consume only
-the selected original control attempt. Node reports diagnostic drops
-separately from physical writes and peer acceptance. This source path has no
-runtime, fault-injection or official interoperability acceptance yet.
+## Diagnostic drops
+
+`CADET_DROP_CADET_MESSAGE` applies to the original application channel. The
+client retains its immutable transmit token; there is no service ACK or replay
+across source loss. One opaque two-byte selector replaces the previous value;
+zero clears it and unknown channels are ignored. The next matching peer
+plaintext is discarded before encryption or CORE queueing. Selector bytes match
+the encoded peer header directly, without byte-order reinterpretation. Local
+loopback and unrelated packets do not consume it.
+
+`Emission::Dropped`, Sent and physical failure remain separate. Exposed attempts
+cannot become diagnostic drops. Reliable DATA/OPEN retain their original MID and
+payload for bounded retry; dropped ACK/OPEN_ACK/DESTROY consume only the selected
+control attempt. See [open work](../../IMPLEMENTATION_STATUS.md) for remaining
+fault-injection and interoperability qualification.

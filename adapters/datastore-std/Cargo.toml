@@ -7,7 +7,7 @@ license.workspace = true
 
 [features]
 default = []
-server = ["dep:gnunet-datastore", "dep:gnunet-crypto", "dep:gnunet-wire", "dep:getrandom", "dep:nix", "tokio/sync"]
+server = ["dep:gnunet-datastore", "dep:gnunet-crypto", "dep:gnunet-wire", "dep:gnunet-native", "dep:getrandom", "tokio/sync"]
 
 [dependencies]
 gnunet-client.workspace = true
@@ -18,7 +18,7 @@ gnunet-datastore = { workspace = true, optional = true }
 gnunet-crypto = { workspace = true, optional = true }
 gnunet-wire = { workspace = true, optional = true }
 getrandom = { workspace = true, optional = true }
-nix = { workspace = true, optional = true }
+gnunet-native = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["net", "time", "rt"] }
 
 [dev-dependencies]

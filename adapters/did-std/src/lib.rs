@@ -1,7 +1,7 @@
 //! Caller-owned actual GNUnet DID operations over original IDENTITY, NAMESTORE
 //! and the existing GNS native query client. No resolver/service/task is created.
 #![forbid(unsafe_code)]
-#![cfg(unix)]
+#![cfg(any(unix, windows))]
 pub use gnunet_client_host::EndpointSource;
 use gnunet_crypto::Entropy;
 pub use gnunet_did as did;

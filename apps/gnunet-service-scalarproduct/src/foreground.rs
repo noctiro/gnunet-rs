@@ -1,7 +1,6 @@
 //! Standard SERVICE lifecycle over original IPC, SETI and CADET owners.
 use crate::{
     Cause, Mode,
-    control::Signals,
     lifecycle::{Cleanup, Resolver},
     settings::Settings,
 };
@@ -11,7 +10,7 @@ use gnunet_program_host::{reporting::Reporter, shared_clock::SharedClock};
 use gnunet_resolver_broker::{LiveConfiguration, broker, native_profile};
 use gnunet_scalarproduct_host::{self as server, Event, Progress, Server, Sources};
 use gnunet_service_runtime::{BoundListeners, clock::RuntimeClock, service::ShutdownMode};
-use gnunet_service_startup::{ParentControl, daemon::ChildReady};
+use gnunet_service_startup::StopSignals;
 use std::{
     error::Error,
     fmt,
@@ -169,10 +168,10 @@ pub(super) struct Inputs<'a> {
     pub config: &'a Configuration,
     pub settings: &'a Settings,
     pub bound: &'a BoundListeners,
-    pub parent: Option<ParentControl>,
+    pub signals: StopSignals,
     pub clock: SharedClock,
     pub reports: Reporter,
-    pub child: &'a mut ChildReady,
+    pub notification: gnunet_program_host::service::native::Readiness<'a>,
     pub cleanup: Cleanup,
 }
 pub(super) async fn run(input: Inputs<'_>) -> Result<(), Cause> {
@@ -181,19 +180,18 @@ pub(super) async fn run(input: Inputs<'_>) -> Result<(), Cause> {
         config,
         settings,
         bound,
-        parent,
+        mut signals,
         clock,
         reports,
-        child,
+        notification,
         cleanup,
     } = input;
-    let mut signals = Signals::new(parent)?;
     let stopped = poll_fn(|cx| {
         reports.register(cx);
         if reports.failed() {
             return Poll::Ready(Ok(true));
         }
-        Poll::Ready(match signals.poll(cx) {
+        Poll::Ready(match signals.poll_stop(cx) {
             Poll::Ready(result) => result.map(|()| true),
             Poll::Pending => Ok(false),
         })
@@ -244,7 +242,7 @@ pub(super) async fn run(input: Inputs<'_>) -> Result<(), Cause> {
                 if reports.failed() {
                     return Poll::Ready(Ok(true));
                 }
-                if let Poll::Ready(result) = signals.poll(cx) {
+                if let Poll::Ready(result) = signals.poll_stop(cx) {
                     result?;
                     return Poll::Ready(Ok(true));
                 }
@@ -309,7 +307,7 @@ pub(super) async fn run(input: Inputs<'_>) -> Result<(), Cause> {
             if reports.failed() {
                 return Poll::Ready(Ok(true));
             }
-            Poll::Ready(match signals.poll(cx) {
+            Poll::Ready(match signals.poll_stop(cx) {
                 Poll::Ready(result) => result.map(|()| true),
                 Poll::Pending => Ok(false),
             })
@@ -328,7 +326,7 @@ pub(super) async fn run(input: Inputs<'_>) -> Result<(), Cause> {
             )?;
             output.flush()?;
         }
-        child.ready()?;
+        notification.signal(&mut signals, &reports).await?;
         let mut grace: Option<Grace> = None;
         let mut cursor = false;
         loop {
@@ -356,7 +354,7 @@ pub(super) async fn run(input: Inputs<'_>) -> Result<(), Cause> {
                     if reports.failed() {
                         return Poll::Ready(Ok(Turn::Stop));
                     }
-                    if let Poll::Ready(result) = signals.poll(cx) {
+                    if let Poll::Ready(result) = signals.poll_stop(cx) {
                         result?;
                         return Poll::Ready(Ok(Turn::Stop));
                     }

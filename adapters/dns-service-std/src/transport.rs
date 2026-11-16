@@ -1,20 +1,21 @@
 //! Actual original Rust-helper process/pipes with bounded immutable MQ cursors.
+mod process;
 use crate::{Error, core::Effect};
 use gnunet_service_runtime::framing::OwnedFrame;
 use gnunet_types::Error as Fault;
+use process::{Child, Input, Output as PipeOutput, Stop};
 use std::future::Future;
 use std::{
     io,
     net::{Ipv4Addr, Ipv6Addr},
     path::PathBuf,
     pin::Pin,
-    process::{ExitStatus, Stdio},
+    process::ExitStatus,
     task::{Context, Poll},
     time::Duration,
 };
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
-    process::{Child, ChildStdin, ChildStdout, Command},
     time::{Instant, Sleep},
 };
 use zeroize::Zeroizing;
@@ -41,7 +42,7 @@ pub struct HelperOptions {
     pub io_slice_bytes: usize,
     /// Fixed first-byte through whole input bound.
     pub input_lifetime: Duration,
-    /// Actual SIGTERM through forced kill budget.
+    /// Graceful stop through forced native termination budget.
     pub stop_grace: Duration,
 }
 /// Actual helper source/process observation. No invented READY/configuration ACK.
@@ -90,15 +91,17 @@ impl std::fmt::Debug for HelperEvent<'_> {
         }
     }
 }
-/// Actual process/cleanup result. Signal delivery, status and independent wait
-/// failure are separate from privileged firewall quiescence claims.
+/// Original process exit and independent stop/wait failures. Native process
+/// termination does not prove privileged interception controls were removed.
 #[derive(Debug)]
 pub struct HelperExit {
-    /// Actual waitpid-equivalent child result.
-    pub status: io::Result<ExitStatus>,
-    /// First independent SIGTERM/SIGKILL failure.
+    /// Completed native exit status. A failed wait cannot construct this receipt.
+    pub status: ExitStatus,
+    /// First independent graceful/forced native stop failure.
     pub signal_error: Option<io::Error>,
-    /// Actual hard budget forced SIGKILL; firewall outcome may be unknown.
+    /// First failed wait, retained even if a subsequent original-object wait succeeds.
+    pub wait_error: Option<io::Error>,
+    /// Hard budget requested native forced termination; firewall outcome may be unknown.
     pub forced: bool,
     /// Original pending output exposure at retirement.
     pub pending: Option<(usize, usize)>,
@@ -114,8 +117,8 @@ struct Output<'id> {
 /// Exactly one owned real process/pipe source, never recreated or replayed.
 pub struct Helper<'id> {
     child: Option<Child>,
-    stdin: Option<ChildStdin>,
-    stdout: Option<ChildStdout>,
+    stdin: Option<Input>,
+    stdout: Option<PipeOutput>,
     rx: Zeroizing<Vec<u8>>,
     read: usize,
     wanted: usize,
@@ -128,6 +131,9 @@ pub struct Helper<'id> {
     stopping: Option<Instant>,
     signal_error: Option<io::Error>,
     startup_error: Option<io::Error>,
+    wait_error: Option<io::Error>,
+    wait_retry: Option<Instant>,
+    wait_failed: bool,
     forced: bool,
     pending: Option<(usize, usize)>,
     timer: Pin<Box<Sleep>>,
@@ -163,38 +169,12 @@ impl<'id> Helper<'id> {
         rx.try_reserve_exact(options.frame_bytes)
             .map_err(|_| Fault::Capacity)?;
         rx.resize(options.frame_bytes, 0);
-        let mut command = Command::new(options.program);
-        command
-            .arg(options.interface)
-            .arg(options.ipv6.to_string())
-            .arg(options.prefix.to_string())
-            .arg(options.ipv4.to_string())
-            .arg(options.mask.to_string())
-            .arg(if options.skip_routing { "1" } else { "0" })
-            .env_clear()
-            .current_dir("/")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .kill_on_drop(false);
-        let mut child = command.spawn()?;
-        let stdin = child.stdin.take();
-        let stdout = child.stdout.take();
-        let startup_error = if stdin.is_none() || stdout.is_none() {
-            Some(io::Error::other(
-                "DNS helper required original pipe missing",
-            ))
-        } else {
-            None
-        };
-        #[cfg(target_os = "linux")]
-        let startup_error = startup_error.or_else(|| {
-            child
-                .id()
-                .ok_or_else(|| io::Error::other("DNS helper missing original PID"))
-                .and_then(check_group)
-                .err()
-        });
+        let process::Spawned {
+            child,
+            stdin,
+            stdout,
+            startup_error,
+        } = process::spawn(&options)?;
         Ok(Self {
             child: Some(child),
             stdin,
@@ -211,6 +191,9 @@ impl<'id> Helper<'id> {
             stopping: None,
             signal_error: None,
             startup_error,
+            wait_error: None,
+            wait_retry: None,
+            wait_failed: false,
             forced: false,
             pending: None,
             timer: Box::pin(tokio::time::sleep_until(Instant::now())),
@@ -268,27 +251,17 @@ impl<'id> Helper<'id> {
     pub fn writable(&self) -> bool {
         self.stdin.is_some() && self.stopping.is_none() && self.tx.is_none()
     }
-    fn signal(&mut self, signal: nix::sys::signal::Signal) {
-        if let Some(pid) = self.child.as_ref().and_then(Child::id) {
-            match i32::try_from(pid).map(nix::unistd::Pid::from_raw) {
-                Ok(pid) => {
-                    if let Err(e) = nix::sys::signal::kill(pid, signal)
-                        && e != nix::errno::Errno::ESRCH
-                        && self.signal_error.is_none()
-                    {
-                        self.signal_error = Some(io::Error::from(e));
-                    }
-                }
-                Err(_) => {
-                    if self.signal_error.is_none() {
-                        self.signal_error = Some(io::Error::other("helper pid overflow"));
-                    }
-                }
-            }
+    fn stop_child(&mut self, stop: Stop) {
+        if let Some(child) = self.child.as_ref()
+            && let Err(error) = child.stop(stop)
+            && self.signal_error.is_none()
+        {
+            self.signal_error = Some(error);
         }
     }
-    /// Physical pipe owners stop before caller retires original core source. The
-    /// real child remains owned until poll_exit collects its actual status.
+    /// Close local pipe admission before retiring the original core source.
+    /// Pending IOCP work remains reactor-owned; closure is not child consumption
+    /// or native I/O completion. The child stays owned until its actual exit.
     pub fn request_stop(&mut self) {
         if self.stopping.is_none() {
             self.pending = self.tx.as_ref().map(|o| (o.offset, o.frame.len()));
@@ -298,9 +271,9 @@ impl<'id> Helper<'id> {
             self.stopping = Instant::now().checked_add(self.grace);
             if self.stopping.is_none() {
                 self.forced = true;
-                self.signal(nix::sys::signal::Signal::SIGKILL);
+                self.stop_child(Stop::Force);
             } else {
-                self.signal(nix::sys::signal::Signal::SIGTERM);
+                self.stop_child(Stop::Graceful);
             }
         }
     }
@@ -308,17 +281,27 @@ impl<'id> Helper<'id> {
     pub fn poll_exit(&mut self, cx: &mut Context<'_>) -> Poll<HelperExit> {
         if self.stopping.is_some_and(|d| Instant::now() >= d) && !self.forced {
             self.forced = true;
-            self.signal(nix::sys::signal::Signal::SIGKILL);
+            self.stop_child(Stop::Force);
         }
         let Some(child) = self.child.as_mut() else {
             return Poll::Pending;
         };
-        let status = {
-            let future = child.wait();
-            let mut future = std::pin::pin!(future);
-            future.as_mut().poll(cx)
+        let status = if self.wait_retry.is_none_or(|at| Instant::now() >= at) {
+            self.wait_retry = None;
+            child.poll_exit(cx)
+        } else {
+            Poll::Pending
         };
-        if let Poll::Ready(status) = status {
+        if let Poll::Ready(Err(error)) = status {
+            if self.wait_error.is_none() {
+                self.wait_error = Some(error);
+                self.wait_failed = true;
+            }
+            // Wait failure is not an exit receipt. Keep the original child and
+            // all cleanup authority; retry without spinning or admitting data.
+            self.request_stop();
+            self.wait_retry = Instant::now().checked_add(Duration::from_millis(50));
+        } else if let Poll::Ready(Ok(status)) = status {
             self.pending = self
                 .pending
                 .take()
@@ -329,13 +312,20 @@ impl<'id> Helper<'id> {
             self.child = None;
             return Poll::Ready(HelperExit {
                 status,
+                wait_error: self.wait_error.take(),
                 signal_error: self.signal_error.take(),
                 forced: self.forced,
                 pending: self.pending.take(),
                 input_prefix: (self.read != 0).then_some((self.read, self.wanted)),
             });
         }
-        if let Some(at) = self.stopping.filter(|_| !self.forced) {
+        let wake = self
+            .stopping
+            .filter(|_| !self.forced)
+            .into_iter()
+            .chain(self.wait_retry)
+            .min();
+        if let Some(at) = wake {
             self.timer.as_mut().reset(at);
             if self.timer.as_mut().poll(cx).is_ready() {
                 cx.waker().wake_by_ref();
@@ -471,6 +461,11 @@ impl<'id> Helper<'id> {
 
         if let Poll::Ready(exit) = self.poll_exit(cx) {
             return Poll::Ready(HelperEvent::Exited(exit));
+        }
+        if std::mem::take(&mut self.wait_failed) {
+            return Poll::Ready(HelperEvent::Failed(io::Error::other(
+                "DNS helper original wait failed; child retirement remains pending",
+            )));
         }
         if self.stopping.is_some() {
             return Poll::Pending;

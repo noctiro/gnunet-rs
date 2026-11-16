@@ -5,7 +5,7 @@ use gnunet_program_host::{
     helpers::{self, Target},
 };
 use gnunet_qr_host::Limits;
-use std::{ffi::OsString, os::unix::ffi::OsStringExt, path::PathBuf, time::Duration};
+use std::{path::PathBuf, time::Duration};
 pub(super) struct Arguments {
     png: Target<Option<Vec<u8>>>,
     device: Target<Option<Vec<u8>>>,
@@ -89,22 +89,54 @@ impl Arguments {
             )?)?,
         };
         limits.validate()?;
-        let png = self
-            .png
-            .with(|v| v.as_deref().map(|v| owned(v, 4096)).transpose())??;
+        let png = self.png.with(|value| {
+            value
+                .as_deref()
+                .map(gnunet_program_host::program::native_path)
+                .transpose()
+                .map(|path| path.map(std::borrow::Cow::into_owned))
+        })??;
         let explicit = self
             .device
-            .with(|v| v.as_deref().map(|v| owned(v, 4096)).transpose())??;
+            .with(|value| value.as_deref().map(|bytes| owned(bytes, 4096)).transpose())??;
         if png.is_some() && explicit.is_some() {
             return Err("select either PNG input or a camera device".into());
         }
         let input = match png {
-            Some(bytes) => Input::Png(PathBuf::from(OsString::from_vec(bytes))),
+            Some(path) => Input::Png(path),
             None => Input::Camera(match explicit {
                 Some(device) => device,
-                None => owned(c.get(section, b"DEVICE").unwrap_or(b"/dev/video0"), 4096)?,
+                None => {
+                    #[cfg(unix)]
+                    let device = c.get(section, b"DEVICE").unwrap_or(b"/dev/video0");
+                    #[cfg(windows)]
+                    let device = c
+                        .get(section, b"DEVICE")
+                        .ok_or("Windows camera input requires --device or [qr-rust] DEVICE")?;
+                    owned(device, 4096)?
+                }
             }),
         };
+        let library = |key: &[u8]| -> Result<Option<PathBuf>, Failure> {
+            let path = c
+                .get(section, key)
+                .map(|_| c.get_filename(section, key, &gnunet_config::ProcessEnvironment))
+                .transpose()?;
+            if path.as_ref().is_some_and(|path| !path.is_absolute()) {
+                return Err("QR provider libraries require explicit absolute paths".into());
+            }
+            Ok(path)
+        };
+        let libraries = gnunet_qr_host::LibraryPaths {
+            png: library(b"LIBPNG")?,
+            zbar: library(b"LIBZBAR")?,
+        };
+        #[cfg(windows)]
+        if libraries.zbar.is_none() || matches!(&input, Input::Png(_)) && libraries.png.is_none() {
+            return Err(
+                "Windows QR requires [qr-rust] LIBZBAR and, for PNG input, LIBPNG DLL paths".into(),
+            );
+        }
         let us = self.timeout.get()?;
         let us = if us == 0 {
             c.get(section, b"TOTAL_TIMEOUT")
@@ -128,6 +160,7 @@ impl Arguments {
                 .unwrap_or(true);
         Ok(Settings {
             input,
+            libraries,
             limits,
             life,
             display,
@@ -152,6 +185,7 @@ pub(super) enum Input {
 }
 pub(super) struct Settings {
     pub input: Input,
+    pub libraries: gnunet_qr_host::LibraryPaths,
     pub limits: Limits,
     pub life: Duration,
     pub display: bool,

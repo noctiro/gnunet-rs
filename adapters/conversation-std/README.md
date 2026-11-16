@@ -6,13 +6,22 @@ original identity/CADET sources and multiple branded calls. It starts no hidden
 task or media helper. `Server::ready()` denotes IPC admission, not an established
 peer channel or remote acceptance; normal SERVICE owns the listeners.
 
-The Line's Awaiting, Active and Failed phases exclusively own initialization and
-session authority. Active holds the original core and verified PILS observation;
-its current domain identity comes from that core. Healthy peer updates preserve
-the core, logical port, calls and admitted effects; each incoming call keeps its
-original signature target. A changed MQ or regressing observation refuses
-replacement, and failed construction cannot publish identity or retry with
-another instance. Identity events have a bounded queue-slot preflight.
+## Identity and setup
+
+The Line's Awaiting, Active, Paused and Failed phases exclusively own
+initialization and session authority. Active holds the original core and verified
+PILS observation. An observer connection loss pauses application and CADET I/O,
+retaining the core, logical port, calls and exact partial-output cursors. Only a
+verified later epoch of that same original PILS client can resume the Line.
+Foreign owners and regressing observations refuse replacement. Retries share one
+startup-duration recovery bound, shortened by existing input, output and identity
+lifetimes. Identity events have a bounded queue-slot preflight.
+
+PILS is observation-only here. Its reconnect does not replay crypto work or
+replace an independently attached CADET MQ. Every incoming call keeps its original
+RingInfo signature target; frozen effects retain their IDs, bytes and deadlines.
+Only newly accepted channels capture the fresh identity. Protocol, resource and
+clock failures remain terminal; failed construction cannot reuse a Line brand.
 
 `Sources::new` snapshots both selected endpoints together, freezes those
 endpoints, and requires the identical shared Clock. A Line first obtains the
@@ -20,15 +29,30 @@ PILS peer and original source generation. The current peer, generation,
 signed HELLO lifetime, cancellation and original native/canonical targets guard
 operations, including guarded CLIENT connect/Resolver steps. A clock
 sample rechecks already observed state and never claims a newly observed PILS
-loss. Source loss retires the original sources rather than replaying a Line on
-a replacement MQ. The first original typed cause, pre-attachment retry
-errors and independent cleanup cause remain available in `LineReport`.
+loss. The first observer and CADET connection losses, terminal typed cause,
+pre-attachment retry errors and independent cleanup cause remain in `LineReport`.
+
+## CADET replacement
+
+EOF or a classified connection error retires the actual MQ and its calls while
+preserving the local IPC Line. Each old native effect keeps its actual exposure
+result; Ring, audio and receive-credit frames never replay. An admitted local
+notification finishes on its original IPC before the call's local HangUp.
+
+The CADET client retains the logical listening port. Its complete announcement
+on a replacement MQ restores listening under a fresh source; an attached socket
+or partial announcement does not. New calls get fresh local CIDs. Recovery keeps
+its first native/canonical budget across repeated losses, shortened by the
+original initial-registration budget and parent bounds. Protocol, resource and
+clock refusals remain terminal.
 
 `RegistrationAccepted` reports that one complete original731 was accepted by
 the local protocol core and its input frame consumed. It exposes only the
 original IPC Line serial, with a bounded event-slot preflight before core
 mutation. It is not a CADET port-write receipt, a protocol ACK or remote-ready
 notification; wire bytes and processing semantics are unchanged.
+
+## Frames and input ownership
 
 Every Open/PeerFrame/ClientFrame/ReceiveDone is tied to the original core effect
 and native Port, Channel, Transmit or Delivery. Whole local MQ writes
@@ -51,12 +75,29 @@ its `mq_current` field only reports the already observed source generation. Each
 destruction never fabricates a peer HangUp, an outgoing ring write, or a healthy
 call result; EOF and MQ loss keep their original failure paths.
 
+## Scheduling and failure retirement
+
 A frozen bounded effect scan preserves each channel's send/input-credit FIFO
 and the Line's IPC FIFO while allowing other calls to progress around a slow
-peer. Native pending operations retain their original target and exposure. Cancellation of unsafe partially exposed immutable DATA physically retires the
-original MQ/Line. Known whole writes stay Written during later retirement;
+peer. Native pending operations retain their original target and exposure.
+Per-call cancellation removes a provably unwritten frame and restores its SDK
+reservation. An exposed prefix drains on its original stream under the original
+write and call-close bounds; no frame is resubmitted. If the peer channel no
+longer permits that drain, the host retires the CADET MQ and recovers listening.
+An unsafe local IPC drain requires closing that Line. Known whole writes stay Written during later retirement;
 unknown or partial operations retain their original Lost/Unsent outcome. Per-call invalid input is rejected through its native channel when safe. EOF/source close does not manufacture peer Pickup or successful wire HangUp. Clock-free shutdown attempts every original Line and records undrained debts;
 undrained cleanup is fatal to new admission.
+
+Call setup and peer-output failures retain a standard local HangUp notice until
+its original close bound. Temporary core queue pressure parks the notice; it
+does not fail the shared Line. An undeliverable required notice or an actual
+client-output failure fences that original IPC, whose owner must physically
+close it. Canceling a known unsubmitted frame preserves independent call and
+IPC ownership. Local Ring/control notifications keep FIFO before failure
+HangUp; cancelled unwritten audio can be removed independently. Peer HangUp
+observations still require an actual741 input.
+
+## Limits and native integration
 
 Default native profile: 32 Lines, 256 global calls, 8 MiB reservation per Line,
 256 MiB aggregate reservation, IPC/core frame extent 65535, syscall slice 65535,

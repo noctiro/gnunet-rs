@@ -3,7 +3,7 @@ use crate::{Cause, Mode, budget::Budget, control::Control, options::Settings, ou
 use gnunet_dht_client_host::{
     self as dht, Client, Event, Get, Instance, Monitor, Outcome, Progress,
 };
-use gnunet_program_host::reporting::Reporter;
+use gnunet_program_host::{binary_io, reporting::Reporter};
 use gnunet_resolver_broker::{BrokerError, Driver, DriverEvent};
 use gnunet_service_runtime::clock::RuntimeClock;
 use gnunet_service_startup::ParentControl;
@@ -13,10 +13,11 @@ use std::{
     cell::Cell,
     fmt,
     future::{Future, poll_fn},
-    io::{self, Stdout},
+    io,
     rc::Rc,
     sync::Arc,
     task::Poll,
+    time::Duration,
 };
 
 pub(super) struct Inputs {
@@ -27,7 +28,6 @@ pub(super) struct Inputs {
     pub reporter: Reporter,
     pub stop: Rc<Cell<bool>>,
     pub parent: Option<ParentControl>,
-    pub stdout: Stdout,
 }
 #[derive(Debug, Default)]
 pub(super) struct Report {
@@ -43,6 +43,8 @@ pub(super) struct Report {
     resolver_connect: Option<BrokerError>,
     resolver_disconnected: bool,
     closed: Option<dht::Snapshot>,
+    output_unfinished: bool,
+    output: Option<binary_io::RetiredSet<1>>,
 }
 #[derive(Debug)]
 struct Failed {
@@ -64,13 +66,20 @@ impl std::error::Error for Failed {
         self.original
             .as_deref()
             .or_else(|| self.disconnect.as_ref().map(|e| e as _))
+            .or_else(|| {
+                self.report
+                    .output
+                    .as_ref()
+                    .filter(|output| !output.successful())
+                    .map(|output| output as _)
+            })
     }
 }
 enum Step<'a> {
     Dht(Result<Progress<'a>, dht::Error>),
     Resolver(Result<gnunet_resolver_broker::Progress, BrokerError>),
     Output(io::Result<usize>),
-    Stop(io::Result<()>),
+    Stop(Result<(), Cause>),
     Expired(Fault),
 }
 pub(super) async fn run(inputs: Inputs) -> Result<Report, Cause> {
@@ -82,11 +91,11 @@ pub(super) async fn run(inputs: Inputs) -> Result<Report, Cause> {
         reporter,
         stop,
         parent,
-        stdout,
     } = inputs;
     let mut instance = Instance::new();
     let mut client = None;
     let mut report = Report::default();
+    let mut output = Output::new();
     let original = async {
         let mut control = Control::new(parent, stop, reporter.clone())?;
         if matches!(settings.mode, Mode::Get | Mode::Monitor) && settings.timeout == 0 {
@@ -159,7 +168,6 @@ pub(super) async fn run(inputs: Inputs) -> Result<Report, Cause> {
             None
         };
         let mut operation = None;
-        let mut output = Output::new(stdout);
         let mut cursor = 0;
         let resolver_state = Cell::new(None);
         loop {
@@ -364,6 +372,7 @@ pub(super) async fn run(inputs: Inputs) -> Result<Report, Cause> {
     }
     .await
     .err();
+    let cleanup = std::time::Instant::now() + Duration::from_secs(3);
     // Closing the original native client retires its MQ; no fabricated STOP
     // receipt, acknowledgement, worker termination or quiescence claim.
     if let Some(owner) = &mut client {
@@ -380,10 +389,18 @@ pub(super) async fn run(inputs: Inputs) -> Result<Report, Cause> {
     let disconnect = resolver.disconnect().err();
     report.resolver_disconnected = disconnect.is_none();
     drop(resolver);
+    report.output_unfinished = !output.finished();
+    report.output = Some(binary_io::settle([output.retire()], cleanup).await);
     if settings.verbose {
         reporter.debug("dht.command.closed", format_args!("{report:?}"));
     }
-    if original.is_some() || disconnect.is_some() {
+    if original.is_some()
+        || disconnect.is_some()
+        || report
+            .output
+            .as_ref()
+            .is_some_and(|output| !output.successful())
+    {
         Err(Box::new(Failed {
             original,
             disconnect,

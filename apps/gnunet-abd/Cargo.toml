@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
-[target.'cfg(unix)'.dependencies]
+[dependencies]
 gnunet-abd = { workspace = true, features = ["alloc"] }
 gnunet-abd-client-host.workspace = true
 gnunet-identity.workspace = true
@@ -17,10 +17,11 @@ gnunet-idna.workspace = true
 gnunet-wire.workspace = true
 gnunet-types.workspace = true
 gnunet-config.workspace = true
-gnunet-program-host = { workspace = true, features = ["runtime", "resolver-broker"] }
+gnunet-program-host = { workspace = true, features = ["runtime", "resolver-broker", "service-runtime"] }
 gnunet-client-host.workspace = true
 gnunet-resolver-broker.workspace = true
 gnunet-service-runtime.workspace = true
+gnunet-service-startup.workspace = true
 tokio = { workspace = true, features = ["rt", "time", "net", "signal"] }
 zeroize = { workspace = true, features = ["alloc"] }
 subtle.workspace = true

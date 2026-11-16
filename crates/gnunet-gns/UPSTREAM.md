@@ -2,6 +2,8 @@
 
 Primary documents consulted for this implementation:
 
+## Reference behavior
+
 - [RFC9498](https://www.rfc-editor.org/rfc/rfc9498.html), especially §§5,7,8.
 - [LSD0008](https://lsd.gnunet.org/lsd0008/), especially §§3–4 (SBOX extension).
 - [Current GANA record registry](https://gana.gnunet.org/gnu-name-system-record-types/gnu_name_system_record_types.html).

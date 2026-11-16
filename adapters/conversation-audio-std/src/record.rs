@@ -1,6 +1,6 @@
 use crate::{
     Error, Limits, RATE, RECORD_SAMPLES, Report, buffer, framing, increment,
-    native::{Encoder, Pulse},
+    native::{Device, Direction, Encoder},
     ogg::Mux,
 };
 use gnunet_types::Error as Fault;
@@ -20,7 +20,7 @@ pub fn record(limits: Limits) -> Result<Report, Error> {
     let mut pcm = buffer::<f32>(RECORD_SAMPLES)?;
     let mut raw = buffer::<u8>(RECORD_SAMPLES * 4)?;
     let mut packet = buffer::<u8>(1024)?;
-    let mut microphone = Pulse::new(true, 1)?;
+    let mut microphone = Device::new(Direction::Capture, 1)?;
     let stdout = io::stdout();
     let mut output = stdout.lock();
     let mut report = Report::default();
@@ -48,6 +48,10 @@ pub fn record(limits: Limits) -> Result<Report, Error> {
     let mut granule = 0u64;
     loop {
         microphone.read(&mut raw)?;
+        increment(
+            &mut report.capture_discontinuities,
+            microphone.take_discontinuities(),
+        )?;
         for (sample, bytes) in pcm.iter_mut().zip(raw.as_chunks::<4>().0.iter()) {
             *sample = f32::from_le_bytes(*bytes);
         }

@@ -4,6 +4,7 @@
 //! whole-file or selected-range authentication, or actual local store acknowledgements; it does
 //! not establish remote replication or indefinite network availability.
 mod directory;
+pub(crate) type TimeLimit = crate::time_limit::TimeLimit<Error>;
 pub mod probe;
 #[cfg(feature = "network")]
 pub(crate) mod publish;
@@ -24,9 +25,8 @@ use gnunet_fs::{
     Content, Location,
     content::{BlockKey, FileReader, NodeRef, TAG_BYTES, VerifiedChunk},
 };
-use gnunet_service_runtime::{
-    clock::{Deadline, RuntimeClock},
-    framing::{Accounting, Budget, Class, Limits as FrameLimits, OwnedFrame, ReadStep},
+use gnunet_service_runtime::framing::{
+    Accounting, Budget, Class, Limits as FrameLimits, OwnedFrame, ReadStep,
 };
 use gnunet_types::{AbsoluteTime, Error as ProtocolError};
 use gnunet_wire::official::fs::{
@@ -41,8 +41,6 @@ use std::{
     fmt,
     future::{Future, poll_fn},
     io,
-    pin::Pin,
-    sync::Arc,
     task::{Context, Poll},
 };
 use tokio::io::{AsyncWrite, AsyncWriteExt};
@@ -62,11 +60,17 @@ pub enum Error {
         /// First actual connection/read/write error during this operation.
         first_io: Option<io::Error>,
     },
-    /// Caller stopped between blocks or during a quiet native read; no completion is claimed.
+    /// Caller stopped between blocks or during a pending source/destination
+    /// operation. Progress excludes a possibly partial chunk or unfinished flush.
     Cancelled(Progress),
     /// Original DATASTORE result/uncertainty and its retained actual reply.
     #[cfg(feature = "network")]
     Store(Box<StoreFailure>),
+}
+impl crate::time_limit::Failure for Error {
+    fn expired() -> Self {
+        Self::Deadline { first_io: None }
+    }
 }
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -130,6 +134,10 @@ pub struct DownloadOptions {
     /// One absolute target in the EndpointSource clock, shared across every block
     /// and reconnect. No new per-block lifetime is silently granted.
     pub deadline: AbsoluteTime,
+    /// Optional enclosing operation's native stop target. Admission uses the
+    /// earlier of this target and the allowance derived from `deadline`.
+    /// This process-local bound is never serialized or sent on the wire.
+    pub native_deadline: Option<tokio::time::Instant>,
     /// Official search anonymity value.
     pub anonymity: u32,
     /// Signed LOC placement peer, or all zeroes for ordinary CHK discovery.
@@ -151,6 +159,7 @@ impl DownloadOptions {
         Self {
             limits: Limits::default(),
             deadline,
+            native_deadline: None,
             anonymity: 1,
             target: [0; 32],
             local_only: false,
@@ -166,87 +175,6 @@ impl DownloadOptions {
             target: *location.peer().as_bytes(),
             ..Self::new(deadline)
         }
-    }
-}
-
-pub(crate) struct TimeLimit {
-    clock: Arc<dyn RuntimeClock>,
-    timer: Deadline,
-    now: AbsoluteTime,
-    target: AbsoluteTime,
-    native: Option<(tokio::time::Instant, Pin<Box<tokio::time::Sleep>>)>,
-}
-impl TimeLimit {
-    pub(crate) fn new(clock: Arc<dyn RuntimeClock>, target: AbsoluteTime) -> Result<Self, Error> {
-        let now = clock.sample()?.now;
-        if target <= now {
-            return Err(Error::Deadline { first_io: None });
-        }
-        let timer = Deadline::at(clock.clone(), target)?;
-        Ok(Self {
-            clock,
-            timer,
-            now,
-            target,
-            native: None,
-        })
-    }
-    fn bounded(
-        clock: Arc<dyn RuntimeClock>,
-        target: AbsoluteTime,
-        hard: tokio::time::Instant,
-    ) -> Result<Self, Error> {
-        if tokio::time::Instant::now() >= hard {
-            return Err(Error::Deadline { first_io: None });
-        }
-        let native = Box::pin(tokio::time::sleep_until(hard));
-        let mut result = Self::new(clock, target)?;
-        if tokio::time::Instant::now() >= hard {
-            return Err(Error::Deadline { first_io: None });
-        }
-        result.native = Some((hard, native));
-        Ok(result)
-    }
-    fn native_guard(&mut self, cx: &mut Context<'_>) -> Result<(), Error> {
-        if let Some((hard, timer)) = self.native.as_mut()
-            && (tokio::time::Instant::now() >= *hard || timer.as_mut().poll(cx).is_ready())
-        {
-            return Err(Error::Deadline { first_io: None });
-        }
-        Ok(())
-    }
-    fn poll(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Error>> {
-        self.native_guard(cx)?;
-        let now = self.clock.sample()?.now;
-        self.native_guard(cx)?;
-        if now < self.now {
-            return Poll::Ready(Err(ProtocolError::TimeUncertain.into()));
-        }
-        self.now = now;
-        if now >= self.target {
-            return Poll::Ready(Err(Error::Deadline { first_io: None }));
-        }
-        match Pin::new(&mut self.timer).poll(cx) {
-            Poll::Pending => Poll::Ready(self.native_guard(cx)),
-            Poll::Ready(Err(error)) => Poll::Ready(Err(error.into())),
-            Poll::Ready(Ok(())) => Poll::Ready(Err(Error::Deadline { first_io: None })),
-        }
-    }
-    #[cfg(feature = "network")]
-    async fn during<F: Future>(&mut self, future: F) -> Result<F::Output, Error> {
-        let mut future = std::pin::pin!(future);
-        poll_fn(|cx| {
-            match self.poll(cx) {
-                Poll::Pending => return Poll::Pending,
-                Poll::Ready(result) => result?,
-            }
-            future.as_mut().poll(cx).map(Ok)
-        })
-        .await
-    }
-    #[cfg(feature = "network")]
-    fn remaining(&self) -> gnunet_types::Duration {
-        gnunet_types::Duration(self.target.as_micros().saturating_sub(self.now.as_micros()))
     }
 }
 
@@ -267,7 +195,7 @@ impl Lookup {
         if options.queries_per_connection == 0 || options.io_slice_bytes == 0 {
             return Err(ProtocolError::InvalidInput.into());
         }
-        let time = TimeLimit::new(source.clock(), options.deadline)?;
+        let time = TimeLimit::new(source.clock(), options.deadline, options.native_deadline)?;
         Self::with_time(source, options, time)
     }
     fn bounded(
@@ -278,7 +206,15 @@ impl Lookup {
         if options.queries_per_connection == 0 || options.io_slice_bytes == 0 {
             return Err(ProtocolError::InvalidInput.into());
         }
-        let time = TimeLimit::bounded(source.clock(), options.deadline, hard)?;
+        let time = TimeLimit::new(
+            source.clock(),
+            options.deadline,
+            Some(
+                options
+                    .native_deadline
+                    .map_or(hard, |outer| outer.min(hard)),
+            ),
+        )?;
         Self::with_time(source, options, time)
     }
     fn with_time(
@@ -495,23 +431,7 @@ impl Lookup {
         progress: Progress,
         control: &mut impl FnMut(Progress) -> Control,
     ) -> Result<(), Error> {
-        // This same future retains the original queue, partial write/read
-        // cursors and reconnect state while quiet reads observe caller control.
-        // The physical timer grants neither a new MQ nor a logical lifetime.
-        let mut fetch = std::pin::pin!(self.fetch(request));
-        let mut observe = std::pin::pin!(async {
-            loop {
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                if control(progress) == Control::Cancel {
-                    return Err(Error::Cancelled(progress));
-                }
-            }
-        });
-        poll_fn(|cx| match fetch.as_mut().poll(cx) {
-            Poll::Ready(result) => Poll::Ready(result),
-            Poll::Pending => observe.as_mut().poll(cx),
-        })
-        .await
+        controlled(self.fetch(request), progress, control).await
     }
     fn block(&self) -> Result<&[u8], Error> {
         let frame = self
@@ -529,6 +449,31 @@ impl Lookup {
             framed.release_frame();
         }
     }
+}
+
+// Retain exactly one original operation future, including any partial native
+// cursor. Control observation has its own timer and does not depend on source
+// readiness or renew the operation's existing logical/native deadlines.
+async fn controlled<T>(
+    operation: impl Future<Output = Result<T, Error>>,
+    progress: Progress,
+    control: &mut impl FnMut(Progress) -> Control,
+) -> Result<T, Error> {
+    let mut operation = std::pin::pin!(operation);
+    let mut observe = std::pin::pin!(async {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            if control(progress) == Control::Cancel {
+                return Error::Cancelled(progress);
+            }
+        }
+    });
+    poll_fn(|cx| match observe.as_mut().poll(cx) {
+        // Once stop is observed, never offer another physical suffix or flush.
+        Poll::Ready(error) => Poll::Ready(Err(error)),
+        Poll::Pending => operation.as_mut().poll(cx),
+    })
+    .await
 }
 
 // Shared authenticated transfer, extracted from the original Buffers::download.
@@ -603,8 +548,16 @@ impl<'buffers, 'cache> Download<'buffers, 'cache> {
                 (length, chunk)
             };
             if let Some(chunk) = chunk {
+                if control(self.progress) == Control::Cancel {
+                    return Err(Error::Cancelled(self.progress));
+                }
                 let length = chunk.bytes().len();
-                self.lookup.during(sink.chunk(chunk)).await??;
+                controlled(
+                    self.lookup.during(sink.chunk(chunk)),
+                    self.progress,
+                    &mut control,
+                )
+                .await??;
                 self.progress.plaintext_bytes += length as u64;
             }
             self.progress.blocks += 1;
@@ -613,8 +566,14 @@ impl<'buffers, 'cache> Download<'buffers, 'cache> {
         if control(self.progress) == Control::Cancel {
             return Err(Error::Cancelled(self.progress));
         }
-        self.lookup.during(sink.finish()).await??;
+        controlled(
+            self.lookup.during(sink.finish()),
+            self.progress,
+            &mut control,
+        )
+        .await??;
         Ok(ReadFile {
+            directory_sync: None,
             verified: self.reader.completion().ok_or(ProtocolError::NotReady)?,
             progress: self.progress,
         })
@@ -643,6 +602,9 @@ impl Buffers {
     /// MQ; the writer keeps any authenticated prefix. Each `write_all` retains
     /// its cursor across ordinary awaits. Only a full authenticated tree plus a
     /// successful writer flush returns ReadFile; flush is not a durability claim.
+    /// Caller control is observed while source, destination write or flush
+    /// futures are pending. Cancellation can leave a partially written chunk
+    /// or an unfinished flush; completed Progress is not a rollback receipt.
     pub async fn download(
         &mut self,
         source: EndpointSource,

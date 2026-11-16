@@ -1,40 +1,120 @@
-# ARM daemon reactor component
+# ARM service host
 
-This Unix std package implements the official v0.29.1 ARM source registry, managed listener ownership, and an IPC/process/timer reactor over the formal `gnunet-arm-service-core`. Managed children use the single `gnunet-service-runtime::process` implementation. No production code calls libgnunet, invents a handshake, or treats a command/effect as a created or ready child.
+`gnunet-arm-service-host` hosts the official ARM IPC registry, managed listeners
+and process/timer state machine over `gnunet-arm-service-core`.
+[gnunet-service-arm](../../apps/gnunet-service-arm/README.md) supplies the normal
+SERVICE entry. Wire messages follow the [central protocol contract](../../spec/gnunet/README.md).
 
-The caller separately owns the immutable registry and core spec views, scope/slots/byte storage, formal Owner, `ManagedListeners`, dedicated external `ChildRegistry`, `State`, LIST scratch, configuration and environment snapshot. `Driver` only borrows these values. Canceling `drive`, dropping its borrow and constructing a new view retain original native capabilities, pending receipts, partial RX/TX, timers and output tickets. `OwnerId` validates the formal owner even when the registry is empty; immutable registry references cannot be replaced by recycled addresses. Native actions independently validate exact leases and original child capabilities. The native registry is dedicated to this daemon throughout State lifetime; arbitrary multi-consumer registry routing is not implemented. Visible unrelated live originals are rejected before consuming wait, and an unexpected already-completed event returns as an explicit ForeignCompletion receipt, never a successful daemon reap.
+## Source and platform layers
 
-`State` owns ARM's control listeners and accepted streams. Managed service listeners belong to a separate readiness registry which never accepts data: the child inherits each original descriptor in source order and consumes pending kernel connections itself. Parent listeners all close before the first shutdown TERM. During manual child drain, ARM's own control listener remains accepting, as the unchanged C daemon does. It closes at final runtime cleanup. A persisted self-stop requester socket stays owned by State after logical MQ retirement and final core cleanup and physically closes at explicit State drop, corresponding to the foreground process exit. Other clients close at runtime cleanup.
+| Module | Responsibility |
+| --- | --- |
+| `registry.rs` | Configuration selection, bounded native command recipes and borrowed core specs |
+| `addresses.rs` | Native family probes, exact ARM resolution hints and endpoint ordering |
+| `listeners.rs`, `listeners/bind.rs` | Original listener ownership, preparation state and one-shot core readiness leases |
+| `framed.rs` | Retained official frame cursors and bounded output FIFO |
+| `process.rs`, `process/` | Typed platform launch context, original-child registry bridge, native image selection and retained control state |
+| `reactor.rs` | Public state, borrowed driver and resource limits |
+| `reactor/children.rs` | Original process launch, signal and consuming-reap settlements |
+| `reactor/clients.rs` | Accepted sources, RX/TX and output handoff |
+| `reactor/timers.rs`, `reactor/drive.rs` | Absolute restart targets, bounded settlements and source rotation |
+| `service/` | Shared configuration/foreground/diagnostics, platform startup and native limits, recovery owners |
 
-Output handoff copies the complete borrowed core frame into a bounded durable per-client queue before releasing its ticket. First positive/EAGAIN/EINTR write attempts change the logical MQ count; zero/fatal writes do not claim in-flight progress. Partial framing and writes survive cancellation. A blocked client does not block another client's control/EOF or original child cleanup. Source IDLE restart tasks are considered only after ordinary active I/O; a nonconsuming kernel check compensates for delayed Tokio readiness hints. Empty TX and unregistered/disarmed listeners do not suppress IDLE. A timer is polled/registered before its lease is acknowledged, retains the original UTC target across backward clocks, and reevaluates UTC on an explicit later drive after a forward change.
+Registry, address collection, framing, managed listeners and reactor scheduling
+share code across Linux, macOS, FreeBSD and Windows. Unix uses the shared exec
+helper and consuming PID waits; Windows uses native image creation, provider
+activation, qualified bootstrap and original-handle waits. Standalone SERVICE shares its foreground loop with
+separate Unix/Windows startup and native limit profiles. Native qualification and remaining entry points are
+tracked in [implementation status](../../IMPLEMENTATION_STATUS.md).
 
-Source startup, restart and shutdown callbacks remain synchronous logical settlements across spawn/TERM acknowledgments. No consuming child-death callback runs midway through those source scans. Cooperative budget yields preserve those unfinished effects and do not poll unrelated I/O first. Real admitted children are installed in both the external registry and core mapping before fallible UTC/core acknowledgments. A consuming wait observation remains retained until acknowledgment. Only an shared `process::spawn` Capacity return becomes an explicit host-profile START_FAILED refusal with an AdmissionCapacity diagnostic; no child/fork/exec is claimed. Other setup/configuration/IO errors remain explicit. They are not blanket translated into protocol failure or success, and the external registry retains original cleanup authority.
+## Configuration and public ownership
 
-The source inventory retains all 121 obligations and 22 unchanged official anchors. None is promoted to full daemon acceptance by this package. The implemented component is supported by 36 host tests (17 inherited foundation, 3 framing, 16 reactor), borrowed-RX negative/owned-copy positive documentation checks, and an eight-way C/Rust public-client × unchanged C/new Rust daemon × Unix/numeric-loopback TCP pair. These are finite observations of the specified profiles, not exhaustive behavior proofs.
+`Registry::from_config` selects configured services and composes immutable
+recipes. Missing category switches enable both system and per-user services.
+Explicit selection, `IMMEDIATE_START`, `START_ON_DEMAND`, `NOARMBIND`, `PIPECONTROL`,
+prefixes, options and per-service configuration retain their documented source
+meaning. Source-form GNUnet commands and SIMPLE executable/argv0/whole-options
+remain distinct. Local native bytes are not protocol text.
 
-The `gnunet-arm-reactor-daemon-fixture` entrypoint is an reactor process for those tests. Its positional CONFIG/HELPER/READY arguments and host ready file are integration controls, not a replacement public GNUnet CLI/protocol or an application-ready promise. Selected USERNAME/resource diagnostics are explicitly refused by that fixture. The ordinary [gnunet-service-arm entry](../../apps/gnunet-service-arm/README.md) separately composes standard SERVICE options/logging/configuration, early CLOSE_LSOCKS release, configured privilege changes and RESOURCE_DIAGNOSTICS/wait4 through this package's service module. Those production paths are present; their complete native/platform, installed-helper and unchanged-official-C acceptance remain unqualified.
+The caller owns Registry/spec views, core scope/slots/frame storage, formal
+Owner, ManagedListeners, a dedicated external ChildRegistry, State, LIST scratch,
+a typed `process::LaunchContext`. Unix contexts borrow configuration, helper and
+environment; Windows contexts borrow an explicit native environment/cwd snapshot.
+Driver only borrows them. Reborrowing a driver
+retains original native capabilities, pending receipts, RX/TX and timers. Owner
+identity and immutable registry bindings are checked independently of slot reuse.
+An unrelated live/completed child never becomes a successful ARM reap.
 
-Run the portable proof with a fixed unchanged normal C ARM receipt:
+## Native command arguments
 
+Windows normal-service recipes preserve the binary and fixed configuration/debug
+arguments as native strings. Only configured prefix/options fragments use the
+shared GNUnet command parser. The shared process layer composes the argument array
+and resolves its image against the explicit environment/cwd, so native path
+backslashes and spaces never pass through Unix escaping. Explicit textual recipes
+retain their documented parser contract.
+
+## Listener preparation and cancellation
+
+`bind_registry(...).await` and `bind_address(..., LocalListenerAccess).await`
+prepare actual native endpoints. Whole-registry preparation starts once and
+reports `NotStarted`, `Incomplete` or `Complete`. Cancellation or failure retains
+all earlier listeners; restarting preparation from zero is refused. Drop the
+retained owner to abort. Nonfatal endpoint failures remain inspectable even when
+preparation completes.
+
+Local paths and access are prepared through the shared
+[listener boundary](../service-runtime/README.md#configured-local-listeners).
+Unix uses private modes; Windows uses owner/primary-group/Everyone DACL policy.
+TCP uses Unix address reuse or Windows exclusive address ownership. IPv6-only
+and backlog settings are applied before reactor registration. Inherited listeners
+acquire no new pathname cleanup authority.
+
+Readiness observes the original listening socket without accepting or reading.
+A canceled wait retains its registration and one-shot lease. A child later
+inherits the original listener and consumes backlog itself. Closing a listener
+releases its socket before its owned path guard. See the detailed
+[reactor ownership contract](REACTOR.md) for source retirement and shutdown.
+
+## Process, output and error contracts
+
+Native admission proves process creation; it does not prove exec, readiness or
+remote work. Admitted children enter both native and core mappings before
+fallible later acknowledgements. Consuming exit observations remain retained
+until acknowledged. Capacity refusal creates no ghost child; original setup,
+clock, I/O and cleanup failures retain their causes. Native recovery retains
+private publisher descriptors and control owners together with the original
+registry, including children that have not confirmed import.
+
+Output handoff copies a complete borrowed frame before releasing its ticket.
+Partial frames/writes retain cursors. A blocked client cannot prevent another
+source's close or original child retirement. RX/TX and source classes rotate;
+empty TX and disarmed listeners do not suppress idle restarts. A timer retains
+its original UTC target and native subscription across canceled waits and clock
+changes. Cooperative settlement yields preserve unfinished effects.
+
+Managed listeners close before shutdown stop effects. Manual drain keeps ARM control
+IPC available until final cleanup. Persisted self-stop requester sockets remain
+owned until explicit State drop. Original child registries must be drained even
+when a driver view is dropped.
+
+## Reference tools
+
+`tools/verify.py` covers native listener profiles; `tools/reactor_verify.py`
+adds current-source C/Rust client/daemon combinations. Both require an unchanged
+normal official C build receipt. Generated sources, binaries and logs belong in
+a fresh directory beneath the repository's `target/` tree. The template mirrors
+current dependency kinds, features and platform guards; a mismatch is a failure.
+
+On Unix, host process tests require building the shared helper first:
+
+```sh
+cargo build -p gnunet-arm-host --bin gnunet-arm-spawn-helper --locked
+cargo test -p gnunet-arm-service-host --all-features --locked
 ```
-python3 -B adapters/arm-service-std/tools/reactor_verify.py --repository /absolute/gnunet-rs \
-  --source /absolute/official-v0.29.1 --reference /absolute/build-result.json \
-  --output /private/tmp/fresh-arm-reactor-proof
-```
 
-All generated crate/lock/target/binary/log artifacts go under the fresh external output. The runner retains the complete root lint contract, compares declared dependency/features/source roles, validates exact nonempty witnesses and 11 negative controls, re-enumerates all original and generated file names before/after, and rechecks the unchanged tracked C tree and declared normal libraries. It never upgrades the overall ARM/GNUnet goal to complete.
-
-The public C actor waits the finite fixture child’s exec marker before asserting a signal15 result. An earlier normal-C trial observed exit1 when STOP arrived in the inherited pre-exec GNUnet signal-handler window. STARTING remains native admission only. Exact cross-backend pre-exec signal-result parity is an unproven native-profile boundary, not certified by this pair.
-
-The existing `tools/verify.py` retains the three normal-C managed-listener
-cases and the shared native/runtime regression scope. The reactor verifier is
-separate. Both freshly build the sole `gnunet-arm-spawn-helper` producer; this
-package publishes no second process helper. For standalone host tests, build
-`cargo build -p gnunet-arm-host --bin gnunet-arm-spawn-helper` into the same target
-first. Full-workspace tests already build this binary through ARM host targets.
-
-Ready ordinary sources, client sessions and each stream's RX/TX direction rotate
-after progress. This prevents a finite earlier message backlog from
-blocking later clients or queued managed demand. The failing pre-change Rust
-witness and the normal-C64-TEST/one-LIST observation are retained separately;
-this fairness property does not certify every ordering of the full scheduler. The ordinary SERVICE composition has separate source and static-check evidence; these finite fairness witnesses do not qualify all current scheduler, clock or native profiles.
+The Windows `windows_reactor` target uses fresh native child processes, private
+working directories and loopback listeners. It covers queued listener transfer,
+qualified readiness, canceled driver reborrowing, cooperative control and native
+termination followed by consuming exit. Cross compilation checks its source;
+execution requires a Windows runner.

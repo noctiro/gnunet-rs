@@ -1,26 +1,39 @@
-# Ordinary ABD SERVICE
+# ABD service
 
-The ordinary installed executable/endpoint is gnunet-service-abd/[abd]. Standard
-startup/options/inherited descriptors, configured process identity, bound
-listeners, shared selected Logger/Clock/Resolver, signals and parent control use
-the existing SERVICE facilities. RUN_PER_USER is the official deployment; Rust
-selects same-UID/GID admission by default where abd.conf declares neither field. Normal UNIX_MATCH_UID/GID overrides stay explicit. READY means IPC admission,
-not connected GNS/NAMESTORE or an authorized request.
+`gnunet-service-abd -c service.conf` runs the official ABD application endpoint
+using caller-driven GNS and private NAMESTORE sources. Each application may retain
+multiple original request IDs; results count only after their original IPC frames
+write in full.
 
-The native owner preserves multiple original RIDs per MQ, query/proof
-sources and output dispositions. Client closure retires that original MQ
-before cancelling its original query owners. A negative result requires actual
-source/proof completion; timeout, source loss and bounded-resource refusal do
-not fabricate an authorization or a completed negative answer. A result is only
-counted when that exact original IPC frame really writes in full.
+## Startup and configuration
 
-[abd-service-rust] configures finite client/query/aggregate reservations, actual
-first/partial/operation/output/shutdown bounds and trusted-clock uncertainty,
-pure proof node/rule/term/depth/fact/witness/lookup/name/credential capacities,
-explicit ATTR_ALIGN64 and GNS/PRIVATE NAMESTORE/Resolver resources. The
-process shares4096 bounded clock subscription slots; failed reservations are
-resource errors. No profile or source error silently replays old work.
+The shared [native SERVICE driver](../../adapters/program-std/README.md#service-startup)
+provides standard options, selected diagnostics, listeners, process identity,
+original parent control and bounded readiness submission. Unix prepares inherited
+and TCP listeners before privilege changes, then completes local endpoints under
+the configured identity. Windows verifies the process token, imports activation,
+and uses managed console detachment or qualified standalone re-exec.
 
-This source is not installed/compiled yet and depends on the author's
-native Server and verified-forward core feed. No native/runtime/crypto/C
-interoperability, measured RSS/performance or complete ABD capability credit.
+`[abd]` selects listeners, ACLs and service options. Missing Unix credential
+settings default to UID/GID matching on Unix and neither check on Windows.
+Explicit Unix UID/GID checks remain unsupported on Windows; native endpoint ACLs
+retain their separate policy. RUN_PER_USER remains the official deployment model.
+
+`[abd-service-rust]` selects finite client/query and aggregate reservations,
+input/operation/output/shutdown bounds, trusted-clock uncertainty, proof
+node/rule/term/depth/fact/witness/lookup/name/credential capacities, explicit
+`ATTR_ALIGN64`, and GNS/NAMESTORE/Resolver resources. The shared clock has 4096
+waiter slots. Invalid resource profiles fail before listener or business admission.
+
+## Results and retirement
+
+READY means bound listeners and IPC admission. Dependency connections and proof
+readiness are established by each original request. A negative result requires
+actual source and proof completion. Timeout, source loss or resource refusal does
+not manufacture authorization or a completed negative result.
+
+Client closure physically retires its original MQ before canceling its queries.
+Original failures and independent cleanup remain separate. Source or profile
+errors do not replay work on another source. See the
+[host contracts](../../adapters/abd-std/) and
+[compatibility policy](../../spec/gnunet/compatibility.md).

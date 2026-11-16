@@ -1,12 +1,14 @@
-//! Actual Unix MQ cursors/timers/EOF with an explicit terminal-controlled source
+//! Actual native MQ cursors/timers/EOF with an explicit terminal-controlled source
 //! model. These checks do not claim official C or real DATASTORE interoperability.
 #![expect(
     clippy::panic_in_result_fn,
     reason = "Native lifecycle regressions assert original frame exposure, EOF and source query ownership"
 )]
 use super::*;
+use crate::local_peer::{Listener, Temporary};
 use gnunet_cadet_host::{ChannelSlot, EndpointSource, Instance, Limits as NativeLimits, PortSlot};
 use gnunet_service_runtime::clock::{ClockSample, ClockSubscription};
+use gnunet_service_runtime::local::Stream;
 use gnunet_wire::official::{
     AbsoluteTime,
     cadet::{Request, Response},
@@ -14,20 +16,10 @@ use gnunet_wire::official::{
     fs::BlockType,
     fs_cadet::QUERY_BYTES,
 };
-use std::{
-    cell::Cell,
-    path::PathBuf,
-    rc::Rc,
-    sync::atomic::{AtomicU64, Ordering},
-    task::Waker,
-};
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::{UnixListener, UnixStream},
-};
+use std::{cell::Cell, path::PathBuf, rc::Rc, task::Waker};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-type Failure = Box<dyn std::error::Error + Send + Sync>;
-static NEXT: AtomicU64 = AtomicU64::new(0);
+type Failure = Box<dyn std::error::Error>;
 struct FrozenClock;
 impl RuntimeClock for FrozenClock {
     fn sample(&self) -> Result<ClockSample, ProtocolError> {
@@ -50,24 +42,25 @@ impl ClockSubscription for FrozenSubscription {
         Poll::Pending
     }
 }
-struct Socket(PathBuf);
+struct Socket {
+    path: PathBuf,
+    _owner: Temporary,
+}
 impl Socket {
-    fn new() -> Result<(Self, UnixListener), Failure> {
-        let path = std::env::temp_dir().join(format!(
-            "gnrs-fs-serve-{}-{}.sock",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        let listener = UnixListener::bind(&path)?;
-        Ok((Self(path), listener))
+    async fn new() -> Result<(Self, Listener), Failure> {
+        let owner = Temporary::new()?;
+        let path = owner.0.join("cadet.sock");
+        let listener = Listener::bind(&path).await?;
+        Ok((
+            Self {
+                path,
+                _owner: owner,
+            },
+            listener,
+        ))
     }
     fn endpoint(&self) -> EndpointSource {
-        EndpointSource::unix(self.0.clone())
-    }
-}
-impl Drop for Socket {
-    fn drop(&mut self) {
-        let _removed = std::fs::remove_file(&self.0);
+        EndpointSource::unix(self.path.clone())
     }
 }
 struct Source {
@@ -169,7 +162,7 @@ async fn partial<'id>(
         }
     }
 }
-async fn frame(stream: &mut UnixStream) -> Result<Vec<u8>, Failure> {
+async fn frame(stream: &mut Stream) -> Result<Vec<u8>, Failure> {
     let mut header = [0; 4];
     stream.read_exact(&mut header).await?;
     let length = usize::from(u16::from_be_bytes([header[0], header[1]]));
@@ -181,13 +174,13 @@ async fn frame(stream: &mut UnixStream) -> Result<Vec<u8>, Failure> {
     stream.read_exact(&mut bytes[4..]).await?;
     Ok(bytes)
 }
-async fn response(stream: &mut UnixStream, response: Response<'_>) -> Result<(), Failure> {
+async fn response(stream: &mut Stream, response: Response<'_>) -> Result<(), Failure> {
     let mut bytes = [0; 256];
     let length = response.encode(&mut bytes)?;
     stream.write_all(&bytes[..length]).await?;
     Ok(())
 }
-async fn query(stream: &mut UnixStream, selection: Selection, credit: bool) -> Result<(), Failure> {
+async fn query(stream: &mut Stream, selection: Selection, credit: bool) -> Result<(), Failure> {
     response(
         stream,
         Response::ChannelCreate {
@@ -223,7 +216,7 @@ fn original_partial_reply_survives_cancel_then_retires_and_reannounces() -> Resu
     let runtime = runtime()?;
     let _entered = runtime.enter();
     runtime.block_on(tokio::time::timeout(Duration::from_secs(5), async {
-        let (socket, listener) = Socket::new()?;
+        let (socket, listener) = Socket::new().await?;
         let value = [0x49; 512];
         let selection = Selection {
             block_type: BlockType::DBLOCK,
@@ -361,7 +354,7 @@ fn shutdown_has_one_cleanup_bound_and_retains_actual_source_debt() -> Result<(),
     let _entered = runtime.enter();
     runtime.block_on(tokio::time::timeout(Duration::from_secs(5), async {
         for observe_terminal in [true, false] {
-            let (socket, listener) = Socket::new()?;
+            let (socket, listener) = Socket::new().await?;
             let ready = Rc::new(Cell::new(false));
             let reads = Rc::new(Cell::new(0));
             let source = Source {
@@ -507,7 +500,7 @@ fn reconnected_wire_channel_cannot_receive_the_original_source_result() -> Resul
     let runtime = runtime()?;
     let _entered = runtime.enter();
     runtime.block_on(tokio::time::timeout(Duration::from_secs(5), async {
-        let (socket, listener) = Socket::new()?;
+        let (socket, listener) = Socket::new().await?;
         let value = [0x57; 16];
         let selection = Selection {
             block_type: BlockType::DBLOCK,
@@ -648,7 +641,7 @@ fn frozen_logical_clock_cannot_retain_a_reply_without_send_credit() -> Result<()
     let runtime = runtime()?;
     let _entered = runtime.enter();
     runtime.block_on(tokio::time::timeout(Duration::from_secs(5), async {
-        let (socket, listener) = Socket::new()?;
+        let (socket, listener) = Socket::new().await?;
         let clock: Arc<dyn RuntimeClock> = Arc::new(FrozenClock);
         let value = [0x63; 16];
         let selection = Selection {
@@ -681,7 +674,7 @@ fn frozen_logical_clock_cannot_retain_a_reply_without_send_credit() -> Result<()
         let mut channels = [ChannelSlot::new(); 2];
         let client = Client::new(
             &mut identity,
-            EndpointSource::unix_with_clock(socket.0.clone(), clock.clone()),
+            EndpointSource::unix_with_clock(socket.path.clone(), clock.clone()),
             &mut ports,
             &mut channels,
             NativeLimits {

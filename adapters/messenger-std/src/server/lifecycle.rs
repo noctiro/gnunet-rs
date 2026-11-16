@@ -405,14 +405,7 @@ impl<'c, 'slots, 'p, E: Entropy, const O: usize> Server<'c, 'slots, 'p, E, O> {
         if self.peer_output.as_ref().is_some_and(|o| now >= o.until)
             || self.cadet_pending.is_some_and(|(_, until)| now >= until)
         {
-            // Shared CADET MQ has no per-frame physical cancellation. Retire this exact
-            // original MQ before invalidating channels; never replay an exposed frame.
-            let original = self.cadet.reconnect()?;
-            if let cadet::Step::Lost { report, cause, .. } = original {
-                self.cadet_lost(Some(report), Some(cause), observe)?;
-            } else {
-                return Err(Fault::Conflict.into());
-            }
+            self.expire_cadet_output(observe)?;
             return Ok(true);
         }
         for i in 0..self.received.len() {
@@ -537,6 +530,12 @@ impl<'c, 'slots, 'p, E: Entropy, const O: usize> Server<'c, 'slots, 'p, E, O> {
         if self.shutdown == Some(ShutdownMode::Immediate) {
             self.close_all(observe);
             return Poll::Ready(Ok(Progress::Closed));
+        }
+        if self
+            .identity_deadline()
+            .is_some_and(|hard| Instant::now() >= hard)
+        {
+            return Poll::Ready(Err(self.identity_timeout()));
         }
         if self.expire_requests(Instant::now(), observe) {
             return Poll::Ready(Ok(Progress::Activity));

@@ -11,7 +11,7 @@ use gnunet_service_runtime::{
     clock::RuntimeClock,
     service::{Listener, ShutdownMode},
 };
-use gnunet_service_startup::{ParentControl, daemon::ChildReady};
+use gnunet_service_startup::ControlReceiver;
 use std::{
     future::{Future, poll_fn},
     io::{self, Write},
@@ -153,10 +153,9 @@ pub(super) struct Inputs<'a> {
     pub config: &'a Configuration,
     pub settings: &'a Settings,
     pub bound: &'a BoundListeners,
-    pub parent: Option<ParentControl>,
+    pub parent: Option<ControlReceiver>,
     pub clock: SharedClock,
     pub reports: Reporter,
-    pub child: &'a mut ChildReady,
     pub cleanup: Cleanup,
 }
 enum Turn {
@@ -189,7 +188,7 @@ async fn turn(
         if reports.failed() {
             return Poll::Ready(Ok(Turn::Logging));
         }
-        if let Poll::Ready(signal) = signals.poll(cx) {
+        if let Poll::Ready(signal) = signals.poll_stop(cx) {
             return Poll::Ready(signal.map(|()| Turn::Signal).map_err(Into::into));
         }
         // The producer's immutable native hard is checked/registered before
@@ -251,7 +250,10 @@ async fn turn(
     })
     .await
 }
-pub(super) async fn run(input: Inputs<'_>) -> Result<(), Failure> {
+pub(super) async fn run(
+    input: Inputs<'_>,
+    notify_ready: impl Future<Output = Result<(), Failure>>,
+) -> Result<(), Failure> {
     let Inputs {
         config,
         settings,
@@ -259,7 +261,6 @@ pub(super) async fn run(input: Inputs<'_>) -> Result<(), Failure> {
         parent,
         clock,
         reports,
-        child,
         cleanup,
     } = input;
     let runtime_clock: Arc<dyn RuntimeClock> = Arc::new(clock);
@@ -339,7 +340,7 @@ pub(super) async fn run(input: Inputs<'_>) -> Result<(), Failure> {
             )?;
             out.flush()?;
         }
-        child.ready()?;
+        gnunet_program_host::service::acknowledge_ready(notify_ready, &mut signals, &reports, settings.grace).await?;
         let mut stop_at = None;
         let mut cursor = 0;
         let mut turns = 0u8;

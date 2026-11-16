@@ -100,13 +100,7 @@ frame, faking an END, or misassigning a FIFO result.
 
 ## Checks
 
-Its
-key-shaped fields are published synthetic mocks, never passed to cryptographic
-generation, public-key derivation, hashing or a C service. The model checks
-START/initialization, create/rename/delete response ordering, zero/partial
-cancellation, source loss/no replay/new ego scope, exact lookup, suffix miss and
-immediate physical retirement on an admission-clock fault. An exposed request's
-retirement is capped by its original native deadline plus grace, including a
-late poll/cancel. Provider failure discovered during admission closes and
-invalidates the source before returning its original error; one bounded loss
-observation remains available before another admission. This is not production crypto, private-key-file or C interoperability proof.
+An exposed request's retirement is capped by its original native deadline plus
+grace, including late polling or cancellation. Provider failure during admission
+closes and invalidates the source before returning its error; one bounded loss
+observation remains available before further admission.

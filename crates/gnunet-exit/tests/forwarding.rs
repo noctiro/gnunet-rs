@@ -36,6 +36,64 @@ fn ip(a: Address, b: Address, p: u8, s: &[u8]) -> Result<Vec<u8>, Error> {
     Ok(out)
 }
 #[test]
+fn replacing_tun_never_replays_a_leased_old_packet() -> Result<(), Error> {
+    let mut engine = Engine::new(
+        Config {
+            policy: Policy {
+                ipv4: true,
+                ipv6: false,
+                rules: gnunet_exit::policy::InternetRules::Ordered {
+                    rules: &[],
+                    default_allow: true,
+                },
+            },
+            ipv4: Some(Pool {
+                subnet: Prefix {
+                    address: Address::V4([10, 19, 0, 1]),
+                    bits: 24,
+                },
+            }),
+            ipv6: None,
+            services: &[],
+            dns: false,
+            af: AfProfile::LINUX,
+        },
+        Limits::default(),
+    )?;
+    let source = engine.attached()?;
+    let old = engine.tun_attached()?;
+    let flow = engine.accept(
+        &source,
+        [7; 32],
+        Target::Internet(Family::V4),
+        MonoInstant(1),
+    )?;
+    let mut entropy = ModelEntropy(1);
+    engine.receive(
+        &flow,
+        &message(PeerMessage::UdpInternet {
+            address: Address::V4([203, 0, 113, 9]),
+            source: 0,
+            destination: 53,
+            payload: b"old-epoch",
+        })?,
+        MonoInstant(2),
+        &mut entropy,
+    )?;
+    let write = engine.tun_output().ok_or(Error::NotReady)?.write;
+    engine.tun_lost(&old, None)?;
+    let new = engine.tun_attached()?;
+    assert_ne!(old, new);
+    assert!(engine.tun_output().is_none());
+    assert_eq!(engine.tun_written(&old, &write), Err(Error::Stale));
+    assert_eq!(engine.tun_written(&new, &write), Err(Error::Stale));
+    assert_eq!(engine.tun_attached().err(), Some(Error::Conflict));
+    engine.tun_lost(&new, None)?;
+    let third = engine.tun_attached()?;
+    assert_ne!(new, third);
+    Ok(())
+}
+#[test]
 fn udp_tcp_icmp_dns_and_original_packet_retirement() -> Result<(), Error> {
     let config = Config {
         policy: Policy {

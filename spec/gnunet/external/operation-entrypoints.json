@@ -42,27 +42,15 @@
           "rust_entry_refs": [
             {
               "anchor": "pub fn deserialize(",
-              "anchor_lines": [
-                900
-              ],
-              "path": "adapters/config-std/src/configuration.rs",
-              "sha256": "c5e69027180ed7126156bf7e0211ddf66a6c22bc2b5da80e8b02c9fcb22ef88b"
+              "path": "adapters/config-std/src/configuration.rs"
             },
             {
               "anchor": "pub fn load_observed(",
-              "anchor_lines": [
-                1539
-              ],
-              "path": "adapters/config-std/src/configuration.rs",
-              "sha256": "c5e69027180ed7126156bf7e0211ddf66a6c22bc2b5da80e8b02c9fcb22ef88b"
+              "path": "adapters/config-std/src/configuration.rs"
             },
             {
               "anchor": "pub fn write_observed(",
-              "anchor_lines": [
-                1828
-              ],
-              "path": "adapters/config-std/src/configuration.rs",
-              "sha256": "c5e69027180ed7126156bf7e0211ddf66a6c22bc2b5da80e8b02c9fcb22ef88b"
+              "path": "adapters/config-std/src/configuration.rs"
             },
             {
               "anchor": "pub fn get_filename(",
@@ -329,11 +317,9 @@
             {
               "anchor": "gnunet_hello",
               "anchor_lines": [
-                7,
-                217
+                6
               ],
-              "path": "adapters/peer-tools-std/src/program/session/hello.rs",
-              "sha256": "0099fb92f32e15eaa340dbfa63f449beef9ffd84ea85672d8bca76227720414d"
+              "path": "adapters/peer-tools-std/src/program/session/hello/export.rs"
             }
           ],
           "title": "Public Base32GNS/identity and HELLO text artifacts"
@@ -479,8 +465,7 @@
             "sha256": "7bcaab9ff013aeed81c08d6106d6516b386909026cbafa6c3d6938045b675166"
           },
           {
-            "path": "adapters/config-std/src/configuration.rs",
-            "sha256": "c5e69027180ed7126156bf7e0211ddf66a6c22bc2b5da80e8b02c9fcb22ef88b"
+            "path": "adapters/config-std/src/configuration.rs"
           },
           {
             "path": "adapters/config-std/src/expansion.rs",
@@ -495,8 +480,7 @@
             "sha256": "c1c40b7be99402a0085cfd9420e92602ab07f4c94979f9da5368fa297084189f"
           },
           {
-            "path": "adapters/peer-tools-std/src/program/session/hello.rs",
-            "sha256": "0099fb92f32e15eaa340dbfa63f449beef9ffd84ea85672d8bca76227720414d"
+            "path": "adapters/peer-tools-std/src/program/session/hello.rs"
           },
           {
             "path": "adapters/pils-std/src/client.rs",
@@ -1110,19 +1094,19 @@
           "condition": "Unix endpoint selected; configured kernel UID/GID admission",
           "id": "statistics.unix-ipc",
           "interop_directions": [
-            "unchanged C client\u2192Rust service",
-            "Rust client\u2192unchanged C service"
+            "unchanged C client→Rust service",
+            "Rust client→unchanged C service"
           ],
           "remaining": [
-            "All168\u2013175 legal operations, partial framing, watches, cancel/loss/reconnect and access rejection remain to execute."
+            "All168–175 legal operations, partial framing, watches, cancel/loss/reconnect and access rejection remain to execute."
           ]
         },
         {
           "condition": "Official HOSTNAME/PORT and service bind/ACL configuration; shared Resolver/native Connection",
           "id": "statistics.tcp-ipc",
           "interop_directions": [
-            "unchanged C remote client\u2192Rust service",
-            "Rust configured StatisticsHandle\u2192unchanged C service"
+            "unchanged C remote client→Rust service",
+            "Rust configured StatisticsHandle→unchanged C service"
           ],
           "remaining": [
             "Actual remote GET/SET/WATCH/flush and IPv4/IPv6 ACL behavior remain unverified. Existing from_config/from_live_config and real TcpStream::connect chain are present."
@@ -1132,8 +1116,8 @@
           "condition": "DATABASE configured; persistent and nonpersistent values mixed",
           "id": "statistics.persistence",
           "interop_directions": [
-            "official C SET dump\u2192Rust load/replay",
-            "Rust canonical persistent dump\u2192official C load"
+            "official C SET dump→Rust load/replay",
+            "Rust canonical persistent dump→official C load"
           ],
           "remaining": [
             "Real clean restart, empty removal, invalid/oversized input and uncertain atomic-save outcomes require current-source execution."
@@ -1143,8 +1127,8 @@
           "condition": "Current alternate gnunet-cli GET/SET/continuous WATCH frontends",
           "id": "statistics.rust-cli",
           "interop_directions": [
-            "Rust tool\u2192official C service",
-            "C tool\u2192Rust service"
+            "Rust tool→official C service",
+            "C tool→Rust service"
           ],
           "remaining": [
             "GET/SET/WATCH share normal configured Unix/TCP support in the production CLI. Actual selected native roles and configuration/environment/output/failure behavior still require current-source acceptance; binary naming/CSV/testbed folder parity is not an inferred wire requirement."
@@ -2331,7 +2315,7 @@
           "title": "Official record, filter, credit and result formats"
         },
         {
-          "boundary": "Original client STORE \u2192 backend tuple mutation \u2192 actual STORE_RESULT",
+          "boundary": "Original client STORE → backend tuple mutation → actual STORE_RESULT",
           "code_status": "present",
           "contract": "Subsystem/key are required; option1 replaces exact subsystem/peer/key and other raw options retain MULTIPLE semantics. Only actual original storage outcome produces STORE_RESULT. Peer/value claims are not authenticated identity proofs.",
           "id": "peerstore.store",
@@ -2405,7 +2389,7 @@
               "start_line": 674
             }
           ],
-          "remaining": "Code is present; mixed C\u2194Rust pagination/filter/end/STOP and source-loss behavior have not been executed.",
+          "remaining": "Code is present; mixed C↔Rust pagination/filter/end/STOP and source-loss behavior have not been executed.",
           "rust_entry_refs": [
             {
               "anchor": "pub fn iterate(",
@@ -2760,8 +2744,8 @@
           "condition": "Unix native CLIENT/SERVICE, current STORE/ITERATE/MONITOR wire, signed result words and explicit finite source limits.",
           "id": "native-ipc",
           "interop_directions": [
-            "Rust client \u2192 C PEERSTORE service",
-            "C client \u2192 Rust PEERSTORE service"
+            "Rust client → C PEERSTORE service",
+            "C client → Rust PEERSTORE service"
           ],
           "remaining": "Actual bidirectional records/credit/result/profile observations remain pending; returned peer/value data is an unauthenticated cache claim."
         },
@@ -2769,8 +2753,8 @@
           "condition": "HelloAdd receives an explicit original producer SignatureProfile and bounded HELLO parser storage. Included-HELLO import is separately configured.",
           "id": "hello-profile",
           "interop_directions": [
-            "C HELLO/peerstore records \u2192 Rust add helper",
-            "Rust stored binary HELLO \u2192 C peerstore consumer"
+            "C HELLO/peerstore records → Rust add helper",
+            "Rust stored binary HELLO → C peerstore consumer"
           ],
           "remaining": "Current public helper and configured URI import exist, but no HELLO parsing/verifying/import execution occurred. Default signature coverage must not be described as authenticated addresses."
         },
@@ -2778,7 +2762,7 @@
           "condition": "Dedicated Rust peerstore WAL, one explicitly started original storage worker, same stable committed UID history.",
           "id": "rust-wal",
           "interop_directions": [
-            "Rust store/restart/expiry \u2192 official IPC clients"
+            "Rust store/restart/expiry → official IPC clients"
           ],
           "remaining": "Real WAL/IO/replay/checkpoint tests and crash recovery are unverified; C SQLite/plugin migration and private transport journal compatibility are excluded."
         },
@@ -2786,8 +2770,8 @@
           "condition": "A retained read-only monitor reconnects under the same deadline; stores/iterators do not replay.",
           "id": "monitor-restoration",
           "interop_directions": [
-            "Rust monitor \u2192 C source across reconnection",
-            "C monitor \u2192 Rust service initialization/live phases"
+            "Rust monitor → C source across reconnection",
+            "C monitor → Rust service initialization/live phases"
           ],
           "remaining": "Fresh initial enumeration can repeat observations and leave live gaps. No exactly-once uninterrupted stream or remote STOP ACK is claimed."
         }
@@ -3276,8 +3260,8 @@
           "condition": "Explicit Linux/Darwin/FreeBSD native IPC address profiles; IPC messages include native sockaddr representation",
           "id": "NAT.native-address-abi",
           "interop_directions": [
-            "same qualified producing ABI client\u2194service",
-            "network STUN/SSDP/IGD/ICMP\u2194external endpoints"
+            "same qualified producing ABI client↔service",
+            "network STUN/SSDP/IGD/ICMP↔external endpoints"
           ],
           "remaining": [
             "Cross-native-ABI local IPC is not claimed by choosing the compiled host profile; every qualified host still needs runtime evidence."
@@ -3287,8 +3271,8 @@
           "condition": "ENABLE_UPNP/configured external source/reversal flags select real backend; raw helpers need actual OS capability",
           "id": "NAT.mapping-and-helpers",
           "interop_directions": [
-            "Rust real IGD\u2194router",
-            "Rust raw helper\u2194remote NAT helper/client"
+            "Rust real IGD↔router",
+            "Rust raw helper↔remote NAT helper/client"
           ],
           "remaining": [
             "Raw Linux/Darwin/FreeBSD implementations are present. Other native helper targets explicitly Unsupported; required OS set remains to be qualified rather than hidden as success."
@@ -3529,26 +3513,26 @@
             {
               "anchor": "AutoQuery::from_configuration(",
               "anchor_lines": [
-                827
+                38
               ],
-              "path": "adapters/nat-test-std/src/cli.rs",
-              "sha256": "b28bba7fec207053e48445d46f4a100df6bea5d89b2bb3190640fb3964a060fa"
+              "path": "adapters/nat-test-std/src/cli/auto.rs",
+              "sha256": "ad74d122d75c54dfa920822151793be3a0d73e69967d063c8e5d99af1ee196ac"
             },
             {
               "anchor": "Test::from_configuration(",
               "anchor_lines": [
-                843
+                54
               ],
-              "path": "adapters/nat-test-std/src/cli.rs",
-              "sha256": "b28bba7fec207053e48445d46f4a100df6bea5d89b2bb3190640fb3964a060fa"
+              "path": "adapters/nat-test-std/src/cli/auto.rs",
+              "sha256": "ad74d122d75c54dfa920822151793be3a0d73e69967d063c8e5d99af1ee196ac"
             },
             {
               "anchor": "if options.write && changed",
               "anchor_lines": [
-                931
+                142
               ],
-              "path": "adapters/nat-test-std/src/cli.rs",
-              "sha256": "b28bba7fec207053e48445d46f4a100df6bea5d89b2bb3190640fb3964a060fa"
+              "path": "adapters/nat-test-std/src/cli/auto.rs",
+              "sha256": "ad74d122d75c54dfa920822151793be3a0d73e69967d063c8e5d99af1ee196ac"
             }
           ],
           "title": "Run standard auto/test CLI and explicit configuration write"
@@ -3559,9 +3543,9 @@
           "condition": "Fixed active nat-auto daemon and public test library",
           "id": "NAT_AUTO.active-current",
           "interop_directions": [
-            "official IPC client\u2192Rust service",
-            "Rust IPC client\u2192official service",
-            "real test challenge sender\u2194TCP/UDP/reversal receiver"
+            "official IPC client→Rust service",
+            "Rust IPC client→official service",
+            "real test challenge sender↔TCP/UDP/reversal receiver"
           ],
           "remaining": [
             "Active proposal may differ in availability result because Rust has a compiled IGD implementation. No NAT classification can be inferred before a real reachability test."
@@ -3692,7 +3676,7 @@
               "start_line": 150
             }
           ],
-          "remaining": "Actual C/Rust signing exchange remains unverified. Fixed C check_sign uses anomalous size/ntohs checks at400\u2013435; Rust validates complete BE32 purpose extent safely, rather than reproducing an out-of-bounds/incorrect C check.",
+          "remaining": "Actual C/Rust signing exchange remains unverified. Fixed C check_sign uses anomalous size/ntohs checks at400–435; Rust validates complete BE32 purpose extent safely, rather than reproducing an out-of-bounds/incorrect C check.",
           "rust_entry_refs": [
             {
               "anchor": "Sign {",
@@ -4842,27 +4826,15 @@
           "rust_entry_refs": [
             {
               "anchor": "Profile::",
-              "anchor_lines": [
-                53
-              ],
-              "path": "apps/gnunet-communicator-quic/src/main.rs",
-              "sha256": "fcbd123579bca1c8576c1684a17ca37b7c01586441c8a69127a890daa55a3c3a"
+              "path": "apps/gnunet-communicator-quic/src/main.rs"
             },
             {
               "anchor": "Profile::",
-              "anchor_lines": [
-                53
-              ],
-              "path": "apps/gnunet-communicator-http3/src/main.rs",
-              "sha256": "68b33498ab25c284ea7fa1a5d4f591d8a5b47bef6160bc0d8dfa65ecdf907ddd"
+              "path": "apps/gnunet-communicator-http3/src/main.rs"
             },
             {
               "anchor": "pub fn run(",
-              "anchor_lines": [
-                104
-              ],
-              "path": "adapters/quic-communicator-std/src/program.rs",
-              "sha256": "603d8d09d4ed6e8ee0c709bd69fdf6152ff88d7b662f5cc47ad8d53e19e985a4"
+              "path": "adapters/quic-communicator-std/src/program.rs"
             },
             {
               "anchor": "pub fn poll(",
@@ -4913,7 +4885,7 @@
             }
           ],
           "remaining": [
-            "Source-entry presence only. Official-client\u2192Rust-service and Rust-native-SDK/CLI\u2192official-service packet behavior, source loss/cancellation, finite stdout and host profiles remain runtime unverified.",
+            "Source-entry presence only. Official-client→Rust-service and Rust-native-SDK/CLI→official-service packet behavior, source loss/cancellation, finite stdout and host profiles remain runtime unverified.",
             "The fixed official C server omits MONITOR_END and omits its peer selector on the initial enumeration. The Rust public contract emits/filters as specified; native source filtering preserves selection and missing C END remains incomplete/timeout. No completion is fabricated.",
             "Complete owner semantics, native timing, memory/performance and official interoperability acceptance remain open; no source count is a completion percentage."
           ],
@@ -5391,9 +5363,9 @@
           "condition": "Qualified Unix SERVICE/CLIENT and enabled communicators",
           "id": "TRANSPORT.native",
           "interop_directions": [
-            "Rust client\u2192official service",
-            "official client\u2192Rust service",
-            "Rust peer\u2194official peer through enabled communicator"
+            "Rust client→official service",
+            "official client→Rust service",
+            "Rust peer↔official peer through enabled communicator"
           ],
           "remaining": [
             "Monitor/link-list service, native SDK and ordinary CLI source entries are present. All selected wire directions, source retirement/restart/cancellation and host profiles remain runtime unverified.",
@@ -5404,11 +5376,11 @@
           "condition": "TCP/UDP/Unix normal build; QUIC requires fixedC quic_dep+experimental; HTTP3 requires http3_enabled",
           "id": "TRANSPORT.communicators",
           "interop_directions": [
-            "TCP\u2194TCP",
-            "UDP\u2194UDP",
-            "Unix\u2194Unix",
-            "conditional QUIC\u2194QUIC",
-            "conditional HTTP3\u2194HTTP3"
+            "TCP↔TCP",
+            "UDP↔UDP",
+            "Unix↔Unix",
+            "conditional QUIC↔QUIC",
+            "conditional HTTP3↔HTTP3"
           ],
           "remaining": [
             "No libp2p communicator is enabled by fixed Meson; do not invent a requirement from an unrelated file. Experimental credential/network profiles remain unverified."
@@ -6169,7 +6141,7 @@
         ]
       },
       "unknowns": [
-        "GNUNET_CORE_is_peer_connected_sync is explicitly outside the versioned official API and marked FIXME not implemented in fixed header709\u2013724; normal Rust peer handle/cache access exists, but no new required RPC is invented.",
+        "GNUNET_CORE_is_peer_connected_sync is explicitly outside the versioned official API and marked FIXME not implemented in fixed header709–724; normal Rust peer handle/cache access exists, but no new required RPC is invented.",
         "Fixed C service_info is local metadata; internal ABI/layout and C scheduler organization are not requirements. Actual native IPC numeric/word-order profile still needs interoperability acceptance.",
         "Session traffic keys/nonce/replay working state are ephemeral; no C private file format or cross-process traffic replay is inferred as a required recovery feature."
       ]
@@ -6587,9 +6559,9 @@
           "condition": "Shared1-hour interval and WORKBITS15; actual CORE/PILS identity and default proof hashing",
           "id": "nse.default-authenticated",
           "interop_directions": [
-            "C NSE peer\u2192Rust peer",
-            "Rust NSE peer\u2192C peer",
-            "mixed C/Rust peers\u2192C and Rust subscribers"
+            "C NSE peer→Rust peer",
+            "Rust NSE peer→C peer",
+            "mixed C/Rust peers→C and Rust subscribers"
           ],
           "remaining": [
             "Current source real signature/PoW/flood generation and current/previous/next-round mixed-node execution remain unverified."
@@ -6599,8 +6571,8 @@
           "condition": "WORKBITS0 explicitly configured; no authentication claim",
           "id": "nse.zero-work-explicit",
           "interop_directions": [
-            "C zero-mode peer\u2194Rust zero-mode peer",
-            "C/Rust subscriber\u2194counterpart service"
+            "C zero-mode peer↔Rust zero-mode peer",
+            "C/Rust subscriber↔counterpart service"
           ],
           "remaining": [
             "Confirm zero mode remains explicit and cannot gain authenticated credit; runtime not executed."
@@ -6610,8 +6582,8 @@
           "condition": "Unix/TCP selected endpoints with actual service ACL/credentials; first-result or -m monitor",
           "id": "nse.ipc-and-cli",
           "interop_directions": [
-            "C client/CLI\u2192Rust service",
-            "Rust client/CLI\u2192C service"
+            "C client/CLI→Rust service",
+            "Rust client/CLI→C service"
           ],
           "remaining": [
             "Finite initial/partial/source targets, actual reconnect and signal/output shutdown need execution."
@@ -6621,8 +6593,8 @@
           "condition": "Original raw8 proof/progress plus correct current identity",
           "id": "nse.proof-file-restart",
           "interop_directions": [
-            "C raw proof artifact\u2192Rust proof store",
-            "Rust raw proof artifact\u2192C service"
+            "C raw proof artifact→Rust proof store",
+            "Rust raw proof artifact→C service"
           ],
           "remaining": [
             "Actual identity rebinding, clean restart and independent unknown commit recovery remain unverified."
@@ -6875,11 +6847,7 @@
             },
             {
               "anchor": "for address in &settings.binds",
-              "anchor_lines": [
-                295
-              ],
-              "path": "apps/gnunet-daemon-hostlist/src/foreground.rs",
-              "sha256": "350f6b8ed6dfb38102029c3eb0a3d6246d41d886832e58dda2eaf23176c68f54"
+              "path": "apps/gnunet-daemon-hostlist/src/drive.rs"
             }
           ],
           "title": "Publish actual HELLO inventory as binary or JSON HTTP responses"
@@ -7031,11 +6999,7 @@
             },
             {
               "anchor": "Some(Durable::recover(",
-              "anchor_lines": [
-                364
-              ],
-              "path": "apps/gnunet-daemon-hostlist/src/foreground.rs",
-              "sha256": "350f6b8ed6dfb38102029c3eb0a3d6246d41d886832e58dda2eaf23176c68f54"
+              "path": "apps/gnunet-daemon-hostlist/src/drive.rs"
             }
           ],
           "source_repair": {
@@ -7075,12 +7039,8 @@
           ],
           "rust_entry_refs": [
             {
-              "anchor": "#[cfg(unix)]\nfn run()",
-              "anchor_lines": [
-                36
-              ],
-              "path": "apps/gnunet-daemon-hostlist/src/main.rs",
-              "sha256": "49c5a4cc3ec418b47e93ebfbfc7634a090d08c3d670f0bf901285fdd4d38f09d"
+              "anchor": "fn run(",
+              "path": "apps/gnunet-daemon-hostlist/src/main.rs"
             },
             {
               "anchor": "if modes.bootstrap {",
@@ -7092,11 +7052,7 @@
             },
             {
               "anchor": "let runtime = Runtime::new(",
-              "anchor_lines": [
-                375
-              ],
-              "path": "apps/gnunet-daemon-hostlist/src/foreground.rs",
-              "sha256": "350f6b8ed6dfb38102029c3eb0a3d6246d41d886832e58dda2eaf23176c68f54"
+              "path": "apps/gnunet-daemon-hostlist/src/drive.rs"
             },
             {
               "anchor": "pub fn request_stop(",
@@ -7123,8 +7079,8 @@
           "condition": "-b and configured HTTP/HTTPS SERVERS, direct IPv4/IPv6 Resolver/TLS path",
           "id": "hostlist.direct-bootstrap",
           "interop_directions": [
-            "C HTTP hostlist provider\u2192Rust bootstrap\u2192PEERSTORE",
-            "Rust HTTP provider\u2192C bootstrap\u2192PEERSTORE"
+            "C HTTP hostlist provider→Rust bootstrap→PEERSTORE",
+            "Rust HTTP provider→C bootstrap→PEERSTORE"
           ],
           "remaining": [
             "Actual HTTP/1 framing, redirect constraints, public TLS/trust/expiry, malformed/truncated HELLOs and bootstrap effectiveness are not runtime-qualified."
@@ -7134,8 +7090,8 @@
           "condition": "One explicitly configured HTTP/HTTP_1_0/SOCKS4/SOCKS4A/SOCKS5/SOCKS5_HOSTNAME proxy, optional auth; HTTPS CONNECT where applicable",
           "id": "hostlist.configured-proxy",
           "interop_directions": [
-            "C provider through configured proxy\u2192Rust bootstrap",
-            "Rust provider through configured proxy\u2192C bootstrap"
+            "C provider through configured proxy→Rust bootstrap",
+            "Rust provider through configured proxy→C bootstrap"
           ],
           "remaining": [
             "Native proxy/auth/DNS selection and original-target failure/cancel behavior require execution. No requirement inferred for undocumented conflicting libcurl proxy-URI overrides."
@@ -7145,8 +7101,8 @@
           "condition": "-p; selected IPv4/IPv6 listeners and actual verified PEERSTORE monitor synchronization",
           "id": "hostlist.publication",
           "interop_directions": [
-            "C bootstrap/browser\u2192Rust binary/JSON/OPTIONS provider",
-            "Rust bootstrap\u2192C provider"
+            "C bootstrap/browser→Rust binary/JSON/OPTIONS provider",
+            "Rust bootstrap→C provider"
           ],
           "remaining": [
             "Current source acceptance for empty/full inventory, expiry/replacement, per-source resource refusal and concurrent revision retention remains unverified."
@@ -7156,8 +7112,8 @@
           "condition": "-e on receiver and -p -a on provider over actual CORE links",
           "id": "hostlist.learning-advertising",
           "interop_directions": [
-            "C advertisement\u2192Rust learner/tester",
-            "Rust advertisement\u2192C learner/tester",
+            "C advertisement→Rust learner/tester",
+            "Rust advertisement→C learner/tester",
             "mixed C/Rust bootstrap peers"
           ],
           "remaining": [
@@ -7168,7 +7124,7 @@
           "condition": "Own qualified metadata state retained across normal shutdown/restart",
           "id": "hostlist.restart",
           "interop_directions": [
-            "Rust history\u2192new Rust daemon; live work restarts fresh",
+            "Rust history→new Rust daemon; live work restarts fresh",
             "C/Rust network interoperability independent of private metadata layout"
           ],
           "remaining": [
@@ -7197,6 +7153,8 @@
           "adapters/hostlist-std/src/publication.rs",
           "adapters/hostlist-std/src/runtime.rs",
           "adapters/hostlist-std/src/server.rs",
+          "apps/gnunet-daemon-hostlist/src/drive.rs",
+          "apps/gnunet-daemon-hostlist/src/failure.rs",
           "apps/gnunet-daemon-hostlist/src/foreground.rs",
           "apps/gnunet-daemon-hostlist/src/main.rs",
           "apps/gnunet-daemon-hostlist/src/settings.rs",
@@ -7247,59 +7205,31 @@
           "rust_entry_refs": [
             {
               "anchor": "fn main()",
-              "anchor_lines": [
-                21
-              ],
-              "path": "apps/gnunet-daemon-topology/src/main.rs",
-              "sha256": "e6a3756ecd8b40ffa337b57c380f034844f41723a622b76b2b87b61e072587dd"
+              "path": "apps/gnunet-daemon-topology/src/main.rs"
             },
             {
               "anchor": "pub fn read(",
-              "anchor_lines": [
-                36
-              ],
-              "path": "apps/gnunet-daemon-topology/src/settings.rs",
-              "sha256": "dd4eebc260abf6a42043a894780ca7145dfd6361d0c07453a2524d2bba5598a1"
+              "path": "apps/gnunet-daemon-topology/src/settings.rs"
             },
             {
               "anchor": "pub(super) async fn scheduled(",
-              "anchor_lines": [
-                114
-              ],
-              "path": "apps/gnunet-daemon-topology/src/foreground.rs",
-              "sha256": "bb8f43ffb5628e1b5464691462c85b7609cbe12cc79036aa7be59183dd49753e"
+              "path": "apps/gnunet-daemon-topology/src/foreground.rs"
             },
             {
               "anchor": "let runtime = Runtime::new(",
-              "anchor_lines": [
-                205
-              ],
-              "path": "apps/gnunet-daemon-topology/src/foreground.rs",
-              "sha256": "bb8f43ffb5628e1b5464691462c85b7609cbe12cc79036aa7be59183dd49753e"
+              "path": "apps/gnunet-daemon-topology/src/foreground.rs"
             },
             {
               "anchor": "pub fn new(",
-              "anchor_lines": [
-                304
-              ],
-              "path": "adapters/topology-std/src/lib.rs",
-              "sha256": "0b116274b5f2221f3ae758b8422ceb4b428082803ea910fff5d856d8d2ae0e0f"
+              "path": "adapters/topology-std/src/lib.rs"
             },
             {
               "anchor": "fn pils_step(",
-              "anchor_lines": [
-                790
-              ],
-              "path": "adapters/topology-std/src/lib.rs",
-              "sha256": "0b116274b5f2221f3ae758b8422ceb4b428082803ea910fff5d856d8d2ae0e0f"
+              "path": "adapters/topology-std/src/lib.rs"
             },
             {
               "anchor": "core::Inbound::Connected(peer)",
-              "anchor_lines": [
-                694
-              ],
-              "path": "adapters/topology-std/src/lib.rs",
-              "sha256": "0b116274b5f2221f3ae758b8422ceb4b428082803ea910fff5d856d8d2ae0e0f"
+              "path": "adapters/topology-std/src/lib.rs"
             }
           ],
           "title": "Start the configured topology daemon with current identity"
@@ -7329,19 +7259,11 @@
           "rust_entry_refs": [
             {
               "anchor": "pub fn begin_monitor(",
-              "anchor_lines": [
-                109
-              ],
-              "path": "adapters/topology-std/src/peerstore.rs",
-              "sha256": "c617be009ddddd38f9a6b9381fc547aca9126ac6ea31c56d4ef2b7c460010d90"
+              "path": "adapters/topology-std/src/peerstore.rs"
             },
             {
               "anchor": "fn monitoring(",
-              "anchor_lines": [
-                461
-              ],
-              "path": "adapters/topology-std/src/peerstore.rs",
-              "sha256": "c617be009ddddd38f9a6b9381fc547aca9126ac6ea31c56d4ef2b7c460010d90"
+              "path": "adapters/topology-std/src/peerstore.rs"
             },
             {
               "anchor": "pub fn learn(",
@@ -7401,35 +7323,19 @@
           "rust_entry_refs": [
             {
               "anchor": "fn core_step(",
-              "anchor_lines": [
-                662
-              ],
-              "path": "adapters/topology-std/src/lib.rs",
-              "sha256": "0b116274b5f2221f3ae758b8422ceb4b428082803ea910fff5d856d8d2ae0e0f"
+              "path": "adapters/topology-std/src/lib.rs"
             },
             {
               "anchor": "fn prepare(",
-              "anchor_lines": [
-                569
-              ],
-              "path": "adapters/topology-std/src/lib.rs",
-              "sha256": "0b116274b5f2221f3ae758b8422ceb4b428082803ea910fff5d856d8d2ae0e0f"
+              "path": "adapters/topology-std/src/lib.rs"
             },
             {
               "anchor": "pub fn start(",
-              "anchor_lines": [
-                125
-              ],
-              "path": "adapters/topology-std/src/peerstore.rs",
-              "sha256": "c617be009ddddd38f9a6b9381fc547aca9126ac6ea31c56d4ef2b7c460010d90"
+              "path": "adapters/topology-std/src/peerstore.rs"
             },
             {
               "anchor": "fn general(",
-              "anchor_lines": [
-                346
-              ],
-              "path": "adapters/topology-std/src/peerstore.rs",
-              "sha256": "c617be009ddddd38f9a6b9381fc547aca9126ac6ea31c56d4ef2b7c460010d90"
+              "path": "adapters/topology-std/src/peerstore.rs"
             },
             {
               "anchor": "pub fn advertisement(",
@@ -7515,19 +7421,11 @@
             },
             {
               "anchor": "pub fn enqueue(",
-              "anchor_lines": [
-                80
-              ],
-              "path": "adapters/topology-std/src/application.rs",
-              "sha256": "277f2edeb3b41f59a2a5fe699e7a6baef0448d0afa93182e42e31e34d82cb534"
+              "path": "adapters/topology-std/src/application.rs"
             },
             {
               "anchor": "if self.app.ready()",
-              "anchor_lines": [
-                611
-              ],
-              "path": "adapters/topology-std/src/lib.rs",
-              "sha256": "0b116274b5f2221f3ae758b8422ceb4b428082803ea910fff5d856d8d2ae0e0f"
+              "path": "adapters/topology-std/src/lib.rs"
             }
           ],
           "title": "Maintain target connectivity through suggestions and withdrawal"
@@ -7552,64 +7450,36 @@
             }
           ],
           "remaining": [
-            "Cancellation/reconnect, timeout, output/logging failure and terminal receipt behavior has only source navigation here; no sockets, timers or workers were run."
+            "Qualify reconnect, source replacement, output failure and bounded cleanup under official C services and each native platform."
           ],
           "rust_entry_refs": [
             {
               "anchor": "fn rotate(",
-              "anchor_lines": [
-                441
-              ],
-              "path": "adapters/topology-std/src/lib.rs",
-              "sha256": "0b116274b5f2221f3ae758b8422ceb4b428082803ea910fff5d856d8d2ae0e0f"
+              "path": "adapters/topology-std/src/lib.rs"
             },
             {
               "anchor": "fn guard(",
-              "anchor_lines": [
-                478
-              ],
-              "path": "adapters/topology-std/src/lib.rs",
-              "sha256": "0b116274b5f2221f3ae758b8422ceb4b428082803ea910fff5d856d8d2ae0e0f"
+              "path": "adapters/topology-std/src/lib.rs"
             },
             {
               "anchor": "pub async fn drive(",
-              "anchor_lines": [
-                961
-              ],
-              "path": "adapters/topology-std/src/lib.rs",
-              "sha256": "0b116274b5f2221f3ae758b8422ceb4b428082803ea910fff5d856d8d2ae0e0f"
+              "path": "adapters/topology-std/src/lib.rs"
             },
             {
               "anchor": "pub fn close(",
-              "anchor_lines": [
-                970
-              ],
-              "path": "adapters/topology-std/src/lib.rs",
-              "sha256": "0b116274b5f2221f3ae758b8422ceb4b428082803ea910fff5d856d8d2ae0e0f"
+              "path": "adapters/topology-std/src/lib.rs"
             },
             {
               "anchor": "pub fn rotate",
-              "anchor_lines": [
-                140
-              ],
-              "path": "adapters/topology-std/src/application.rs",
-              "sha256": "277f2edeb3b41f59a2a5fe699e7a6baef0448d0afa93182e42e31e34d82cb534"
+              "path": "adapters/topology-std/src/application.rs"
             },
             {
               "anchor": "pub fn expire(",
-              "anchor_lines": [
-                167
-              ],
-              "path": "adapters/topology-std/src/peerstore.rs",
-              "sha256": "c617be009ddddd38f9a6b9381fc547aca9126ac6ea31c56d4ef2b7c460010d90"
+              "path": "adapters/topology-std/src/peerstore.rs"
             },
             {
-              "anchor": "if let Poll::Ready(result) = signals.poll(cx)",
-              "anchor_lines": [
-                279
-              ],
-              "path": "apps/gnunet-daemon-topology/src/foreground.rs",
-              "sha256": "bb8f43ffb5628e1b5464691462c85b7609cbe12cc79036aa7be59183dd49753e"
+              "anchor": "if let Poll::Ready(result) = signals.poll_stop(cx)",
+              "path": "apps/gnunet-daemon-topology/src/foreground.rs"
             }
           ],
           "title": "Reconnect, cancel waits and retire original pending operations"
@@ -7646,40 +7516,24 @@
             }
           ],
           "remaining": [
-            "Remote counter visibility, reconnect/failure behavior and metrics timing remain unexecuted; local counters are not independent delivery receipts."
+            "Qualify nonzero counter deltas, metric timing, source loss and uncertain writes against official C and each native platform."
           ],
           "rust_entry_refs": [
             {
               "anchor": "pub fn new(",
-              "anchor_lines": [
-                48
-              ],
-              "path": "apps/gnunet-daemon-topology/src/statistics.rs",
-              "sha256": "1e96e08820455ac21170e808acc184cc1007307f1b2df54e05cfa230858786eb"
+              "path": "apps/gnunet-daemon-topology/src/statistics.rs"
             },
             {
-              "anchor": "fn admit(",
-              "anchor_lines": [
-                90
-              ],
-              "path": "apps/gnunet-daemon-topology/src/statistics.rs",
-              "sha256": "1e96e08820455ac21170e808acc184cc1007307f1b2df54e05cfa230858786eb"
+              "anchor": "pub fn refresh(",
+              "path": "apps/gnunet-daemon-topology/src/statistics.rs"
             },
             {
-              "anchor": "owners.statistics.refresh(owners.runtime.statistics())",
-              "anchor_lines": [
-                242
-              ],
-              "path": "apps/gnunet-daemon-topology/src/foreground.rs",
-              "sha256": "bb8f43ffb5628e1b5464691462c85b7609cbe12cc79036aa7be59183dd49753e"
+              "anchor": ".refresh(owners.providers.runtime.statistics());",
+              "path": "apps/gnunet-daemon-topology/src/foreground.rs"
             },
             {
               "anchor": "pub fn statistics(",
-              "anchor_lines": [
-                411
-              ],
-              "path": "adapters/topology-std/src/lib.rs",
-              "sha256": "0b116274b5f2221f3ae758b8422ceb4b428082803ea910fff5d856d8d2ae0e0f"
+              "path": "adapters/topology-std/src/lib.rs"
             }
           ],
           "title": "Export observed topology statistics"
@@ -7705,7 +7559,7 @@
             "actual original send/store outcome -> runtime observer"
           ],
           "remaining": [
-            "Physical cleanup/receipt timing, original native deadline enforcement, retries and cancellations are source-present but unexecuted; no success is inferred from a hint or local write."
+            "Qualify physical cleanup, source rollover, retries and partial-operation cancellation; local hints and writes are not remote delivery receipts."
           ]
         },
         {
@@ -7967,7 +7821,7 @@
           "title": "Forward, drop or answer original DNS callback"
         },
         {
-          "boundary": "Actual helper packet source\u2194DNSSTUB\u2194configured resolver",
+          "boundary": "Actual helper packet source↔DNSSTUB↔configured resolver",
           "code_status": "present",
           "contract": "Validate official helper PI/IP/UDP envelope, start the original DNSSTUB query, match its real response to the request, construct output and retain resolver/helper causes under original deadlines.",
           "id": "DNS.resolution",
@@ -8174,9 +8028,9 @@
           "condition": "Fixed official helper build is Linux; actual root/capability/TUN/firewall prerequisites",
           "id": "DNS.linux-interception",
           "interop_directions": [
-            "official client\u2194Rust service",
-            "Rust client\u2194official service",
-            "real helper packet interface\u2194service"
+            "official client↔Rust service",
+            "Rust client↔official service",
+            "real helper packet interface↔service"
           ],
           "remaining": [
             "Actual Linux helper/kernel setup and cleanup is unverified; normal READY is local source construction with setup acknowledgement explicitly unclaimed."
@@ -8186,7 +8040,7 @@
           "condition": "Other qualified Unix CLIENT platforms may access an external DNS service; fixed Meson monitor/redirect utilities install:false",
           "id": "DNS.client-only",
           "interop_directions": [
-            "native client\u2192external service"
+            "native client→external service"
           ],
           "remaining": [
             "No nonLinux interception helper is claimed. Optional C utility filenames are swapped by Meson; behavior/flags, not executable organization, is mapped."
@@ -8264,7 +8118,7 @@
           "title": "Active public IPC and typed key formats"
         },
         {
-          "boundary": "Client monitor \u2194 SERVICE START/UPDATE/END",
+          "boundary": "Client monitor ↔ SERVICE START/UPDATE/END",
           "code_status": "present",
           "contract": "A real initial snapshot ends with the official UPDATE end marker; later create/rename/delete updates remain on the original source. Returned ego handles are revoked on real source loss. No result/write is substituted for initial END.",
           "id": "identity.monitor",
@@ -8312,7 +8166,7 @@
           "title": "Initial inventory and subsequent identity updates"
         },
         {
-          "boundary": "One-shot client lookup \u2194 SERVICE lookup handlers",
+          "boundary": "One-shot client lookup ↔ SERVICE lookup handlers",
           "code_status": "present",
           "contract": "Exact requests use ASCII-insensitive comparison; suffix requests use the longest whole-name/dot suffix with case-sensitive matching. Found is UPDATE; not-found is official result200, not a synthetic END.",
           "id": "identity.lookup",
@@ -8550,7 +8404,7 @@
           "title": "Cancel, physical source loss and fresh resnapshot"
         },
         {
-          "boundary": "Normal SERVICE construction \u2192 actual Loaded \u2192 Core \u2192 matching worker receipt",
+          "boundary": "Normal SERVICE construction → actual Loaded → Core → matching worker receipt",
           "code_status": "present",
           "contract": "The production foreground opens Namespace::Identity, recovers committed egos, starts the original worker and exposes the server. Mutation success uses a matching committed generation; uncertain storage outcomes fence the owner. Private Rust storage is independent of C EGODIR.",
           "id": "identity.persistence",
@@ -8629,7 +8483,7 @@
               "start_line": 552
             }
           ],
-          "remaining": "Functional production entries exist; actual C\u2194Rust HPKE envelope/key-text interchange is unverified. Exact standalone gnunet-identity executable/flag parity is not claimed.",
+          "remaining": "Functional production entries exist; actual C↔Rust HPKE envelope/key-text interchange is unverified. Exact standalone gnunet-identity executable/flag parity is not claimed.",
           "rust_entry_refs": [
             {
               "anchor": "return identity::run(",
@@ -8672,8 +8526,8 @@
           "condition": "Unix SERVICE/CLIENT with current official identity framing; API EndpointSource supports configured source, functional CLI explicitly selects UNIXPATH.",
           "id": "native-ipc",
           "interop_directions": [
-            "Rust client \u2192 C IDENTITY service",
-            "C client \u2192 Rust IDENTITY service"
+            "Rust client → C IDENTITY service",
+            "C client → Rust IDENTITY service"
           ],
           "remaining": "Both directions require real owner/service observations; source presence and historical compilation are not interoperability acceptance."
         },
@@ -8681,8 +8535,8 @@
           "condition": "Current ECDSA/PKEY65536 or EdDSA/EDKEY65556 typed keys; explicit entropy/key export/HPKE capability.",
           "id": "keys-and-messages",
           "interop_directions": [
-            "Rust typed-key/HPKE envelope \u2192 C consumer",
-            "C typed-key/HPKE envelope \u2192 Rust consumer"
+            "Rust typed-key/HPKE envelope → C consumer",
+            "C typed-key/HPKE envelope → Rust consumer"
           ],
           "remaining": "Actual key/HPKE execution is paused. Unknown future key tags are unsupported; no production libgnunet FFI is used."
         },
@@ -8690,7 +8544,7 @@
           "condition": "Dedicated marked Namespace::Identity snapshot store with the actual Loaded/worker owner.",
           "id": "rust-persistence",
           "interop_directions": [
-            "Rust own-store restart \u2192 official IPC clients"
+            "Rust own-store restart → official IPC clients"
           ],
           "remaining": "Crash/durability/fence recovery is unverified. C EGODIR/default-map migration is intentionally absent, not a public wire operation."
         },
@@ -8698,7 +8552,7 @@
           "condition": "Current functional tool is gnunet-cli identity; drop-in standalone C executable/flag parity is a separate scope condition.",
           "id": "cli-grammar",
           "interop_directions": [
-            "Functional Rust CLI \u2192 official service/message formats"
+            "Functional Rust CLI → official service/message formats"
           ],
           "remaining": "Exact gnunet-identity filename/-C/-D/-R/-W option parity is not claimed by the current tool; decide separately if a drop-in CLI acceptance contract is required."
         }
@@ -11983,11 +11837,7 @@
             },
             {
               "anchor": "pub fn close_all(",
-              "anchor_lines": [
-                603
-              ],
-              "path": "adapters/cadet-std/src/server.rs",
-              "sha256": "6ebc202cc82d60a78553fc08d141911f0cad096f24dab67c9362d32c400abfa8"
+              "path": "adapters/cadet-std/src/server.rs"
             }
           ],
           "title": "Connect, recover ports and disconnect current application ownership"
@@ -12033,27 +11883,15 @@
             },
             {
               "anchor": "Request::PortOpen { port: hash }",
-              "anchor_lines": [
-                864
-              ],
-              "path": "crates/gnunet-cadet/src/service.rs",
-              "sha256": "9db4716980083ebeef9f33cd95a927b7acfa4f1170d8d82170bf063eb2de4fee"
+              "path": "crates/gnunet-cadet/src/service.rs"
             },
             {
               "anchor": "Request::PortClose { port: hash }",
-              "anchor_lines": [
-                890
-              ],
-              "path": "crates/gnunet-cadet/src/service.rs",
-              "sha256": "9db4716980083ebeef9f33cd95a927b7acfa4f1170d8d82170bf063eb2de4fee"
+              "path": "crates/gnunet-cadet/src/service.rs"
             },
             {
               "anchor": "pub fn accept_peer",
-              "anchor_lines": [
-                1382
-              ],
-              "path": "adapters/cadet-std/src/server.rs",
-              "sha256": "6ebc202cc82d60a78553fc08d141911f0cad096f24dab67c9362d32c400abfa8"
+              "path": "adapters/cadet-std/src/server.rs"
             }
           ],
           "title": "Open/close incoming ports and accept channels"
@@ -12113,43 +11951,23 @@
             },
             {
               "anchor": "Request::ChannelCreate {",
-              "anchor_lines": [
-                903
-              ],
-              "path": "crates/gnunet-cadet/src/service.rs",
-              "sha256": "9db4716980083ebeef9f33cd95a927b7acfa4f1170d8d82170bf063eb2de4fee"
+              "path": "crates/gnunet-cadet/src/service.rs"
             },
             {
               "anchor": "pub fn progress(",
-              "anchor_lines": [
-                1095
-              ],
-              "path": "crates/gnunet-cadet/src/service.rs",
-              "sha256": "9db4716980083ebeef9f33cd95a927b7acfa4f1170d8d82170bf063eb2de4fee"
+              "path": "crates/gnunet-cadet/src/service.rs"
             },
             {
               "anchor": "pub fn peer_opened",
-              "anchor_lines": [
-                1370
-              ],
-              "path": "adapters/cadet-std/src/server.rs",
-              "sha256": "6ebc202cc82d60a78553fc08d141911f0cad096f24dab67c9362d32c400abfa8"
+              "path": "adapters/cadet-std/src/server.rs"
             },
             {
               "anchor": "pub fn expire_destroy(",
-              "anchor_lines": [
-                1643
-              ],
-              "path": "crates/gnunet-cadet/src/service.rs",
-              "sha256": "9db4716980083ebeef9f33cd95a927b7acfa4f1170d8d82170bf063eb2de4fee"
+              "path": "crates/gnunet-cadet/src/service.rs"
             },
             {
               "anchor": "fn poll_drains(",
-              "anchor_lines": [
-                771
-              ],
-              "path": "adapters/cadet-std/src/server.rs",
-              "sha256": "6ebc202cc82d60a78553fc08d141911f0cad096f24dab67c9362d32c400abfa8"
+              "path": "adapters/cadet-std/src/server.rs"
             }
           ],
           "title": "Create, destroy and inspect a channel"
@@ -12195,35 +12013,19 @@
             },
             {
               "anchor": "Request::Data {",
-              "anchor_lines": [
-                1020
-              ],
-              "path": "crates/gnunet-cadet/src/service.rs",
-              "sha256": "9db4716980083ebeef9f33cd95a927b7acfa4f1170d8d82170bf063eb2de4fee"
+              "path": "crates/gnunet-cadet/src/service.rs"
             },
             {
               "anchor": "Request::Ack {",
-              "anchor_lines": [
-                1035
-              ],
-              "path": "crates/gnunet-cadet/src/service.rs",
-              "sha256": "9db4716980083ebeef9f33cd95a927b7acfa4f1170d8d82170bf063eb2de4fee"
+              "path": "crates/gnunet-cadet/src/service.rs"
             },
             {
               "anchor": "pub fn receive_peer",
-              "anchor_lines": [
-                1437
-              ],
-              "path": "adapters/cadet-std/src/server.rs",
-              "sha256": "6ebc202cc82d60a78553fc08d141911f0cad096f24dab67c9362d32c400abfa8"
+              "path": "adapters/cadet-std/src/server.rs"
             },
             {
               "anchor": "pub fn peer_receive_done",
-              "anchor_lines": [
-                1459
-              ],
-              "path": "adapters/cadet-std/src/server.rs",
-              "sha256": "6ebc202cc82d60a78553fc08d141911f0cad096f24dab67c9362d32c400abfa8"
+              "path": "adapters/cadet-std/src/server.rs"
             },
             {
               "anchor": "pub fn poll_output_guarded(",
@@ -12397,11 +12199,7 @@
             },
             {
               "anchor": "pub fn send_completed",
-              "anchor_lines": [
-                1425
-              ],
-              "path": "adapters/cadet-std/src/server.rs",
-              "sha256": "6ebc202cc82d60a78553fc08d141911f0cad096f24dab67c9362d32c400abfa8"
+              "path": "adapters/cadet-std/src/server.rs"
             }
           ],
           "title": "Handle real peer connections and relay multihop frames"
@@ -12674,11 +12472,7 @@
             },
             {
               "anchor": "pub fn bind_management(",
-              "anchor_lines": [
-                397
-              ],
-              "path": "adapters/cadet-std/src/server.rs",
-              "sha256": "6ebc202cc82d60a78553fc08d141911f0cad096f24dab67c9362d32c400abfa8"
+              "path": "adapters/cadet-std/src/server.rs"
             },
             {
               "anchor": "Inspector::new(",
@@ -12754,12 +12548,8 @@
               "sha256": "da22b9ce16715e17f433ce9f27b76eac850539a8f3e925e3b8f84846e7d15624"
             },
             {
-              "anchor": "pub(super) async fn run(",
-              "anchor_lines": [
-                463
-              ],
-              "path": "apps/gnunet-cadet/src/run.rs",
-              "sha256": "18d3930956401948dfb47dddba11f634e85b97bf476aa5985a1078fb3bb27f70"
+              "anchor": "async fn run(",
+              "path": "apps/gnunet-cadet/src/run.rs"
             },
             {
               "anchor": "pub(super) fn observe(",
@@ -12868,35 +12658,19 @@
             },
             {
               "anchor": "DropConfigured(Channel",
-              "anchor_lines": [
-                426
-              ],
-              "path": "crates/gnunet-cadet/src/service.rs",
-              "sha256": "9db4716980083ebeef9f33cd95a927b7acfa4f1170d8d82170bf063eb2de4fee"
+              "path": "crates/gnunet-cadet/src/service.rs"
             },
             {
               "anchor": "pub fn consume_peer_drop(",
-              "anchor_lines": [
-                1075
-              ],
-              "path": "crates/gnunet-cadet/src/service.rs",
-              "sha256": "9db4716980083ebeef9f33cd95a927b7acfa4f1170d8d82170bf063eb2de4fee"
+              "path": "crates/gnunet-cadet/src/service.rs"
             },
             {
               "anchor": "let dispatch = match Request::decode(bytes)",
-              "anchor_lines": [
-                928
-              ],
-              "path": "adapters/cadet-std/src/server.rs",
-              "sha256": "6ebc202cc82d60a78553fc08d141911f0cad096f24dab67c9362d32c400abfa8"
+              "path": "adapters/cadet-std/src/server.rs"
             },
             {
               "anchor": "pub fn consume_peer_drop(",
-              "anchor_lines": [
-                1394
-              ],
-              "path": "adapters/cadet-std/src/server.rs",
-              "sha256": "6ebc202cc82d60a78553fc08d141911f0cad096f24dab67c9362d32c400abfa8"
+              "path": "adapters/cadet-std/src/server.rs"
             },
             {
               "anchor": "Dropped,",
@@ -13006,12 +12780,10 @@
             "sha256": "1ae86614ecacd6f3079d2fafa59cc0df54b4d40b364e87f229bcd77078b7f76d"
           },
           {
-            "path": "adapters/cadet-std/src/server.rs",
-            "sha256": "92df02573be0b814be49c150439a0c35cc4cb15697d64b765c6d10fd637770ec"
+            "path": "adapters/cadet-std/src/server.rs"
           },
           {
-            "path": "apps/gnunet-cadet/src/run.rs",
-            "sha256": "18d3930956401948dfb47dddba11f634e85b97bf476aa5985a1078fb3bb27f70"
+            "path": "apps/gnunet-cadet/src/run.rs"
           },
           {
             "path": "apps/gnunet-cli/src/cadet.rs",
@@ -13054,8 +12826,7 @@
             "sha256": "6e71830623ff707754028147ec59ae99fd600a1d48d9cebf91924f953af6675a"
           },
           {
-            "path": "crates/gnunet-cadet/src/service.rs",
-            "sha256": "468a45e315bcc2907b8373d82c4a1438e7ee8d35ea8e0987f982fbb289eec87e"
+            "path": "crates/gnunet-cadet/src/service.rs"
           },
           {
             "path": "crates/gnunet-cadet/src/tunnel/controller.rs",
@@ -15391,7 +15162,7 @@
           "title": "Public certificate, IPC and flood formats"
         },
         {
-          "boundary": "One original application request \u2194 actual persistent accepted knowledge",
+          "boundary": "One original application request ↔ actual persistent accepted knowledge",
           "code_status": "present",
           "contract": "QUERY returns0 for known revoked and1 for still valid; errors or local whole writes cannot synthesize service status. Previously accepted durable knowledge is queried without pretending recovery is a fresh PoW verification.",
           "id": "revocation.query",
@@ -15409,7 +15180,7 @@
               "start_line": 249
             }
           ],
-          "remaining": "Client, service and CLI entry points are present; actual C\u2194Rust query and own-store restart observations are unverified.",
+          "remaining": "Client, service and CLI entry points are present; actual C↔Rust query and own-store restart observations are unverified.",
           "rust_entry_refs": [
             {
               "anchor": "pub fn query(",
@@ -15447,7 +15218,7 @@
           "title": "Query whether a key is known revoked"
         },
         {
-          "boundary": "REVOKE request or peer candidate \u2192 actual checker \u2192 committed inventory \u2192 original response",
+          "boundary": "REVOKE request or peer candidate → actual checker → committed inventory → original response",
           "code_status": "present",
           "contract": "Unknown proofs require signature/order/work/lifetime validation using the actual per-hash stepper. TTL remains informational. Known accepted duplicates return0. New acceptance waits for the matching original durable receipt; invalid proof drops the original requester as the pinned service does, and uncertain storage never becomes accepted.",
           "id": "revocation.accept",
@@ -15509,7 +15280,7 @@
           "title": "Submit, validate and durably accept a revocation"
         },
         {
-          "boundary": "Durable local inventory \u2192 announced peer; inbound full message \u2192 original candidate validation",
+          "boundary": "Durable local inventory → announced peer; inbound full message → original candidate validation",
           "code_status": "present",
           "contract": "New accepted certificates use the same complete official REVOKE frame. Original peer/source tokens and complete local payload writes advance only that intent; they do not prove remote delivery. Reconnect creates fresh dissemination intent from durable knowledge.",
           "id": "revocation.flood",
@@ -15533,7 +15304,7 @@
               "start_line": 620
             }
           ],
-          "remaining": "Both directions are composed through existing CORE clients; actual Rust\u2194C peers and underlay/CORE delivery are unverified and profile dependent.",
+          "remaining": "Both directions are composed through existing CORE clients; actual Rust↔C peers and underlay/CORE delivery are unverified and profile dependent.",
           "rust_entry_refs": [
             {
               "anchor": "fn schedule(",
@@ -15631,7 +15402,7 @@
           "title": "Inventory anti-entropy through SETU"
         },
         {
-          "boundary": "Normal SERVICE \u2192 qualified Rust snapshot namespace \u2192 full public certificate inventory",
+          "boundary": "Normal SERVICE → qualified Rust snapshot namespace → full public certificate inventory",
           "code_status": "present",
           "contract": "The service opens its own Namespace::Revocation and restores complete accepted certificates and admission policy metadata. A fresh empty image is committed before publication; existing marked/missing canonical state fails closed. Acceptance does not expire into key resurrection merely because the original proof lifetime passes.",
           "id": "revocation.persistence",
@@ -15822,8 +15593,8 @@
           "condition": "Current typed key families and exact372-byte public proof, finite one-operation application MQ.",
           "id": "application-ipc",
           "interop_directions": [
-            "Rust client \u2192 C REVOCATION service",
-            "C client \u2192 Rust REVOCATION service"
+            "Rust client → C REVOCATION service",
+            "C client → Rust REVOCATION service"
           ],
           "remaining": "Actual proof/status interoperability is unverified; active service polarity governs over reversed comments."
         },
@@ -15831,9 +15602,9 @@
           "condition": "Configured CORE_CLASS_ORDER native/little/big and SETU_ABI native/little64/little32/big64/big32 must match the actual C producer build.",
           "id": "core-setu-native",
           "interop_directions": [
-            "Rust peer \u2192 C peer CORE flood",
-            "C peer \u2192 Rust peer CORE flood",
-            "Rust\u2194C SETU revocation inventory union"
+            "Rust peer → C peer CORE flood",
+            "C peer → Rust peer CORE flood",
+            "Rust↔C SETU revocation inventory union"
           ],
           "remaining": "Source supports explicit profiles; actual ABI/profile combinations and peer underlay are unverified. These adapt existing native fields, not a private wire."
         },
@@ -15841,8 +15612,8 @@
           "condition": "Explicit named ego signing, original public artifact and bounded per-hash worker; no private C scheduler image or saved scores.",
           "id": "proof-work-checkpoint",
           "interop_directions": [
-            "Rust public certificate/checkpoint \u2192 official verifier/CLI",
-            "Official public certificate \u2192 Rust verifier/resumer"
+            "Rust public certificate/checkpoint → official verifier/CLI",
+            "Official public certificate → Rust verifier/resumer"
           ],
           "remaining": "No actual hashing/signing/worker/file computation was run. Public format cannot restore discarded search history; --start is an explicit floor."
         },
@@ -15850,7 +15621,7 @@
           "condition": "Own marked Namespace::Revocation state; permanent previously accepted key knowledge.",
           "id": "accepted-inventory",
           "interop_directions": [
-            "Rust own-store restart \u2192 official application query and peer dissemination"
+            "Rust own-store restart → official application query and peer dissemination"
           ],
           "remaining": "Durable recovery unverified. Truncated C private DB/SETU-consumer defects and legacy DB migration are not compatibility requirements."
         }
@@ -16006,7 +15777,7 @@
           "title": "Allocate virtual IP for an Internet destination or named peer service"
         },
         {
-          "boundary": "REGEX policy search\u2192selected exit\u2192normal CADET client",
+          "boundary": "REGEX policy search→selected exit→normal CADET client",
           "code_status": "present",
           "contract": "Use actual REGEX search based on destination family/policy and bind result/current source to original flow; named peer services bypass discovery appropriately and use exact service port.",
           "id": "VPN.discovery",
@@ -16028,7 +15799,7 @@
                 209
               ],
               "path": "apps/gnunet-service-vpn/src/discovery.rs",
-              "sha256": "963d204117c6011dc5133043994eff2c39fb0d7090e7378571b9c1f6de83292f"
+              "sha256": "8183924b4ae125f3c749bb121f81f35f248d580c925a5d1396870f700860e3e6"
             },
             {
               "anchor": "pub fn poll",
@@ -16036,15 +15807,15 @@
                 649
               ],
               "path": "apps/gnunet-service-vpn/src/discovery.rs",
-              "sha256": "963d204117c6011dc5133043994eff2c39fb0d7090e7378571b9c1f6de83292f"
+              "sha256": "8183924b4ae125f3c749bb121f81f35f248d580c925a5d1396870f700860e3e6"
             },
             {
               "anchor": "pub fn select_exit(",
               "anchor_lines": [
-                402
+                397
               ],
               "path": "adapters/vpn-std/src/coordinator.rs",
-              "sha256": "89e4670c10997af77e1c14bb662aff4613d903c104f95d5c6914572cf3037e1b"
+              "sha256": "fa0a0063c95187d316191eadfe2486fa1c2f61682e27cebc1c3d71d0611ef7dc"
             },
             {
               "anchor": "pub fn open_request(",
@@ -16165,45 +15936,48 @@
             {
               "anchor": "pub fn read(",
               "anchor_lines": [
-                117
+                154
               ],
               "path": "apps/gnunet-service-vpn/src/settings.rs",
-              "sha256": "bcbe75ecdcdf08169dabf4c918de03ad4b50c7e4b51cbc420bc9af0a43e28992"
+              "sha256": "6946ccd6d704fc9e98e4934acadde01cd1fc2b67b1945c18bf37884340f27d85"
             },
             {
               "anchor": "pub fn",
               "anchor_lines": [
-                22,
-                31,
-                38,
-                51,
-                58,
-                75,
-                80,
-                86,
-                106,
-                116,
+                23,
+                33,
+                47,
+                54,
+                67,
+                74,
+                93,
+                105,
+                119,
                 124,
-                254
+                130,
+                155,
+                165,
+                174,
+                331
               ],
               "path": "adapters/vpn-std/src/coordinator/device.rs",
-              "sha256": "ae556849792d3c4219cc26475e05fbba36d86e73d7995209a60fde855709a170"
+              "sha256": "9ccc79a0578dcfdc22753a416371c6e32c1759e29c8d3ed8198e2266832fa5bc"
             },
             {
               "anchor": "pub fn open_linux_exclusive(",
               "anchor_lines": [
-                135
+                98
               ],
-              "path": "adapters/tun-std/src/lib.rs",
-              "sha256": "7a5b5d2ad393bed0ba6b762bbff1a173bd22afdc216c5694863274c1f770cccf"
+              "path": "adapters/tun-std/src/owned/unix.rs",
+              "sha256": "c54d3b5d98b38e0c417754bba7e52c1fa4428c07525cdc63d087f1b87e38ef02"
             },
             {
               "anchor": "pub fn open_utun(",
               "anchor_lines": [
-                147
+                110
               ],
-              "path": "adapters/tun-std/src/lib.rs",
-              "sha256": "7a5b5d2ad393bed0ba6b762bbff1a173bd22afdc216c5694863274c1f770cccf"
+              "path": "adapters/tun-std/src/owned/unix.rs",
+              "sha256": "c54d3b5d98b38e0c417754bba7e52c1fa4428c07525cdc63d087f1b87e38ef02"
             },
             {
               "anchor": "pub fn spawn(",
@@ -16211,7 +15985,7 @@
                 194
               ],
               "path": "adapters/tun-std/src/helper.rs",
-              "sha256": "d2b0b38a97b145555dec6547a26e2b3e46fff4c2eded05069c43583758e77ff7"
+              "sha256": "f3c3616de33121a07d2e872871e06d041e71c5d5d8805fd55d6a101b111010cb"
             }
           ],
           "title": "Acquire, administer and retire actual TUN routes"
@@ -16278,10 +16052,10 @@
             {
               "anchor": "pub fn request_shutdown(",
               "anchor_lines": [
-                453
+                448
               ],
               "path": "adapters/vpn-std/src/coordinator.rs",
-              "sha256": "89e4670c10997af77e1c14bb662aff4613d903c104f95d5c6914572cf3037e1b"
+              "sha256": "fa0a0063c95187d316191eadfe2486fa1c2f61682e27cebc1c3d71d0611ef7dc"
             }
           ],
           "title": "Retain lease/cancel certainty across original native loss"
@@ -16318,21 +16092,19 @@
             {
               "anchor": "fn run()",
               "anchor_lines": [
-                31,
-                35
+                4
               ],
-              "path": "apps/gnunet-service-vpn/src/main.rs",
-              "sha256": "c2f46f956f59a4bb3c7d6538e463090090667f974099363476f644f3a79cbdee"
+              "path": "apps/gnunet-service-vpn/src/unix.rs",
+              "sha256": "93a147b47b1606aeab26678d26c7e33a70e3a68d0d27a973c686c23323ec3387"
             },
             {
               "anchor": "async fn",
               "anchor_lines": [
-                223,
-                319,
-                434
+                227,
+                342
               ],
               "path": "apps/gnunet-service-vpn/src/foreground.rs",
-              "sha256": "c65b17a1a640bd9b0f96d8e9559f88643051bfd6581f9899c4095d8e12ac41c4"
+              "sha256": "e87a36e4a18ea9902a41f3cebab6de0caf346db6733523f8a48bbb52eb150eec"
             },
             {
               "anchor": "async fn",
@@ -16342,6 +16114,30 @@
               ],
               "path": "apps/gnunet-cli/src/vpn.rs",
               "sha256": "4c7a68eb41872af0c1385d5f650136ea3262eb3cc112a61d8baa8ed39f2880d4"
+            },
+            {
+              "path": "apps/gnunet-service-vpn/src/windows.rs",
+              "anchor": "fn run()",
+              "anchor_lines": [
+                17
+              ],
+              "sha256": "ab953dcb6f1a19662039bd63b141e14542b3ee0fc56ff1934b9416a01edd47ba"
+            },
+            {
+              "path": "apps/gnunet-service-vpn/src/device.rs",
+              "anchor": "async fn open(",
+              "anchor_lines": [
+                13
+              ],
+              "sha256": "2697ca042b9e811bbc5447953c990d7974241c8ac46ccc5e70a1e1e080752d2d"
+            },
+            {
+              "path": "apps/gnunet-service-vpn/src/device/windows.rs",
+              "anchor": "fn open(",
+              "anchor_lines": [
+                40
+              ],
+              "sha256": "68797d5f8381822f159bd60e1f8fd9276acf0e25684a78a1115611bfa97fe86d"
             }
           ],
           "title": "Run standard VPN service and normal redirect CLI"
@@ -16352,9 +16148,9 @@
           "condition": "Linux fresh actual helper/TUN or macOS native utun; explicitly verified preopened modes",
           "id": "VPN.native",
           "interop_directions": [
-            "official IPC caller\u2194Rust VPN service",
-            "Rust client\u2194official VPN service",
-            "Rust VPN\u2194official exit over CADET"
+            "official IPC caller↔Rust VPN service",
+            "Rust client↔official VPN service",
+            "Rust VPN↔official exit over CADET"
           ],
           "remaining": [
             "Qualified kernel/device/route/IPv6 readiness, cancellation and full cross-implementation traffic remain runtime unverified."
@@ -16364,8 +16160,8 @@
           "condition": "Default actual REGEX discovery or explicitly configured finite exit list",
           "id": "VPN.discovery-policy",
           "interop_directions": [
-            "REGEX discovery\u2192CADET peer",
-            "explicit configured exit\u2192CADET peer"
+            "REGEX discovery→CADET peer",
+            "explicit configured exit→CADET peer"
           ],
           "remaining": [
             "Config-only/direct exit profile does not certify public discovery; actual REGEX native source path is separately present."
@@ -16993,11 +16789,7 @@
           "rust_entry_refs": [
             {
               "anchor": "pub fn new(",
-              "anchor_lines": [
-                63
-              ],
-              "path": "adapters/dns2gns-std/src/runtime.rs",
-              "sha256": "4387e573bfb2cdd92b50d13c14848be48303670b1d93f497e4af42d972b5f603"
+              "path": "adapters/dns2gns-std/src/runtime.rs"
             },
             {
               "anchor": "pub fn from_gns(",
@@ -17009,19 +16801,11 @@
             },
             {
               "anchor": "tld::Request {",
-              "anchor_lines": [
-                178
-              ],
-              "path": "adapters/dns2gns-std/src/request.rs",
-              "sha256": "d26141bb52b7db1d5ab06274a77187faabc6a5e966c82bc82d9d613f0f87c573"
+              "path": "adapters/dns2gns-std/src/request.rs"
             },
             {
               "anchor": "pub(super) async fn run(",
-              "anchor_lines": [
-                521
-              ],
-              "path": "apps/gnunet-dns2gns/src/run.rs",
-              "sha256": "9a5d7569b2bd77246fe471565b300a9aa2331fb7c961ac36ac7a8550f80633e2"
+              "path": "apps/gnunet-dns2gns/src/run.rs"
             }
           ],
           "title": "Serve ordinary DNS clients through GNS or explicit DNS fallback"
@@ -17442,12 +17226,10 @@
           },
           {
             "path": "adapters/dns2gns-std/src/request.rs",
-            "sha256": "d26141bb52b7db1d5ab06274a77187faabc6a5e966c82bc82d9d613f0f87c573",
             "source_snapshot": "/private/tmp/gnunet-GNS-RECLAIM-REST-operation-inventory-20261102-d5c371n8/source-snapshots/adapters/dns2gns-std/src/request.rs"
           },
           {
             "path": "adapters/dns2gns-std/src/runtime.rs",
-            "sha256": "4387e573bfb2cdd92b50d13c14848be48303670b1d93f497e4af42d972b5f603",
             "source_snapshot": "/private/tmp/gnunet-GNS-RECLAIM-REST-operation-inventory-20261102-d5c371n8/source-snapshots/adapters/dns2gns-std/src/runtime.rs"
           },
           {
@@ -17537,7 +17319,6 @@
           },
           {
             "path": "apps/gnunet-dns2gns/src/run.rs",
-            "sha256": "9a5d7569b2bd77246fe471565b300a9aa2331fb7c961ac36ac7a8550f80633e2",
             "source_snapshot": "/private/tmp/gnunet-GNS-RECLAIM-REST-operation-inventory-20261102-d5c371n8/source-snapshots/apps/gnunet-dns2gns/src/run.rs"
           },
           {
@@ -19596,40 +19377,72 @@
             {
               "anchor": "fn main()",
               "anchor_lines": [
-                23
+                18
               ],
               "path": "apps/gnunet-daemon-exit/src/main.rs",
-              "sha256": "f56ce131ff6e1584c27c1a18052f8ad4b3c337dc1f7e75e866433f68af40663a"
+              "sha256": "423972d5613cd75d15503156bafc6c7bad836967c8b268f878101dd7c99c616c"
             },
             {
               "anchor": "pub fn read(",
               "anchor_lines": [
-                126
+                163
               ],
               "path": "apps/gnunet-daemon-exit/src/settings.rs",
-              "sha256": "f82d9c580773fff7321580e14456f0716f3c205be467757b1742c517d1619682"
+              "sha256": "405340bcf03606919dd715229b3d7ffa622589093c537be926a73a9d1f487151"
             },
             {
               "anchor": "let services = resolve(",
               "anchor_lines": [
-                657
+                726
               ],
               "path": "apps/gnunet-daemon-exit/src/foreground.rs",
-              "sha256": "3f15507acae18965fca8edf5cab8ce2f759ea92b96b214b90470848d98e20fef"
+              "sha256": "aac28ac29e0b85dc4f907bd51fb32f13027d7f7b5960a91def000f9b8c375855"
             },
             {
               "anchor": "pub fn try_new(",
               "anchor_lines": [
-                206
+                195
               ],
               "path": "adapters/exit-std/src/runtime.rs",
-              "sha256": "c3bc131591cf1678bb594384931584a2467ec0310a49d6e5bdff5107652812a4"
+              "sha256": "239f0d365fe44ff08cdcb2476f277cca69462533cfcffa8f786347dcc6f91759"
+            },
+            {
+              "anchor": "fn capture(",
+              "anchor_lines": [
+                8
+              ],
+              "path": "apps/gnunet-daemon-exit/src/early/windows.rs",
+              "sha256": "a616840c37b36243583af53bfc9e0e5a279db51602c0107faacd095f7321dae2"
+            },
+            {
+              "anchor": "async fn open(",
+              "anchor_lines": [
+                13
+              ],
+              "path": "apps/gnunet-daemon-exit/src/network/device.rs",
+              "sha256": "3dcd2098a294b2def678be89c2eb062ca63e86c254481ef30ab5f9397252646e"
+            },
+            {
+              "anchor": "fn open(",
+              "anchor_lines": [
+                42
+              ],
+              "path": "apps/gnunet-daemon-exit/src/network/device/windows.rs",
+              "sha256": "ad6a7640ef5adc0d87957b4959e1031458ec8982d39ebe81f01aff80810e44e9"
+            },
+            {
+              "anchor": "fn prepare(",
+              "anchor_lines": [
+                22
+              ],
+              "path": "apps/gnunet-daemon-exit/src/readiness.rs",
+              "sha256": "36e582b0039fb438aa91dd77a658ea8478f5d7ba78334a49112b4d73d1753355"
             }
           ],
           "title": "Run standard configured exit daemon"
         },
         {
-          "boundary": "Official EXIT_RANGE policy\u2192REGEX announcement\u2192incoming CADET port",
+          "boundary": "Official EXIT_RANGE policy→REGEX announcement→incoming CADET port",
           "code_status": "present",
           "contract": "Compile official destination/port policy into real REGEX announcement, open exact IP-family ports and enforce the same configured policy before forwarding, without equating local announcement write to remote publication.",
           "id": "EXIT.internet-policy",
@@ -19663,24 +19476,24 @@
                 59
               ],
               "path": "apps/gnunet-daemon-exit/src/announcement.rs",
-              "sha256": "2a9e171424669bcb980c45f942d1099ee31c13bcae939cc73dfac7d62f519eb8"
+              "sha256": "5ff3e8fa7804f153b1b3f970fe7bba8d3c411c5ae8f7e174c76dd80d18f67cc4"
             },
             {
               "anchor": "pub fn poll(",
               "anchor_lines": [
-                381
+                379
               ],
               "path": "apps/gnunet-daemon-exit/src/announcement.rs",
-              "sha256": "2a9e171424669bcb980c45f942d1099ee31c13bcae939cc73dfac7d62f519eb8"
+              "sha256": "5ff3e8fa7804f153b1b3f970fe7bba8d3c411c5ae8f7e174c76dd80d18f67cc4"
             },
             {
               "anchor": "announcements.enable()",
               "anchor_lines": [
-                582,
-                772
+                642,
+                858
               ],
               "path": "apps/gnunet-daemon-exit/src/foreground.rs",
-              "sha256": "3f15507acae18965fca8edf5cab8ce2f759ea92b96b214b90470848d98e20fef"
+              "sha256": "aac28ac29e0b85dc4f907bd51fb32f13027d7f7b5960a91def000f9b8c375855"
             },
             {
               "anchor": "PeerMessage::UdpInternet",
@@ -19694,7 +19507,7 @@
           "title": "Advertise and authorize actual IPv4/IPv6 Internet exits"
         },
         {
-          "boundary": "Official service configuration\u2192port binding\u2192target translation",
+          "boundary": "Official service configuration→port binding→target translation",
           "code_status": "present",
           "contract": "Resolve configured service targets and port mappings, open the corresponding exact service port and forward official TCP/UDP/ICMP service requests with bounded per-flow state.",
           "id": "EXIT.service",
@@ -19719,27 +19532,27 @@
             {
               "anchor": "redirects",
               "anchor_lines": [
-                110,
-                207,
-                208,
-                222,
-                223,
-                242,
-                248,
+                121,
+                256,
                 257,
-                265,
-                396
+                271,
+                272,
+                291,
+                297,
+                306,
+                314,
+                462
               ],
               "path": "apps/gnunet-daemon-exit/src/settings.rs",
-              "sha256": "f82d9c580773fff7321580e14456f0716f3c205be467757b1742c517d1619682"
+              "sha256": "405340bcf03606919dd715229b3d7ffa622589093c537be926a73a9d1f487151"
             },
             {
               "anchor": "pub fn bindings(",
               "anchor_lines": [
-                443
+                509
               ],
               "path": "apps/gnunet-daemon-exit/src/settings.rs",
-              "sha256": "f82d9c580773fff7321580e14456f0716f3c205be467757b1742c517d1619682"
+              "sha256": "405340bcf03606919dd715229b3d7ffa622589093c537be926a73a9d1f487151"
             },
             {
               "anchor": "pub const fn service(",
@@ -19761,7 +19574,7 @@
           "title": "Export named TCP/UDP services over exact CADET descriptors"
         },
         {
-          "boundary": "Official TCP/UDP/ICMP VPN messages\u2194actual TUN IP packets",
+          "boundary": "Official TCP/UDP/ICMP VPN messages↔actual TUN IP packets",
           "code_status": "present",
           "contract": "Decode selected AF profile, authorize target, translate flow addresses/ports/checksums and return actual reply packet families over original CADET channel with real input/output obligations.",
           "id": "EXIT.packets",
@@ -19837,7 +19650,7 @@
           "title": "Translate Internet/service packets and return peer replies"
         },
         {
-          "boundary": "EXIT_DNS exact CADET DNS port\u2192configured resolver UDP socket",
+          "boundary": "EXIT_DNS exact CADET DNS port→configured resolver UDP socket",
           "code_status": "present",
           "contract": "For enabled EXIT_DNS, open official exit-dns CADET port, retain original request/socket/nonce and real numeric resolver, validate response and send only the corresponding result; do not claim DNSSEC or remote discovery.",
           "id": "EXIT.dns-forward",
@@ -19856,10 +19669,10 @@
             {
               "anchor": "let dns = if flag(",
               "anchor_lines": [
-                192
+                241
               ],
               "path": "apps/gnunet-daemon-exit/src/settings.rs",
-              "sha256": "f82d9c580773fff7321580e14456f0716f3c205be467757b1742c517d1619682"
+              "sha256": "405340bcf03606919dd715229b3d7ffa622589093c537be926a73a9d1f487151"
             },
             {
               "anchor": "pub fn dns()",
@@ -19952,58 +19765,58 @@
             {
               "anchor": "let dns = if flag(",
               "anchor_lines": [
-                192
+                241
               ],
               "path": "apps/gnunet-daemon-exit/src/settings.rs",
-              "sha256": "f82d9c580773fff7321580e14456f0716f3c205be467757b1742c517d1619682"
+              "sha256": "405340bcf03606919dd715229b3d7ffa622589093c537be926a73a9d1f487151"
             },
             {
               "anchor": "mod dns_advertisement;",
               "anchor_lines": [
-                12
+                10
               ],
               "path": "apps/gnunet-daemon-exit/src/main.rs",
-              "sha256": "f56ce131ff6e1584c27c1a18052f8ad4b3c337dc1f7e75e866433f68af40663a"
+              "sha256": "423972d5613cd75d15503156bafc6c7bad836967c8b268f878101dd7c99c616c"
             },
             {
               "anchor": "let dns_advertisement = if settings.dns.is_some()",
               "anchor_lines": [
-                698
+                773
               ],
               "path": "apps/gnunet-daemon-exit/src/foreground.rs",
-              "sha256": "3f15507acae18965fca8edf5cab8ce2f759ea92b96b214b90470848d98e20fef"
+              "sha256": "aac28ac29e0b85dc4f907bd51fb32f13027d7f7b5960a91def000f9b8c375855"
             },
             {
               "anchor": "fn dns_port_written(",
               "anchor_lines": [
-                464
+                524
               ],
               "path": "apps/gnunet-daemon-exit/src/foreground.rs",
-              "sha256": "3f15507acae18965fca8edf5cab8ce2f759ea92b96b214b90470848d98e20fef"
+              "sha256": "aac28ac29e0b85dc4f907bd51fb32f13027d7f7b5960a91def000f9b8c375855"
             },
             {
               "anchor": "owner.readiness(",
               "anchor_lines": [
-                602
+                662
               ],
               "path": "apps/gnunet-daemon-exit/src/foreground.rs",
-              "sha256": "3f15507acae18965fca8edf5cab8ce2f759ea92b96b214b90470848d98e20fef"
+              "sha256": "aac28ac29e0b85dc4f907bd51fb32f13027d7f7b5960a91def000f9b8c375855"
             },
             {
               "anchor": "match owner.poll(cx)",
               "anchor_lines": [
-                606
+                666
               ],
               "path": "apps/gnunet-daemon-exit/src/foreground.rs",
-              "sha256": "3f15507acae18965fca8edf5cab8ce2f759ea92b96b214b90470848d98e20fef"
+              "sha256": "aac28ac29e0b85dc4f907bd51fb32f13027d7f7b5960a91def000f9b8c375855"
             },
             {
               "anchor": "fn close_dns_advertisement(",
               "anchor_lines": [
-                254
+                263
               ],
               "path": "apps/gnunet-daemon-exit/src/foreground.rs",
-              "sha256": "3f15507acae18965fca8edf5cab8ce2f759ea92b96b214b90470848d98e20fef"
+              "sha256": "aac28ac29e0b85dc4f907bd51fb32f13027d7f7b5960a91def000f9b8c375855"
             },
             {
               "anchor": "pub fn new(",
@@ -20011,87 +19824,87 @@
                 172
               ],
               "path": "apps/gnunet-daemon-exit/src/dns_advertisement.rs",
-              "sha256": "714afa740fc9e727ed964ed08408ccd189dd2410c4bd86050294bc1921763924"
+              "sha256": "81517b4f48659e8e21179b284ff794a2c8a056ce069d1a2f8bca8b9ca71ad514"
             },
             {
               "anchor": "pub fn readiness(",
               "anchor_lines": [
-                239
+                240
               ],
               "path": "apps/gnunet-daemon-exit/src/dns_advertisement.rs",
-              "sha256": "714afa740fc9e727ed964ed08408ccd189dd2410c4bd86050294bc1921763924"
+              "sha256": "81517b4f48659e8e21179b284ff794a2c8a056ce069d1a2f8bca8b9ca71ad514"
             },
             {
               "anchor": "fn sign(",
               "anchor_lines": [
-                423
+                424
               ],
               "path": "apps/gnunet-daemon-exit/src/dns_advertisement.rs",
-              "sha256": "714afa740fc9e727ed964ed08408ccd189dd2410c4bd86050294bc1921763924"
+              "sha256": "81517b4f48659e8e21179b284ff794a2c8a056ce069d1a2f8bca8b9ca71ad514"
             },
             {
               "anchor": "KeyTarget::Exact(identity)",
               "anchor_lines": [
-                452
+                453
               ],
               "path": "apps/gnunet-daemon-exit/src/dns_advertisement.rs",
-              "sha256": "714afa740fc9e727ed964ed08408ccd189dd2410c4bd86050294bc1921763924"
+              "sha256": "81517b4f48659e8e21179b284ff794a2c8a056ce069d1a2f8bca8b9ca71ad514"
             },
             {
               "anchor": "fn signature(",
               "anchor_lines": [
-                459
+                460
               ],
               "path": "apps/gnunet-daemon-exit/src/dns_advertisement.rs",
-              "sha256": "714afa740fc9e727ed964ed08408ccd189dd2410c4bd86050294bc1921763924"
+              "sha256": "81517b4f48659e8e21179b284ff794a2c8a056ce069d1a2f8bca8b9ca71ad514"
             },
             {
               "anchor": "fn put(",
               "anchor_lines": [
-                552
+                553
               ],
               "path": "apps/gnunet-daemon-exit/src/dns_advertisement.rs",
-              "sha256": "714afa740fc9e727ed964ed08408ccd189dd2410c4bd86050294bc1921763924"
+              "sha256": "81517b4f48659e8e21179b284ff794a2c8a056ce069d1a2f8bca8b9ca71ad514"
             },
             {
               "anchor": "fn completion(",
               "anchor_lines": [
-                514
+                515
               ],
               "path": "apps/gnunet-daemon-exit/src/dns_advertisement.rs",
-              "sha256": "714afa740fc9e727ed964ed08408ccd189dd2410c4bd86050294bc1921763924"
+              "sha256": "81517b4f48659e8e21179b284ff794a2c8a056ce069d1a2f8bca8b9ca71ad514"
             },
             {
               "anchor": "fn retire(",
               "anchor_lines": [
-                279
+                280
               ],
               "path": "apps/gnunet-daemon-exit/src/dns_advertisement.rs",
-              "sha256": "714afa740fc9e727ed964ed08408ccd189dd2410c4bd86050294bc1921763924"
+              "sha256": "81517b4f48659e8e21179b284ff794a2c8a056ce069d1a2f8bca8b9ca71ad514"
             },
             {
               "anchor": "fn failed(",
               "anchor_lines": [
-                325
+                326
               ],
               "path": "apps/gnunet-daemon-exit/src/dns_advertisement.rs",
-              "sha256": "714afa740fc9e727ed964ed08408ccd189dd2410c4bd86050294bc1921763924"
+              "sha256": "81517b4f48659e8e21179b284ff794a2c8a056ce069d1a2f8bca8b9ca71ad514"
             },
             {
               "anchor": "fn guard(",
               "anchor_lines": [
-                368
+                369
               ],
               "path": "apps/gnunet-daemon-exit/src/dns_advertisement.rs",
-              "sha256": "714afa740fc9e727ed964ed08408ccd189dd2410c4bd86050294bc1921763924"
+              "sha256": "81517b4f48659e8e21179b284ff794a2c8a056ce069d1a2f8bca8b9ca71ad514"
             },
             {
               "anchor": "pub fn close(",
               "anchor_lines": [
-                691
+                692
               ],
               "path": "apps/gnunet-daemon-exit/src/dns_advertisement.rs",
-              "sha256": "714afa740fc9e727ed964ed08408ccd189dd2410c4bd86050294bc1921763924"
+              "sha256": "81517b4f48659e8e21179b284ff794a2c8a056ce069d1a2f8bca8b9ca71ad514"
             },
             {
               "anchor": "pub fn signed_region(",
@@ -20120,18 +19933,18 @@
             {
               "anchor": "pub fn binding_status(",
               "anchor_lines": [
-                335
+                328
               ],
               "path": "adapters/exit-std/src/runtime.rs",
-              "sha256": "c3bc131591cf1678bb594384931584a2467ec0310a49d6e5bdff5107652812a4"
+              "sha256": "239f0d365fe44ff08cdcb2476f277cca69462533cfcffa8f786347dcc6f91759"
             },
             {
               "anchor": "pub fn dns_advertisement(",
               "anchor_lines": [
-                133
+                152
               ],
               "path": "apps/gnunet-daemon-exit/src/lifecycle.rs",
-              "sha256": "78aeee16f8306270b0e359d1a8c61c8bf7aa892dc0eddde777699a0ea0bbd591"
+              "sha256": "6073ac09f6becdfd6dd3864869e8c45d68d5283a286c60fb3925a34358b15aa5"
             },
             {
               "anchor": "gnunet-pils-host = { workspace = true, features = [\"client\"] }",
@@ -20140,6 +19953,38 @@
               ],
               "path": "apps/gnunet-daemon-exit/Cargo.toml",
               "sha256": "c1692ef349a0cc1e707d1365d208367af6a90fb56ce3ca267bd644b5cb013bda"
+            },
+            {
+              "anchor": "fn capture(",
+              "anchor_lines": [
+                8
+              ],
+              "path": "apps/gnunet-daemon-exit/src/early/windows.rs",
+              "sha256": "a616840c37b36243583af53bfc9e0e5a279db51602c0107faacd095f7321dae2"
+            },
+            {
+              "anchor": "async fn open(",
+              "anchor_lines": [
+                13
+              ],
+              "path": "apps/gnunet-daemon-exit/src/network/device.rs",
+              "sha256": "3dcd2098a294b2def678be89c2eb062ca63e86c254481ef30ab5f9397252646e"
+            },
+            {
+              "anchor": "fn open(",
+              "anchor_lines": [
+                42
+              ],
+              "path": "apps/gnunet-daemon-exit/src/network/device/windows.rs",
+              "sha256": "ad6a7640ef5adc0d87957b4959e1031458ec8982d39ebe81f01aff80810e44e9"
+            },
+            {
+              "anchor": "fn prepare(",
+              "anchor_lines": [
+                22
+              ],
+              "path": "apps/gnunet-daemon-exit/src/readiness.rs",
+              "sha256": "36e582b0039fb438aa91dd77a658ea8478f5d7ba78334a49112b4d73d1753355"
             }
           ],
           "source_repair": {
@@ -20186,12 +20031,12 @@
           ],
           "rust_entry_refs": [
             {
-              "anchor": "pub(super) async fn open(",
+              "anchor": "pub(crate) async fn open(",
               "anchor_lines": [
-                19
+                13
               ],
-              "path": "apps/gnunet-daemon-exit/src/network.rs",
-              "sha256": "a967caa5523fc40ab90f0b052acc6e81f15fe823ae33470c3c53a13484a67ba2"
+              "path": "apps/gnunet-daemon-exit/src/network/device.rs",
+              "sha256": "3dcd2098a294b2def678be89c2eb062ca63e86c254481ef30ab5f9397252646e"
             },
             {
               "anchor": "Profile::Exit",
@@ -20212,22 +20057,22 @@
             {
               "anchor": "pub fn shutdown(",
               "anchor_lines": [
-                615
+                643
               ],
               "path": "adapters/exit-std/src/runtime.rs",
-              "sha256": "c3bc131591cf1678bb594384931584a2467ec0310a49d6e5bdff5107652812a4"
+              "sha256": "239f0d365fe44ff08cdcb2476f277cca69462533cfcffa8f786347dcc6f91759"
             },
             {
               "anchor": "pub(super) struct",
               "anchor_lines": [
-                53,
-                77,
-                166,
-                185,
-                193
+                60,
+                100,
+                192,
+                211,
+                219
               ],
               "path": "apps/gnunet-daemon-exit/src/lifecycle.rs",
-              "sha256": "78aeee16f8306270b0e359d1a8c61c8bf7aa892dc0eddde777699a0ea0bbd591"
+              "sha256": "6073ac09f6becdfd6dd3864869e8c45d68d5283a286c60fb3925a34358b15aa5"
             }
           ],
           "title": "Own actual exit TUN/NAT and bounded original shutdown"
@@ -20238,8 +20083,8 @@
           "condition": "EXIT_DNS=YES with literal configured DNS_RESOLVER and no IP forwarding",
           "id": "EXIT.dns-only",
           "interop_directions": [
-            "official VPN/PT DNS peer\u2192Rust EXIT",
-            "Rust signed DNS ad\u2192official DHT discovery"
+            "official VPN/PT DNS peer→Rust EXIT",
+            "Rust signed DNS ad→official DHT discovery"
           ],
           "remaining": [
             "Ordinary DNS forwarding and bounded standard signed DNS advertisement publisher now have actual production entries. Actual signed artifacts/PILS/DHT/CADET endpoint roles, dependency recovery, unknown PUT/cancel, source readiness and DNS traffic remain native/interoperability unverified. Local PUT whole-write and READY prove no publication or remote availability."
@@ -20249,8 +20094,8 @@
           "condition": "EXIT_IPV4/EXIT_IPV6 and official range policy or configured service descriptors",
           "id": "EXIT.internet-and-services",
           "interop_directions": [
-            "Rust exit\u2194official VPN TCP/UDP/ICMP",
-            "REGEX advertiser\u2192official discoverer"
+            "Rust exit↔official VPN TCP/UDP/ICMP",
+            "REGEX advertiser→official discoverer"
           ],
           "remaining": [
             "Policy/REGEX/CADET/TUN external correctness, remote reachability and restoration remain runtime unverified."
@@ -21899,11 +21744,7 @@
             },
             {
               "anchor": "pub fn open(",
-              "anchor_lines": [
-                491
-              ],
-              "path": "crates/gnunet-messenger-core/src/engine.rs",
-              "sha256": "d2050d8560d1c8402800e03c313e64a42e097e2141e29a07ac19a4ef05e9695a"
+              "path": "crates/gnunet-messenger-core/src/engine.rs"
             }
           ],
           "title": "OPEN, multiple-door ENTRY, CLOSE and SYNC"
@@ -22182,11 +22023,7 @@
             },
             {
               "anchor": "pub fn may_deliver_talk(",
-              "anchor_lines": [
-                915
-              ],
-              "path": "crates/gnunet-messenger-core/src/engine.rs",
-              "sha256": "d2050d8560d1c8402800e03c313e64a42e097e2141e29a07ac19a4ef05e9695a"
+              "path": "crates/gnunet-messenger-core/src/engine.rs"
             }
           ],
           "title": "Discourse subscriptions, TALK and epoch/group secret content"
@@ -22232,27 +22069,15 @@
             },
             {
               "anchor": "pub fn enable_records",
-              "anchor_lines": [
-                252
-              ],
-              "path": "adapters/messenger-api-std/src/records.rs",
-              "sha256": "ccced5e74e1352f54971d3fee762087ef38425c69d73807e6d452651326955c9"
+              "path": "adapters/messenger-api-std/src/records.rs"
             },
             {
               "anchor": "pub fn members(",
-              "anchor_lines": [
-                783
-              ],
-              "path": "crates/gnunet-messenger-core/src/engine.rs",
-              "sha256": "d2050d8560d1c8402800e03c313e64a42e097e2141e29a07ac19a4ef05e9695a"
+              "path": "crates/gnunet-messenger-core/src/engine.rs"
             },
             {
               "anchor": "pub fn contact_name(",
-              "anchor_lines": [
-                813
-              ],
-              "path": "crates/gnunet-messenger-core/src/engine.rs",
-              "sha256": "d2050d8560d1c8402800e03c313e64a42e097e2141e29a07ac19a4ef05e9695a"
+              "path": "crates/gnunet-messenger-core/src/engine.rs"
             }
           ],
           "title": "Public room/contact discovery and owned publication records"
@@ -22282,11 +22107,7 @@
           "rust_entry_refs": [
             {
               "anchor": "pub fn reconnect(",
-              "anchor_lines": [
-                534
-              ],
-              "path": "adapters/messenger-api-std/src/api.rs",
-              "sha256": "09a42970f7119837e18cc483c4784d3a6eb2eaefbe010fcafb1a0cb1d214c81e"
+              "path": "adapters/messenger-api-std/src/api.rs"
             },
             {
               "anchor": "pub fn can_reconnect(",
@@ -22372,36 +22193,19 @@
             },
             {
               "anchor": "fn run(",
-              "anchor_lines": [
-                33,
-                41
-              ],
-              "path": "apps/gnunet-messenger/src/main.rs",
-              "sha256": "415784ee642a9acab9948e32a2f5c7f655769cebba8995d6cd1c3c643d3f25c1"
+              "path": "apps/gnunet-messenger/src/main.rs"
             },
             {
               "anchor": "let mut api = Api::<OsEntropy>::new(",
-              "anchor_lines": [
-                1035
-              ],
-              "path": "apps/gnunet-messenger/src/session.rs",
-              "sha256": "5a086373aa87c7ecb523062b6768f129fbed8153f1054248171cce3c37bd9866"
+              "path": "apps/gnunet-messenger/src/session.rs"
             },
             {
               "anchor": "api.send_private_bounded(",
-              "anchor_lines": [
-                900
-              ],
-              "path": "apps/gnunet-messenger/src/session.rs",
-              "sha256": "5a086373aa87c7ecb523062b6768f129fbed8153f1054248171cce3c37bd9866"
+              "path": "apps/gnunet-messenger/src/session/admission.rs"
             },
             {
               "anchor": "api.request_message_bounded(",
-              "anchor_lines": [
-                925
-              ],
-              "path": "apps/gnunet-messenger/src/session.rs",
-              "sha256": "5a086373aa87c7ecb523062b6768f129fbed8153f1054248171cce3c37bd9866"
+              "path": "apps/gnunet-messenger/src/session/admission.rs"
             }
           ],
           "title": "Ordinary MESSENGER service and interactive client"
@@ -22485,16 +22289,14 @@
         ],
         "rust": [
           {
-            "path": "adapters/messenger-api-std/src/api.rs",
-            "sha256": "bd913cb99688dd2284efc5ad279e400e02634a613263980ee2a2ae460c8add02"
+            "path": "adapters/messenger-api-std/src/api.rs"
           },
           {
             "path": "adapters/messenger-api-std/src/discovery.rs",
             "sha256": "6b4772d725afc5ca98db10b1f684c7d56541ac2012bae000bab8380c44f14c44"
           },
           {
-            "path": "adapters/messenger-api-std/src/records.rs",
-            "sha256": "ccced5e74e1352f54971d3fee762087ef38425c69d73807e6d452651326955c9"
+            "path": "adapters/messenger-api-std/src/records.rs"
           },
           {
             "path": "adapters/messenger-api-std/src/recovery.rs",
@@ -22533,12 +22335,10 @@
             "sha256": "5f92f6185603a188f17db9d407f35e0bc9ad26f18f4cdb38c850949a03c45030"
           },
           {
-            "path": "apps/gnunet-messenger/src/main.rs",
-            "sha256": "415784ee642a9acab9948e32a2f5c7f655769cebba8995d6cd1c3c643d3f25c1"
+            "path": "apps/gnunet-messenger/src/main.rs"
           },
           {
-            "path": "apps/gnunet-messenger/src/session.rs",
-            "sha256": "181bcb99a46a5276500d56203d2b65b2de49eeb37afd893cc335f0467e4727d1"
+            "path": "apps/gnunet-messenger/src/session.rs"
           },
           {
             "path": "apps/gnunet-service-messenger/src/foreground.rs",
@@ -22553,8 +22353,7 @@
             "sha256": "c30327cd2363cec8ace24311acb16e2017ba7c3cef5854ed5a3e2095ae8abdc0"
           },
           {
-            "path": "crates/gnunet-messenger-core/src/engine.rs",
-            "sha256": "d2050d8560d1c8402800e03c313e64a42e097e2141e29a07ac19a4ef05e9695a"
+            "path": "crates/gnunet-messenger-core/src/engine.rs"
           },
           {
             "path": "crates/gnunet-messenger-core/src/ingest.rs",
@@ -22563,6 +22362,36 @@
           {
             "path": "crates/gnunet-messenger-core/src/service.rs",
             "sha256": "9d5cf7bab9ac19c45f146cffba35f0d3141fcd9dac775b71504a8db3936a1137"
+          },
+          {
+            "path": "apps/gnunet-messenger/src/session/admission.rs"
+          },
+          {
+            "path": "apps/gnunet-messenger/src/session/alarm.rs"
+          },
+          {
+            "path": "apps/gnunet-messenger/src/session/events.rs"
+          },
+          {
+            "path": "apps/gnunet-messenger/src/session/lookup.rs"
+          },
+          {
+            "path": "apps/gnunet-messenger/src/session/scheduling.rs"
+          },
+          {
+            "path": "apps/gnunet-messenger/src/session/state.rs"
+          },
+          {
+            "path": "apps/gnunet-messenger/src/output/render.rs"
+          },
+          {
+            "path": "apps/gnunet-messenger/src/output/report.rs"
+          },
+          {
+            "path": "apps/gnunet-messenger/src/output/writer.rs"
+          },
+          {
+            "path": "crates/gnunet-messenger-core/src/lease.rs"
           }
         ]
       },
@@ -22723,11 +22552,7 @@
           "rust_entry_refs": [
             {
               "anchor": "pub(super) fn policy(",
-              "anchor_lines": [
-                111
-              ],
-              "path": "apps/gnunet-rest-server/src/settings.rs",
-              "sha256": "45b9d463acf8c6500216aa5a5362761ac3f5d2868d917762b198917cb383e91f"
+              "path": "apps/gnunet-rest-server/src/authorization.rs"
             },
             {
               "anchor": "pub fn basic(",
@@ -22779,28 +22604,15 @@
           "rust_entry_refs": [
             {
               "anchor": "pub(super) fn policy(",
-              "anchor_lines": [
-                111
-              ],
-              "path": "apps/gnunet-rest-server/src/settings.rs",
-              "sha256": "45b9d463acf8c6500216aa5a5362761ac3f5d2868d917762b198917cb383e91f"
+              "path": "apps/gnunet-rest-server/src/authorization.rs"
             },
             {
               "anchor": "REST_ECHO_ORIGIN_WEBEXT",
-              "anchor_lines": [
-                116,
-                117
-              ],
-              "path": "apps/gnunet-rest-server/src/settings.rs",
-              "sha256": "45b9d463acf8c6500216aa5a5362761ac3f5d2868d917762b198917cb383e91f"
+              "path": "apps/gnunet-rest-server/src/authorization.rs"
             },
             {
               "anchor": "let cors = Cors::new(",
-              "anchor_lines": [
-                120
-              ],
-              "path": "apps/gnunet-rest-server/src/settings.rs",
-              "sha256": "45b9d463acf8c6500216aa5a5362761ac3f5d2868d917762b198917cb383e91f"
+              "path": "apps/gnunet-rest-server/src/authorization.rs"
             },
             {
               "anchor": "pub fn new(",
@@ -23036,27 +22848,15 @@
             },
             {
               "anchor": "pub fn get(",
-              "anchor_lines": [
-                121
-              ],
-              "path": "adapters/rest-std/src/config.rs",
-              "sha256": "1966655a7e2a4eecac6d99b5e60b188e9b2fa8af59b45cae13bdae1100f429b2"
+              "path": "adapters/rest-std/src/config.rs"
             },
             {
               "anchor": "pub async fn post(",
-              "anchor_lines": [
-                171
-              ],
-              "path": "adapters/rest-std/src/config.rs",
-              "sha256": "1966655a7e2a4eecac6d99b5e60b188e9b2fa8af59b45cae13bdae1100f429b2"
+              "path": "adapters/rest-std/src/config.rs"
             },
             {
               "anchor": "pub fn poll(",
-              "anchor_lines": [
-                356
-              ],
-              "path": "adapters/rest-std/src/config.rs",
-              "sha256": "1966655a7e2a4eecac6d99b5e60b188e9b2fa8af59b45cae13bdae1100f429b2"
+              "path": "adapters/rest-std/src/config.rs"
             }
           ],
           "title": "Read and update actual configuration over HTTP"
@@ -23413,11 +23213,7 @@
             },
             {
               "anchor": "let (provider, driver) = Provider::persistent(",
-              "anchor_lines": [
-                319
-              ],
-              "path": "apps/gnunet-rest-server/src/settings.rs",
-              "sha256": "45b9d463acf8c6500216aa5a5362761ac3f5d2868d917762b198917cb383e91f"
+              "path": "apps/gnunet-rest-server/src/settings.rs"
             }
           ],
           "title": "Publish selected metadata/JWKS and recover OIDC continuity"
@@ -23465,43 +23261,23 @@
           "rust_entry_refs": [
             {
               "anchor": "program::prepare(",
-              "anchor_lines": [
-                52
-              ],
-              "path": "apps/gnunet-rest-server/src/main.rs",
-              "sha256": "3e8e9967ff4a92bfafdd193d27c897518721df377e7577d8ce2b7b2967a2575d"
+              "path": "apps/gnunet-rest-server/src/main.rs"
             },
             {
               "anchor": "let handlers = Context::new(",
-              "anchor_lines": [
-                376
-              ],
-              "path": "apps/gnunet-rest-server/src/foreground.rs",
-              "sha256": "28f97b4c3cf0f41defb74bd0d2d38ada0ad5dc3d925c6cc40d1c704a836647f3"
+              "path": "apps/gnunet-rest-server/src/foreground.rs"
             },
             {
               "anchor": "handlers.with_oidc(",
-              "anchor_lines": [
-                395
-              ],
-              "path": "apps/gnunet-rest-server/src/foreground.rs",
-              "sha256": "28f97b4c3cf0f41defb74bd0d2d38ada0ad5dc3d925c6cc40d1c704a836647f3"
+              "path": "apps/gnunet-rest-server/src/foreground.rs"
             },
             {
               "anchor": "let mut server = Server::new(",
-              "anchor_lines": [
-                493
-              ],
-              "path": "apps/gnunet-rest-server/src/foreground.rs",
-              "sha256": "28f97b4c3cf0f41defb74bd0d2d38ada0ad5dc3d925c6cc40d1c704a836647f3"
+              "path": "apps/gnunet-rest-server/src/foreground.rs"
             },
             {
               "anchor": "pub(super) fn listener_config(",
-              "anchor_lines": [
-                182
-              ],
-              "path": "apps/gnunet-rest-server/src/settings.rs",
-              "sha256": "45b9d463acf8c6500216aa5a5362761ac3f5d2868d917762b198917cb383e91f"
+              "path": "apps/gnunet-rest-server/src/settings.rs"
             }
           ],
           "title": "Run the configured HTTP service with all actual selected handlers"
@@ -23643,7 +23419,6 @@
         "rust_entry_files": [
           {
             "path": "adapters/rest-std/src/config.rs",
-            "sha256": "1966655a7e2a4eecac6d99b5e60b188e9b2fa8af59b45cae13bdae1100f429b2",
             "source_snapshot": "/private/tmp/gnunet-GNS-RECLAIM-REST-operation-inventory-20261102-d5c371n8/source-snapshots/adapters/rest-std/src/config.rs"
           },
           {
@@ -23693,17 +23468,14 @@
           },
           {
             "path": "apps/gnunet-rest-server/src/foreground.rs",
-            "sha256": "28f97b4c3cf0f41defb74bd0d2d38ada0ad5dc3d925c6cc40d1c704a836647f3",
             "source_snapshot": "/private/tmp/gnunet-GNS-RECLAIM-REST-operation-inventory-20261102-d5c371n8/source-snapshots/apps/gnunet-rest-server/src/foreground.rs"
           },
           {
             "path": "apps/gnunet-rest-server/src/main.rs",
-            "sha256": "3e8e9967ff4a92bfafdd193d27c897518721df377e7577d8ce2b7b2967a2575d",
             "source_snapshot": "/private/tmp/gnunet-GNS-RECLAIM-REST-operation-inventory-20261102-d5c371n8/source-snapshots/apps/gnunet-rest-server/src/main.rs"
           },
           {
             "path": "apps/gnunet-rest-server/src/settings.rs",
-            "sha256": "45b9d463acf8c6500216aa5a5362761ac3f5d2868d917762b198917cb383e91f",
             "source_snapshot": "/private/tmp/gnunet-GNS-RECLAIM-REST-operation-inventory-20261102-d5c371n8/source-snapshots/apps/gnunet-rest-server/src/settings.rs"
           },
           {
@@ -25195,34 +24967,30 @@
             {
               "anchor": "gnunet_peer_tools_host::run(",
               "anchor_lines": [
-                18
+                16
               ],
-              "path": "apps/gnunet-hello/src/main.rs",
-              "sha256": "52a5ddd3b3b887c2976594aee3a3f47dab32678e6be8c1f71a139287f95da326"
+              "path": "apps/gnunet-hello/src/main.rs"
             },
             {
-              "anchor": "pub(super) async fn observe_pils",
+              "anchor": "pub(crate) async fn observe_pils",
               "anchor_lines": [
-                35
+                33
               ],
-              "path": "adapters/peer-tools-std/src/program/session/hello.rs",
-              "sha256": "0099fb92f32e15eaa340dbfa63f449beef9ffd84ea85672d8bca76227720414d"
+              "path": "adapters/peer-tools-std/src/program/session/hello/export.rs"
             },
             {
-              "anchor": "pub(super) async fn import",
+              "anchor": "pub(crate) async fn import",
               "anchor_lines": [
-                384
+                50
               ],
-              "path": "adapters/peer-tools-std/src/program/session/hello.rs",
-              "sha256": "0099fb92f32e15eaa340dbfa63f449beef9ffd84ea85672d8bca76227720414d"
+              "path": "adapters/peer-tools-std/src/program/session/hello/import.rs"
             },
             {
-              "anchor": "pub(super) async fn dump",
+              "anchor": "pub(crate) async fn dump",
               "anchor_lines": [
-                245
+                77
               ],
-              "path": "adapters/peer-tools-std/src/program/session/hello.rs",
-              "sha256": "0099fb92f32e15eaa340dbfa63f449beef9ffd84ea85672d8bca76227720414d"
+              "path": "adapters/peer-tools-std/src/program/session/hello/scan.rs"
             },
             {
               "anchor": "pub fn announcement(",
@@ -26658,32 +26426,32 @@
               "anchor_lines": [
                 35
               ],
-              "path": "adapters/service-runtime/src/activation.rs",
+              "path": "adapters/service-runtime/src/activation/unix.rs",
               "sha256": "4494040e02964bcc7d749a4f0e0685f92d8e0cfa8ec87cf4da1f3154959a4509"
             },
             {
               "anchor": "pub async fn bind(",
               "anchor_lines": [
-                258
+                28
               ],
-              "path": "adapters/service-runtime/src/listeners.rs",
-              "sha256": "fa4406e8cba797792c75a5fc825deccc3c3e1b42c7986137e9faa5584f0e53e1"
+              "path": "adapters/service-runtime/src/listeners/unix.rs",
+              "sha256": "fffd4c3da5582476d7d57c4f272c00eebf52c12339d8bd016531f7d28cb5abca"
             },
             {
               "anchor": "pub fn prepare_before_identity(",
               "anchor_lines": [
-                298
+                52
               ],
-              "path": "adapters/service-runtime/src/listeners.rs",
-              "sha256": "fa4406e8cba797792c75a5fc825deccc3c3e1b42c7986137e9faa5584f0e53e1"
+              "path": "adapters/service-runtime/src/listeners/unix.rs",
+              "sha256": "fffd4c3da5582476d7d57c4f272c00eebf52c12339d8bd016531f7d28cb5abca"
             },
             {
               "anchor": "pub async fn finish_with_access(",
               "anchor_lines": [
-                388
+                126
               ],
-              "path": "adapters/service-runtime/src/listeners.rs",
-              "sha256": "fa4406e8cba797792c75a5fc825deccc3c3e1b42c7986137e9faa5584f0e53e1"
+              "path": "adapters/service-runtime/src/listeners/unix.rs",
+              "sha256": "fffd4c3da5582476d7d57c4f272c00eebf52c12339d8bd016531f7d28cb5abca"
             },
             {
               "anchor": "BoundListeners::prepare_before_identity(",
@@ -26692,6 +26460,14 @@
               ],
               "path": "apps/gnunet-service-pils/src/main.rs",
               "sha256": "4a23fd870cd0d6e591552c4ad905267fbda2c0d7b07383a7505b328ac082c079"
+            },
+            {
+              "anchor": "pub async fn bind(",
+              "anchor_lines": [
+                20
+              ],
+              "path": "adapters/service-runtime/src/listeners/windows.rs",
+              "sha256": "4564f85194144237fbd7780b426d4f336bf78ced529115956ddf2178ce15a36f"
             }
           ],
           "title": "Configured and inherited original listener ownership"
@@ -26744,10 +26520,10 @@
             {
               "anchor": "pub fn service_options(",
               "anchor_lines": [
-                410
+                314
               ],
               "path": "adapters/service-runtime/src/listeners.rs",
-              "sha256": "fa4406e8cba797792c75a5fc825deccc3c3e1b42c7986137e9faa5584f0e53e1"
+              "sha256": "69471673baa668220048acaebe9f6a63466e77844fd5ccc79d5eb19d5c37e530"
             },
             {
               "anchor": "pub fn admit(",
@@ -26934,7 +26710,7 @@
               "anchor_lines": [
                 150
               ],
-              "path": "adapters/service-startup/src/early.rs",
+              "path": "adapters/service-startup/src/unix/capture.rs",
               "sha256": "076d6d3c72772278dfe3bb855eb83c07e3935be534ce4093b3a56137d58cbff0"
             },
             {
@@ -26942,7 +26718,7 @@
               "anchor_lines": [
                 261
               ],
-              "path": "adapters/service-startup/src/daemon.rs",
+              "path": "adapters/service-startup/src/unix/daemon.rs",
               "sha256": "0b750fcf258d2dd276feff7e4bba40d84fae44a46d56e1027243c39c7c4115eb"
             },
             {
@@ -26950,7 +26726,7 @@
               "anchor_lines": [
                 297
               ],
-              "path": "adapters/service-startup/src/privilege.rs",
+              "path": "adapters/service-startup/src/unix/privilege.rs",
               "sha256": "39e8a10af1318dd6b4ed68eef2b9f23b495ae76adf6d2526a73fff228d317499"
             },
             {
@@ -27162,7 +26938,7 @@
             "sha256": "bebeec3292457a6d506721112104b2f2e64c7130b8118cdc53ceb7d36f19ac8d"
           },
           {
-            "path": "adapters/service-runtime/src/activation.rs",
+            "path": "adapters/service-runtime/src/activation/unix.rs",
             "sha256": "4494040e02964bcc7d749a4f0e0685f92d8e0cfa8ec87cf4da1f3154959a4509"
           },
           {
@@ -27186,15 +26962,15 @@
             "sha256": "8b37bba5679586c346232f6fa42a82aa3041b1b7c29390e74fcc1b1149aa8de1"
           },
           {
-            "path": "adapters/service-startup/src/daemon.rs",
+            "path": "adapters/service-startup/src/unix/daemon.rs",
             "sha256": "0b750fcf258d2dd276feff7e4bba40d84fae44a46d56e1027243c39c7c4115eb"
           },
           {
-            "path": "adapters/service-startup/src/early.rs",
+            "path": "adapters/service-startup/src/unix/capture.rs",
             "sha256": "076d6d3c72772278dfe3bb855eb83c07e3935be534ce4093b3a56137d58cbff0"
           },
           {
-            "path": "adapters/service-startup/src/privilege.rs",
+            "path": "adapters/service-startup/src/unix/privilege.rs",
             "sha256": "39e8a10af1318dd6b4ed68eef2b9f23b495ae76adf6d2526a73fff228d317499"
           },
           {
@@ -27979,7 +27755,7 @@
       "kind": "subsystem",
       "operations": [
         {
-          "boundary": "public SDK\u2192actual IPC stream\u2192per-request sampler\u2192caller",
+          "boundary": "public SDK→actual IPC stream→per-request sampler→caller",
           "code_status": "present",
           "contract": "Actual request-owned sampling consumes the service biased stream and exposes peer/observation metadata. Count is local SDK demand, not an invented request-N wire RPC. Zero completes locally; attached-source loss must not splice partial samples into replacement-epoch success.",
           "id": "RPS.sample",
@@ -28057,7 +27833,7 @@
           "title": "Stream-fed peer sampling and peer-info callbacks"
         },
         {
-          "boundary": "client IPC1130\u20131135\u2192service\u2192original client output",
+          "boundary": "client IPC1130–1135→service→original client output",
           "code_status": "present",
           "contract": "View/stream requests and cancels use actual production IPC. Count0 means continuous; finite native demand is a local quota including the first observed frame. Raw stream remains biased. Packed reply counts use explicit pinned-C native-endian profiles; raw view id/reserved bytes remain visible. There is no wire ACK/END and local Complete is not one.",
           "id": "RPS.stream-view",
@@ -28141,7 +27917,7 @@
           "title": "Actual view and explicitly biased stream subscriptions"
         },
         {
-          "boundary": "seed/CORE status/PEERSTORE HELLO-key hint\u2192actual CADET probe\u2192qualification",
+          "boundary": "seed/CORE status/PEERSTORE HELLO-key hint→actual CADET probe→qualification",
           "code_status": "present",
           "contract": "Public seeds and actual source observations are bounded discovery hints. Cached identities and locally whole-written probes do not prove remote liveness. Retained public facts may create fresh-generation probes after restoration; retiring generations cannot qualify replacement channels.",
           "id": "RPS.seed-discovery",
@@ -28219,7 +27995,7 @@
           "title": "Public seeding and real discovery-source hints"
         },
         {
-          "boundary": "actual CADET port/channel\u2192CHECK_LIVE/PUSH/PULL\u2192view/history/sampler",
+          "boundary": "actual CADET port/channel→CHECK_LIVE/PUSH/PULL→view/history/sampler",
           "code_status": "present",
           "contract": "Main port is the hash of official application string rps. Standard peer messages carry actual identities and bounded view subsets. CHECK_LIVE has no invented reply; original pull whole-write precedes eligible reply. Real channel/group ownership and effect terminals govern rounds. Actual NSE estimates drive bounded finite targets; nonfinite observations never allocate infinite state.",
           "id": "RPS.peer-exchange",
@@ -28255,7 +28031,7 @@
               "start_line": 4950
             }
           ],
-          "remaining": "Actual C\u2194Rust peer frames, mixed CADET routes, round/NSE adaptation, loss/reannouncement and sampler quality remain unaccepted. Written is local transport progress, not remote delivery/processing.",
+          "remaining": "Actual C↔Rust peer frames, mixed CADET routes, round/NSE adaptation, loss/reannouncement and sampler quality remain unaccepted. Written is local transport progress, not remote delivery/processing.",
           "rust_entry_refs": [
             {
               "anchor": "pub enum PeerMessage",
@@ -28317,7 +28093,7 @@
           "title": "Main-port peer exchange, rounds and NSE resizing"
         },
         {
-          "boundary": "same client MQ SubStart/SubStop\u2192derived64-byte port\u2192distinct group",
+          "boundary": "same client MQ SubStart/SubStop→derived64-byte port→distinct group",
           "code_status": "present",
           "contract": "Shared-value groups use official string-prefix derivation and packed interval/hash fields. The same original MQ writes SubStart before query; GroupWritten is local only. Nonreused group generations and actual old port/channel retirement prevent old traffic entering same-hash replacement groups. Stop uses the original group/source, not a fresh unrelated MQ.",
           "id": "RPS.subgroups",
@@ -28395,7 +28171,7 @@
           "title": "Shared-value subgroup creation and retirement"
         },
         {
-          "boundary": "native/core effect ownership\u2192physical retirement\u2192typed terminal",
+          "boundary": "native/core effect ownership→physical retirement→typed terminal",
           "code_status": "present",
           "contract": "Cancellation preserves original client/group/effect/source generations and whole versus partial exposure. No partial sample or peer payload silently crosses attached-source loss. Peer-closing blocks replacement admission until real channel retirement. Aggregate group shutdown drains admitted effects before quiescence. A changed CORE identity requires restart; same identity reconnect does not relabel groups.",
           "id": "RPS.cancel-recovery",
@@ -28493,7 +28269,7 @@
           "title": "Original-source cancellation, recovery and shutdown"
         },
         {
-          "boundary": "standard PROGRAM/SERVICE\u2192configured shared sources\u2192production owners",
+          "boundary": "standard PROGRAM/SERVICE→configured shared sources→production owners",
           "code_status": "present",
           "contract": "Normal service uses actual configuration/activation/account/listeners/logger and shared explicitly polled Resolver. CORE identity constructs the service; READY follows actual main-port announcement and is not a remote/sample ACK. CLI sample/view/stream/seed use configured native owner. Default output is PeerID lines or explicit empty-view/stream text; seed confirmation is local whole-write. Original signal/deadline/stdout/cleanup errors remain classified.",
           "id": "RPS.normal-entry",

@@ -13,6 +13,7 @@ use gnunet_pils_host::{
     client::{Client, EndpointSource, Limits, Progress},
     identity::load_existing,
 };
+use gnunet_service_runtime::local::Stream;
 use gnunet_types::Error;
 use gnunet_udp_communicator_core::{PeerId, send::Mode};
 use gnunet_udp_communicator_host::{
@@ -30,7 +31,7 @@ use std::{
     task::Poll,
     time::Duration,
 };
-use tokio::{net::UnixStream, time::Instant};
+use tokio::time::Instant;
 struct Random;
 impl Entropy for Random {
     fn fill(&mut self, bytes: &mut [u8]) -> Result<(), Error> {
@@ -116,11 +117,10 @@ async fn run(args: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
         transmit: socket.profile().sender_policy(),
     };
     let state = PathBuf::from(&args[3]);
-    std::fs::create_dir(&state)?;
+    gnunet_service_runtime::private_parents(&state.join(".gnunet-udp-state"))?;
     let mut journal = Journal::open(&state, local, 64)?;
-    let connection = gnunet_service_runtime::connection::Connection::from_unix(
-        UnixStream::connect(&args[1]).await?,
-    );
+    let connection =
+        gnunet_service_runtime::connection::Connection::from_unix(Stream::connect(&args[1]).await?);
     let mut driver = Driver::new(connection, socket, configuration, now)?;
     std::fs::write(
         &args[6],

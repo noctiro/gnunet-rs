@@ -106,6 +106,7 @@ impl Runtime {
             active: 0,
             first_failure: None,
             listener_errors: [None, None],
+            datagram_errors: Default::default(),
             unresolved: 0,
             quiescent: false,
             listeners_released: false,
@@ -379,6 +380,18 @@ impl Runtime {
             let result = socket.poll_recv_from(cx, &mut buffer);
             match result {
                 Poll::Pending => {}
+                Poll::Ready(Err(error))
+                    if gnunet_native::network::isolated_datagram_receive_error(&error) =>
+                {
+                    let errors = &mut self.report.datagram_errors[index];
+                    errors.count = errors.count.saturating_add(1);
+                    if errors.first.is_none() {
+                        errors.first = Some(error);
+                    }
+                    self.listener_cursor = (index + 1) % 2;
+                    observer(Event::DatagramRejected(index));
+                    return Poll::Ready(Progress::Activity);
+                }
                 Poll::Ready(Err(error)) => {
                     self.listeners[index] = None;
                     self.report.listener_errors[index] = Some(error);
@@ -511,6 +524,11 @@ fn bind(requested: SocketAddr) -> (Option<UdpSocket>, Binding) {
             Domain::IPV6
         };
         let socket = Socket::new(domain, Type::DGRAM, Some(Protocol::UDP))?;
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsSocket;
+            gnunet_native::network::suppress_udp_connection_resets(socket.as_socket())?;
+        }
         if requested.is_ipv6() {
             socket.set_only_v6(true)?;
         }

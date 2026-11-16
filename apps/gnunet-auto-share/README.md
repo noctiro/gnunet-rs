@@ -4,6 +4,8 @@ The application implements `gnunet-auto-share` using the existing FS
 publication API. It adds no protocol, native service, C FFI, hidden Resolver or
 subprocess publisher.
 
+## Configuration
+
 The standard PROGRAM takes exactly one directory and implements the active
 `-a/--anonymity`, `-p/--priority`, `-r/--replication`,
 `-d/--disable-creation-time`, `-D/--disable-extractor`, and `-V/--verbose`
@@ -41,8 +43,10 @@ budgets and original stop/operation bounds remain in force. Native plugin
 internal memory and blocking calls are not covered by a Rust RSS or forced
 preemption claim. Provider void return with no callback cannot prove that every
 plugin parsed successfully; output facts remain metadata and actual
-accepted publication tasks. This source increment has not loaded a provider or
-run the ordinary command.
+accepted publication tasks. Installed-provider qualification is tracked in the
+[implementation status](../../IMPLEMENTATION_STATUS.md).
+
+## Scanning and publication
 
 A bounded worker builds sorted descriptor-anchored stat snapshots, prepares each
 stable top-level file/subdirectory, and rechecks that exact original snapshot
@@ -66,14 +70,31 @@ Unknown writes, orphan intents, fenced WALs, or failed restoration isolate that
 original version/path. A changed input cannot evade this fence by creating
 another task. Known safe partial/refused work retries the same Task. No retained raw response projection can mint a NativeResult or authorization. Deleted input stops new work; no network erasure/unindex success is invented.
 
-The new `.auto-share-rust` namespace is a marked, exclusively locked FS-owned
-store. Its immutable header binds the canonical watched root's device/inode. Only fresh creation initializes a missing canonical image; an existing
-marked directory missing that image fails closed. Dynamic catalog state uses
-bounded checksum/generation images with create_new0600, file sync, atomic rename
-and parent sync. Failed/uncertain local commits fence the owner. Temporary
-cleanup checks the observed inode and never adopts a temporary image as
-committed. It assumes the private namespace is not concurrently replaced by a
-hostile same-UID writer; separate check+unlink is not an atomic inode-unlink API. There is no C-state import or old-format migration.
+## Persistent state
+
+The `.auto-share-rust` namespace is a marked, exclusively locked FS-owned store.
+Its immutable header binds the canonical watched root and complete native identity.
+Only fresh creation initializes a missing canonical image; existing marked state
+without its image fails closed. `FSASHR03` stores bounded checksum/generation
+images in `catalog.image`. The [catalog model](../../adapters/fs-std/src/auto_share/catalog.rs)
+separates state policy from the [snapshot owner](../../adapters/fs-std/src/auto_share/catalog/image.rs).
+The latter pins the original image, writes a private `catalog.next`, synchronizes
+its contents and replaces the name through held native handles. Failed or uncertain
+commits fence the owner; recovery only removes a qualified original temporary.
+`Owner::catalog_directory_sync` reports the actual image/WAL naming barriers.
+Windows reports `Unavailable`; prepared groups and file contents have separate
+receipts. Local names use a lossless native codec; metadata object coordinates
+retain protocol separators. There is no C-state import or old-format migration.
+
+## Native lifecycle
+
+The same PROGRAM and worker run on Unix and Windows. Unix applies the configured
+process identity; Windows verifies the primary-token account before opening owned
+state. Native termination uses interrupt/terminate on Unix and console stop events
+on Windows. Parent-control EOF is not stop. As a foreground PROGRAM, automatic
+sharing has no SERVICE accept/readiness point; listener activation and detached
+SERVICE bootstrap are refused. Native provider configuration is execution authority
+only when explicitly selected in the current process.
 
 `Stop` wakes the original owner. Signals, original parent control, native/source
 bounds, selected-log/stdout failure, Resolver failure, and PROGRAM scheduler
@@ -82,6 +103,8 @@ retirement and worker shutdown/join. The Resolver disconnects afterward. Indepen
 are retained. Dropping an observation is not reported as cleanup. Synchronous
 OS filesystem calls and ordinary bounded stdout writes may block; this code
 does not pretend to force-cancel them or mutate inherited OFD flags.
+
+## Limits
 
 Default bounds are explicit: 1024 historical top-level names, 4096 versions,
 65536 scan objects, depth64, 8MiB name workspace, 256MiB input total, 4h maximum
@@ -97,6 +120,8 @@ there is no silent GC of uncertainty. Exhaustion is an explicit error. The
 `EXTRACT_PROBE_BYTES`, `METADATA_ITEMS`, `METADATA_BYTES`, `KEYWORDS`,
 `KEYWORD_BYTES`, `KEYWORD_TASKS`, and `GROUP_PLAN_BYTES`. Durations use the
 standard configuration parser and must be positive and finite.
+
+## Reference behavior
 
 C differences intentionally retained as source facts: MIN_DELAY is one minute
 although its comment says one second; the C stat fingerprint overwrites one

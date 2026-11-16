@@ -2,7 +2,6 @@
 //! persists in this value across cancellation of any wait future. It implements
 //! no substitute TRANSPORT, CORE, PEERSTORE or PILS service.
 #![forbid(unsafe_code)]
-#![cfg(unix)]
 /// Original scan/store durability task identities and real process port.
 pub mod history;
 mod link;
@@ -403,3 +402,6 @@ impl PilsFeed {
         poll_fn(|cx| self.poll_update(cx)).await
     }
 }
+
+#[cfg(test)]
+mod test_support;

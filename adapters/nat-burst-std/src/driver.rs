@@ -24,6 +24,20 @@ use zeroize::{Zeroize, Zeroizing};
 // filling this buffer is explicitly classified as possibly truncated, never as
 // a 36-byte burst and never as a complete ordinary application datagram.
 const RECEIVE_BYTES: usize = 65_536;
+fn bind_scan_socket(address: SocketAddr) -> io::Result<std::net::UdpSocket> {
+    let socket = socket2::Socket::new(
+        socket2::Domain::for_address(address),
+        socket2::Type::DGRAM,
+        Some(socket2::Protocol::UDP),
+    )?;
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsSocket;
+        gnunet_native::network::set_exclusive_address_use(socket.as_socket())?;
+    }
+    socket.bind(&address.into())?;
+    Ok(socket.into())
+}
 
 struct Slot<'id> {
     id: SocketId<'id>,
@@ -560,7 +574,7 @@ impl<'id> Burst<'id> {
             return;
         };
         self.report.ports_attempted += 1;
-        let std_socket = match std::net::UdpSocket::bind(local) {
+        let std_socket = match bind_scan_socket(local) {
             Ok(socket) => socket,
             Err(error) if error.kind() == io::ErrorKind::AddrInUse => {
                 observe(Event::Occupied {
@@ -584,6 +598,21 @@ impl<'id> Burst<'id> {
                 self.finish(Cause::Deadline(DeadlineKind::Hard));
             }
             return;
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsSocket;
+            if let Err(error) =
+                gnunet_native::network::suppress_udp_connection_resets(std_socket.as_socket())
+            {
+                drop(std_socket);
+                self.finish(Cause::Io {
+                    action: IoAction::ReceivePolicy,
+                    port: local.port(),
+                    error,
+                });
+                return;
+            }
         }
         if let Err(error) = std_socket.set_nonblocking(true) {
             // Retire this newly created handle before recording the original error.
@@ -763,6 +792,15 @@ impl<'id> Burst<'id> {
                 activity = true;
                 let (remote, length) = match result {
                     Ok(value) => value,
+                    Err(error)
+                        if gnunet_native::network::isolated_datagram_receive_error(&error) =>
+                    {
+                        observe(Event::ReceiveError {
+                            id: self.slots[index].id,
+                            error: &error,
+                        });
+                        continue;
+                    }
                     Err(error) => {
                         let port = self.slots[index].local;
                         self.finish(Cause::Io {

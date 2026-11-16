@@ -4,6 +4,8 @@ Run `python3 -B tools/reference/accepted-stream/verify.py --repository /absolute
 --source /absolute/pinned-gnunet --reference /absolute/normal-arm-build/build-result.json
 --output /absolute/fresh-external-output`.
 
+## Usage
+
 Generation copies the complete repository workspace, all local sources,
 settings and both lock files to an isolated tree. It adds only the observation
 probe as a workspace member and regenerates that tree's lock offline. No

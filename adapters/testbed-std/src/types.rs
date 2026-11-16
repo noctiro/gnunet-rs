@@ -8,10 +8,14 @@ pub struct Limits {
     pub ports_per_configuration: usize,
     /// Maximum configurations/sections/ACL planning input bytes.
     pub configuration_bytes: usize,
-    /// Maximum path bytes and UNIXPATH output bytes.
+    /// Maximum native byte encoding and UNIXPATH output bytes.
     pub path_bytes: usize,
     /// Native temporary directory name attempts, without entropy or a hidden loop.
     pub directory_attempts: u32,
+    /// Maximum entries visited during an explicit owned-tree removal.
+    pub cleanup_entries: usize,
+    /// Maximum nested directories visited during explicit removal.
+    pub cleanup_depth: usize,
 }
 impl Default for Limits {
     fn default() -> Self {
@@ -21,6 +25,8 @@ impl Default for Limits {
             configuration_bytes: 4 * 1024 * 1024,
             path_bytes: 4096,
             directory_attempts: 4096,
+            cleanup_entries: 131072,
+            cleanup_depth: 64,
         }
     }
 }
@@ -31,6 +37,8 @@ impl Limits {
             || self.configuration_bytes == 0
             || self.path_bytes == 0
             || self.directory_attempts == 0
+            || self.cleanup_entries == 0
+            || self.cleanup_depth == 0
         {
             Err(Cause::Protocol(Fault::InvalidInput).into())
         } else {
@@ -56,10 +64,11 @@ impl Default for Families {
     }
 }
 /// Explicit creation, root trust and public network policy.
+#[derive(Debug)]
 pub struct Options {
     /// Exact GNUNET_TESTBED_PREFIX override, or None for a fresh owned temp child.
     pub prefix: Option<PathBuf>,
-    /// Existing parent for fresh named children, defaults to /tmp to leave room for actual Unix socket names.
+    /// Existing parent for fresh children: Unix /tmp or the native Windows temporary directory.
     pub temporary_parent: PathBuf,
     /// One safe basename, not a path. Used only when prefix is absent.
     pub label: OsString,
@@ -80,7 +89,7 @@ impl Default for Options {
     fn default() -> Self {
         Self {
             prefix: None,
-            temporary_parent: PathBuf::from("/tmp"),
+            temporary_parent: temporary_parent(),
             label: "testing".into(),
             trusted_ip: None,
             hostname: None,
@@ -98,7 +107,9 @@ pub enum Exposure {
     Unchanged,
     /// A private temporary file may exist; final target not installed.
     Staged,
-    /// Rename/link actually installed original bytes; later fsync may be unknown.
+    /// A native publication call ran without a conclusive installation receipt.
+    Uncertain,
+    /// Rename/link actually installed original bytes; later directory sync may be unknown.
     Installed,
 }
 /// Original typed failure. Configuration values are never included in messages.
@@ -117,6 +128,13 @@ pub enum Cause {
         /// Original OS error.
         error: io::Error,
     },
+    /// Original native publication error, including independent close and cleanup observations.
+    Publication {
+        /// Actual selected target.
+        path: PathBuf,
+        /// Native publication and cleanup observations.
+        error: Box<gnunet_native::filesystem::publication::Failure>,
+    },
     /// Existing directory is not this utility's marked Rust namespace.
     ForeignDirectory,
     /// Namespace inode/marker/counter changed, or a prior unknown fenced admission.
@@ -133,7 +151,7 @@ pub struct Failure {
     /// Actual installation exposure, never converted to success.
     pub exposure: Exposure,
     /// First independent cleanup cause, if any.
-    pub cleanup: Option<Cause>,
+    pub cleanup: Option<Box<Cause>>,
     /// Total independent cleanup failures (bounded attempts).
     pub cleanup_count: usize,
 }
@@ -149,7 +167,7 @@ impl Failure {
     pub(crate) fn add(&mut self, cause: Cause) {
         self.cleanup_count = self.cleanup_count.saturating_add(1);
         if self.cleanup.is_none() {
-            self.cleanup = Some(cause)
+            self.cleanup = Some(Box::new(cause))
         }
     }
 }
@@ -183,6 +201,9 @@ impl std::fmt::Display for Failure {
                 path,
                 error,
             } => write!(f, "TESTBED {operation} at {}: {error}", path.display()),
+            Cause::Publication { path, error } => {
+                write!(f, "TESTBED publication at {}: {error}", path.display())
+            }
             Cause::ForeignDirectory => {
                 f.write_str("TESTBED refuses an unmarked/nonempty directory")
             }
@@ -193,18 +214,34 @@ impl std::fmt::Display for Failure {
         }
     }
 }
-impl std::error::Error for Failure {}
+impl std::error::Error for Failure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match &self.cause {
+            Cause::Protocol(error) => Some(error),
+            Cause::Configuration(error) => Some(error),
+            Cause::Io { error, .. } => Some(error),
+            Cause::Publication { error, .. } => Some(error.as_ref()),
+            _ => None,
+        }
+    }
+}
 /// Successful complete local configuration publication, only minted after real
-/// final file and parent fsync. It implies no service/peer readiness.
+/// file synchronization and native name publication. Directory synchronization
+/// is a separate capability observation. It implies no service/peer readiness.
 #[derive(Debug)]
 pub struct Published {
     pub(crate) path: PathBuf,
     pub(crate) bytes: usize,
+    pub(crate) directory_sync: gnunet_native::DirectorySync,
 }
 impl Published {
     /// Actual output path.
     pub fn path(&self) -> &Path {
         &self.path
+    }
+    /// Native directory naming barrier, independent of synchronized file data.
+    pub const fn directory_sync(&self) -> gnunet_native::DirectorySync {
+        self.directory_sync
     }
     /// Actual immutable serialized byte count.
     pub const fn bytes(&self) -> usize {
@@ -216,7 +253,7 @@ impl Published {
 pub enum Removal {
     /// Logical resources released; marked path deliberately retained.
     Kept(PathBuf),
-    /// Native remove_dir_all of the original marked directory succeeded.
+    /// Original marked directory and all visited entries were removed.
     Removed(PathBuf),
 }
 /// Explicit target publication policy; no implicit unknown-write replay.
@@ -236,5 +273,16 @@ impl Options {
             prefix: std::env::var_os("GNUNET_TESTBED_PREFIX").map(PathBuf::from),
             ..Self::default()
         }
+    }
+}
+
+fn temporary_parent() -> PathBuf {
+    #[cfg(unix)]
+    {
+        PathBuf::from("/tmp")
+    }
+    #[cfg(windows)]
+    {
+        std::env::temp_dir()
     }
 }

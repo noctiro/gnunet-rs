@@ -7,12 +7,56 @@ before configured USERNAME; the existing identity is loaded only after that
 boundary and a verified PILS announcement, and must match it. Replay
 state is independent, private and bound to the same public peer.
 
+## Process and storage
+
+`[communicator-udp-rust] ACK_TIMEOUT` selects the sender's finite, positive
+ACK liveness window; the default is five minutes. It is independent of the
+official `REKEY_INTERVAL` and `REKEY_MAX_BYTES` settings. Matching peer-bound
+ACKs refresh liveness. Expiry retires the original KX/BOX queues and pending
+local outcomes before another endpoint can be admitted; native sends alone
+provide no liveness or delivery receipt.
+
+Linux, macOS and FreeBSD apply the configured Unix account after numeric binds.
+Windows qualifies the configured identity against the actual process token.
+
+Destination-level UDP send failures retire only the affected endpoint's queues.
+The original negative SEND result and native diagnostic remain distinct from
+successful native transmission; other endpoints keep the shared socket and MQ.
+Socket-owner, resource and short-write failures retain their terminal boundary.
+Both paths finish identity setup before resolver workers and private state.
+Inherited client control and native stop subscriptions use the shared startup
+owner. Windows UDP sockets suppress asynchronous ICMP connection-reset receives.
+The replay journal reports its actual directory-sync capability separately from
+file synchronization and local commit observations.
+
+## Address discovery
+
 Official broadcast/multicast presence uses the original family sockets and
 interface snapshots. Signature-verified address candidates enter the
 APPLICATION Validate path; they never directly install an authenticated
 queue. NAT/interface claims, communicator local publication writes and PILS
 FEED writes remain separately observed. URI `udp://` and communicator `udp-`
 addresses are encoded in their respective official contexts.
+
+Interface refresh prepares the complete classification, advertised-address and
+discovery projections before changing any consumer. Exclusive address and
+discovery guards make their joint commit infallible; failed enumeration,
+projection or admission retains the previous complete snapshot and retries on
+the scan interval. Existing write receipts, pending announcements and membership
+retirement remain with their original owners. Projection buffers are released
+after installation; the scanner retains only the native rows.
+
+The [NAT observer](src/run/nat_registration.rs) derives registration deadlines
+from its selector's absolute logical clock. EOF, native network failure, input
+expiry and source-level protocol/capacity refusal retire that source's claims,
+then schedule a fresh REGISTER with bounded backoff. Its allocation, epoch and
+address IDs are new; old requests, partial writes and callbacks are not replayed.
+Interface claims and UDP sessions keep their independent owners. A new address
+that exceeds claim capacity or fails classification is diagnosed and its actual
+callback released, so later removals can proceed. The NAT client's bounded
+allocation remains until the actual removal or source retirement.
+
+## Identity recovery
 
 Verified HELLO refreshes on the same PILS source can update revision and expiry
 without rotating the identity. The program explicitly adopts such a current
@@ -22,19 +66,35 @@ sessions after an ordinary FEED. A healthy changed peer on that same branded
 observer retires original packet/peer/MQ authority, then selects a fresh matched
 key and that full identity's original replay journal. Default sockets, fixed
 packet backing, NAT/interface claims and desired FEED stay with the process. Old discovery signatures are cleared; canceled packets and exposed MQ prefixes
-retain their loss facts. Physical observer replacement or uncertain
-history still stops the process.
+retain their loss facts. Uncertain replay history stops the process.
 
-The process identity owner has exclusive Active(key+journal) and Retired phases. A failed reconstruction grants no new key/journal facade. Repeated changes
-share one native/canonical 30-second recovery bound until replacement
-REGISTER and queue restoration whole writes complete. Queue/token serials and
-lifetime traffic counters do not reset. Address observations retain a live
-socket across an identity cut; final stop keeps its separate withdrawal path.
+Physical PILS connection loss closes the old TRANSPORT source and retires
+old packet, peer and discovery authority before releasing its key and journal.
+The identity owner enters a paused phase without a usable key/journal facade.
+The same PILS client must receive a signed, unexpired identity on a strictly
+newer branded epoch with a newer revision before reconstruction. A socket
+attachment alone cannot resume work. If the cached master no longer matches,
+the program verifies this successor before reading the configured existing
+key; it never creates a key or accepts a mismatch.
+
+Repeated identity changes and source losses share one native/canonical
+30-second recovery bound until replacement REGISTER and queue restoration
+whole writes complete. The first connection failure is retained. Guards run
+again inside the PILS driver after clock providers and before native I/O.
+Clock, replay-history and ownership invariant failures remain terminal.
+Queue/token serials, original NAT/application deadlines and lifetime traffic
+counters do not reset. Default UDP sockets and NAT/interface claims remain
+owned; old FEEDs retain their actual write/loss receipts. A replacement source
+receives a new snapshot of current address intent, including after a previous
+whole-written FEED. Shutdown while paused closes connectors without starting
+another recovery or claiming an address withdrawal.
 
 Each polling turn refreshes the canonical/UTC and native elapsed time
 after the original native guards, including after a pending socket/timer wait. ACK expiry and PILS-key validity therefore use the current turn's sample; a
 canonical clock rollback stops the owner. Original ACK, burst, discovery and
 publication targets are retained through waits.
+
+## TRANSPORT recovery
 
 A lost TRANSPORT connection retires its original input, partial writes and
 pending send callbacks before one retained, bounded-backoff CLIENT attempt
@@ -45,10 +105,12 @@ remaining packet credit. New-source commands and traffic for announced queues
 interleave with restoration, so duplex backpressure cannot stall a large queue
 set. Current address ADDs follow completed queue restoration; original NAT claims and PILS FEED
 operations keep their independent ownership and lifetimes. An MQ replacement
-alone neither withdraws a still-live UDP address nor replays its HELLO feed. Physical stop, identity loss and uncertain replay-store outcomes still stop the
+alone neither withdraws a still-live UDP address nor replays its HELLO feed. Physical stop and uncertain replay-store outcomes still stop the
 original owner. Local registration and restoration logs distinguish actual
 whole writes from peer delivery or acknowledgement. Connection, registration and restoration milestones use the ordinary INFO
 level, including in builds that omit optional DEBUG diagnostics.
+
+## Diagnostics and shutdown
 
 Normal-owner cleanup emits one bounded `udp.traffic` INFO snapshot on success
 or failure, subject to the selected logger and level. The same fixed counters
@@ -80,9 +142,10 @@ a missing implementation of a defined v0.29.1 UDP exchange; no private probe,
 nonce, send receipt or connection success is invented. This does not establish
 NAT traversal or mixed-node reachability. Stream activation descriptors are rejected; no inherited readiness is claimed.
 
-The recovery increment requires its own normal-process qualification; source
-and compilation alone do not prove recovery or unchanged C interoperability. Earlier evidence retains its original source and scope. This entry does not
-establish full UDP or GNUnet completion.
+Remaining normal-process and official-peer coverage is tracked in
+[implementation status](../../IMPLEMENTATION_STATUS.md).
+
+## Identity profile
 
 The PILS identity/HELLO profile is selected from `[PILS] PROFILE`, with
 `reference029`/`reference-0.29.1` as the unchanged default and

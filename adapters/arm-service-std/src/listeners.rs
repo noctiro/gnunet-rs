@@ -7,25 +7,17 @@ use crate::{
 };
 use gnunet_arm_service_core::{ListenerAction, ListenerEffect, ListenerId, Owner, ReadinessId};
 use gnunet_config::{Configuration, Environment};
-use gnunet_service_runtime::readiness::{Readiness, RegisteredReadiness};
-use gnunet_service_runtime::{
-    ActivatedSocket, CreatedPath, PrivateListener, bind_private_with_permissions, private_parents,
-};
-use socket2::{Domain, Protocol, SockAddr, Socket, Type};
-#[cfg(target_os = "linux")]
-use std::os::unix::ffi::OsStrExt;
+use gnunet_service_runtime::readiness::{Readiness, RegisteredListener};
+use gnunet_service_runtime::{ActivatedSocket, CreatedPath, LocalListenerAccess};
+#[cfg(unix)]
+use std::os::fd::AsFd;
+#[cfg(windows)]
+use std::os::windows::io::AsSocket;
 use std::{
-    fmt, fs, io,
-    os::{
-        fd::{BorrowedFd, OwnedFd},
-        unix::{
-            fs::{FileTypeExt, MetadataExt},
-            net::UnixStream,
-        },
-    },
-    path::Path,
+    fmt, io,
     task::{Context, Poll},
 };
+mod bind;
 /// Observable nonfatal collection/bind failure. A registered service is retained
 /// even when every configured listener fails, as in the official setup callback.
 #[derive(Debug)]
@@ -66,6 +58,9 @@ pub enum Failure {
 /// Host resource/protocol failure. Busy is retained as a retryable core outcome.
 #[derive(Debug)]
 pub enum Error {
+    /// A registry preparation already completed, failed or was canceled. Retire
+    /// the retained owner before starting another whole-registry preparation.
+    PreparationStarted,
     /// Caller configured listener maximum is exhausted.
     Capacity,
     /// Source registry and core service IDs do not match, or no actual FD exists.
@@ -80,6 +75,9 @@ pub enum Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::PreparationStarted => {
+                f.write_str("ARM registry listener preparation already started")
+            }
             Self::Capacity => f.write_str("ARM listener capacity exhausted"),
             Self::Mapping => f.write_str("ARM listener ownership mapping mismatch"),
             Self::Core(error) => write!(f, "ARM listener state: {error:?}"),
@@ -128,7 +126,7 @@ pub struct Event<'scope> {
 }
 struct Entry<'scope> {
     // Field order is intentional: close/deregister the descriptor before unlink.
-    port: Option<RegisteredReadiness>,
+    port: Option<RegisteredListener>,
     path: Option<CreatedPath>,
     address: Address,
     service: usize,
@@ -144,102 +142,18 @@ pub struct ManagedListeners<'scope> {
     maximum: usize,
     pending: Option<ListenerEffect<'scope>>,
     ready: Option<Event<'scope>>,
+    preparation: Preparation,
 }
-fn stale_precheck(path: &Path) {
-    let Err(error) = UnixStream::connect(path) else {
-        return;
-    };
-    if error.raw_os_error() != Some(libc::ECONNREFUSED) {
-        return;
-    }
-    let Ok(target) = fs::metadata(path) else {
-        return;
-    };
-    if !target.file_type().is_socket() {
-        return;
-    }
-    let Ok(before) = fs::symlink_metadata(path) else {
-        return;
-    };
-    // Preserve a replaced directory entry. As with CreatedPath, this is a
-    // separate metadata/unlink sequence; hostile concurrent replacement must be
-    // excluded by the startup owner, and no atomic-unlink claim is made.
-    if fs::symlink_metadata(path)
-        .is_ok_and(|now| now.dev() == before.dev() && now.ino() == before.ino())
-    {
-        match fs::remove_file(path) {
-            Ok(()) | Err(_) => {}
-        }
-    }
-}
-fn register(descriptor: OwnedFd) -> io::Result<RegisteredReadiness> {
-    RegisteredReadiness::new(descriptor).map_err(|failure| failure.error)
-}
-fn bound(
-    address: &Address,
-    mode: u32,
-    warnings: &mut Vec<io::Error>,
-) -> io::Result<(RegisteredReadiness, Option<CreatedPath>, Address)> {
-    match address {
-        Address::Unix(path) => {
-            if let Err(error) = private_parents(path) {
-                warnings.push(error);
-            }
-            stale_precheck(path);
-            let PrivateListener {
-                listener,
-                path: guard,
-                warnings: options,
-            } = bind_private_with_permissions(path, 5, mode)?;
-            warnings.extend(options);
-            let port = register(listener.into())?;
-            Ok((port, Some(guard), address.clone()))
-        }
-        Address::Tcp(address) => {
-            let socket = Socket::new(
-                Domain::for_address(*address),
-                Type::STREAM,
-                Some(Protocol::TCP),
-            )?;
-            if let Err(error) = socket.set_reuse_address(true) {
-                warnings.push(error);
-            }
-            if address.is_ipv6()
-                && let Err(error) = socket.set_only_v6(true)
-            {
-                warnings.push(error);
-            }
-            socket.set_nonblocking(true)?;
-            socket.bind(&SockAddr::from(*address))?;
-            socket.listen(5)?;
-            let actual = socket
-                .local_addr()?
-                .as_socket()
-                .ok_or(io::ErrorKind::InvalidData)?;
-            Ok((register(socket.into())?, None, Address::Tcp(actual)))
-        }
-        Address::Abstract(bytes) => {
-            #[cfg(target_os = "linux")]
-            {
-                if bytes.len() != 108 || bytes[0] != 0 || bytes.iter().all(|byte| *byte == 0) {
-                    return Err(io::ErrorKind::InvalidInput.into());
-                }
-                let socket = Socket::new(Domain::UNIX, Type::STREAM, None)?;
-                if let Err(error) = socket.set_reuse_address(true) {
-                    warnings.push(error);
-                }
-                socket.set_nonblocking(true)?;
-                socket.bind(&SockAddr::unix(std::ffi::OsStr::from_bytes(bytes))?)?;
-                socket.listen(5)?;
-                Ok((register(socket.into())?, None, address.clone()))
-            }
-            #[cfg(not(target_os = "linux"))]
-            {
-                let _ = bytes;
-                Err(io::ErrorKind::Unsupported.into())
-            }
-        }
-    }
+/// Whole-registry preparation state, independent of core listener attachment.
+/// Incomplete preparation can own actual listeners; it is never retry-from-zero.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Preparation {
+    /// No whole-registry preparation was admitted.
+    NotStarted,
+    /// Started but not returned successfully, including canceled or failed work.
+    Incomplete,
+    /// Completed all collection/bind attempts; inspect nonfatal failures too.
+    Complete,
 }
 impl<'scope> ManagedListeners<'scope> {
     fn check_owner(&self, owner: &Owner<'scope, '_, '_, '_>) -> Result<(), Error> {
@@ -258,6 +172,7 @@ impl<'scope> ManagedListeners<'scope> {
             maximum,
             pending: None,
             ready: None,
+            preparation: Preparation::NotStarted,
         }
     }
     /// Bind eligible entries from the immutable registry. Individual source
@@ -266,13 +181,19 @@ impl<'scope> ManagedListeners<'scope> {
     /// earlier real listeners in this value so shutdown can consume them safely.
     /// Call inside an entered Tokio runtime with its I/O driver enabled, as
     /// required by the shared descriptor registration.
-    pub fn bind_registry(
+    /// Cancellation retains partial original listeners and marks preparation
+    /// incomplete. Retire this owner to abort; repeated preparation is refused.
+    pub async fn bind_registry(
         &mut self,
         config: &Configuration,
         registry: &Registry,
         environment: &impl Environment,
         addresses_per_service: usize,
     ) -> Result<(), Error> {
+        if self.preparation != Preparation::NotStarted {
+            return Err(Error::PreparationStarted);
+        }
+        self.preparation = Preparation::Incomplete;
         let first = self.entries.len();
         for (index, service) in registry.services().iter().enumerate().rev() {
             if !service.bind {
@@ -299,16 +220,16 @@ impl<'scope> ManagedListeners<'scope> {
                     diagnostic,
                 });
             }
-            let mode = if matches!(config.get_yesno(&service.name, b"UNIX_MATCH_UID"), Ok(true)) {
-                0o700
+            let access = if matches!(config.get_yesno(&service.name, b"UNIX_MATCH_UID"), Ok(true)) {
+                LocalListenerAccess::Owner
             } else if matches!(config.get_yesno(&service.name, b"UNIX_MATCH_GID"), Ok(true)) {
-                0o770
+                LocalListenerAccess::Group
             } else {
-                0o777
+                LocalListenerAccess::Everyone
             };
             let start = self.entries.len();
             for address in addresses.addresses {
-                match self.bind_address(index, address, mode)? {
+                match self.bind_address(index, address, access).await? {
                     BindOutcome::Bound { .. } | BindOutcome::Failed => {}
                 }
             }
@@ -317,25 +238,35 @@ impl<'scope> ManagedListeners<'scope> {
         // setup_service binds in config iterator order, while each listening
         // DLL and the service DLL are head-inserted for later traversal.
         self.entries[first..].sort_by_key(|entry| entry.service);
+        self.preparation = Preparation::Complete;
         Ok(())
+    }
+    /// Actual whole-registry preparation state, including abandoned work.
+    #[must_use]
+    pub const fn preparation(&self) -> Preparation {
+        self.preparation
     }
     /// Bind one explicit endpoint using the ARM reuse/V6ONLY/backlog5 policy.
     /// Direct ephemeral TCP addresses are permitted for owned local fixtures;
     /// configuration collection never turns PORT0 into an ephemeral listener.
     /// Requires an entered Tokio runtime with its I/O driver enabled.
-    pub fn bind_address(
+    pub async fn bind_address(
         &mut self,
         service: usize,
         address: Address,
-        mode: u32,
+        access: LocalListenerAccess,
     ) -> Result<BindOutcome, Error> {
         if self.entries.len() == self.maximum {
             return Err(Error::Capacity);
         }
         let index = self.entries.len();
         let mut warnings = Vec::new();
-        match bound(&address, mode, &mut warnings) {
-            Ok((port, path, address)) => self.entries.push(Entry {
+        match bind::prepare(&address, access, &mut warnings).await {
+            Ok(bind::Bound {
+                port,
+                path,
+                address,
+            }) => self.entries.push(Entry {
                 port: Some(port),
                 path,
                 address,
@@ -370,22 +301,14 @@ impl<'scope> ManagedListeners<'scope> {
         if self.entries.len() == self.maximum {
             return Err(Error::Capacity);
         }
-        let (descriptor, address) = match socket {
-            ActivatedSocket::Unix(socket) => {
-                socket.set_nonblocking(true).map_err(Error::Io)?;
-                let address = socket.local_addr().map_err(Error::Io)?;
-                let address = address.as_pathname().ok_or(Error::Mapping)?.to_owned();
-                (OwnedFd::from(socket), Address::Unix(address))
-            }
-            ActivatedSocket::Tcp(socket) => {
-                socket.set_nonblocking(true).map_err(Error::Io)?;
-                let address = socket.local_addr().map_err(Error::Io)?;
-                (OwnedFd::from(socket), Address::Tcp(address))
-            }
-        };
+        let bind::Bound {
+            port,
+            address,
+            path,
+        } = bind::adopt(socket).map_err(Error::Io)?;
         self.entries.push(Entry {
-            port: Some(register(descriptor).map_err(Error::Io)?),
-            path: None,
+            port: Some(port),
+            path,
             address,
             service,
             id: None,
@@ -543,13 +466,25 @@ impl<'scope> ManagedListeners<'scope> {
     }
     /// Original actual descriptor, borrowed for a future checked inheritance port.
     /// Callers must not accept/read/modify it as an ARM readiness observation.
-    pub fn descriptor(&self, id: ListenerId<'scope>) -> Option<BorrowedFd<'_>> {
+    pub fn descriptor(
+        &self,
+        id: ListenerId<'scope>,
+    ) -> Option<gnunet_native::network::BorrowedStream<'_>> {
         self.entries
             .iter()
             .find(|entry| entry.id == Some(id))?
             .port
             .as_ref()
-            .map(RegisteredReadiness::as_fd)
+            .map(|port| {
+                #[cfg(unix)]
+                {
+                    port.as_fd()
+                }
+                #[cfg(windows)]
+                {
+                    port.as_socket()
+                }
+            })
     }
     /// Actual bound endpoint for a listener, including the chosen fixture port.
     pub fn address(&self, index: usize) -> Option<&Address> {

@@ -3,7 +3,7 @@
     reason = "Assertions identify actual CLI output and joined-worker fixture failures; I/O and extraction errors remain returned to the harness."
 )]
 use super::*;
-use std::{ffi::OsString, fs, os::unix::fs::DirBuilderExt, sync::atomic::AtomicU64};
+use std::{ffi::OsString, fs, sync::atomic::AtomicU64};
 
 struct Directory(PathBuf);
 impl Directory {
@@ -14,7 +14,7 @@ impl Directory {
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
-        fs::DirBuilder::new().mode(0o700).create(&path)?;
+        crate::fs::create_private_directory(&path)?;
         Ok(Self(path))
     }
 }

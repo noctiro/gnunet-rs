@@ -11,6 +11,14 @@ impl<'id, 'slots, 'seen, S: StorePort, L: LocationSigner, R: PeerRouter>
         let Some(mut admin) = self.admin.take() else {
             return Poll::Pending;
         };
+        if (self.closing || self.peer(admin.client).is_none())
+            && admin.output.is_none()
+            && admin.pending.as_ref().is_none_or(|job| !job.admitted())
+        {
+            // A parsed IPC request is not an admitted filesystem mutation.
+            // Retire a capacity waiter without registering/removing after stop.
+            return Poll::Ready(());
+        }
         if let Some(job) = &mut admin.pending {
             match job.poll(cx) {
                 Poll::Pending => {

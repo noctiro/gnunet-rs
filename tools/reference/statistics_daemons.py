@@ -555,7 +555,7 @@ def run_suite(args):
         def start_rust(generation, configuration=r_conf, socket_path=r_socket):
             command = [str(active["rust_service"]), "-c", str(configuration), "-L", "ERROR"]
             service = harness.start("rust-service-" + str(generation), command)
-            harness.ready(service, socket_path, b"READY statistics wire=0.29.1 persistence=official-set-snapshot authentication=kernel-unix\n")
+            harness.ready(service, socket_path, b"READY statistics persistence=official-set-snapshot\n")
             return service
         rust_server = start_rust(0)
         c_set(harness, active["c_client"], r_conf, COUNTER, 55, persistent=True)

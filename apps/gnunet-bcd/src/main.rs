@@ -6,9 +6,7 @@ use std::{
     process::ExitCode,
 };
 type Failure = Box<dyn Error>;
-#[cfg(unix)]
 mod run;
-#[cfg(unix)]
 mod settings;
 #[derive(Debug)]
 struct SelectedFailure {
@@ -42,25 +40,14 @@ fn main() -> ExitCode {
         }
     }
 }
-#[cfg(not(unix))]
-fn entry() -> Result<(), Failure> {
-    Err("normal BCD renderer ownership requires Unix".into())
-}
-#[cfg(unix)]
 #[expect(
     unsafe_code,
-    reason = "Unique first-exec inherited descriptor ownership transfer before configuration/logger/runtime/listener/child construction"
+    reason = "Once-only native inheritance capture before configuration, logger, runtime or child construction"
 )]
-fn capture() -> Result<gnunet_service_startup::CapturedStartup, Failure> {
-    // SAFETY: first action of this fresh executable; no competing FD owner,
-    // runtime, logger, environment capture, thread or child exists yet.
-    Ok(unsafe {
-        gnunet_service_startup::capture_from_environment(
-            gnunet_service_startup::InheritedMode::CloseAfterConfiguredBind,
-        )?
-    })
+fn capture() -> Result<gnunet_service_startup::ClientStartup, Failure> {
+    // SAFETY: first startup action before logger, files, runtime or workers.
+    Ok(unsafe { gnunet_service_startup::ClientStartup::capture() }?)
 }
-#[cfg(unix)]
 fn entry() -> Result<(), Failure> {
     use gnunet_program_host::{
         logging::Logger,
@@ -69,21 +56,8 @@ fn entry() -> Result<(), Failure> {
         reporting::Reporter,
         shared_clock::SharedClock,
     };
-    use gnunet_service_startup::InheritedResources;
     use std::sync::Arc;
     let captured = capture()?;
-    match captured.inherited {
-        InheritedResources::CloseAfterBind(hold) => {
-            let offered = !hold.is_empty();
-            let closed = hold.abort();
-            if offered {
-                return Err(format!("BCD PROGRAM binds its selected TCP listener; unexpected inherited descriptors actually retired: {closed:?}").into());
-            }
-        }
-        InheritedResources::Listeners(_) => {
-            return Err("unexpected BCD listener activation mode".into());
-        }
-    }
     let clock = SharedClock::native(256)?;
     let configuration = gnunet_config::Configuration::create(
         Arc::new(gnunet_config::ProjectData::default()),
@@ -93,10 +67,11 @@ fn entry() -> Result<(), Failure> {
     let mut logger = Logger::new(b"gnunet-bcd", std::process::id(), false)?;
     let prepared=program::prepare(configuration,Invocation{
         binary_name:b"gnunet-bcd",select_default_filename:true,defaults:Defaults::Native,
-        help:Some(b"HTTP GNS business cards. -p/--port PORT selects the listening port (8888). GET / and /full serve forms; /submit/simple and /submit/full validate the typed GNS zone key and generate a real PDF, or QR PNG when gnspng is present. HEAD serves the simple form headers without rendering. [bcd-rust] selects numeric BIND_TO, absolute PDFLATEX/GHOSTSCRIPT/LAUNCHER/TEMP_ROOT, finite connection/job/application-byte and head/whole/output/child cleanup limits. Tool absence fails only that generation request with HTTP500. No shell, shell-escape, arbitrary template, hidden task or provider fallback. Standard PROGRAM -c/-L/-l/-h/-v, original parent control, SIGINT and SIGTERM apply."),
+        help:Some(b"Serve GNS business-card forms and generate PDF or QR PNG cards. -p/--port selects the port (8888). [bcd-rust] selects numeric BIND_TO, absolute PDFLATEX/GHOSTSCRIPT paths, private TEMP_ROOT and resource limits. Windows launches tools directly; Unix also selects LAUNCHER. Tools run only on generation requests. See README for routes and configuration."),
     },arguments.options(),std::env::args_os(),&program::Environment::capture(),&mut NlsDisabled,&mut logger,&clock,&mut io::stdout().lock(),&mut io::stderr().lock());
     let reporter = Reporter::new(logger, clock.clone());
-    if let Some(notice) = captured.control_notice {
+    #[cfg(unix)]
+    if let Some(notice) = captured.notice {
         reporter.debug(
             "bcd.parent.notice",
             format_args!("original parent control declaration: {notice:?}"),
@@ -125,7 +100,7 @@ fn entry() -> Result<(), Failure> {
             settings,
             canonical,
             reporter.clone(),
-            captured.parent_control,
+            captured.parent,
         ))
     })();
     if let Err(error) = &result {

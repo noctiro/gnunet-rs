@@ -198,7 +198,7 @@ impl Services {
         shutdown: std::pin::Pin<&mut S>,
         observers: crate::bind_resolution::Observers<'_>,
     ) -> Result<Option<crate::listeners::PreparedListeners>, Failure> {
-        if settings.hostname.is_some() && activation.sockets.is_empty() {
+        if settings.hostname.is_some() && activation.is_empty() {
             self.context.connect_live(self.live.clone())?;
         }
         crate::bind_resolution::prepare(
@@ -277,7 +277,7 @@ pub enum Diagnostic {
     Reversal(ReversalEvent),
     /// Actual source loss, local reattachment and original callback retirement.
     Transport(TransportEvent),
-    /// Actual healthy identity retirement and verified next-generation readiness.
+    /// Local identity retirement and verified next-generation readiness.
     Identity(IdentityEvent),
     /// Actual replay worker initialization, persistence and retirement outcome.
     Replay(gnunet_tcp_replay_host::Progress),
@@ -542,7 +542,9 @@ pub async fn foreground_prepared_with_services_and_statistics<F: StatisticsFacto
             if let Some(identity) = pils.identity() {
                 if let Some(original) = &continuity { original.verify(identity, source.as_ref())?; }
                 if pils.local_key_status() != pc::LocalKeyStatus::Matched {
+                    if let Some(original)=&mut continuity { original.guard_io(source.as_ref())?; }
                     let master = gnunet_pils_host::identity::load_existing(&local_key.ikm_file)?;
+                    if let Some(original)=&mut continuity { original.guard_io(source.as_ref())?; }
                     if pils.enable_local_key(master)? != pc::LocalKeyStatus::Matched {
                         return Err(Error::Authentication.into());
                     }
@@ -562,7 +564,6 @@ pub async fn foreground_prepared_with_services_and_statistics<F: StatisticsFacto
                 Connection(usize, Connection),
             }
             let event = {
-                let mut driving = std::pin::pin!(pils.drive(None));
                 let mut resolving = std::pin::pin!(resolver.drive_waiting(None, &mut *observe_resolver));
                 poll_fn(|cx| {
                     if failed() { return Poll::Ready(Ok(Initial::Stop)); }
@@ -584,12 +585,15 @@ pub async fn foreground_prepared_with_services_and_statistics<F: StatisticsFacto
                         let part = (cursor + offset) % 4;
                         match part {
                             0 => {
-                                if let Poll::Ready(result) = driving.as_mut().poll(cx) {
+                                let result=match &mut continuity {
+                                    Some(original)=>original.poll_source(&mut pils,source.as_ref(),cx),
+                                    None=>pils.poll_guarded(cx,None,&mut ||Ok(())).map(|result|result.map_err(|error|Box::new(error) as Failure)),
+                                };
+                                if let Poll::Ready(result) = result {
                                     cursor = 1;
                                     return Poll::Ready(
                                         result
-                                            .map(Initial::Pils)
-                                            .map_err(|e| Box::new(e) as Failure),
+                                            .map(Initial::Pils),
                                     );
                                 }
                             }
@@ -602,7 +606,7 @@ pub async fn foreground_prepared_with_services_and_statistics<F: StatisticsFacto
                             }
                             index => {
                                 let n = index - 1;
-                                if connections[n].is_some() {
+                                if connections[n].is_some() || continuity.as_ref().is_some_and(identity::Continuity::paused) {
                                     continue;
                                 }
                                 let dial = if n == 0 { &mut ps } else { &mut tr };
@@ -635,7 +639,17 @@ pub async fn foreground_prepared_with_services_and_statistics<F: StatisticsFacto
                     return Ok(total);
                 }
                 Initial::Activity => {}
-                Initial::Pils(original) => identity::observe(original, observe_pils)?,
+                Initial::Pils(original) => {
+                    if identity::observe_initial(original,observe_pils,&mut continuity,source.clone())? {
+                        // These streams carried no domain request. Discard only
+                        // actual old acquisitions and keep original notices.
+                        for (index,connection) in connections.iter_mut().enumerate() {
+                            if connection.take().is_some() {
+                                if index==0 { ps.restart()?; } else { tr.restart()?; }
+                            }
+                        }
+                    }
+                },
                 Initial::Connection(index, connection) => connections[index] = Some(connection),
             }
             tokio::task::yield_now().await;

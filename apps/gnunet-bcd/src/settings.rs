@@ -82,17 +82,34 @@ impl Arguments {
             terminate_grace: time(b"TERM_GRACE", d.terminate_grace)?,
             cleanup_grace: time(b"CLEANUP_GRACE", d.cleanup_grace)?,
         };
+        #[cfg(unix)]
         let launcher = if c.get(section, b"LAUNCHER").is_some() {
             c.get_filename(section, b"LAUNCHER", &gnunet_config::ProcessEnvironment)?
         } else {
             c.project_data()
                 .libexec_binary_path(b"gnunet-arm-spawn-helper")?
         };
+        #[cfg(unix)]
+        let pdflatex = Some(path(b"PDFLATEX", PathBuf::from("/usr/bin/pdflatex"))?);
+        #[cfg(unix)]
+        let ghostscript = Some(path(b"GHOSTSCRIPT", PathBuf::from("/usr/bin/gs"))?);
+        #[cfg(windows)]
+        let pdflatex = c
+            .get(section, b"PDFLATEX")
+            .map(|_| c.get_filename(section, b"PDFLATEX", &gnunet_config::ProcessEnvironment))
+            .transpose()?;
+        #[cfg(windows)]
+        let ghostscript = c
+            .get(section, b"GHOSTSCRIPT")
+            .map(|_| c.get_filename(section, b"GHOSTSCRIPT", &gnunet_config::ProcessEnvironment))
+            .transpose()?;
         let renderer = Arc::new(provider::Settings {
-            pdflatex: path(b"PDFLATEX", PathBuf::from("/usr/bin/pdflatex"))?,
-            ghostscript: path(b"GHOSTSCRIPT", PathBuf::from("/usr/bin/gs"))?,
+            pdflatex,
+            ghostscript,
+            #[cfg(unix)]
             launcher,
             temp_root: path(b"TEMP_ROOT", std::env::temp_dir())?,
+            #[cfg(unix)]
             configuration: Arc::new(c.duplicate()?),
             limits: provider_limits,
         });

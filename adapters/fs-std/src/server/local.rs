@@ -158,6 +158,9 @@ impl<'id, 'slots, 'seen, S: StorePort, L: LocationSigner, R: PeerRouter>
         if let Some(mut local) = self.local.take() {
             if !self.live(local.lookup) {
                 if let Some(job) = &mut local.resolve {
+                    if !job.admitted() {
+                        return Poll::Ready(());
+                    }
                     match job.poll(cx) {
                         Poll::Pending => {
                             self.local = Some(local);

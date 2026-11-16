@@ -9,24 +9,43 @@ license.workspace = true
 workspace = true
 
 [features]
-default = []
+default = ["cadet", "did", "fs", "identity", "namestore", "peerstore", "reclaim", "regex", "revocation", "statistics", "transport", "vpn"]
+cadet = ["gnunet/official-cadet-client"]
+did = ["dep:gnunet-native", "gnunet/official-did-client"]
+fs = ["runtime", "gnunet/official-fs-network", "gnunet/fs-compression"]
+identity = ["dep:gnunet-native", "gnunet/official-identity-client"]
+namestore = ["dep:gnunet-native", "dep:gnunet-service-runtime", "gnunet/official-namestore-client", "gnunet/gnsrecord-text"]
+peerstore = ["gnunet/official-peerstore-client"]
+reclaim = ["gnunet/official-reclaim-client", "gnunet/reclaim-credentials"]
+regex = ["gnunet/official-regex-client"]
+revocation = ["dep:gnunet-service-runtime", "gnunet/revocation", "gnunet/official-revocation-client"]
+statistics = ["runtime", "gnunet/official-ipc"]
+transport = ["runtime", "gnunet/official-transport-observation"]
+vpn = ["gnunet/official-vpn-client"]
+runtime = ["dep:gnunet-native", "dep:gnunet-ipc-unix", "dep:gnunet-client", "dep:gnunet-client-host", "dep:gnunet-config", "dep:gnunet-program-host", "dep:gnunet-resolver-broker", "dep:gnunet-service-runtime", "dep:gnunet-service-startup", "dep:gnunet-types"]
 
 [dependencies]
-gnunet = { path = "../../crates/gnunet", default-features = false, features = ["official-ipc", "official-fs-network", "fs-compression", "official-cadet-client", "official-peerstore-client", "official-transport-observation", "official-vpn-client", "official-regex-client", "official-identity-client", "official-namestore-client", "official-reclaim-client", "official-did-client", "reclaim-credentials", "revocation", "official-revocation-client", "gnsrecord-text"] }
+gnunet = { path = "../../crates/gnunet", default-features = false }
 serde_json = { workspace = true, features = ["std"] }
 tokio = { workspace = true, features = ["rt", "net", "time", "fs", "signal", "sync"] }
 zeroize.workspace = true
 
 # The continuous consumer uses the same original configured native statistics
 # owner/Clock/Resolver as services; one Runtime is created only for this command.
+[target.'cfg(any(unix, windows))'.dependencies]
+gnunet-native = { workspace = true, optional = true }
+gnunet-ipc-unix = { workspace = true, optional = true }
+gnunet-client = { workspace = true, optional = true }
+gnunet-client-host = { workspace = true, optional = true }
+gnunet-config = { workspace = true, optional = true }
+gnunet-program-host = { workspace = true, features = ["resolver-broker"], optional = true }
+gnunet-resolver-broker = { workspace = true, optional = true }
+gnunet-service-runtime = { workspace = true, optional = true }
+gnunet-service-startup = { workspace = true, optional = true }
+gnunet-types = { workspace = true, optional = true }
+
 [target.'cfg(unix)'.dependencies]
-gnunet-ipc-unix.workspace = true
-gnunet-client.workspace = true
-gnunet-client-host.workspace = true
-gnunet-config.workspace = true
-gnunet-program-host = { workspace = true, features = ["resolver-broker"] }
-gnunet-resolver-broker.workspace = true
-gnunet-service-runtime.workspace = true
-gnunet-service-startup.workspace = true
-gnunet-types.workspace = true
 nix = { workspace = true, features = ["poll", "fs"] }
+
+[target.'cfg(windows)'.dev-dependencies]
+socket2.workspace = true

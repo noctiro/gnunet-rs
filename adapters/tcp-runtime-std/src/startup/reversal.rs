@@ -862,7 +862,6 @@ mod tests {
     };
     use gnunet_tcp_communicator_host::{Capacity, ManagerCapacity};
     use std::{num::NonZeroUsize, task::Waker};
-    use tokio::net::UnixStream;
 
     #[tokio::test(flavor = "current_thread")]
     #[expect(
@@ -883,12 +882,12 @@ mod tests {
         let mut completions = (0..8)
             .map(|_| CompletionSlot::default())
             .collect::<Vec<_>>();
-        let (peerstore, _peerstore_remote) = UnixStream::pair()?;
-        let (transport, _transport_remote) = UnixStream::pair()?;
+        let (peerstore, _peerstore_remote) = crate::test_support::pair().await?;
+        let (transport, _transport_remote) = crate::test_support::pair().await?;
         let mut pool = crate::Pool::new(Setup {
             services: [
-                Connection::from_unix(peerstore),
-                Connection::from_unix(transport),
+                Connection::from_tcp(peerstore),
+                Connection::from_tcp(transport),
             ],
             identity: Identity::from_keys(&keys),
             scope: &mut scope,

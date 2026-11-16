@@ -304,6 +304,10 @@ pub struct Report {
     pub forced_reconnects: u64,
     /// Actual original cancellation refusals, without inferring retirement.
     pub cancellation_errors: u64,
+    /// Original exposed CORE_SEND frames returned without a whole-write fact.
+    pub partial_retirements: u64,
+    /// Partial retirements whose original immutable frame was tunnel ciphertext.
+    pub encrypted_partial_retirements: u64,
 }
 /// One actual caller-visible action. Successful Book effects were already
 /// synchronously consumed; returned tokens remain observations of that action.

@@ -9,6 +9,8 @@
 )]
 #[path = "../../tcp-communicator-std/tests/support/history.rs"]
 mod history;
+#[path = "support/stream.rs"]
+mod stream;
 use gnunet_crypto::{EddsaPrivateKey, Entropy};
 use gnunet_service_runtime::{
     clock::{RuntimeClock, SystemClock},
@@ -34,7 +36,7 @@ use std::{
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::{TcpListener, UnixStream},
+    net::{TcpListener, TcpStream},
 };
 type Failure = Box<dyn StdError>;
 struct Random(u8);
@@ -108,9 +110,9 @@ impl Storage {
         }
     }
 }
-fn ipc() -> Result<(Connection, UnixStream), Failure> {
-    let (a, b) = UnixStream::pair()?;
-    Ok((Connection::from_unix(a), b))
+async fn ipc() -> Result<(Connection, TcpStream), Failure> {
+    let (a, b) = stream::pair().await?;
+    Ok((Connection::from_tcp(a), b))
 }
 async fn step(
     pool: &mut Pool<'_>,
@@ -156,8 +158,8 @@ async fn fixed_one_slot_recycles_128_actual_native_generations_with_new_future_s
     let mut storage = [Storage::new()];
     let mut scope = Scope::new();
     let mut slots = [Slot::new(), Slot::new()];
-    let (ps, _ps_peer) = ipc()?;
-    let (tr, _tr_peer) = ipc()?;
+    let (ps, _ps_peer) = ipc().await?;
+    let (tr, _tr_peer) = ipc().await?;
     let mut pool = Pool::new(Setup {
         services: [ps, tr],
         identity,
@@ -223,8 +225,8 @@ async fn actual_peer_reset_returns_original_failure_token_and_keeps_other_native
     let mut backing = [Storage::new(), Storage::new()];
     let mut scope = Scope::new();
     let mut slots = [Slot::new(), Slot::new(), Slot::new(), Slot::new()];
-    let (ps, _ps_peer) = ipc()?;
-    let (tr, _tr_peer) = ipc()?;
+    let (ps, _ps_peer) = ipc().await?;
+    let (tr, _tr_peer) = ipc().await?;
     let mut pool = Pool::new(Setup {
         services: [ps, tr],
         identity: Identity::from_keys(&keys),
@@ -339,10 +341,7 @@ impl Scratch {
         getrandom::fill(&mut nonce)?;
         let label: String = nonce.iter().map(|b| format!("{b:02x}")).collect();
         let p = std::env::temp_dir().join(format!("tcp-native-{label}"));
-        {
-            use std::os::unix::fs::DirBuilderExt;
-            std::fs::DirBuilder::new().mode(0o700).create(&p)?;
-        }
+        gnunet_service_runtime::private_parents(&p.join(".fixture"))?;
         Ok(Self(p))
     }
 }
@@ -493,8 +492,8 @@ async fn actual_clock_refusal_retires_original_socket_before_typed_clean_proof_w
     let mut backing = [Storage::new()];
     let mut scope = Scope::new();
     let mut slots = [Slot::new(), Slot::new()];
-    let (ps, mut ps_peer) = ipc()?;
-    let (tr, mut tr_peer) = ipc()?;
+    let (ps, mut ps_peer) = ipc().await?;
+    let (tr, mut tr_peer) = ipc().await?;
     let mut pool = Pool::new(Setup {
         services: [ps, tr],
         identity: Identity::from_keys(&keys),
@@ -628,7 +627,11 @@ async fn cached_timestamp_range_refuses_actual_writer_fence_path_replacement() -
     let first = clock.read()?;
     let guard = d.0.join("frontier.tcp-lock");
     std::fs::rename(&guard, d.0.join("original-lock"))?;
-    std::fs::write(&guard, [])?;
+    let parent = gnunet_native::filesystem::Directory::open(&d.0)?;
+    let replacement_guard =
+        parent.create_private_file(std::ffi::OsStr::new("frontier.tcp-lock"))?;
+    replacement_guard.sync_all()?;
+    drop(replacement_guard);
     assert!(
         clock.read().is_err(),
         "cached reserved range must not bypass the original writer-fence authority check"

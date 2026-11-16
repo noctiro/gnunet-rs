@@ -1,6 +1,7 @@
 //! The original Line's initialization capability and verified session are exclusive.
 use super::{Fault, Identity, Instance, PilsIdentity, Session};
 use gnunet_conversation::Limits;
+use gnunet_pils::client::Epoch;
 
 pub(super) struct LineSession<'s, 'p> {
     phase: Phase<'s, 'p>,
@@ -11,17 +12,20 @@ pub(super) enum Observation {
     Initial,
     Refresh,
     PeerChanged,
+    SourceReplaced,
 }
 
-#[expect(
-    clippy::large_enum_variant,
-    reason = "one inline original session; boxing would add an allocation to every Line"
-)]
 enum Phase<'s, 'p> {
     Awaiting(&'s mut Instance),
     Active {
         core: Session<'s>,
         observed: PilsIdentity<'p>,
+    },
+    /// Public observation is unavailable. The original core, native channel
+    /// bindings, bytes and deadlines remain frozen under their existing owners.
+    Paused {
+        core: Session<'s>,
+        previous: PilsIdentity<'p>,
     },
     /// Consuming the original brand may fail while reserving the bounded core.
     /// This terminal state retains no initialization or identity authority.
@@ -38,20 +42,58 @@ impl<'s, 'p> LineSession<'s, 'p> {
     }
     pub(super) fn core(&self) -> Option<&Session<'s>> {
         match &self.phase {
-            Phase::Active { core, .. } => Some(core),
+            Phase::Active { core, .. } | Phase::Paused { core, .. } => Some(core),
             Phase::Awaiting(_) | Phase::Failed => None,
         }
     }
     pub(super) fn core_mut(&mut self) -> Option<&mut Session<'s>> {
         match &mut self.phase {
-            Phase::Active { core, .. } => Some(core),
+            Phase::Active { core, .. } | Phase::Paused { core, .. } => Some(core),
             Phase::Awaiting(_) | Phase::Failed => None,
         }
+    }
+    pub(super) fn previous(&self) -> Option<PilsIdentity<'p>> {
+        match &self.phase {
+            Phase::Active { observed, .. } => Some(*observed),
+            Phase::Paused { previous, .. } => Some(*previous),
+            Phase::Awaiting(_) | Phase::Failed => None,
+        }
+    }
+    pub(super) fn waiting(&self) -> bool {
+        matches!(self.phase, Phase::Paused { .. })
+    }
+    /// Fence exactly the actual lost MQ. Later unsuccessful attempts of the
+    /// same original client may fail while this first observation stays frozen.
+    pub(super) fn pause(&mut self, epoch: Epoch<'p>) -> Result<(), Fault> {
+        match &self.phase {
+            Phase::Active { observed, .. } if observed.epoch() != epoch => {
+                return Err(Fault::StaleGeneration);
+            }
+            Phase::Paused { previous, .. } => {
+                return if epoch == previous.epoch() || epoch.is_successor_of(previous.epoch()) {
+                    Ok(())
+                } else {
+                    Err(Fault::StaleGeneration)
+                };
+            }
+            Phase::Awaiting(_) => return Ok(()),
+            Phase::Failed => return Err(Fault::Conflict),
+            Phase::Active { .. } => {}
+        }
+        let Phase::Active { core, observed } = core::mem::replace(&mut self.phase, Phase::Failed)
+        else {
+            return Err(Fault::Conflict);
+        };
+        self.phase = Phase::Paused {
+            core,
+            previous: observed,
+        };
+        Ok(())
     }
     pub(super) fn observed(&self) -> Option<PilsIdentity<'p>> {
         match &self.phase {
             Phase::Active { observed, .. } => Some(*observed),
-            Phase::Awaiting(_) | Phase::Failed => None,
+            Phase::Awaiting(_) | Phase::Paused { .. } | Phase::Failed => None,
         }
     }
     /// A healthy peer change must still come from the original branded MQ.
@@ -63,6 +105,13 @@ impl<'s, 'p> LineSession<'s, 'p> {
                 Err(Fault::StaleGeneration)
             }
             Phase::Failed => Err(Fault::Conflict),
+            Phase::Paused { previous, .. }
+                if !next.epoch().is_successor_of(previous.epoch())
+                    || next.revision() <= previous.revision() =>
+            {
+                Err(Fault::StaleGeneration)
+            }
+            Phase::Paused { .. } => Ok(()),
             Phase::Awaiting(_) | Phase::Active { .. } => Ok(()),
         }
     }
@@ -75,6 +124,16 @@ impl<'s, 'p> LineSession<'s, 'p> {
         now: u64,
     ) -> Result<Observation, Fault> {
         self.check(observed)?;
+        if let Phase::Paused { core, .. } = &mut self.phase {
+            let next = Identity::new(*observed.peer().as_bytes(), observed.epoch().value())?;
+            core.replace_identity_source(&core.identity(), next)?;
+            let Phase::Paused { core, .. } = core::mem::replace(&mut self.phase, Phase::Failed)
+            else {
+                return Err(Fault::Conflict);
+            };
+            self.phase = Phase::Active { core, observed };
+            return Ok(Observation::SourceReplaced);
+        }
         if let Phase::Active {
             core,
             observed: old,

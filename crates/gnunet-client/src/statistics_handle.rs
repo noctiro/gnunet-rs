@@ -1318,6 +1318,51 @@ impl<'owner, const A: usize, const N: usize, const W: usize, const WW: usize, co
         }
         let timeout = Duration(self.backoff.0.checked_mul(5).ok_or(Error::Overflow)?);
         let deadline = AbsoluteTime::from_micros(now.as_micros().saturating_add(timeout.0));
+        self.begin_draining(deadline)
+    }
+    /// Apply the same queue and processing-barrier policy with an explicit,
+    /// finite local wait budget independent of connection retry backoff. This
+    /// changes no wire messages or confirmation requirements. A rejected budget
+    /// changes no queued action; immediate/discard cases need no wait budget.
+    pub fn begin_destroy_with_timeout(
+        &mut self,
+        sync_first: bool,
+        now: AbsoluteTime,
+        timeout: Duration,
+    ) -> Result<(), Error> {
+        self.open()?;
+        if !sync_first || self.connection.is_none() || self.mq_nontransmitted_length() == 0 {
+            return self.finish_destroy(DestroyOutcome::Discarded, Error::Cancelled);
+        }
+        self.drain_with_timeout(now, timeout)
+    }
+    /// Request the official processing barrier on the current connection even
+    /// when its transmit queue is empty. This explicit Rust policy differs from
+    /// `begin_destroy`'s C queue condition, but uses the same DISCONNECT/CONFIRM
+    /// exchange and never replays mutations or confirms an older lost epoch.
+    /// With no current connection, retire immediately with honest discard counts.
+    pub fn begin_confirmed_destroy(
+        &mut self,
+        now: AbsoluteTime,
+        timeout: Duration,
+    ) -> Result<(), Error> {
+        self.open()?;
+        if self.connection.is_none() {
+            return self.finish_destroy(DestroyOutcome::Discarded, Error::Cancelled);
+        }
+        self.drain_with_timeout(now, timeout)
+    }
+    fn drain_with_timeout(&mut self, now: AbsoluteTime, timeout: Duration) -> Result<(), Error> {
+        if timeout.0 == 0 || timeout.0 == u64::MAX {
+            return Err(Error::InvalidInput);
+        }
+        let deadline = now
+            .as_micros()
+            .checked_add(timeout.0)
+            .ok_or(Error::Overflow)?;
+        self.begin_draining(AbsoluteTime::from_micros(deadline))
+    }
+    fn begin_draining(&mut self, deadline: AbsoluteTime) -> Result<(), Error> {
         for index in 0..A {
             if self.actions[index].action.is_some_and(|action| {
                 action.queued && matches!(action.kind, ActionKind::Get | ActionKind::Watch(_))
@@ -1546,6 +1591,91 @@ mod tests {
         let out = h.next_request(e, &mut [0; 32])?.ok_or(Error::NotReady)?;
         h.on_frame_written(e, out.transmit)?;
         Ok(out)
+    }
+    #[test]
+    fn confirmed_destroy_covers_idle_mutations_without_changing_c_destroy() -> Result<(), Error> {
+        for confirmed in [false, true] {
+            let mut instance = Instance::new();
+            let mut h = owner(&mut instance)?;
+            h.set(b"a", 7, false)?;
+            let epoch = h.begin_connection(AbsoluteTime::from_micros(0))?;
+            send(&mut h, epoch)?;
+            assert!(h.is_idle());
+            assert_eq!(h.mq_nontransmitted_length(), 0);
+            if confirmed {
+                h.begin_confirmed_destroy(AbsoluteTime::from_micros(1), Duration(10))?;
+                let mut frame = [0; 32];
+                let barrier = h.next_request(epoch, &mut frame)?.ok_or(Error::NotReady)?;
+                assert_eq!(barrier.kind, OutboundKind::Disconnect);
+                assert_eq!(&frame[..barrier.len], b"\0\x04\0\xae");
+                h.on_frame_written(epoch, barrier.transmit)?;
+                h.receive(epoch, b"\0\x04\0\xaf", AbsoluteTime::from_micros(3))?;
+                assert!(h.ready_destroy_pending());
+                h.finalize_ready_destroy()?;
+            } else {
+                h.begin_destroy(true, AbsoluteTime::from_micros(1))?;
+            }
+            let report = h.take_destroy_report().ok_or(Error::NotReady)?;
+            assert_eq!(
+                report.outcome,
+                if confirmed {
+                    DestroyOutcome::ProcessingConfirmed
+                } else {
+                    DestroyOutcome::Discarded
+                }
+            );
+            assert_eq!(report.queued_mutations_discarded, 0);
+            assert_eq!(report.unconfirmed_mutations, u64::from(!confirmed));
+            assert!(h.is_closed());
+        }
+        Ok(())
+    }
+    #[test]
+    fn confirmed_destroy_preserves_lost_epoch_debt_and_exact_deadline() -> Result<(), Error> {
+        for expired in [false, true] {
+            let mut instance = Instance::new();
+            let mut h = owner(&mut instance)?;
+            h.set(b"a", 7, false)?;
+            let old = h.begin_connection(AbsoluteTime::from_micros(0))?;
+            send(&mut h, old)?;
+            h.connection_lost(old, Error::Io, AbsoluteTime::from_micros(1))?;
+            h.set(b"b", 9, false)?;
+            let now = h.next_wakeup().ok_or(Error::NotReady)?;
+            let epoch = h.begin_connection(now)?;
+            send(&mut h, epoch)?;
+            assert!(h.is_idle());
+            assert_eq!(
+                h.begin_confirmed_destroy(now, Duration(0)),
+                Err(Error::InvalidInput)
+            );
+            assert!(!h.is_destroying());
+            h.begin_confirmed_destroy(now, Duration(10))?;
+            let deadline = AbsoluteTime::from_micros(now.as_micros() + 10);
+            assert_eq!(h.destruction_deadline(), Some(deadline));
+            assert_eq!(send(&mut h, epoch)?.kind, OutboundKind::Disconnect);
+            assert_eq!(
+                h.receive(old, b"\0\x04\0\xaf", now),
+                Err(Error::StaleGeneration)
+            );
+            if expired {
+                h.tick(deadline)?;
+            } else {
+                h.receive(epoch, b"\0\x04\0\xaf", now)?;
+                h.finalize_ready_destroy()?;
+            }
+            let report = h.take_destroy_report().ok_or(Error::NotReady)?;
+            assert_eq!(
+                report.outcome,
+                if expired {
+                    DestroyOutcome::Deadline
+                } else {
+                    DestroyOutcome::ProcessingConfirmed
+                }
+            );
+            assert_eq!(report.queued_mutations_discarded, 0);
+            assert_eq!(report.unconfirmed_mutations, if expired { 2 } else { 1 });
+        }
+        Ok(())
     }
     #[test]
     fn generation_exhaustion_retires_slots_without_aliasing() -> Result<(), Error> {

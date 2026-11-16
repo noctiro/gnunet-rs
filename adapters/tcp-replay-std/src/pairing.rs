@@ -1,13 +1,12 @@
 //! V2 public frontier format and the actual bootstrap durability barrier. This
 //! parses only explicitly selected Rust public state, never any private key.
 use gnunet_crypto::EddsaPublicKey;
+use gnunet_native::{
+    DirectorySync,
+    filesystem::{Directory, EntryInfo, FileIdentity, file_info, private_single_file_identity},
+};
 use std::{
-    fs::{self, File, OpenOptions},
-    io::{self, Read},
-    os::unix::{
-        ffi::OsStrExt,
-        fs::{MetadataExt, OpenOptionsExt},
-    },
+    io::{self, Read, Seek, SeekFrom},
     path::Path,
 };
 /// Exact bounded V2 public image, including replay identity and min generation.
@@ -58,71 +57,74 @@ impl FrontierImage {
         Ok(value)
     }
 }
-fn inode(meta: &fs::Metadata) -> (u64, u64) {
-    (meta.dev(), meta.ino())
+pub(crate) struct Inspection {
+    pub image: FrontierImage,
+    pub directory_sync: DirectorySync,
 }
-fn check_file(meta: &fs::Metadata) -> io::Result<()> {
-    if !meta.is_file()
-        || meta.nlink() != 1
-        || meta.len() != FRONTIER_BYTES as u64
-        || meta.mode() & 0o077 != 0
-    {
-        return Err(io::Error::other(
-            "not an exact private V2 public frontier file",
-        ));
-    }
-    Ok(())
-}
-pub(crate) fn inspect(path: &Path) -> io::Result<FrontierImage> {
-    if !path.is_absolute() || path.file_name().is_none() || path.as_os_str().as_bytes().contains(&0)
+/// Read only the original exact selected object and report its actual native
+/// barriers. An equal-byte replacement never supplies this observation.
+pub(crate) fn inspect(path: &Path) -> io::Result<Inspection> {
+    if !path.is_absolute()
+        || path.file_name().is_none()
+        || path.as_os_str().as_encoded_bytes().contains(&0)
     {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "explicit absolute public frontier path required",
         ));
     }
-    let parent = path
-        .parent()
-        .ok_or_else(|| io::Error::other("frontier parent missing"))?;
-    let directory = File::open(parent)?;
-    let parent_meta = directory.metadata()?;
-    if !parent_meta.is_dir() {
-        return Err(io::Error::other("frontier parent is not a directory"));
+    let parent = path.parent().ok_or(io::ErrorKind::InvalidInput)?;
+    let name = path.file_name().ok_or(io::ErrorKind::InvalidInput)?;
+    let directory = Directory::open(parent)?;
+    directory.validate_namespace()?;
+    let parent_id = FileIdentity::of(directory.as_file())?;
+    let mut file = directory.open_file_for_sync(name)?;
+    let file_id = private_single_file_identity(&file)?;
+    let EntryInfo::File(info) = file_info(&file)? else {
+        return Err(io::Error::other("ordinary TCP frontier required"));
+    };
+    if info.bytes != FRONTIER_BYTES as u64 || !directory.same_file(name, &file)? {
+        return Err(io::Error::other("exact original V2 TCP frontier required"));
     }
-    let mut file = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-        .open(path)?;
-    let original = file.metadata()?;
-    check_file(&original)?;
     let mut bytes = [0; FRONTIER_BYTES];
     file.read_exact(&mut bytes)?;
     let image = FrontierImage::decode(bytes)?;
-    // Actual file and directory barriers precede any Bound snapshot command.
     file.sync_all()?;
-    directory.sync_all()?;
-    let actual = fs::symlink_metadata(path)?;
-    check_file(&actual)?;
-    let dir_actual = fs::metadata(parent)?;
-    if actual.file_type().is_symlink()
-        || inode(&actual) != inode(&original)
-        || inode(&file.metadata()?) != inode(&original)
-        || !dir_actual.is_dir()
-        || inode(&dir_actual) != inode(&parent_meta)
+    let directory_sync = directory.sync()?;
+    if directory_sync == DirectorySync::Unavailable {
+        file.sync_all()?;
+    }
+    file.seek(SeekFrom::Start(0))?;
+    let mut actual = [0; FRONTIER_BYTES];
+    file.read_exact(&mut actual)?;
+    let mut extra = [0];
+    let selected = Directory::open(parent)?;
+    selected.validate_namespace()?;
+    if actual != bytes
+        || file.read(&mut extra)? != 0
+        || file_info(&file)? != EntryInfo::File(info)
+        || private_single_file_identity(&file)? != file_id
+        || !directory.same_file(name, &file)?
+        || FileIdentity::of(selected.as_file())? != parent_id
+        || FileIdentity::of(directory.as_file())? != parent_id
     {
         return Err(io::Error::other(
             "original frontier or directory changed during pairing",
         ));
     }
-    Ok(image)
+    Ok(Inspection {
+        image,
+        directory_sync,
+    })
 }
 pub(crate) fn barrier(
     path: &Path,
     id: [u8; 32],
     local: EddsaPublicKey,
     generation: u64,
-) -> io::Result<()> {
-    let image = inspect(path)?;
+) -> io::Result<DirectorySync> {
+    let inspected = inspect(path)?;
+    let image = inspected.image;
     if image.dirty
         || image.reserved != 0
         || image.ledger != id
@@ -134,5 +136,5 @@ pub(crate) fn barrier(
             "Unbound ledger does not match original initialized frontier",
         ));
     }
-    Ok(())
+    Ok(inspected.directory_sync)
 }

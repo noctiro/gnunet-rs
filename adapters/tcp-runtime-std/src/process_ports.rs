@@ -320,6 +320,7 @@ impl ProcessPorts {
             return Err(epoch::FinishRejected {
                 proof,
                 error: epoch::Failure {
+                    cleanup: None,
                     stage: epoch::Stage::BackendQuarantine,
                     outcome: epoch::Outcome::Unknown,
                     cause: io::Error::other("original replay worker/debt not certainly joined"),

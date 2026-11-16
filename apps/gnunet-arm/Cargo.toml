@@ -17,6 +17,7 @@ gnunet-arm-core.workspace = true
 gnunet-config.workspace = true
 gnunet-client-host.workspace = true
 gnunet-types.workspace = true
+gnunet-native.workspace = true
 tokio = { workspace = true, features = ["rt", "net", "time", "io-util", "signal", "sync"] }
 
 [lints]

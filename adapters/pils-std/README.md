@@ -1,88 +1,57 @@
 # Native PILS host
 
-`Host` adopts a authorized Unix listener and a pure PILS service owner. Its
-explicitly driven steps retain physical streams, partial framing, per-connection
-FIFO output and public address scratch. Per-client limits bound admission;
-malformed/slow clients close independently. Key-result output uses erased owners. The node supplies canonical logical time and owns listener policy/path cleanup,
-readiness, shutdown and the persistent writer lease.
+This adapter supplies the official PILS client and service over shared native
+local/TCP framing. Protocol and cryptographic decisions live in `gnunet-pils`.
 
-`identity::load_or_create` acquires an exclusive lease, creates the
-official raw32 initial-key file using fresh entropy, syncs the temporary file,
-renames it and syncs its directory. Existing malformed files fail rather than
-silently changing the identity. Read-only domain clients use `load_existing`. Unix files must be private. Native lock I/O failures preserve their cause. The lease coordinates Rust identity writers; it is not a PEERSTORE namespace lock
-or a proof that an unrelated historical writer has quiesced.
+## Service
 
-`pils-service SOCKET KEYFILE` is a controlled foreground acceptance embedding. It reports READY, uses official IPC and exits on stdin `quit`. Its1ms polling
-loop is a fixture profile, not a performance benchmark or the complete production
-launcher. The optional `service` feature adds the production `service::Host` and
-`startup::{prepare,foreground,foreground_listening}`; `gnunet-service-pils` uses that path rather than
-the fixture loop. `prepare` owns synchronous private-root setup outside service polling and
-before service tasks/workers; the caller-driven host uses common canonical Unix/TCP connections,
-kernel UID/GID checks, address ACL, bounded erased framing and an explicit shared
-absolute UTC clock. Every connection subscribes immediately. All four
-registered request families use the existing pure crypto owner; FEED broadcasts
-immutable announcements in original per-MQ FIFO order. There is no active
-periodic rollover/HELLO task in the reference. Polling performs no private-file
-I/O and creates no worker, per-peer thread or C backend.
+The `service` feature exposes `service::Host` and
+`startup::{prepare,foreground,foreground_listening}`.
+`prepare` loads configuration and the private root outside socket polling.
+The caller owns listeners, the shared clock, stop policy and readiness.
+The [normal executable](../../apps/gnunet-service-pils/) has separate Unix and
+Windows startup entries around one foreground loop.
 
-Normal preparation reads node-wide `[PILS] PROFILE` before loading or creating
-the private root. `reference029` (also `reference-0.29.1`, the default) preserves
-the official ordinary build: its empty address hash keeps PID stable across
-address changes and its HELLO signature covers metadata only. `deterministic`
-selects the official conditional build's canonical address hash and corresponding
-PID changes, with metadata and address coverage. All normal consumers must choose
-that same profile. Unknown choices fail before private creation; no signature
-verification fallback or private wire format is introduced.
+Every accepted MQ immediately subscribes to HELLO announcements. SIGN, DHKEM,
+legacy DH and FEED retain official request numbers and original-MQ FIFO ordering.
+Only FEED generates updates; there is no periodic identity/HELLO task.
 
-The standard production SERVICE captures activation/parent control first, then
-uses shared `c,d,h,L,l,v` options, selected Logger and explicit fresh-process
-daemon split. Only the child loads configuration or prepares authority/listeners;
-parent success requires the original ready byte, never EOF/clean early
-stop or a queued message. Child logging PID refresh keeps the selected owned file.
+`service::Limits` bounds clients, frame bytes, retained TX frames/bytes, address
+scratch/count and syscall slices. One fixed slot belongs to each admitted client;
+events use a reserved clients+1 queue. Partial frames survive canceled drives.
+Shutdown closes physical streams, erases pure service secrets, then releases the
+writer lease. Write progress describes local transfer, not remote processing.
 
-Its idle current-thread runtime adopts activation or prebinds TCP before USERNAME,
-then leaves that entered preparation scope for apply/initgroups. New Unix
-paths finish under the selected account. Only then does the unchanged synchronous
-`prepare` construct the durable `[PEER] PRIVATE_KEY` authority, outside host
-polling and before active service tasks. Its original root/fence/secret drop order
-is retained. Logger and Host share the same selected SharedClock/skew authority. Embedding callers must supply the configured account before private-root
-access and service tasks; the library checks real/effective primary IDs instead
-of switching them inside async work.
+## Private root
 
-`foreground_listening` consumes BoundListeners without rebinding; both
-public foreground entries use one internal driver. Ready runs only after actual
-root preparation and listener binding, with current Host identity still present. Failure of ready or service work reaches Host.close and retained cleanup
-events. Independently failed cleanup observers retain both original causes. The standard Logger handles socket/progress diagnostics. First diagnostic
-IO failure requests normal shutdown and is returned after original streams close,
-key owners erase and writer fence releases. No global logger, secret logging,
-private-key copy, background root job or synthetic write/ACK is introduced. The active source does not use the template's PILS
-SECRET_KEY_FILE. Missing/malformed credential options are explicit and UID
-matching takes priority through the shared implementation.
+`identity::load_or_create` reads or creates the exact official raw32 seed at
+`[PEER] PRIVATE_KEY`. `[PILS] SECRET_KEY_FILE` is not the active source setting.
+`load_existing` performs no creation or writer-lock acquisition.
 
-`service::Limits` bounds physical clients, single-frame size, retained per-MQ
-output records/bytes, address scratch/count and syscall slices. The host keeps
-one fixed slot per admitted client and a pre-reserved clients+1 event queue;
-there is no per-poll connection-ID allocation. Original queue/refusal/native
-causes stay observable and only the affected MQ closes. Explicit shutdown closes
-physical streams, then erases the service keys, then drops the persistent writer
-lease. Original partial frames survive canceled drives. Actual write progress
-is not a request ACK, remote delivery or persistence result.
+The namespace owner retains an original directory, persistent lock and complete
+native file identities. Files must be private regular single-link objects;
+symlinks, malformed keys and changed names fail. Unix namespaces require the
+effective owner without group/other writes. Windows checks trusted ownership and
+native DACLs; key files require the process user and private data access.
+Namespace administration and hostile replacement remain caller exclusions.
 
-The hardened Unix loader refuses symlinks, multiple links, wrong effective
-owners and group/other file permissions, verifies original held/path directory,
-lock and key inodes, and preserves the file lock through the writer's
-lifetime. Existing key and parent synchronization plus exact reread reconcile
-an earlier interrupted directory barrier. New creation uses an owned mode0600
-temporary with file sync, original-inode checks, rename, directory sync and
-original-byte readback. Failed durability returns no usable owner; malformed
-existing files never select replacement identity generation. Namespace ownership
-and exclusion of hostile path replacement remain caller requirements.
+Creation writes and syncs a private staging file, publishes that original file,
+and reads it back through the held handle. An existing key is synced and reread
+without reopening it. Only initial absence permits generation. Interrupted writes
+are not retried; independent staging-cleanup errors remain visible. A failure
+returns no usable key/lease even when publication effects are uncertain.
+`KeyLease::directory_sync` reports the actual naming barrier separately from file
+sync: Windows reports `Unavailable`. No directory durability is fabricated.
 
-One production-host model supplies a new Rust root, Unix/TCP streams,
-all four valid message families, signature/DH/KEM checks and durable reopen. It is separate from the historical C/client profiles and does not establish
-whole-node acceptance. No libgnunet implementation is used. Native private-root
-and production service modules are explicitly Unix-only; the pure crate remains
-independent of native platform/runtime dependencies.
+## Profiles
+
+`[PILS] PROFILE=reference029` (also `reference-0.29.1`, the default) selects the
+official ordinary build: an empty address hash preserves PID across FEEDs and
+HELLO signatures cover metadata. `deterministic` selects the official conditional
+address-derived identity and metadata/address signature coverage. All consumers
+must choose the same profile; invalid selections fail before private creation.
+
+## Client
 
 The optional `client` feature adds `client::Client`, a movable, explicitly polled
 Rust PILS client. The caller supplies exclusively borrowed `Instance` storage,
@@ -127,13 +96,13 @@ operation and erases the received secret; a mismatched local master key is
 explicitly unavailable until a caller supplies the matching one. Profiles are
 explicit, with no fallback between Reference029 and LSD0014 text semantics.
 
-`cargo run -p gnunet-pils-host --features client --example pils-client -- SOCKET IKM`
-is a finite direct acceptance caller. The optional third argument `recovery`
-uses explicit stdin checkpoints for the owned fault observer. It is test
-orchestration, not a production launcher, protocol field or remote guarantee. The direct and controlled-loss normal-C profiles have separate source-bound
-receipts. They cover Reference029 on owned Unix sockets; they do not establish
-conditional-build/C-over-TCP acceptance, every allocation/OS-crash combination,
-a complete production node supervisor, or full PILS/Node interoperability.
+## Example
 
-The
-existing historical profile descriptions above retain their original scope.
+```sh
+cargo run -p gnunet-pils-host --features client --example pils-client -- SOCKET IKM
+```
+
+The optional `recovery` argument enables explicit stdin checkpoints for the finite
+acceptance caller. Normal service configuration uses `gnunet-service-pils -c FILE`.
+See the central [compatibility contract](../../spec/gnunet/compatibility.md) for
+interoperability requirements and qualification scope.

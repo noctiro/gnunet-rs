@@ -1,10 +1,10 @@
 //! Explicit durable native probe observations; history never becomes fresh proof.
+use super::entropy::OsEntropy;
 use super::{
     publication::hex,
     service::{duration, target},
 };
 use gnunet::{
-    crypto::Entropy,
     fs::{Limits as UriLimits, Uri},
     fs_host::{
         Buffers,
@@ -15,17 +15,15 @@ use gnunet::{
         },
         search::availability::Summary,
     },
-    types::{AbsoluteTime, Error as ProtocolError},
+    types::AbsoluteTime,
 };
 use serde_json::{Value, json};
 use std::{
     cell::Cell,
     error::Error,
     ffi::OsStr,
-    fs::File,
     future::{Future, poll_fn},
-    io::{self, Read, Write},
-    os::unix::ffi::OsStrExt,
+    io::{self, Write},
     path::Path,
 };
 
@@ -116,9 +114,12 @@ fn history(task: &Task, event: &str) -> Value {
 
 pub(super) fn create(
     args: &[impl AsRef<OsStr>],
-    out: &mut impl Write,
+    out: &mut super::Output<'_, impl Write>,
 ) -> Result<(), Box<dyn Error>> {
-    let uri = Uri::parse(args[1].as_ref().as_bytes(), UriLimits::default())?;
+    let uri = Uri::parse(
+        crate::argument::wire_bytes(args[1].as_ref())?,
+        UriLimits::default(),
+    )?;
     let options = match uri {
         Uri::Content(_) => probe::Options::new(AbsoluteTime::from_micros(0)),
         Uri::Location(location) => probe::Options::from(DownloadOptions::location(
@@ -144,22 +145,18 @@ pub(super) fn create(
     row(out, &history(&task, "fs_probe_task_created"))?;
     Ok(())
 }
-struct EntropySource(File);
-impl Entropy for EntropySource {
-    fn fill(&mut self, output: &mut [u8]) -> Result<(), ProtocolError> {
-        self.0
-            .read_exact(output)
-            .map_err(|_| ProtocolError::Entropy)
-    }
-}
 
-pub(super) fn run(args: &[impl AsRef<OsStr>], out: &mut impl Write) -> Result<(), Box<dyn Error>> {
+pub(super) fn run(
+    args: &[impl AsRef<OsStr>],
+    out: &mut super::Output<'_, impl Write>,
+) -> Result<(), Box<dyn Error>> {
     let source = EndpointSource::unix(Path::new(args[0].as_ref()).to_path_buf());
     let mut task = Task::open(args[1].as_ref(), open_limits())?;
     let interval = match args.get(2) {
         Some(value) => duration(Some(value))?,
         None => 5_000_000,
     };
+    out.interval(interval)?;
     let deadline = target(&source, interval)?;
     let leaf = match args.get(3) {
         Some(value) => value
@@ -167,20 +164,14 @@ pub(super) fn run(args: &[impl AsRef<OsStr>], out: &mut impl Write) -> Result<()
             .to_str()
             .ok_or("leaf must be UTF-8 digits")?
             .parse::<u64>()?,
-        None => probe::sample_leaf(
-            task.manifest().content()?,
-            &mut EntropySource(File::open("/dev/urandom")?),
-        )?,
+        None => probe::sample_leaf(task.manifest().content()?, &mut OsEntropy)?,
     };
     let mut buffers = Buffers::new();
-    let result = tokio::runtime::Builder::new_current_thread()
+    let (result, signal_error) = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?
         .block_on(async {
-            let mut interrupt =
-                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
-            let mut terminate =
-                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+            let mut signals = super::stop::StopEvents::new()?;
             let stop = Cell::new(false);
             let mut original =
                 std::pin::pin!(
@@ -191,15 +182,16 @@ pub(super) fn run(args: &[impl AsRef<OsStr>], out: &mut impl Write) -> Result<()
                     })
                 );
             let actual = poll_fn(|cx| {
-                if interrupt.poll_recv(cx).is_ready() || terminate.poll_recv(cx).is_ready() {
+                if signals.poll(cx) {
                     stop.set(true);
                 }
                 original.as_mut().poll(cx)
             })
             .await;
-            Ok::<_, io::Error>(actual)
+            Ok::<_, io::Error>((actual, signals.take_failure()))
         })?;
-    match result {
+    out.cleanup()?;
+    let result = match result {
         Ok(outcome) => {
             let success = outcome.recorded.result().is_ok();
             row(
@@ -218,12 +210,13 @@ pub(super) fn run(args: &[impl AsRef<OsStr>], out: &mut impl Write) -> Result<()
             )?;
             Err(error as Box<dyn Error>)
         }
-    }
+    };
+    super::stop::retain(result, signal_error)
 }
 
 pub(super) fn status(
     args: &[impl AsRef<OsStr>],
-    out: &mut impl Write,
+    out: &mut super::Output<'_, impl Write>,
 ) -> Result<(), Box<dyn Error>> {
     let task = Task::open(args[0].as_ref(), open_limits())?;
     row(out, &history(&task, "fs_probe_task_status"))?;
@@ -231,7 +224,7 @@ pub(super) fn status(
 }
 fn local_control(
     args: &[impl AsRef<OsStr>],
-    out: &mut impl Write,
+    out: &mut super::Output<'_, impl Write>,
     cancel: bool,
 ) -> Result<(), Box<dyn Error>> {
     let mut task = Task::open(args[0].as_ref(), open_limits())?;
@@ -266,13 +259,13 @@ fn local_control(
 }
 pub(super) fn abandon(
     args: &[impl AsRef<OsStr>],
-    out: &mut impl Write,
+    out: &mut super::Output<'_, impl Write>,
 ) -> Result<(), Box<dyn Error>> {
     local_control(args, out, false)
 }
 pub(super) fn cancel(
     args: &[impl AsRef<OsStr>],
-    out: &mut impl Write,
+    out: &mut super::Output<'_, impl Write>,
 ) -> Result<(), Box<dyn Error>> {
     local_control(args, out, true)
 }

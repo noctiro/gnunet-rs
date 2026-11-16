@@ -7,11 +7,8 @@ use std::{
     process::ExitCode,
 };
 type Cause = Box<dyn Error>;
-#[cfg(unix)]
 mod descriptors;
-#[cfg(unix)]
 mod spool;
-#[cfg(unix)]
 mod transform;
 
 #[derive(Debug)]
@@ -49,14 +46,6 @@ fn main() -> ExitCode {
         }
     }
 }
-#[cfg(not(unix))]
-fn entry() -> Result<(), Problem> {
-    Err(Problem::message(
-        1,
-        "normal Base32 descriptor ownership requires Unix",
-    ))
-}
-#[cfg(unix)]
 fn entry() -> Result<(), Problem> {
     use gnunet_program_host::{
         getopt::Options,
@@ -71,7 +60,7 @@ fn entry() -> Result<(), Problem> {
         b"decode raw Base32 stdin; otherwise encode raw bytes",
         decode.clone(),
     ));
-    options.add(helpers::help(&project, Some(b"Crockford Base32 encoder/decoder. Reads stdin and writes stdout without an extra newline. Decode validates the complete input in a private disk spool before writing stdout; malformed text, including whitespace, fails. Memory is fixed-size; the spool grows with valid decoded input and actual filesystem errors remain failures. SIGINT/SIGTERM cancel, restore original stdio flags and clean the original spool. No keys, entropy, network, helper child or cryptographic operation.")));
+    options.add(helpers::help(&project, Some(b"Crockford Base32 encoder/decoder. Reads stdin and writes stdout without an extra newline. Decode validates the complete input in a private disk spool before writing stdout; malformed text, including whitespace, fails. Memory is fixed-size; the spool grows with valid decoded input and actual filesystem errors remain failures. Native termination cancels, retires original stdio and cleans the original spool. No keys, entropy, network, helper child or cryptographic operation.")));
     options.add(helpers::version(env!("CARGO_PKG_VERSION").as_bytes()));
     let mut parsed = options.run(
         b"gnunet-base32 [OPTIONS]",

@@ -1,5 +1,5 @@
 //! Explicit isolated process fixture, not production configuration extensions.
-use gnunet_resolver_host::{MachineFiles, startup};
+use gnunet_resolver_host::{MachineInputs, startup};
 use std::{
     error::Error,
     io::{self, Write},
@@ -24,9 +24,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         return Err("extra fixture argument".into());
     }
     let cfg = startup::configuration(Some(&config))?;
-    let files = MachineFiles {
+    let files = MachineInputs {
+        search_domain: None,
         hosts: std::fs::read(hosts)?,
         resolv: std::fs::read(resolv)?,
+        dns_endpoints: Vec::new(),
         diagnostics: Vec::new(),
     };
     tokio::runtime::Builder::new_current_thread()
@@ -41,9 +43,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                     tokio::time::sleep(Duration::from_millis(5)).await;
                 }
             };
-            let report = startup::foreground(
+            let report = startup::foreground_configured(
                 &cfg,
-                gnunet_service_runtime::Activation::default(),
                 files,
                 &[endpoint],
                 |_| std::fs::write(&ready, b"ready\n"),

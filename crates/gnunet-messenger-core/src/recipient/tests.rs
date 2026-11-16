@@ -241,8 +241,10 @@ fn incoming_private_keeps_the_actual_key_owner_after_identity_rotation_and_faile
         crypto::message::private_body(&encrypted),
     )?;
     assert!(core.recipient(room, &message)?.is_none());
+    assert!(core.pending_decryption(room)?.any(|hash| hash == &message));
     core.decrypt_message(room, &message, &mut SensitiveBuffer::<8192>::new())?;
     drain(&mut core, room)?;
+    assert!(!core.pending_decryption(room)?.any(|hash| hash == &message));
     assert!(core.message(room, &message)?.sender() == Some(sender));
     assert!(core.recipient(room, &message)? == Some(recipient));
     assert!(sender != recipient);

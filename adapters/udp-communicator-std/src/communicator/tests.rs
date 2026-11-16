@@ -4,34 +4,33 @@ use gnunet_wire::official::{MessageHeader, MessageType, communicator::Request};
 use std::{
     cell::Cell,
     future::poll_fn,
-    os::unix::fs::DirBuilderExt,
     path::PathBuf,
     sync::atomic::{AtomicU64, Ordering},
     time::Duration,
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::{UdpSocket, UnixStream},
+    net::{TcpStream, UdpSocket},
 };
 
-type Test = Result<(), Box<dyn std::error::Error>>;
+pub(super) type Test = Result<(), Box<dyn std::error::Error>>;
 static NEXT: AtomicU64 = AtomicU64::new(0);
-fn check(value: bool) -> Test {
+pub(super) fn check(value: bool) -> Test {
     if value {
         Ok(())
     } else {
         Err("UDP generation retirement regression".into())
     }
 }
-struct Scratch(PathBuf);
+pub(super) struct Scratch(pub(super) PathBuf);
 impl Scratch {
-    fn new() -> Result<Self, io::Error> {
+    pub(super) fn new() -> Result<Self, io::Error> {
         let path = std::env::temp_dir().join(format!(
             "udp-generation-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
-        std::fs::DirBuilder::new().mode(0o700).create(&path)?;
+        crate::test_support::private_directory(&path)?;
         Ok(Self(path))
     }
 }
@@ -50,12 +49,12 @@ impl Entropy for Random<'_> {
         }
     }
 }
-fn frame(kind: u16, size: usize) -> Result<Vec<u8>, Error> {
+pub(super) fn frame(kind: u16, size: usize) -> Result<Vec<u8>, Error> {
     let mut value = vec![0; size];
     MessageHeader::from_total_size(MessageType::new(kind), size)?.encode(&mut value)?;
     Ok(value)
 }
-fn create(peer: PeerId, target: SocketAddr) -> Result<Vec<u8>, Error> {
+pub(super) fn create(peer: PeerId, target: SocketAddr) -> Result<Vec<u8>, Error> {
     let address = transport::address(target);
     let mut value = frame(1206, 41 + address.len())?;
     value[4..8].copy_from_slice(&[1, 2, 3, 4]);
@@ -63,7 +62,12 @@ fn create(peer: PeerId, target: SocketAddr) -> Result<Vec<u8>, Error> {
     value[40..40 + address.len()].copy_from_slice(address.as_bytes());
     Ok(value)
 }
-fn send(peer: PeerId, queue: u32, mid: [u8; 8], message: &[u8]) -> Result<Vec<u8>, Error> {
+pub(super) fn send(
+    peer: PeerId,
+    queue: u32,
+    mid: [u8; 8],
+    message: &[u8],
+) -> Result<Vec<u8>, Error> {
     let mut value = frame(1209, 48 + message.len())?;
     value[4..8].copy_from_slice(&queue.to_be_bytes());
     value[8..16].copy_from_slice(&mid);
@@ -71,7 +75,9 @@ fn send(peer: PeerId, queue: u32, mid: [u8; 8], message: &[u8]) -> Result<Vec<u8
     value[48..].copy_from_slice(message);
     Ok(value)
 }
-async fn read_frame(service: &mut UnixStream) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+pub(super) async fn read_frame(
+    service: &mut TcpStream,
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let mut head = [0; 4];
     service.read_exact(&mut head).await?;
     let size = usize::from(u16::from_be_bytes([head[0], head[1]]));
@@ -81,25 +87,31 @@ async fn read_frame(service: &mut UnixStream) -> Result<Vec<u8>, Box<dyn std::er
     service.read_exact(&mut value[4..]).await?;
     Ok(value)
 }
-fn ack(value: &[u8], peer: PeerId, queue: u32, mid: [u8; 8], success: bool) -> Test {
+pub(super) fn ack(value: &[u8], peer: PeerId, queue: u32, mid: [u8; 8], success: bool) -> Test {
     check(matches!(Request::decode(value)?, Request::Sent {
         queue: q, message_id, peer: p, status
     } if q == queue && message_id == mid && p == peer && status == if success { 1 } else { -1 }))
 }
-fn setup(value: &[u8]) -> Result<u32, Box<dyn std::error::Error>> {
+pub(super) fn setup(value: &[u8]) -> Result<u32, Box<dyn std::error::Error>> {
     match Request::decode(value)? {
         Request::QueueSetup(queue, _) => Ok(queue.id),
         _ => Err("expected actual QueueSetup".into()),
     }
 }
-fn owner(
+pub(super) async fn owner<'id>(
     local: &Identity,
-) -> Result<(Communicator<'static>, UnixStream), Box<dyn std::error::Error>> {
+) -> Result<(Communicator<'id>, TcpStream), Box<dyn std::error::Error>> {
     let socket = DatagramSocket::bind("127.0.0.1:0".parse()?)?;
+    owner_on(local, socket).await
+}
+async fn owner_on<'id>(
+    local: &Identity,
+    socket: DatagramSocket,
+) -> Result<(Communicator<'id>, TcpStream), Box<dyn std::error::Error>> {
     let policy = socket.profile().sender_policy();
-    let (service, stream) = UnixStream::pair()?;
+    let (service, stream) = crate::test_support::pair().await?;
     let communicator = Communicator::new(
-        Connection::from_unix(stream),
+        Connection::from_tcp(stream),
         vec![socket],
         Configuration {
             local: local.peer(),
@@ -129,6 +141,21 @@ async fn drive(
     reject_entropy: &Cell<bool>,
     sent: &Cell<usize>,
 ) -> Test {
+    drive_observed(owner, local, journal, reject_entropy, |event| {
+        if matches!(event, Activity::NativeSent { .. }) {
+            sent.set(sent.get() + 1);
+        }
+        Ok(())
+    })
+    .await
+}
+pub(super) async fn drive_observed(
+    owner: &mut Communicator<'_>,
+    local: &Identity,
+    journal: &mut Journal,
+    reject_entropy: &Cell<bool>,
+    mut observe: impl FnMut(Activity) -> Test,
+) -> Test {
     loop {
         let event = poll_fn(|cx| {
             owner.poll_step(
@@ -141,11 +168,13 @@ async fn drive(
             )
         })
         .await?;
-        if matches!(event, Activity::NativeSent { .. }) {
-            sent.set(sent.get() + 1);
-        }
+        observe(event)?;
     }
 }
+
+mod classification;
+mod discovery_lifecycle;
+mod send_failure;
 
 #[tokio::test(flavor = "current_thread")]
 async fn failed_box_send_withdraws_both_queues_and_recreates_without_old_credit() -> Test {
@@ -155,7 +184,7 @@ async fn failed_box_send_withdraws_both_queues_and_recreates_without_old_credit(
         let remote = Identity::from_seed([5; 32]);
         let destination = UdpSocket::bind("127.0.0.1:0").await?;
         let target = destination.local_addr()?;
-        let (mut owner, mut service) = owner(&local)?;
+        let (mut owner, mut service) = owner(&local).await?;
         let mut journal = Journal::open(&scratch.0, local.peer(), 2)?;
         let reject_entropy = Cell::new(false);
         let sent = Cell::new(0usize);
@@ -283,7 +312,7 @@ async fn retiring_endpoint_input_is_consumed_without_replay_commit_then_can_be_r
         let remote = Identity::from_seed([5; 32]);
         let destination = UdpSocket::bind("127.0.0.1:0").await?;
         let target = destination.local_addr()?;
-        let (mut owner, _service) = owner(&local)?;
+        let (mut owner, _service) = owner(&local).await?;
         let mut journal = Journal::open(&scratch.0, local.peer(), 2)?;
         drain(&mut owner).await?;
         let EndpointAdmission::New(plan) =
@@ -368,7 +397,7 @@ async fn identity_cut_cancels_original_packet_and_reuses_socket_backing_with_fre
         let remote = Identity::from_seed([5; 32]);
         let destination = UdpSocket::bind("127.0.0.1:0").await?;
         let target = destination.local_addr()?;
-        let (mut owner, mut service) = owner(&a)?;
+        let (mut owner, mut service) = owner(&a).await?;
         let address = owner.sockets[0].local_address();
         let backing = owner.scratch.as_ptr();
         let mut journal = namespace.journal(a.peer(), 2)?;
@@ -410,9 +439,9 @@ async fn identity_cut_cancels_original_packet_and_reuses_socket_backing_with_fre
             drop(journal);
             journal = namespace.journal(next.peer(), 2)?;
             owner.resume_identity(next, &journal)?;
-            let (fresh_service, connection) = UnixStream::pair()?;
+            let (fresh_service, connection) = crate::test_support::pair().await?;
             service = fresh_service;
-            owner.reconnect(Connection::from_unix(connection))?;
+            owner.reconnect(Connection::from_tcp(connection))?;
             drain(&mut owner).await?;
             let _register = read_frame(&mut service).await?;
             while owner.restoring {

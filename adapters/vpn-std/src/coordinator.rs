@@ -29,6 +29,10 @@ pub use device::{Device, PacketIo};
 mod control;
 mod packets;
 mod peer;
+#[cfg(windows)]
+mod recovery;
+#[cfg(windows)]
+pub use recovery::{WintunPhysicalFailure, WintunRecoveryFailure};
 
 struct Input<'cadet, 'id> {
     frame: cadet::Received<'cadet>,
@@ -108,6 +112,8 @@ pub struct Coordinator<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy> {
     timer: Option<Pin<Box<Sleep>>>,
     timer_at: Option<Instant>,
     report: Report,
+    #[cfg(windows)]
+    recovery: recovery::Recovery,
 }
 impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
     Coordinator<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
@@ -190,6 +196,8 @@ impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
             timer: None,
             timer_at: None,
             report: Report::default(),
+            #[cfg(windows)]
+            recovery: recovery::Recovery::default(),
         })
     }
     /// The original packet source is live and actual native configuration,
@@ -285,6 +293,7 @@ impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
         self.device.io.is_helper()
     }
     /// Mandatory original helper wait after physical packet/MQ shutdown.
+    #[cfg(unix)]
     pub async fn reap_helper(&mut self) -> Option<tun::helper::Report> {
         self.device.io.reap_helper().await
     }
@@ -445,6 +454,10 @@ impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
     /// Stop new input and admission under one original finite shutdown grace.
     /// Existing immutable physical attempts retain their original owners.
     pub fn request_shutdown(&mut self) {
+        #[cfg(windows)]
+        {
+            self.recovery.hard = None;
+        }
         if self.stopping.is_none() && self.closed.is_none() {
             self.stopping = Some(
                 Instant::now()
@@ -545,6 +558,10 @@ impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
         if let Some(t) = self.control_deadline() {
             put(t);
         }
+        #[cfg(windows)]
+        if let Some(hard) = self.recovery.hard {
+            put(hard);
+        }
         at
     }
     fn poll_inner(
@@ -556,6 +573,14 @@ impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
     ) -> Poll<Result<Progress, Error>> {
         if self.closed.is_some() {
             return Poll::Ready(Ok(Progress::Stopped));
+        }
+        #[cfg(windows)]
+        if self
+            .recovery
+            .hard
+            .is_some_and(|hard| Instant::now() >= hard)
+        {
+            self.request_shutdown();
         }
         if self.stopping.is_some_and(|t| Instant::now() >= t) {
             self.close(observe);
@@ -577,7 +602,31 @@ impl<'id, 'store, 'bytes, 'cadet, 'cstore, 'policy>
                 _ => {}
             }
         }
-        activity |= self.poll_control(cx, observe)?;
+        match self.poll_control(cx, observe) {
+            Ok(progress) => activity |= progress,
+            Err(error) => {
+                #[cfg(windows)]
+                if matches!(&error, Error::Admin(_) | Error::Native(_)) {
+                    match self.retire_missing_interface(observe) {
+                        Ok(true) => {
+                            observe(Event::RecoveryError(error));
+                            activity = true;
+                        }
+                        Ok(false) => return Poll::Ready(Err(error)),
+                        Err(probe) => {
+                            observe(Event::RecoveryError(probe));
+                            return Poll::Ready(Err(error));
+                        }
+                    }
+                } else {
+                    return Poll::Ready(Err(error));
+                }
+                #[cfg(unix)]
+                return Poll::Ready(Err(error));
+            }
+        }
+        #[cfg(windows)]
+        self.observe_recovery()?;
         activity |= self.poll_backend(cx, observe)?;
         activity |= self.poll_tun_output(cx, observe)?;
         if self.stopping.is_none() {

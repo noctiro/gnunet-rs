@@ -209,7 +209,7 @@ impl Settings {
             native,
             options: service_options(c, b"messenger", ShutdownMode::Immediate)?,
             unix: UnixAccess {
-                match_uid: yes(c, b"UNIX_MATCH_UID", true)?,
+                match_uid: yes(c, b"UNIX_MATCH_UID", cfg!(unix))?,
                 match_gid: yes(c, b"UNIX_MATCH_GID", false)?,
             },
             resolver: gnunet_resolver_broker::Limits {

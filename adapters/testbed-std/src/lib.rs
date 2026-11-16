@@ -1,13 +1,11 @@
 //! Complete active TESTBED native system/configuration library. Native effects
 //! are explicit synchronous utility calls, never performed inside a socket poll.
-#![cfg(unix)]
 #![forbid(unsafe_code)]
 pub use gnunet_testbed as core;
 use gnunet_types::Error as Fault;
 use std::{
     ffi::OsString,
     io,
-    os::unix::ffi::OsStrExt,
     path::{Path, PathBuf},
 };
 mod configuration;
@@ -102,14 +100,16 @@ impl<'id, 'slots> System<'id, 'slots> {
         for p in &generated.ports {
             self.core.reserved(*p)?;
         }
-        if path.as_os_str().as_bytes().len() > self.options.limits.path_bytes {
+        if gnunet_native::os_bytes::encode(path.as_os_str()).len() > self.options.limits.path_bytes
+        {
             return Err(Fault::TooLarge.into());
         }
         let bytes = zeroize::Zeroizing::new(generated.configuration.serialize()?);
         if bytes.len() > self.options.limits.configuration_bytes {
             return Err(Fault::TooLarge.into());
         }
-        self.directory.publish(path, &bytes, replace)
+        let original = (path == generated.default_config()).then_some(&generated.home_owner);
+        self.directory.publish(path, &bytes, replace, original)
     }
     /// Release every original reservation. Existing config paths remain, and any
     /// actual peers using them remain the caller's responsibility.

@@ -6,21 +6,15 @@ use std::{
     process::ExitCode,
 };
 type Failure = Box<dyn Error>;
-#[cfg(unix)]
-mod control;
-#[cfg(unix)]
+mod authorization;
 mod early;
-#[cfg(unix)]
 mod foreground;
-#[cfg(unix)]
 mod lifecycle;
-#[cfg(unix)]
 mod settings;
 fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            #[cfg(unix)]
             if error.is::<lifecycle::Reported>() {
                 return ExitCode::FAILURE;
             }
@@ -29,11 +23,6 @@ fn main() -> ExitCode {
         }
     }
 }
-#[cfg(not(unix))]
-fn run() -> Result<(), Failure> {
-    Err("native REST foreground requires Unix".into())
-}
-#[cfg(unix)]
 fn run() -> Result<(), Failure> {
     use gnunet_program_host::{
         logging::Logger,
@@ -59,28 +48,36 @@ fn run() -> Result<(), Failure> {
         },
         Default::default(), std::env::args_os(), &program::Environment::capture(),
         &mut NlsDisabled, &mut logger, &clock, &mut io::stdout().lock(), &mut io::stderr().lock(),
-    )?;
-    let prepared = match prepared {
-        Preparation::Ready(p) => *p,
-        Preparation::Stopped(s) => {
-            if s.code == 0 && matches!(s.reason, program::StoppedReason::Options) {
-                return Ok(());
-            }
-            return Err(format!("PROGRAM stopped: {:?} (source code {})", s.reason, s.code).into());
-        }
-    };
+    );
     let reports = Reporter::new(logger, clock.clone());
-    let result = selected(prepared, clock, inherited, reports.clone());
+    let result = (|| {
+        let prepared = match prepared? {
+            Preparation::Ready(prepared) => *prepared,
+            Preparation::Stopped(stopped)
+                if stopped.code == 0
+                    && matches!(stopped.reason, program::StoppedReason::Options) =>
+            {
+                return Ok(None);
+            }
+            Preparation::Stopped(stopped) => {
+                return Err(format!(
+                    "PROGRAM stopped: {:?} (source code {})",
+                    stopped.reason, stopped.code
+                )
+                .into());
+            }
+        };
+        selected(prepared, clock, inherited, reports.clone()).map(Some)
+    })();
     finish(result, reports)
 }
-#[cfg(unix)]
 fn selected(
     prepared: gnunet_program_host::program::Prepared,
     clock: gnunet_program_host::shared_clock::SharedClock,
     inherited: early::Inherited,
     reports: gnunet_program_host::reporting::Reporter,
 ) -> Result<foreground::Report, Failure> {
-    use gnunet_service_startup::{GroupsProfile, apply_privileges, configured_user, resolve_user};
+    #[cfg(unix)]
     if let Some(notice) = &inherited.notice {
         reports.warning(
             "rest.parent",
@@ -94,17 +91,25 @@ fn selected(
         return Err("REST accepts no positional arguments".into());
     }
     let settings = settings::Settings::read(prepared.main().config)?;
-    let user = configured_user(prepared.main().config, b"rest")?
-        .map(|n| resolve_user(&n))
-        .transpose()?;
-    let privilege = apply_privileges(user.as_ref(), GroupsProfile::WithInitgroups)?;
-    if user.is_some() {
-        reports.message(
-            gnunet_program_host::policy::Level::INFO,
-            "rest.identity",
-            format_args!("REST configured process identity: {privilege:?}"),
-        );
+    #[cfg(unix)]
+    {
+        use gnunet_service_startup::{
+            GroupsProfile, apply_privileges, configured_user, resolve_user,
+        };
+        let user = configured_user(prepared.main().config, b"rest")?
+            .map(|n| resolve_user(&n))
+            .transpose()?;
+        let privilege = apply_privileges(user.as_ref(), GroupsProfile::WithInitgroups)?;
+        if user.is_some() {
+            reports.message(
+                gnunet_program_host::policy::Level::INFO,
+                "rest.identity",
+                format_args!("REST configured process identity: {privilege:?}"),
+            );
+        }
     }
+    #[cfg(windows)]
+    gnunet_service_startup::verify_configured_identity(prepared.main().config, b"rest")?;
     if reports.failed() {
         return Err("REST selected Logger failed before runtime setup".into());
     }
@@ -116,14 +121,12 @@ fn selected(
             prepared, clock, settings, inherited, reports,
         ))
 }
-#[cfg(unix)]
 #[derive(Debug)]
 struct LoggingFailure {
     original: Option<Failure>,
     diagnostic: io::Error,
     completion: Option<foreground::Report>,
 }
-#[cfg(unix)]
 impl std::fmt::Display for LoggingFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
@@ -133,22 +136,21 @@ impl std::fmt::Display for LoggingFailure {
         )
     }
 }
-#[cfg(unix)]
 impl Error for LoggingFailure {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         self.original.as_deref().or(Some(&self.diagnostic))
     }
 }
-#[cfg(unix)]
 fn finish(
-    result: Result<foreground::Report, Failure>,
+    result: Result<Option<foreground::Report>, Failure>,
     reports: gnunet_program_host::reporting::Reporter,
 ) -> Result<(), Failure> {
     match &result {
-        Ok(report) => reports.debug(
+        Ok(Some(report)) => reports.debug(
             "rest.stopped",
             format_args!("REST actual terminal={report:?}"),
         ),
+        Ok(None) => {}
         Err(error) => reports.message(
             gnunet_program_host::policy::Level::ERROR,
             "rest.failed",
@@ -160,7 +162,7 @@ fn finish(
         (Ok(completion), Some(diagnostic)) => Err(Box::new(LoggingFailure {
             original: None,
             diagnostic,
-            completion: Some(completion),
+            completion,
         }) as Failure),
         (Err(original), Some(diagnostic)) => Err(Box::new(LoggingFailure {
             original: Some(original),

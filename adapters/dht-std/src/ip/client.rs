@@ -85,22 +85,9 @@ fn socket_buffers(socket: &UdpSocket) -> io::Result<()> {
     Ok(())
 }
 fn isolated_receive_error(error: &io::Error) -> bool {
-    // UDP may report asynchronous errors for earlier datagrams on this socket
-    // (udp(7)); neither a current peer nor an earlier send can be inferred.
-    // EINTR only interrupts this receive. Return once instead of retrying here.
-    // Resource failures (including ENOBUFS/ENOMEM), bad descriptors and opaque
-    // registration errors keep the original source-failure path.
-    matches!(
-        error.raw_os_error(),
-        Some(
-            libc::ECONNREFUSED
-                | libc::ENETUNREACH
-                | libc::EHOSTUNREACH
-                | libc::EMSGSIZE
-                | libc::EINTR
-        )
-    )
+    gnunet_native::network::isolated_datagram_receive_error(error)
 }
+
 fn bind(endpoint: SocketAddr) -> io::Result<Binding> {
     let socket = Socket::new(
         if endpoint.is_ipv4() {
@@ -114,6 +101,11 @@ fn bind(endpoint: SocketAddr) -> io::Result<Binding> {
     if endpoint.is_ipv6() {
         socket.set_only_v6(true)?;
     }
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsSocket;
+        gnunet_native::network::suppress_udp_connection_resets(socket.as_socket())?;
+    }
     socket.set_nonblocking(true)?;
     socket.bind(&endpoint.into())?;
     let socket = UdpSocket::from_std(StdSocket::from(socket))?;
@@ -121,11 +113,9 @@ fn bind(endpoint: SocketAddr) -> io::Result<Binding> {
     Ok(Binding { socket, local })
 }
 fn family_unavailable(error: &io::Error) -> bool {
-    matches!(
-        error.raw_os_error(),
-        Some(libc::EAFNOSUPPORT | libc::EPROTONOSUPPORT | libc::ENOPROTOOPT)
-    )
+    gnunet_native::network::socket_family_unavailable(error)
 }
+
 impl<'id> Client<'id> {
     /// Bind the actual configured numeric sockets and snapshot real interfaces.
     /// No CORE, resolver, NSE service or private key is opened by this owner.

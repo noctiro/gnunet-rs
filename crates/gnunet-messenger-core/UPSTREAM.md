@@ -4,6 +4,8 @@ Pin: GNUnet v0.29.1, commit
 `346358e26d4dcc2dc4f51bef5d52dca29c7d8165`.
 `reference-inputs.json` identifies the selected public C/H inputs.
 
+## Source map
+
 | Contract | Pinned active source |
 | --- | --- |
 | Room flags and epoch identifier bitfields | `src/include/gnunet_messenger_service.h:82`, `:147` |
@@ -28,11 +30,15 @@ Pin: GNUnet v0.29.1, commit
 | Revolution validity, retained historical key and following epochs | `messenger_api_epoch_announcement.c:522-560`; `messenger_api_epoch_group.c:375-430` |
 |192-byte AUTH wire omits its required MAC16 | `messenger_api_message.c:439`, `:828`, `:1187`; extractor `:1945-1968`; handler `messenger_api_room.c:2094-2250` |
 
+## Internal representation
+
 Rust deliberately stores one original frame with fixed metadata, generational
 handles, inherited lineage and bounded iterative traversal rather than copying C
 hash maps/linked lists/plugin or scheduler structures. Successful M3 checks and
 private owned capabilities are consumed for decisions; no public token
 constructor can create a successful cryptographic proof.
+
+## Reference differences
 
 The C unique-confirmation replacement path increments its count again
 (`messenger_api_epoch_membership.c:229-320`); Rust counts distinct contacts instead.

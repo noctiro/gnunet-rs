@@ -21,16 +21,15 @@ use gnunet_fs_codec::Inflate;
 use gnunet_types::{AbsoluteTime, Error as ProtocolError};
 use gnunet_wire::official::fs::SEARCH_LOOPBACK_ONLY;
 use observation::{Pending, Staged};
+mod timing;
 use proof::{NamespaceSelection, Retained as RetainedProof};
+use std::sync::Arc;
 use std::{
     fmt,
     future::poll_fn,
     mem::size_of,
     slice::IterMut,
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
+    sync::atomic::{AtomicU64, Ordering},
     task::{Context, Poll},
 };
 use tokio::time::Instant;
@@ -426,6 +425,8 @@ where
     source: F,
     clock: Option<Arc<dyn gnunet_service_runtime::clock::RuntimeClock>>,
     last_now: Option<AbsoluteTime>,
+    time: Option<crate::time_limit::TimeLimit<ProtocolError>>,
+    origin: Instant,
     options: Options,
     queries: Vec<Query<'id, KNOWN>>,
     initial_queries: usize,
@@ -480,6 +481,7 @@ where
         options: Options,
         capture_namespace_proof: bool,
     ) -> Result<Self, Error> {
+        let origin = Instant::now();
         if options.limits.queries == 0 || options.limits.results == 0 || identities.is_empty() {
             return Err(Error::Limit);
         }
@@ -540,6 +542,8 @@ where
             source,
             clock: None,
             last_now: None,
+            time: None,
+            origin,
             options,
             queries: Vec::new(),
             initial_queries: specs.len(),
@@ -661,6 +665,7 @@ where
         }
         self.closed = true;
         self.pending = None;
+        self.time = None;
         match first {
             Some(error) => Err(error.into()),
             None => Ok(()),
@@ -694,32 +699,9 @@ where
         if self.closed {
             return Poll::Ready(Err(ProtocolError::Closed.into()));
         }
-        let observed = self
-            .clock
-            .as_ref()
-            .ok_or(ProtocolError::NotReady)
-            .and_then(|clock| clock.sample().map(|sample| sample.now));
-        let cause = match observed {
-            Ok(now) => {
-                let cause = if self.last_now.is_some_and(|last| now < last) {
-                    Some(ProtocolError::TimeUncertain)
-                } else if now >= self.options.deadline {
-                    Some(ProtocolError::Deadline)
-                } else {
-                    None
-                };
-                self.last_now = Some(now);
-                cause
-            }
-            Err(cause) => Some(cause),
-        };
-        if let Some(cause) = cause {
-            // Even a retained resource-refused advertisement cannot postpone
-            // the original operation deadline or clock refusal indefinitely.
-            return Poll::Ready(match self.abort(cause) {
-                Ok(()) => Err(cause.into()),
-                Err(error) => Err(error),
-            });
+        match self.poll_time(cx) {
+            Poll::Pending => return Poll::Pending,
+            Poll::Ready(result) => result?,
         }
         if self.pending.is_some() {
             return Poll::Ready(self.stage_pending());
@@ -800,8 +782,14 @@ where
         }
         .into_opener();
         let source = (self.source)()?;
-        if self.clock.is_none() {
+        if self.time.is_none() {
             self.clock = Some(source.clock());
+            self.time = Some(crate::time_limit::TimeLimit::admit(
+                source.clock(),
+                self.options.deadline,
+                self.origin,
+                None,
+            )?);
         }
         let mut parents = Vec::new();
         if let Some(parent) = parent {

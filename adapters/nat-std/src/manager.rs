@@ -395,7 +395,7 @@ impl Manager {
     pub fn pending(&self) -> usize {
         self.jobs.len() + self.helpers.pending() + self.leases.len() + self.cleanup_queue.len()
     }
-    /// Actual cleanup attempts which could not establish removal; never reported as clean shutdown.
+    /// Mapping removal or helper retirement which could not be established.
     pub const fn unresolved(&self) -> usize {
         self.unresolved
     }
@@ -1404,6 +1404,9 @@ impl Manager {
         event: crate::helpers::Event,
         observe: &mut impl FnMut(Event),
     ) -> Result<(), Failure> {
+        if matches!(&event, crate::helpers::Event::RetirementUnknown { .. }) {
+            self.unresolved = self.unresolved.saturating_add(1);
+        }
         match &event {
             crate::helpers::Event::Observation {
                 helper,

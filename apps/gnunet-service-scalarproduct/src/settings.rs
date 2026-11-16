@@ -197,7 +197,7 @@ impl Settings {
             },
             access: UnixAccess {
                 match_uid: yes(b"UNIX_MATCH_UID", false)?,
-                match_gid: yes(b"UNIX_MATCH_GID", true)?,
+                match_gid: yes(b"UNIX_MATCH_GID", cfg!(unix))?,
             },
             options: service_options(c, mode.section(), ShutdownMode::Immediate)?,
             shutdown_grace: time(c, b"SHUTDOWN_GRACE", Duration::from_secs(10))?,

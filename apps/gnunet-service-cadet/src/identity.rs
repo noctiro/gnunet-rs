@@ -22,6 +22,7 @@ pub(super) type Pils<'a> = Client<'a, 1>;
 pub(super) type Resolver = Driver<16, 256>;
 #[cfg(test)]
 mod profile_tests;
+pub(super) mod recovery;
 /// One original observation-only client on the node's selected public source.
 /// This retains the existing resource policy and constructs no physical socket.
 pub(super) fn observer<'a>(
@@ -52,6 +53,13 @@ pub(super) struct Dependencies<'a, 'stats> {
     pub signals: Signals,
     pub reporter: Reporter,
     last_retry: Option<io::Error>,
+    pub observer_recovery: recovery::Recovery,
+}
+/// Only an actual verified announcement authorizes the next peer generation.
+pub(super) enum IdentityUpdate<'a> {
+    Ready(Identity<'a>),
+    Waiting,
+    Activity,
 }
 #[derive(Debug)]
 struct IdentityLoss {
@@ -138,6 +146,7 @@ impl<'a, 'stats> Dependencies<'a, 'stats> {
         signals: Signals,
         reporter: Reporter,
         statistics: crate::statistics::Owner<'stats>,
+        recovery_timeout: Duration,
     ) -> Self {
         Self {
             statistics,
@@ -146,6 +155,7 @@ impl<'a, 'stats> Dependencies<'a, 'stats> {
             signals,
             reporter,
             last_retry: None,
+            observer_recovery: recovery::Recovery::new(recovery_timeout),
         }
     }
     pub(super) fn native_resolver_diagnostics(&mut self) {
@@ -183,10 +193,9 @@ impl<'a, 'stats> Dependencies<'a, 'stats> {
             _ => false,
         }
     }
-    pub(super) fn observe_pils(
+    fn observe_startup(
         &mut self,
         result: Result<Progress<'a, 1>, PilsError>,
-        expected: Option<Identity<'a>>,
         failures: &mut Failures,
     ) -> Option<Identity<'a>> {
         match result {
@@ -194,13 +203,7 @@ impl<'a, 'stats> Dependencies<'a, 'stats> {
                 failures.record(Stage::Identity, Box::new(error))
             }
             Ok(Progress::Inbound(Inbound::Identity { identity, .. })) => {
-                if expected.is_some_and(|expected| {
-                    identity.peer() != expected.peer() || identity.epoch() != expected.epoch()
-                }) {
-                    failures.record(Stage::Identity, Box::new(io::Error::other("PILS changed the actual original identity/MQ while the CADET service was active; restart is required")));
-                } else {
-                    return Some(identity);
-                }
+                return Some(identity);
             }
             Ok(Progress::Lost {
                 epoch,
@@ -220,16 +223,9 @@ impl<'a, 'stats> Dependencies<'a, 'stats> {
                     "cadet.pils.retry",
                     format_args!("cadet PILS socket retry epoch={}: {error}", epoch.value()),
                 );
-                if expected.is_some() {
-                    failures.record(Stage::Identity, Box::new(error));
-                } else if self.last_retry.is_none() {
+                if self.last_retry.is_none() {
                     self.last_retry = Some(error);
                 }
-            }
-            Ok(Progress::Connected(epoch))
-                if expected.is_some_and(|expected| expected.epoch() != epoch) =>
-            {
-                failures.record(Stage::Identity, Box::new(ProtocolError::StaleGeneration))
             }
             Ok(Progress::Closed) => {
                 failures.record(Stage::Identity, Box::new(ProtocolError::Closed))
@@ -238,21 +234,68 @@ impl<'a, 'stats> Dependencies<'a, 'stats> {
         }
         None
     }
-    /// A verified healthy announcement can initiate a controlled identity cut.
-    /// Physical loss or replacement of the actual observer remains a failure.
-    /// The caller must retire its identity-bound providers before applying it.
+    /// A physical loss fences the old generation before another application IO
+    /// turn. Only a fresh verified announcement can authorize its replacement.
+    /// Protocol, resource and provider refusals remain failures.
     pub(super) fn observe_identity_update(
         &mut self,
         result: Result<Progress<'a, 1>, PilsError>,
         expected: Identity<'a>,
         failures: &mut Failures,
-    ) -> Option<Identity<'a>> {
-        if let Ok(Progress::Inbound(Inbound::Identity { identity, .. })) = &result
-            && identity.epoch() == expected.epoch()
-        {
-            return Some(*identity);
+    ) -> IdentityUpdate<'a> {
+        if let Ok(Progress::ConnectRetry { epoch, error, .. }) = &result {
+            self.reporter.warning(
+                "cadet.pils.retry",
+                format_args!("cadet PILS socket retry epoch={}: {error}", epoch.value()),
+            );
         }
-        self.observe_pils(result, Some(expected), failures)
+        let was_pending = self.observer_recovery.pending();
+        let update = match self.observer_recovery.observe(result, expected) {
+            Ok(update) => update,
+            Err(error) => {
+                failures.record(Stage::Identity, error);
+                return IdentityUpdate::Activity;
+            }
+        };
+        if !was_pending && let Some(cause) = self.observer_recovery.first() {
+            self.reporter.warning(
+                "cadet.pils.recover",
+                format_args!("retiring identity-bound providers after source loss: {cause}"),
+            );
+        }
+        update
+    }
+    pub(super) fn begin_observer_recovery(
+        &mut self,
+        cause: Box<dyn Error>,
+        failures: &mut Failures,
+    ) {
+        if self.observer_recovery.pending() {
+            return;
+        }
+        self.reporter.warning(
+            "cadet.pils.recover",
+            format_args!("retiring identity-bound providers after source loss: {cause}"),
+        );
+        if let Err(error) = self.observer_recovery.begin(cause) {
+            failures.record(Stage::Identity, Box::new(error));
+        }
+    }
+    pub(super) fn identity_recovery_hard(&self) -> Option<tokio::time::Instant> {
+        self.observer_recovery.hard()
+    }
+    /// Clearing the bound requires the current original observer token, after
+    /// the caller has completed its own provider/CORE replacement barrier.
+    pub(super) fn identity_recovered(
+        &mut self,
+        identity: Identity<'a>,
+    ) -> Result<(), Box<dyn Error>> {
+        if !self.pils.identity().is_some_and(|current| {
+            current.epoch() == identity.epoch() && current.peer() == identity.peer()
+        }) {
+            return Err(ProtocolError::StaleGeneration.into());
+        }
+        self.observer_recovery.complete()
     }
     pub(super) async fn wait_identity(
         &mut self,
@@ -345,7 +388,7 @@ impl<'a, 'stats> Dependencies<'a, 'stats> {
             if let Some(Err(error)) = resolved {
                 failures.record(Stage::Resolver, Box::new(error));
             }
-            let identity = announced.and_then(|result| self.observe_pils(result, None, failures));
+            let identity = announced.and_then(|result| self.observe_startup(result, failures));
             if !failures.is_empty() || reporter.failed() {
                 return None;
             }

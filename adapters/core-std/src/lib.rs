@@ -6,6 +6,8 @@ mod io;
 /// Real PILS identity feed and foreground configuration assembly.
 pub mod startup;
 #[cfg(test)]
+mod test_support;
+#[cfg(test)]
 mod tests;
 
 use application::{Applications, PeerState};
@@ -260,6 +262,11 @@ pub struct Host<'a> {
     plain: Zeroizing<Vec<u8>>,
     stopped: bool,
     report: Report,
+}
+impl Drop for Host<'_> {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
 }
 impl<'a> Host<'a> {
     /// Construct a service with an actual initialized identity and a reusable

@@ -1,16 +1,16 @@
 //! Actual callback bytes copied before returning their borrowed delivery lease.
+mod retirement;
 use crate::Cause;
+use gnunet_program_host::binary_io;
 use gnunet_resolver_broker::{Completion, Hostname, Reply};
-use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
+pub(super) use retirement::Retired;
 use std::{
     future::Future,
-    io::{self, Stdout, Write},
-    os::fd::AsFd,
+    io::{self, Write},
     pin::Pin,
     task::{Context, Poll},
     time::Duration,
 };
-use tokio::time::{Instant, Sleep};
 use zeroize::Zeroizing;
 pub(super) struct Line {
     bytes: Zeroizing<Vec<u8>>,
@@ -25,6 +25,22 @@ impl Line {
     }
     pub(super) fn finished(&self) -> bool {
         self.offset == self.bytes.len()
+    }
+    pub(super) fn written(&mut self, count: usize) -> io::Result<()> {
+        if count == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::WriteZero,
+                "stdout wrote zero bytes",
+            ));
+        }
+        if count > self.bytes.len() - self.offset {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid original stdout write count",
+            ));
+        }
+        self.offset += count;
+        Ok(())
     }
 }
 pub(super) enum Callback {
@@ -58,64 +74,72 @@ pub(super) fn copy(reply: Reply<'_>, reverse: bool) -> Result<Callback, Cause> {
         offset: 0,
     }))
 }
+/// One capacity-one native writer; dropping a wait never resubmits its bytes.
 pub(super) struct Output {
-    stdout: Stdout,
-    alarm: Pin<Box<Sleep>>,
+    owner: binary_io::Output,
+    pending: Option<(usize, usize)>,
+    retry: Pin<Box<tokio::time::Sleep>>,
 }
 impl Output {
-    pub(super) fn new(stdout: Stdout) -> Self {
-        Self {
-            stdout,
-            alarm: Box::pin(tokio::time::sleep(Duration::ZERO)),
-        }
+    pub(super) fn new() -> Result<Self, binary_io::StartError> {
+        Ok(Self {
+            owner: binary_io::Output::stdout(512)?,
+            pending: None,
+            retry: Box::pin(tokio::time::sleep(Duration::ZERO)),
+        })
     }
     pub(super) fn poll(
         &mut self,
         cx: &mut Context<'_>,
         line: &mut Line,
     ) -> Poll<io::Result<usize>> {
-        if self.alarm.as_mut().poll(cx).is_pending() {
-            return Poll::Pending;
+        if let Some((offset, _)) = self.pending {
+            if offset != line.offset {
+                return Poll::Ready(Err(io::Error::other(
+                    "stdout lost its original line cursor",
+                )));
+            }
+        } else {
+            if self.retry.as_mut().poll(cx).is_pending() {
+                return Poll::Pending;
+            }
+            let end = line.bytes.len().min(line.offset + 512);
+            self.owner.begin(&line.bytes[line.offset..end])?;
+            self.pending = Some((line.offset, end - line.offset));
         }
-        self.alarm
-            .as_mut()
-            .reset(Instant::now() + Duration::from_millis(25));
-        let mut fds = [PollFd::new(self.stdout.as_fd(), PollFlags::POLLOUT)];
-        match poll(&mut fds, PollTimeout::ZERO) {
-            Err(nix::errno::Errno::EINTR) => {}
-            Err(error) => return Poll::Ready(Err(error.into())),
-            Ok(_) => {
-                let flags = fds[0].revents().unwrap_or(PollFlags::empty());
-                if flags.intersects(PollFlags::POLLNVAL | PollFlags::POLLHUP | PollFlags::POLLERR) {
-                    return Poll::Ready(Err(io::Error::new(
-                        io::ErrorKind::BrokenPipe,
-                        "stdout readiness failed",
-                    )));
-                }
-                if flags.contains(PollFlags::POLLOUT) {
-                    let end = line.bytes.len().min(line.offset + 512);
-                    // Sole original stdout fd; no hidden stdio buffer/flush and
-                    // no changed OFD flags. The synchronous OS write itself is
-                    // not claimed to be forcibly interruptible by an async timer.
-                    match nix::unistd::write(self.stdout.as_fd(), &line.bytes[line.offset..end]) {
-                        Err(nix::errno::Errno::EINTR | nix::errno::Errno::EAGAIN) => {}
-                        Err(error) => return Poll::Ready(Err(error.into())),
-                        Ok(0) => {
-                            return Poll::Ready(Err(io::Error::new(
-                                io::ErrorKind::WriteZero,
-                                "stdout wrote zero bytes of a result line",
-                            )));
-                        }
-                        Ok(count) => {
-                            line.offset += count;
-                            self.alarm.as_mut().reset(Instant::now());
-                            return Poll::Ready(Ok(count));
-                        }
+        let result = {
+            let completion = self.owner.complete();
+            let mut completion = std::pin::pin!(completion);
+            completion.as_mut().poll(cx)
+        };
+        match result {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(result) => {
+                self.pending = None;
+                let count = match result {
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            io::ErrorKind::Interrupted | io::ErrorKind::WouldBlock
+                        ) =>
+                    {
+                        // These original native calls wrote no bytes. Back off
+                        // without changing the line cursor or command deadline.
+                        self.retry
+                            .as_mut()
+                            .reset(tokio::time::Instant::now() + Duration::from_millis(25));
+                        let _registered = self.retry.as_mut().poll(cx);
+                        return Poll::Pending;
                     }
-                }
+                    result => result?,
+                };
+                line.written(count)?;
+                Poll::Ready(Ok(count))
             }
         }
-        let _registered = self.alarm.as_mut().poll(cx);
-        Poll::Pending
+    }
+    /// End admission and observe only original native work during fixed grace.
+    pub(super) async fn retire(self) -> Retired {
+        retirement::retire(self.owner, self.pending.is_some()).await
     }
 }

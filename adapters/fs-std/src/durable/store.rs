@@ -3,10 +3,10 @@
 mod format;
 #[cfg(test)]
 mod tests;
-use nix::{
-    errno::Errno,
-    fcntl::{AtFlags, Flock, FlockArg, OFlag, open, openat},
-    sys::stat::{FileStat, Mode, SFlag, fstat, fstatat, mkdirat},
+use crate::FileIdentity;
+use gnunet_native::{
+    DirectorySync,
+    filesystem::{Directory, ExclusiveFile, FileReader, private_single_file_identity},
 };
 use std::{
     error,
@@ -14,21 +14,11 @@ use std::{
     fmt,
     fs::{self, File},
     io::{self, Read, Seek, SeekFrom, Write},
-    os::unix::fs::FileExt,
     path::Path,
     sync::Arc,
 };
 const LOCK: &str = ".lock";
 const WAL: &str = "records.wal";
-const DIRECTORY: OFlag = OFlag::O_RDONLY
-    .union(OFlag::O_DIRECTORY)
-    .union(OFlag::O_NOFOLLOW)
-    .union(OFlag::O_CLOEXEC);
-const REGULAR: OFlag = OFlag::O_RDWR
-    .union(OFlag::O_NOFOLLOW)
-    .union(OFlag::O_CLOEXEC)
-    .union(OFlag::O_NONBLOCK);
-
 /// Explicit retained-memory and on-disk limits, checked before append I/O.
 #[derive(Clone, Copy, Debug)]
 pub struct Limits {
@@ -192,33 +182,22 @@ struct Pending {
     kind: u16,
     frame: Vec<u8>,
 }
-#[derive(Clone, Copy, Eq, PartialEq)]
-struct Identity {
-    dev: nix::libc::dev_t,
-    ino: nix::libc::ino_t,
-}
-impl Identity {
-    fn of(stat: &FileStat) -> Self {
-        Self {
-            dev: stat.st_dev,
-            ino: stat.st_ino,
-        }
-    }
-}
-/// One stable lock FD owns this anchored WAL until drop. It is never unlinked.
+/// One stable native lock owner owns this anchored WAL until drop. It is never unlinked.
 /// Accepted metadata and one reusable frame remain bounded by Limits; historical
 /// bodies stay on the WAL. These are store limits, not a task-wide RAM budget.
 /// Appends are synchronous
 /// barriers: place this owner on a host worker if fsync must not block an executor.
 pub struct Store {
-    parent: File,
+    parent: Directory,
     name: OsString,
-    root: File,
-    root_id: Identity,
-    lock: Flock<File>,
-    lock_id: Identity,
+    root: Directory,
+    root_id: FileIdentity,
+    lock: ExclusiveFile,
+    lock_id: FileIdentity,
     wal: File,
-    wal_id: Identity,
+    wal_id: FileIdentity,
+    wal_reader: FileReader,
+    naming_sync: Option<DirectorySync>,
     task_id: [u8; 32],
     limits: Limits,
     scratch: Vec<u8>,
@@ -232,7 +211,7 @@ impl Store {
     /// Borrow the original anchored directory for crate-owned child stores.
     /// This is not a new naming or durability receipt.
     pub(crate) fn directory(&self) -> &File {
-        &self.root
+        self.root.as_file()
     }
 
     /// Create a NEW task directory below an existing caller-selected parent.
@@ -249,42 +228,33 @@ impl Store {
         let (parent, name) = child(parent, name)?;
         Self::create_named(parent, name, limits)
     }
-    fn create_named(parent: File, name: OsString, limits: Limits) -> Result<Self, Error> {
+    fn create_named(parent: Directory, name: OsString, limits: Limits) -> Result<Self, Error> {
         let mut id = [0; 32];
-        File::open("/dev/urandom")
-            .and_then(|mut file| file.read_exact(&mut id))
-            .map_err(|e| Error::native("task-id-entropy", Certainty::NotWritten, e))?;
-        mkdirat(&parent, name.as_os_str(), Mode::S_IRWXU).map_err(|e| {
-            Error::native(
-                "create-directory",
+        gnunet_native::entropy::fill(&mut id)
+            .map_err(|error| Error::native("task-id-entropy", Certainty::NotWritten, error))?;
+        let root = parent
+            .create_private_directory(&name)
+            .map_err(|error| Error::native("create-directory", Certainty::NotWritten, error))?;
+        root.validate_private().map_err(|error| {
+            Error::new(
+                "created-directory-privacy",
+                FailureKind::Authority,
                 Certainty::NotWritten,
-                io::Error::from(e),
+                Some(error),
             )
         })?;
-        let root = File::from(
-            openat(&parent, name.as_os_str(), DIRECTORY, Mode::empty()).map_err(|e| {
-                Error::native(
-                    "open-created-directory",
-                    Certainty::NotWritten,
-                    io::Error::from(e),
-                )
-            })?,
-        );
-        let lock = regular(&root, LOCK, true)?;
-        let lock = lock_file(lock)?;
-        let mut wal = regular(&root, WAL, true)?;
+        let lock = lock_file(regular(&root, LOCK, Creation::New)?)?;
+        let mut wal = regular(&root, WAL, Creation::New)?;
         wal.write_all(&format::header(&id))
-            .map_err(|e| Error::native("create-header-write", Certainty::Unknown, e))?;
+            .map_err(|error| Error::native("create-header-write", Certainty::Unknown, error))?;
         wal.sync_all()
-            .map_err(|e| Error::native("create-header-sync", Certainty::Unknown, e))?;
+            .map_err(|error| Error::native("create-header-sync", Certainty::Unknown, error))?;
         lock.sync_all()
-            .map_err(|e| Error::native("create-lock-sync", Certainty::Unknown, e))?;
-        root.sync_all()
-            .map_err(|e| Error::native("create-root-sync", Certainty::Unknown, e))?;
-        parent
-            .sync_all()
-            .map_err(|e| Error::native("create-parent-sync", Certainty::Unknown, e))?;
-        Self::assembled(parent, name, root, lock, wal, id, limits)
+            .map_err(|error| Error::native("create-lock-sync", Certainty::Unknown, error))?;
+        let mut store = Self::assembled(parent, name, root, lock, wal, id, limits)?;
+        store.refresh_naming("create-root-sync", "create-parent-sync")?;
+        store.verify()?;
+        Ok(store)
     }
     /// Reopen under the stable original lock, validate every complete record,
     /// repair only a provably incomplete final frame, and refresh durability.
@@ -318,18 +288,24 @@ impl Store {
         Self::open_named(parent, name, limits, None)
     }
     fn open_named(
-        parent: File,
+        parent: Directory,
         name: OsString,
         limits: Limits,
         expected: Option<crate::FileIdentity>,
     ) -> Result<Self, Error> {
-        let root = File::from(
-            openat(&parent, name.as_os_str(), DIRECTORY, Mode::empty()).map_err(|e| {
-                Error::native("open-directory", Certainty::NotWritten, io::Error::from(e))
-            })?,
-        );
+        let root = parent
+            .open_directory(&name)
+            .map_err(|error| Error::native("open-directory", Certainty::NotWritten, error))?;
+        root.validate_private().map_err(|error| {
+            Error::new(
+                "directory-privacy",
+                FailureKind::Authority,
+                Certainty::NotWritten,
+                Some(error),
+            )
+        })?;
         if let Some(expected) = expected {
-            let actual = crate::FileIdentity::of(&root).map_err(|error| {
+            let actual = crate::FileIdentity::of(root.as_file()).map_err(|error| {
                 Error::native("registered-directory-stat", Certainty::NotWritten, error)
             })?;
             if actual != expected {
@@ -339,8 +315,8 @@ impl Store {
                 ));
             }
         }
-        let lock = lock_file(regular(&root, LOCK, false)?)?;
-        let mut wal = regular(&root, WAL, false)?;
+        let lock = lock_file(regular(&root, LOCK, Creation::Existing)?)?;
+        let mut wal = regular(&root, WAL, Creation::Existing)?;
         let mut header = [0; format::HEADER];
         wal.read_exact(&mut header)
             .map_err(|e| Error::native("read-header", Certainty::NotWritten, e))?;
@@ -352,29 +328,24 @@ impl Store {
             .wal
             .sync_all()
             .map_err(|e| Error::native("open-wal-sync", Certainty::Unknown, e))?;
-        store
-            .root
-            .sync_all()
-            .map_err(|e| Error::native("open-root-sync", Certainty::Unknown, e))?;
-        store
-            .parent
-            .sync_all()
-            .map_err(|e| Error::native("open-parent-sync", Certainty::Unknown, e))?;
+        store.refresh_naming("open-root-sync", "open-parent-sync")?;
         store.verify()?;
         Ok(store)
     }
     fn assembled(
-        parent: File,
+        parent: Directory,
         name: OsString,
-        root: File,
-        lock: Flock<File>,
+        root: Directory,
+        lock: ExclusiveFile,
         wal: File,
         task_id: [u8; 32],
         limits: Limits,
     ) -> Result<Self, Error> {
-        let root_id = identity(&root, "root-identity")?;
-        let lock_id = identity(&lock, "lock-identity")?;
+        let root_id = identity(root.as_file(), "root-identity")?;
+        let lock_id = identity(lock.as_file(), "lock-identity")?;
         let wal_id = identity(&wal, "wal-identity")?;
+        let wal_reader = FileReader::from_file(&wal)
+            .map_err(|error| Error::native("wal-reader", Certainty::NotWritten, error))?;
         let store = Self {
             parent,
             name,
@@ -384,6 +355,8 @@ impl Store {
             lock_id,
             wal,
             wal_id,
+            wal_reader,
+            naming_sync: None,
             task_id,
             limits,
             scratch: Vec::new(),
@@ -395,6 +368,33 @@ impl Store {
         };
         store.verify()?;
         Ok(store)
+    }
+    /// Actual combined root/parent naming-barrier observation. File/WAL syncs
+    /// remain separate. Windows reports Unavailable without inventing a barrier.
+    #[must_use]
+    pub fn directory_sync(&self) -> Option<DirectorySync> {
+        self.naming_sync
+    }
+    fn refresh_naming(
+        &mut self,
+        root_stage: &'static str,
+        parent_stage: &'static str,
+    ) -> Result<(), Error> {
+        let root = self
+            .root
+            .sync()
+            .map_err(|error| Error::native(root_stage, Certainty::Unknown, error))?;
+        let parent = self
+            .parent
+            .sync()
+            .map_err(|error| Error::native(parent_stage, Certainty::Unknown, error))?;
+        self.naming_sync = Some(match (root, parent) {
+            (DirectorySync::Synchronized, DirectorySync::Synchronized) => {
+                DirectorySync::Synchronized
+            }
+            _ => DirectorySync::Unavailable,
+        });
+        Ok(())
     }
     /// Secure-random persistent task identity; not a wire identifier or authority.
     #[must_use]
@@ -424,7 +424,7 @@ impl Store {
             self.check_length(self.end)?;
             let total = format::record_size(row.body_len)?;
             self.prepare_scratch(total, "read-record-buffer")?;
-            self.wal
+            self.wal_reader
                 .read_exact_at(&mut self.scratch, row.offset)
                 .map_err(|error| Error::native("read-record", Certainty::NotWritten, error))?;
             let metadata = format::prefix(
@@ -644,39 +644,44 @@ impl Store {
         Ok(())
     }
     fn verify(&self) -> Result<(), Error> {
-        for (directory, name, file, original) in [
-            (
-                &self.parent,
-                self.name.as_os_str(),
-                &self.root,
-                self.root_id,
-            ),
-            (
-                &self.root,
-                std::ffi::OsStr::new(LOCK),
-                &*self.lock,
-                self.lock_id,
-            ),
-            (
-                &self.root,
-                std::ffi::OsStr::new(WAL),
-                &self.wal,
-                self.wal_id,
-            ),
+        self.root.validate_private().map_err(|error| {
+            Error::new(
+                "directory-privacy",
+                FailureKind::Authority,
+                Certainty::NotWritten,
+                Some(error),
+            )
+        })?;
+        if private_regular(self.lock.as_file(), "lock-shape")? != self.lock_id
+            || private_regular(&self.wal, "wal-shape")? != self.wal_id
+        {
+            return Err(Error::before("retained-authority", FailureKind::Authority));
+        }
+        for (directory, name, original) in [
+            (&self.parent, self.name.as_os_str(), self.root_id),
+            (&self.root, OsStr::new(LOCK), self.lock_id),
+            (&self.root, OsStr::new(WAL), self.wal_id),
         ] {
-            let current = fstatat(directory, name, AtFlags::AT_SYMLINK_NOFOLLOW).map_err(|e| {
-                Error::native("name-authority", Certainty::NotWritten, io::Error::from(e))
-            })?;
-            if Identity::of(&current) != original
-                || identity(file, "retained-authority")? != original
-            {
+            let named = directory
+                .entry_info(name)
+                .map_err(|error| Error::native("name-authority", Certainty::NotWritten, error))?;
+            let actual = match named {
+                gnunet_native::filesystem::EntryInfo::File(info)
+                | gnunet_native::filesystem::EntryInfo::Directory(info) => info.identity,
+                gnunet_native::filesystem::EntryInfo::Other => {
+                    return Err(Error::before("replaced-authority", FailureKind::Authority));
+                }
+            };
+            if actual != original {
                 return Err(Error::before("replaced-authority", FailureKind::Authority));
             }
         }
         let mut header = [0; format::HEADER];
-        self.wal.read_exact_at(&mut header, 0).map_err(|error| {
-            Error::native("header-authority-read", Certainty::NotWritten, error)
-        })?;
+        self.wal_reader
+            .read_exact_at(&mut header, 0)
+            .map_err(|error| {
+                Error::native("header-authority-read", Certainty::NotWritten, error)
+            })?;
         if header != format::header(&self.task_id) {
             return Err(Error::before(
                 "header-authority-changed",
@@ -705,7 +710,7 @@ impl Store {
             let head_len = usize::try_from(remaining.min(format::RECORD_HEADER as u64))
                 .map_err(|_| Error::before("load-header-length", FailureKind::Limit))?;
             let mut head = [0; format::RECORD_HEADER];
-            self.wal
+            self.wal_reader
                 .read_exact_at(&mut head[..head_len], self.end)
                 .map_err(|e| Error::native("load-record-header", Certainty::NotWritten, e))?;
             let Some((kind, body_len)) = format::prefix(&head[..head_len], sequence, self.limits)?
@@ -728,7 +733,7 @@ impl Store {
                     .map_err(|_| Error::before("load-partial-length", FailureKind::Limit))?;
                 self.prepare_scratch(present, "load-partial-allocation")?;
                 self.scratch[..format::RECORD_HEADER].copy_from_slice(&head);
-                self.wal
+                self.wal_reader
                     .read_exact_at(
                         &mut self.scratch[format::RECORD_HEADER..],
                         self.end + format::RECORD_HEADER as u64,
@@ -743,7 +748,7 @@ impl Store {
             self.reserve_record("load-index-allocation")?;
             self.prepare_scratch(total, "load-frame-allocation")?;
             self.scratch[..format::RECORD_HEADER].copy_from_slice(&head);
-            self.wal
+            self.wal_reader
                 .read_exact_at(
                     &mut self.scratch[format::RECORD_HEADER..],
                     self.end + format::RECORD_HEADER as u64,
@@ -776,17 +781,21 @@ impl Store {
         Ok(())
     }
 }
-fn child(parent: &File, name: &OsStr) -> Result<(File, OsString), Error> {
+#[derive(Clone, Copy)]
+enum Creation {
+    New,
+    Existing,
+}
+fn child(parent: &File, name: &OsStr) -> Result<(Directory, OsString), Error> {
     let raw = name.as_encoded_bytes();
     if raw.is_empty() || raw.contains(&0) || raw.contains(&b'/') || matches!(raw, b"." | b"..") {
         return Err(Error::before("task-child-name", FailureKind::Malformed));
     }
-    let parent = parent
-        .try_clone()
+    let parent = Directory::from_file(parent)
         .map_err(|error| Error::native("task-child-parent", Certainty::NotWritten, error))?;
     Ok((parent, name.to_os_string()))
 }
-fn parent(path: &Path) -> Result<(File, OsString), Error> {
+fn parent(path: &Path) -> Result<(Directory, OsString), Error> {
     let name = path
         .file_name()
         .filter(|n| !n.is_empty())
@@ -800,47 +809,44 @@ fn parent(path: &Path) -> Result<(File, OsString), Error> {
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
     let selected = fs::canonicalize(selected)
-        .map_err(|e| Error::native("parent-resolve", Certainty::NotWritten, e))?;
-    let parent =
-        File::from(open(&selected, DIRECTORY, Mode::empty()).map_err(|e| {
-            Error::native("parent-open", Certainty::NotWritten, io::Error::from(e))
-        })?);
+        .map_err(|error| Error::native("parent-resolve", Certainty::NotWritten, error))?;
+    let parent = Directory::open(&selected)
+        .map_err(|error| Error::native("parent-open", Certainty::NotWritten, error))?;
     Ok((parent, name))
 }
-fn regular(root: &File, name: &str, create: bool) -> Result<File, Error> {
-    let flags = if create {
-        REGULAR | OFlag::O_CREAT | OFlag::O_EXCL
-    } else {
-        REGULAR
-    };
-    let file = File::from(
-        openat(root, name, flags, Mode::S_IRUSR | Mode::S_IWUSR).map_err(|e| {
-            Error::native("regular-open", Certainty::NotWritten, io::Error::from(e))
-        })?,
-    );
-    let stat = fstat(&file)
-        .map_err(|e| Error::native("regular-stat", Certainty::NotWritten, io::Error::from(e)))?;
-    if (stat.st_mode & SFlag::S_IFMT.bits()) != SFlag::S_IFREG.bits() || stat.st_nlink != 1 {
-        return Err(Error::before("regular-file-shape", FailureKind::Authority));
+fn regular(root: &Directory, name: &str, creation: Creation) -> Result<File, Error> {
+    let file = match creation {
+        Creation::New => root.create_private_file(OsStr::new(name)),
+        Creation::Existing => root.open_file_for_update(OsStr::new(name)),
     }
+    .map_err(|error| Error::native("regular-open", Certainty::NotWritten, error))?;
+    private_regular(&file, "regular-file-shape")?;
     Ok(file)
 }
-fn lock_file(file: File) -> Result<Flock<File>, Error> {
-    Flock::lock(file, FlockArg::LockExclusiveNonblock).map_err(|(_, error)| {
+fn private_regular(file: &File, stage: &'static str) -> Result<FileIdentity, Error> {
+    private_single_file_identity(file).map_err(|error| {
+        Error::new(
+            stage,
+            FailureKind::Authority,
+            Certainty::NotWritten,
+            Some(error),
+        )
+    })
+}
+fn lock_file(file: File) -> Result<ExclusiveFile, Error> {
+    ExclusiveFile::try_lock(file).map_err(|error| {
+        let kind = match &error {
+            std::fs::TryLockError::WouldBlock => FailureKind::Locked,
+            std::fs::TryLockError::Error(_) => FailureKind::Io,
+        };
         Error::new(
             "writer-lock",
-            if error == Errno::EWOULDBLOCK {
-                FailureKind::Locked
-            } else {
-                FailureKind::Io
-            },
+            kind,
             Certainty::NotWritten,
             Some(io::Error::from(error)),
         )
     })
 }
-fn identity(file: &File, stage: &'static str) -> Result<Identity, Error> {
-    fstat(file)
-        .map(|stat| Identity::of(&stat))
-        .map_err(|e| Error::native(stage, Certainty::NotWritten, io::Error::from(e)))
+fn identity(file: &File, stage: &'static str) -> Result<FileIdentity, Error> {
+    FileIdentity::of(file).map_err(|error| Error::native(stage, Certainty::NotWritten, error))
 }

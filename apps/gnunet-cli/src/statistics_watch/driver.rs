@@ -1,5 +1,6 @@
 //! Actual original handle/WID/epoch lifecycle, with one held output and no hidden task.
-use super::{Failure, control::Signals, output::Output};
+use super::{Failure, output::Output};
+use crate::foreground::Signals;
 use gnunet_client::{
     statistics::{Selector, WatchValue},
     statistics_handle::{ConnectionEpoch, DestroyReport, GetFlow, WatchId},
@@ -27,7 +28,7 @@ use tokio::time::{Instant, Sleep};
 type Owner<'id> = handle::StatisticsHandle<'id, 2, 512, 1, 1, 2>;
 const ADMISSION: Duration = Duration::from_secs(30);
 const ROW: Duration = Duration::from_secs(30);
-const CLEANUP: Duration = Duration::from_secs(5);
+pub(super) const CLEANUP: Duration = Duration::from_secs(5);
 const CADENCE: Duration = Duration::from_millis(10);
 pub(super) struct Names {
     pub subsystem: Vec<u8>,

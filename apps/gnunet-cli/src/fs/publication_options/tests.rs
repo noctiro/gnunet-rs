@@ -7,14 +7,13 @@ use gnunet::{
     fs_host::{durable::store, publication::Task},
     wire::datastore::{Request, Response, Status},
 };
+use gnunet_service_runtime::{
+    BoundListeners, LocalListenerAccess, local::Stream, service::Listener,
+};
 use std::{
     ffi::OsString,
     fs,
-    io::{self, Read, Write},
-    os::unix::{
-        fs::DirBuilderExt,
-        net::{UnixListener, UnixStream},
-    },
+    io::{self, Write},
     path::{Path, PathBuf},
     sync::{
         Arc,
@@ -23,6 +22,7 @@ use std::{
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use zeroize::Zeroizing;
 type Result<T = ()> = std::result::Result<T, Box<dyn Error>>;
 const ABSOLUTE: u64 = 9_000_000_000_123_456;
@@ -39,11 +39,11 @@ impl Temporary {
         static NEXT: AtomicU64 = AtomicU64::new(1);
         loop {
             let path = std::env::temp_dir().join(format!(
-                "fs-publish-policy-{}-{}",
+                "gcp-{}-{}",
                 std::process::id(),
                 NEXT.fetch_add(1, Ordering::Relaxed)
             ));
-            match fs::DirBuilder::new().mode(0o700).create(&path) {
+            match crate::fs::create_private_directory(&path) {
                 Ok(()) => return Ok(Self(path)),
                 Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
                 Err(error) => return Err(error),
@@ -71,15 +71,20 @@ fn guard(until: Instant, stop: &AtomicBool) -> io::Result<()> {
         Ok(())
     }
 }
-fn read(
-    stream: &mut UnixStream,
+async fn read(
+    stream: &mut Stream,
     bytes: &mut [u8],
     until: Instant,
     stop: &AtomicBool,
 ) -> io::Result<usize> {
     loop {
         guard(until, stop)?;
-        match stream.read(bytes) {
+        let result = match tokio::time::timeout(Duration::from_millis(20), stream.read(bytes)).await
+        {
+            Ok(result) => result,
+            Err(_) => continue,
+        };
+        match result {
             Err(error)
                 if matches!(
                     error.kind(),
@@ -91,14 +96,14 @@ fn read(
         }
     }
 }
-fn exact(
-    stream: &mut UnixStream,
+async fn exact(
+    stream: &mut Stream,
     mut bytes: &mut [u8],
     until: Instant,
     stop: &AtomicBool,
 ) -> io::Result<()> {
     while !bytes.is_empty() {
-        let count = read(stream, bytes, until, stop)?;
+        let count = read(stream, bytes, until, stop).await?;
         if count == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
@@ -111,73 +116,125 @@ fn exact(
 }
 impl StorePeer {
     fn new(path: &Path, expected: BlockOptions) -> io::Result<Self> {
-        let listener = UnixListener::bind(path)?;
-        listener.set_nonblocking(true)?;
+        let path = path.to_owned();
+        let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
         let finished = Arc::new(AtomicBool::new(false));
         let stop = Arc::new(AtomicBool::new(false));
         let done = finished.clone();
         let stopped = stop.clone();
         let peer = thread::spawn(move || {
-            let until = Instant::now() + Duration::from_secs(5);
-            let mut kinds = Vec::new();
-            loop {
-                guard(until, &stopped)?;
-                let mut stream = match listener.accept() {
-                    Ok((stream, _)) => stream,
-                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                        if done.load(Ordering::SeqCst) {
-                            return Ok(kinds);
-                        }
-                        thread::sleep(Duration::from_millis(1));
-                        continue;
-                    }
-                    Err(error) => return Err(error),
-                };
-                stream.set_read_timeout(Some(Duration::from_millis(20)))?;
-                stream.set_write_timeout(Some(Duration::from_millis(20)))?;
-                loop {
-                    let mut header = [0; 4];
-                    if read(&mut stream, &mut header[..1], until, &stopped)? == 0 {
-                        break;
-                    }
-                    exact(&mut stream, &mut header[1..], until, &stopped)?;
-                    let size = gnunet::wire::MessageHeader::decode(&header)
-                        .map_err(io::Error::other)?
-                        .size();
-                    let mut bytes = Zeroizing::new(vec![0; size]);
-                    bytes[..4].copy_from_slice(&header);
-                    exact(&mut stream, &mut bytes[4..], until, &stopped)?;
-                    let Request::Put(data) = Request::decode(&bytes).map_err(io::Error::other)?
-                    else {
-                        return Err(io::Error::other(
-                            "normal task route issued an unexpected DATASTORE operation",
-                        ));
-                    };
-                    check(
-                        data.priority == expected.priority
-                            && data.anonymity == expected.anonymity
-                            && data.replication == expected.replication
-                            && data.expiration == expected.expiration,
-                        "actual PUT did not retain the original publication policy",
-                    )?;
-                    kinds.push(data.kind);
-                    let mut response = [0; 16];
-                    let size = Response::Status(Status {
-                        code: 1,
-                        min_expiration: AbsoluteTime::UNIX_EPOCH,
-                        message: None,
-                    })
-                    .encode(&mut response)
+            let result = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            result.block_on(async {
+                let mut config = gnunet_config::Configuration::default();
+                config
+                    .set_value(
+                        b"datastore",
+                        b"UNIXPATH",
+                        Some(gnunet_native::os_bytes::encode(path.as_os_str()).as_ref()),
+                    )
                     .map_err(io::Error::other)?;
-                    stream.write_all(&response[..size])?;
+                config
+                    .set_number(b"datastore", b"PORT", 0)
+                    .map_err(io::Error::other)?;
+                let bound = BoundListeners::bind_configured(
+                    &config,
+                    b"datastore",
+                    LocalListenerAccess::Owner,
+                )
+                .await
+                .map_err(|error| match error.downcast::<io::Error>() {
+                    Ok(error) => *error,
+                    Err(error) => io::Error::other(format!("local fixture preparation: {error:?}")),
+                })?;
+                let listeners = bound.listeners();
+                let listener = match listeners.as_slice() {
+                    [Listener::Unix(listener)] => *listener,
+                    _ => {
+                        return Err(io::Error::other(
+                            "expected one private local publication listener",
+                        ));
+                    }
+                };
+                let _ready = ready_tx.send(());
+                let until = Instant::now() + Duration::from_secs(15);
+                let mut kinds = Vec::new();
+                loop {
+                    guard(until, &stopped)?;
+                    let mut stream =
+                        match tokio::time::timeout(Duration::from_millis(20), listener.accept())
+                            .await
+                        {
+                            Ok(Ok((stream, _))) => stream,
+                            Err(_) => {
+                                if done.load(Ordering::SeqCst) {
+                                    return Ok(kinds);
+                                }
+                                continue;
+                            }
+                            Ok(Err(error)) => return Err(error),
+                        };
+                    loop {
+                        let mut header = [0; 4];
+                        if read(&mut stream, &mut header[..1], until, &stopped).await? == 0 {
+                            break;
+                        }
+                        exact(&mut stream, &mut header[1..], until, &stopped).await?;
+                        let size = gnunet::wire::MessageHeader::decode(&header)
+                            .map_err(io::Error::other)?
+                            .size();
+                        let mut bytes = Zeroizing::new(vec![0; size]);
+                        bytes[..4].copy_from_slice(&header);
+                        exact(&mut stream, &mut bytes[4..], until, &stopped).await?;
+                        let Request::Put(data) =
+                            Request::decode(&bytes).map_err(io::Error::other)?
+                        else {
+                            return Err(io::Error::other(
+                                "normal task route issued an unexpected DATASTORE operation",
+                            ));
+                        };
+                        check(
+                            data.priority == expected.priority
+                                && data.anonymity == expected.anonymity
+                                && data.replication == expected.replication
+                                && data.expiration == expected.expiration,
+                            "actual PUT did not retain the original publication policy",
+                        )?;
+                        kinds.push(data.kind);
+                        let mut response = [0; 16];
+                        let size = Response::Status(Status {
+                            code: 1,
+                            min_expiration: AbsoluteTime::UNIX_EPOCH,
+                            message: None,
+                        })
+                        .encode(&mut response)
+                        .map_err(io::Error::other)?;
+                        tokio::time::timeout_at(until.into(), stream.write_all(&response[..size]))
+                            .await
+                            .map_err(|_| {
+                                io::Error::new(
+                                    io::ErrorKind::TimedOut,
+                                    "original publication reply bound",
+                                )
+                            })??;
+                    }
                 }
-            }
+            })
         });
-        Ok(Self {
+        let mut owner = Self {
             finished,
             stop,
             peer: Some(peer),
-        })
+        };
+        match ready_rx.recv_timeout(Duration::from_secs(5)) {
+            Ok(()) => Ok(owner),
+            Err(error) => {
+                owner.stop.store(true, Ordering::SeqCst);
+                owner.finish()?;
+                Err(io::Error::other(error))
+            }
+        }
     }
     fn run(&self, args: &[OsString], output: &mut impl Write) -> Result {
         let result = run(args, output);
@@ -212,8 +269,9 @@ fn target() -> Result<OsString> {
     });
     let mut bytes = vec![0; uri.encoded_len()?];
     uri.encode(&mut bytes)?;
-    use std::os::unix::ffi::OsStringExt;
-    Ok(OsString::from_vec(bytes))
+    Ok(OsString::from(
+        String::from_utf8(bytes).map_err(io::Error::other)?,
+    ))
 }
 fn policy(args: &mut Vec<OsString>, expiration: &str) {
     args.extend(

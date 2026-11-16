@@ -1,4 +1,5 @@
 //! Actual owned-child launch, signal-credit and original-PID wait regressions.
+#![cfg(unix)]
 #![expect(
     clippy::panic,
     reason = "These test-only callbacks deliberately fail on unexpected invocation or result shape."

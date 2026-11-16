@@ -175,7 +175,7 @@ impl Settings {
             nse: gnunet_nse_client_host::Limits::default(),
             access: UnixAccess {
                 match_uid: yes(b"UNIX_MATCH_UID", false)?,
-                match_gid: yes(b"UNIX_MATCH_GID", true)?,
+                match_gid: yes(b"UNIX_MATCH_GID", cfg!(unix))?,
             },
             options: service_options(c, b"rps", ShutdownMode::Immediate)?,
             shutdown_grace: Duration::from_micros(time(

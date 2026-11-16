@@ -1,9 +1,11 @@
-use crate::{Stage, StoreError};
+use crate::{CommitBackend, DirectorySync, NativeCommit, Stage, StoreError};
 use gnunet_statistics::Statistics;
 use gnunet_types::Error;
 use gnunet_wire::official::MessageHeader;
+#[cfg(not(windows))]
+use std::fs::OpenOptions;
 use std::{
-    fs::{self, File, OpenOptions},
+    fs::{self, File},
     io::{self, Read, Write},
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
@@ -44,7 +46,7 @@ pub struct LoadReport {
     pub rows: usize,
 }
 
-/// Namespace outcome after the requested synchronization operations succeeded.
+/// Actual namespace outcome, independent of the directory barrier receipt.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SaveOutcome {
     /// A complete snapshot replaced the destination atomically.
@@ -55,7 +57,7 @@ pub enum SaveOutcome {
     Absent,
 }
 
-/// Counts of the actual committed official SET snapshot.
+/// Counts and directory barrier receipt of an actual official SET snapshot.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SaveReport {
     /// Replacement, removal or already-absent outcome.
@@ -64,49 +66,10 @@ pub struct SaveReport {
     pub bytes: u64,
     /// Number of persistent statistic rows written.
     pub records: usize,
-}
-
-/// Namespace publication and directory synchronization boundary.
-///
-/// File creation, writing and `sync_all` always use the actual filesystem.
-/// This narrow interface permits a platform backend or fault-injection test to
-/// report a namespace operation that may have happened before an I/O error.
-/// Implementations must perform the named operation and propagate real errors;
-/// returning success without it invalidates the save's durability contract.
-pub trait CommitBackend {
-    /// Replace the destination entry with the complete same-directory source.
-    fn rename(&mut self, source: &Path, destination: &Path) -> io::Result<()>;
-    /// Remove an obsolete destination entry.
-    fn remove(&mut self, destination: &Path) -> io::Result<()>;
-    /// Synchronize this existing directory's namespace updates.
-    fn sync_directory(&mut self, directory: &Path) -> io::Result<()>;
-}
-
-/// Actual Unix namespace operations and directory `sync_all`.
-///
-/// Other targets return `Unsupported` before native saving starts: standard Rust
-/// does not expose a portable directory-synchronization primitive there. A
-/// suitable platform may instead supply a real [`CommitBackend`].
-#[derive(Default)]
-pub struct NativeCommit;
-impl CommitBackend for NativeCommit {
-    fn rename(&mut self, source: &Path, destination: &Path) -> io::Result<()> {
-        fs::rename(source, destination)
-    }
-    fn remove(&mut self, destination: &Path) -> io::Result<()> {
-        fs::remove_file(destination)
-    }
-    fn sync_directory(&mut self, directory: &Path) -> io::Result<()> {
-        #[cfg(unix)]
-        {
-            File::open(directory)?.sync_all()
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = directory;
-            Err(io::Error::from(io::ErrorKind::Unsupported))
-        }
-    }
+    /// Combined directory barrier result for every changed parent. None means
+    /// the already-absent database required no namespace mutation. File data was
+    /// synchronized independently before any nonempty snapshot publication.
+    pub directory_sync: Option<DirectorySync>,
 }
 
 /// An explicit official `[STATISTICS] DATABASE` path and finite work limits.
@@ -116,6 +79,7 @@ impl CommitBackend for NativeCommit {
 /// allow a loader to see a complete old or new snapshot. Concurrent in-place
 /// external writes are outside that ownership contract; length changes are
 /// detected and rejected. There is no hidden fallback database or migration.
+#[derive(Debug)]
 pub struct Store {
     path: PathBuf,
     parent: PathBuf,
@@ -132,6 +96,9 @@ impl Store {
                 Error::InvalidInput,
             ));
         }
+        #[cfg(windows)]
+        gnunet_native::paths::validate_file_path(&path)
+            .map_err(|error| StoreError::io(Stage::Preflight, None, error))?;
         let parent = parent_of(&path).to_path_buf();
         Ok(Self {
             path,
@@ -194,6 +161,22 @@ impl Store {
         // Reject named pipes/devices before a blocking open. The caller owns
         // namespace writers; descriptor metadata below still validates the
         // actual regular file that was opened.
+        // Windows std metadata classifies AF_UNIX reparse nodes as files. Inspect
+        // the native tag first, including alternate case spellings of a live
+        // endpoint, rather than opening it as a database candidate.
+        #[cfg(windows)]
+        match gnunet_native::local_path::is_socket(&self.path) {
+            Ok(true) => {
+                return Err(StoreError::protocol(
+                    Stage::Inspect,
+                    None,
+                    Error::InvalidInput,
+                ));
+            }
+            Ok(false) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(StoreError::io(Stage::Inspect, None, error)),
+        }
         match fs::metadata(&self.path) {
             Ok(metadata) if metadata.is_file() => {}
             Ok(_) => {
@@ -216,7 +199,11 @@ impl Store {
             }
             Err(error) => return Err(StoreError::io(Stage::Inspect, None, error)),
         }
-        let mut file = match File::open(&self.path) {
+        #[cfg(windows)]
+        let opened = gnunet_native::paths::open_regular_file(&self.path);
+        #[cfg(not(windows))]
+        let opened = File::open(&self.path);
+        let mut file = match opened {
             Ok(file) => file,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 return Ok((
@@ -338,7 +325,8 @@ impl Store {
     ///
     /// Accepted bytes are exactly the official concatenated SET dump format.
     /// Nonempty saves write a private-mode same-directory temporary file,
-    /// synchronize it, atomically rename it and synchronize the parent directory.
+    /// synchronize it and replace the destination entry. The directory barrier
+    /// result is reported independently in [`SaveReport::directory_sync`].
     /// Empty snapshots remove the old database like the reference service.
     /// Synchronization success means the OS accepted those requests, not an
     /// independent guarantee about a device or remote filesystem's persistence.
@@ -347,11 +335,11 @@ impl Store {
         core: &Statistics<R, N, C, W, E>,
         scratch: &mut [u8],
     ) -> Result<SaveReport, StoreError> {
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         {
             self.save_with(core, scratch, &mut NativeCommit)
         }
-        #[cfg(not(unix))]
+        #[cfg(not(any(unix, windows)))]
         {
             let _ = (core, scratch);
             Err(StoreError::io(
@@ -425,7 +413,7 @@ impl Store {
         if records == 0 {
             return self.remove_empty(commit);
         }
-        prepare_parent(&self.parent, commit)?;
+        let prepared = prepare_parent(&self.parent, commit)?;
         let (mut candidate, mut file) = temporary(&self.path)?;
         for update in snapshot.iter() {
             let size = update
@@ -443,13 +431,14 @@ impl Store {
             .map_err(|error| {
                 StoreError::io(Stage::Rename, None, error).unknown(Some(candidate.path.clone()))
             })?;
-        commit
+        let directory_sync = commit
             .sync_directory(&self.parent)
             .map_err(|error| StoreError::io(Stage::SyncDirectory, None, error).unknown(None))?;
         Ok(SaveReport {
             outcome: SaveOutcome::Stored,
             bytes,
             records,
+            directory_sync: Some(prepared.combine(directory_sync)),
         })
     }
 
@@ -460,6 +449,7 @@ impl Store {
                     outcome: SaveOutcome::Absent,
                     bytes: 0,
                     records: 0,
+                    directory_sync: None,
                 });
             }
             Err(error) => return Err(StoreError::io(Stage::Inspect, None, error)),
@@ -470,13 +460,14 @@ impl Store {
             Err(error) if error.kind() == io::ErrorKind::NotFound => SaveOutcome::Absent,
             Err(error) => return Err(StoreError::io(Stage::Remove, None, error).unknown(None)),
         };
-        commit
+        let directory_sync = commit
             .sync_directory(&self.parent)
             .map_err(|error| StoreError::io(Stage::SyncDirectory, None, error).unknown(None))?;
         Ok(SaveReport {
             outcome,
             bytes: 0,
             records: 0,
+            directory_sync: Some(directory_sync),
         })
     }
 }
@@ -487,7 +478,10 @@ fn parent_of(path: &Path) -> &Path {
         .unwrap_or(Path::new("."))
 }
 
-fn prepare_parent(parent: &Path, commit: &mut impl CommitBackend) -> Result<(), StoreError> {
+fn prepare_parent(
+    parent: &Path,
+    commit: &mut impl CommitBackend,
+) -> Result<DirectorySync, StoreError> {
     let mut missing = Vec::new();
     let mut cursor = parent;
     loop {
@@ -516,15 +510,17 @@ fn prepare_parent(parent: &Path, commit: &mut impl CommitBackend) -> Result<(), 
         }
     }
     fs::create_dir_all(parent).map_err(|error| StoreError::io(Stage::Prepare, None, error))?;
+    let mut synchronized = DirectorySync::Synchronized;
     for created in missing.iter().rev() {
-        commit
+        let directory = commit
             .sync_directory(created)
             .map_err(|error| StoreError::io(Stage::Prepare, None, error))?;
-        commit
+        let entry = commit
             .sync_directory(parent_of(created))
             .map_err(|error| StoreError::io(Stage::Prepare, None, error))?;
+        synchronized = synchronized.combine(directory).combine(entry);
     }
-    Ok(())
+    Ok(synchronized)
 }
 
 struct Temporary {
@@ -552,14 +548,20 @@ fn temporary(destination: &Path) -> Result<(Temporary, File), StoreError> {
         // A NAME_MAX-byte destination must still admit a temporary sibling.
         let temporary_name = format!(".gnunet-statistics-{}-{ordinal}.tmp", std::process::id());
         let path = parent_of(destination).join(temporary_name);
-        let mut options = OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        match options.open(&path) {
+        #[cfg(windows)]
+        let opened = gnunet_native::paths::create_private_file(&path);
+        #[cfg(not(windows))]
+        let opened = {
+            let mut options = OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            options.open(&path)
+        };
+        match opened {
             Ok(file) => {
                 return Ok((
                     Temporary {

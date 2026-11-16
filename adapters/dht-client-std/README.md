@@ -6,6 +6,8 @@ ports and `Framed` IO. The caller drives one bounded observation at a time. It
 creates no DHT service, Resolver task or hidden scheduler loop. This package is
 not imported by the default SDK.
 
+## Public interface
+
 Dropping `drive` preserves original connect attempts, partial RX/TX and logical
 intent. Closing or reconnecting first retires native IO; outstanding one-shot
 notices retain their original MQ owner. Port failures remain retained until
@@ -30,6 +32,8 @@ wait futures with retained partial responses, PUT cancellation, truncated EOF,
 fresh-MQ reconstruction and no uncertain PUT replay. Port tests check retained
 clock refusal and listener release.
 
+## Checks and examples
+
 The `normal_dht` example is an interoperation probe for an independently started
 normal official v0.29.1 DHT profile and its public C API actor. Its fixture keys,
 payloads and cached Reference029 identity are deliberate assertions. It exercises
@@ -37,6 +41,8 @@ bidirectional data exchange, HELLO metadata verification/offer, monitors,
 GET/known/monitor restoration and STOP. The independent evidence capsule records
 the exact official build, actors, original failures, inputs and runtime images. That single-node TEST-plugin/heap-cache profile is local IPC evidence, not a
 remote-routing or durability claim.
+
+## Cancellation and recovery
 
 `retire_io` physically detaches the original MQ or pending connection attempt
 without a clock sample or replacement IO. A present epoch settles its original

@@ -12,7 +12,6 @@ use std::{
     error::Error,
     ffi::OsStr,
     io::{self, Write},
-    os::unix::ffi::OsStrExt,
     path::Path,
 };
 
@@ -70,7 +69,7 @@ pub(super) fn datastore_client<'id, 'slots, 'buffers>(
 }
 pub(super) fn publish(
     args: &[impl AsRef<OsStr>],
-    out: &mut impl Write,
+    out: &mut super::Output<'_, impl Write>,
 ) -> Result<(), Box<dyn Error>> {
     super::publish::run(
         args,
@@ -107,7 +106,7 @@ fn fetch_arguments(args: &[impl AsRef<OsStr>]) -> Result<FetchArguments<'_>, Box
     let mut index = 3;
     while index < args.len() {
         let value = args[index].as_ref();
-        let raw = value.as_bytes();
+        let raw = value.as_encoded_bytes();
         if !literal && raw == b"--" {
             literal = true;
             index += 1;
@@ -123,9 +122,8 @@ fn fetch_arguments(args: &[impl AsRef<OsStr>]) -> Result<FetchArguments<'_>, Box
         } else if literal {
             None
         } else {
-            raw.strip_prefix(b"--anonymity=")
-                .or_else(|| raw.strip_prefix(b"-a"))
-                .map(OsStr::from_bytes)
+            gnunet_native::os_bytes::strip_ascii_prefix(value, b"--anonymity=")
+                .or_else(|| gnunet_native::os_bytes::strip_ascii_prefix(value, b"-a"))
         };
         if let Some(level) = level {
             if anonymity.is_some() {
@@ -158,11 +156,15 @@ fn fetch_arguments(args: &[impl AsRef<OsStr>]) -> Result<FetchArguments<'_>, Box
 
 pub(super) fn fetch(
     args: &[impl AsRef<OsStr>],
-    out: &mut impl Write,
+    out: &mut super::Output<'_, impl Write>,
 ) -> Result<(), Box<dyn Error>> {
     let arguments = fetch_arguments(args)?;
-    let uri = Uri::parse(arguments.uri.as_bytes(), UriLimits::default())?;
+    let uri = Uri::parse(
+        crate::argument::wire_bytes(arguments.uri)?,
+        UriLimits::default(),
+    )?;
     let source = EndpointSource::unix(Path::new(arguments.socket).to_path_buf());
+    out.interval(arguments.interval)?;
     let deadline = target(&source, arguments.interval)?;
     let (content, options) = match uri {
         Uri::Content(content) => (content, DownloadOptions::new(deadline)),
@@ -184,6 +186,7 @@ pub(super) fn fetch(
     let mut output = OutputDir::open(parent)?;
     tokio::runtime::Builder::new_current_thread().enable_all().build()?.block_on(async {
         let done=output.download_file(name,source,content,&mut Buffers::new(),None,options, |_|Control::Continue).await?;
+        out.cleanup()?;
         let row=serde_json::json!({"event":"fs_download_complete","bytes":done.progress.plaintext_bytes,"blocks":done.progress.blocks});
         serde_json::to_writer(&mut *out,&row).map_err(io::Error::other)?;writeln!(out)?;
         Ok::<_,Box<dyn Error>>(())

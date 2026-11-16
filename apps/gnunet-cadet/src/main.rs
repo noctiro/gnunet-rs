@@ -1,18 +1,9 @@
 //! Standard CADET binary stream/listen/echo PROGRAM over the actual client.
 #![deny(unsafe_code)]
-#[cfg(unix)]
 mod budget;
-#[cfg(unix)]
-mod control;
-#[cfg(unix)]
-mod early;
-#[cfg(unix)]
 mod options;
-#[cfg(unix)]
 mod run;
-#[cfg(unix)]
 mod state;
-#[cfg(unix)]
 mod stdio;
 use std::{
     error::Error,
@@ -20,19 +11,16 @@ use std::{
     process::ExitCode,
 };
 type Cause = Box<dyn Error>;
-#[cfg(unix)]
 #[derive(Debug)]
 struct SelectedFailure {
     original: Option<Cause>,
     logging: Option<io::Error>,
 }
-#[cfg(unix)]
 impl std::fmt::Display for SelectedFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "cadet PROGRAM: {self:?}")
     }
 }
-#[cfg(unix)]
 impl Error for SelectedFailure {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         self.original
@@ -40,14 +28,19 @@ impl Error for SelectedFailure {
             .or_else(|| self.logging.as_ref().map(|error| error as _))
     }
 }
+#[expect(
+    unsafe_code,
+    reason = "Fresh PROGRAM captures native inheritance before competing owners"
+)]
 fn main() -> ExitCode {
-    match execute() {
+    // SAFETY: first and only capture in this fresh single-threaded executable.
+    let result = unsafe { gnunet_service_startup::ClientStartup::capture() }
+        .map_err(|error| Box::new(error) as Cause)
+        .and_then(execute);
+    match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            #[cfg(unix)]
             let selected = error.is::<SelectedFailure>();
-            #[cfg(not(unix))]
-            let selected = false;
             if !selected {
                 let _diagnostic = writeln!(io::stderr().lock(), "gnunet-cadet: {error}");
             }
@@ -55,22 +48,14 @@ fn main() -> ExitCode {
         }
     }
 }
-#[cfg(not(unix))]
-fn execute() -> Result<(), Cause> {
-    Err("online cadet PROGRAM requires Unix".into())
-}
-#[cfg(unix)]
-fn execute() -> Result<(), Cause> {
+fn execute(startup: gnunet_service_startup::ClientStartup) -> Result<(), Cause> {
     use gnunet_program_host::{
-        foreground,
         logging::Logger,
         program::{self, Defaults, Invocation, NlsDisabled, Preparation},
         reporting::Reporter,
         shared_clock::SharedClock,
     };
-    use std::{cell::Cell, rc::Rc, sync::Arc};
-    // Capture first: no logger/runtime/stdio reader or other descriptor owner.
-    let early = early::capture()?;
+    use std::sync::Arc;
     let clock = SharedClock::native(64)?;
     let config = gnunet_config::Configuration::create(
         Arc::new(gnunet_config::ProjectData::default()),
@@ -84,8 +69,9 @@ fn execute() -> Result<(), Cause> {
         select_default_filename:true,defaults:Defaults::Native,
     },selection.options(),std::env::args_os(),&program::Environment::capture(),&mut NlsDisabled,&mut logger,&clock,&mut io::stdout().lock(),&mut io::stderr().lock());
     let reporter = Reporter::new(logger, clock.clone());
-    if let Some(notice) = early.notice {
-        reporter.debug(
+    #[cfg(unix)]
+    if let Some(notice) = startup.notice {
+        reporter.warning(
             "cadet.parent.notice",
             format_args!("parent-control: {notice:?}"),
         );
@@ -120,37 +106,14 @@ fn execute() -> Result<(), Cause> {
                 .build()
             {
                 Err(error) => Err(Box::new(error) as Cause),
-                Ok(runtime) => runtime.block_on(async {
-                    use gnunet_resolver_broker::{Family, FamilyProfile};
-                    use gnunet_service_runtime::clock::RuntimeClock;
-                    let source: Arc<dyn RuntimeClock> = Arc::new(clock.clone());
-                    let native = gnunet_resolver_broker::native_profile()?;
-                    let family =
-                        FamilyProfile::new(native.encode(Family::V4), native.encode(Family::V6))?;
-                    let live = gnunet_client_host::LiveConfiguration::new(configuration);
-                    let (mut context, resolver) = gnunet_resolver_broker::broker::<128, 256>(
-                        live.clone(),
-                        Default::default(),
-                        family,
-                        source.clone(),
-                    )?;
-                    let stop = Rc::new(Cell::new(false));
-                    let product = run::run(run::Inputs {
-                        settings,
-                        live,
-                        context: context.clone(),
-                        resolver,
-                        source,
-                        reporter: reporter.clone(),
-                        stop: stop.clone(),
-                        parent: early.parent,
-                        input: early.input,
-                        output: early.output,
-                    });
-                    foreground::run(prepared, &mut context, clock.clone(), stop, product)
-                        .await
-                        .map(|_report| ())
-                }),
+                Ok(runtime) => runtime.block_on(run::scheduled(
+                    prepared,
+                    settings,
+                    configuration,
+                    clock.clone(),
+                    reporter.clone(),
+                    startup,
+                )),
             }
         }
     };

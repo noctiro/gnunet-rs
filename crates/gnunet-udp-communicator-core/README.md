@@ -5,6 +5,8 @@ packet fields and packet authentication. Its default feature set needs no heap. 
 packets with burned BOX sequence numbers, receiver KID windows and explicit
 replay-store admission. Randomness and monotonic time come from callers.
 
+## Wire format
+
 The interoperability profile follows the unchanged official source
 `346358e26d4dcc2dc4f51bef5d52dca29c7d8165`, including its KID formula:
 HKDF-Extract(salt=BE32(sequence), IKM=master), then HKDF-Expand with
@@ -17,12 +19,24 @@ with empty AAD. BOX has a 48-byte prefix. Ordinary rekey uses KEM 0x0020 and the
 official 36-byte type1462 message. ACK is the exact 72-byte type1460 message. Padding uses type1461 and caller-provided entropy. All cryptographic
 algorithms are shared with `gnunet-session-crypto`; production uses no C FFI.
 
+## Receive admission
+
 `Receiver::initial` authenticates before calling `ReplayStore`. Its trait is a
 required gate, not an implementation of durable persistence. The finite unit
 store only proves trait behavior. A backend must bind local identity,
 remote sender and monotonic time in its own namespace, persist atomically with
 an exclusive writer fence, and keep ambiguous outcomes quiescent until resolved. Neither the unit store nor the normal C packet helper proves that requirement. The fixed C verifier authenticates purpose33 but does not itself implement the
 persistent monotonic-time gate required by LSD0007.
+
+`Receiver::prepare_boxed` authenticates and reserves payload, rekey and refill
+effects before returning a `PreparedBox` that exclusively borrows that receiver.
+External endpoint preparation may then refuse by dropping the guard: no KID,
+window, byte counter or ACK credit changes. Scratch is erased before the guard is
+returned. Its consuming `commit` is infallible and releases the prepared effects;
+`Receiver::boxed` combines preparation and commit for callers with no external
+admission gate. Neither path refunds the sender's already burned sequence.
+
+## Component observers
 
 The `udp_packet_oracle` example is a finite component observer using public
 fixture seeds A=[3;32], B=[5;32], ordinary official TEST type0/counter messages,
@@ -38,6 +52,8 @@ This evidence establishes packet components only. Native UDP sockets, IPv4/IPv6
 MTU behavior, transport IPC/backchannel lifecycle, PILS identity ownership, NAT,
 durable replay persistence, scheduler/resource teardown and complete UDP or Node
 interoperability remain separate required work.
+
+## Sender recovery
 
 BOX preparation prefers the newest usable ACK-confirmed master. A retained
 sender can therefore recover after a peer loses volatile receive keys and

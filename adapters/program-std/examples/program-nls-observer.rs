@@ -12,7 +12,7 @@ mod actual {
         },
         shared_clock::SharedClock,
     };
-    use gnunet_resolver_broker::{FamilyProfile, Limits, LiveConfiguration};
+    use gnunet_resolver_broker::{Limits, LiveConfiguration};
     use std::{
         io::{self, Write},
         path::PathBuf,
@@ -78,8 +78,7 @@ mod actual {
         let entered = runtime.enter();
         let clock = SharedClock::native(3)?;
         let subscription = Arc::new(clock.clone());
-        use std::os::unix::ffi::OsStrExt;
-        let config_file = marker.as_os_str().as_bytes().to_vec();
+        let config_file = gnunet_native::os_bytes::encode(marker.as_os_str()).into_owned();
         let project = gnunet_config::ProjectData {
             gettext_path: Some(directory),
             config_file: config_file.clone(),
@@ -92,7 +91,7 @@ mod actual {
         let (mut resolver, driver) = gnunet_resolver_broker::broker::<8, 1024>(
             LiveConfiguration::new(initial),
             Limits::default(),
-            FamilyProfile::new(libc::AF_INET, libc::AF_INET6)?,
+            gnunet_resolver_broker::native_profile()?,
             subscription,
         )
         .map_err(Failure::Broker)?;

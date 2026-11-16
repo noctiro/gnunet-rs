@@ -4,6 +4,8 @@ This adapter owns the official780 intent and its two-round native generation
 flow: commitment production, own/remote reveal validation and final aggregation. Generally usable FAIR remains obstructed by the original fixed response width. It adds no
 private message, complaint round, reduced roster or replacement proof profile.
 
+## Public interface
+
 `Sources::new` snapshots PILS/CONSENSUS endpoints with their common clock. `Request::from_frame` preserves the original request. Normalization adds the
 local identity when absent, sorts the original roster, rejects duplicate
 identities, and validates the threshold and complete original-roster reveal

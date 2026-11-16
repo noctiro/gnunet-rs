@@ -86,6 +86,127 @@ fn commands(stage: Stage) -> Vec<Vec<&'static str>> {
         Stage::Runtime => vec![
             vec![
                 "cargo",
+                "check",
+                "-p",
+                "gnunet-cli",
+                "--no-default-features",
+                "--features",
+                "fs",
+                "--all-targets",
+                "--locked",
+            ],
+            vec![
+                "cargo",
+                "check",
+                "-p",
+                "gnunet-program-host",
+                "--no-default-features",
+                "--features",
+                "service-runtime",
+                "--all-targets",
+                "--locked",
+            ],
+            vec![
+                "cargo",
+                "test",
+                "-p",
+                "gnunet-namecache-client-host",
+                "-p",
+                "gnunet-dht-client-host",
+                "-p",
+                "gnunet-core-client-host",
+                "-p",
+                "gnunet-seti-client-host",
+                "-p",
+                "gnunet-setu-client-host",
+                "-p",
+                "gnunet-rps-client-host",
+                "-p",
+                "gnunet-messenger-client-host",
+                "-p",
+                "gnunet-set-client-host",
+                "-p",
+                "gnunet-scalarproduct-client-host",
+                "-p",
+                "gnunet-consensus-client-host",
+                "-p",
+                "gnunet-abd-client-host",
+                "-p",
+                "gnunet-secretsharing-client-host",
+                "-p",
+                "gnunet-conversation-client-host",
+                "-p",
+                "gnunet-nat-client-host",
+                "-p",
+                "gnunet-dns-client-host",
+                "-p",
+                "gnunet-nse-client-host",
+                "--all-targets",
+                "--all-features",
+                "--locked",
+            ],
+            vec![
+                "cargo",
+                "test",
+                "-p",
+                "gnunet-pils-host",
+                "--lib",
+                "--features",
+                "client",
+                "--locked",
+            ],
+            vec![
+                "cargo",
+                "check",
+                "-p",
+                "gnunet",
+                "--no-default-features",
+                "--features",
+                "official-namecache-client,official-pils-client,official-dht-client,official-core-client,official-seti-client,official-setu-client,official-rps-client,official-messenger-client,official-set-client,official-scalarproduct-client,official-consensus-client,official-abd-client,official-secretsharing-client,official-conversation-client,official-nat-client,official-dns-client,official-nse-client,official-fs,official-fs-extraction,official-fs-network,official-fs-auto-share,official-fs-server,official-datastore-server",
+                "--locked",
+            ],
+            vec![
+                "cargo",
+                "test",
+                "-p",
+                "gnunet-fs-host",
+                "-p",
+                "gnunet-extractor-host",
+                "-p",
+                "gnunet-auto-share",
+                "-p",
+                "gnunet-datastore-host",
+                "-p",
+                "gnunet-service-datastore",
+                "-p",
+                "gnunet-service-fs",
+                "-p",
+                "gnunet-cadet-host",
+                "-p",
+                "gnunet-snapshot-host",
+                "-p",
+                "gnunet-identity-host",
+                "-p",
+                "gnunet-namestore-host",
+                "-p",
+                "gnunet-service-identity",
+                "-p",
+                "gnunet-service-namestore",
+                "--features",
+                "gnunet-fs-host/auto-share,gnunet-fs-host/server,gnunet-datastore-host/server",
+                "--all-targets",
+                "--locked",
+            ],
+            vec![
+                "cargo",
+                "test",
+                "-p",
+                "gnunet-extractor-host",
+                "--doc",
+                "--locked",
+            ],
+            vec![
+                "cargo",
                 "test",
                 "-p",
                 "gnunet-config",
@@ -101,6 +222,14 @@ fn commands(stage: Stage) -> Vec<Vec<&'static str>> {
                 "test",
                 "-p",
                 "gnunet-service-runtime",
+                "-p",
+                "gnunet-service-startup",
+                "-p",
+                "gnunet-ipc-unix",
+                "-p",
+                "gnunet-statistics-store",
+                "-p",
+                "gnunet-service-statistics",
                 "--all-targets",
                 "--all-features",
                 "--locked",
@@ -113,7 +242,20 @@ fn commands(stage: Stage) -> Vec<Vec<&'static str>> {
                 "--lib",
                 "--test",
                 "transport",
+                "--test",
+                "presence",
                 "--all-features",
+                "--locked",
+            ],
+            vec![
+                "cargo",
+                "test",
+                "-p",
+                "gnunet-cli",
+                "--no-default-features",
+                "--features",
+                "cadet,did,fs,identity,namestore,peerstore,reclaim,regex,revocation,statistics,transport,vpn",
+                "--all-targets",
                 "--locked",
             ],
             vec![
@@ -133,8 +275,24 @@ fn commands(stage: Stage) -> Vec<Vec<&'static str>> {
                 "gnunet-resolver-host",
                 "--test",
                 "tcp",
+                "--test",
+                "loopback",
+                "--test",
+                "recovery",
                 "--all-features",
                 "--locked",
+            ],
+            vec![
+                "cargo",
+                "run",
+                "-p",
+                "gnunet-service-resolver",
+                "--bin",
+                "gnunet-service-resolver",
+                "--all-features",
+                "--locked",
+                "--",
+                "--help",
             ],
         ],
         Stage::Test => vec![
@@ -283,15 +441,11 @@ fn check_platform(stages: &[Stage], unix: bool) -> CheckResult<()> {
         && stages.iter().any(|stage| {
             matches!(
                 stage,
-                Stage::Tools
-                    | Stage::Lint
-                    | Stage::Test
-                    | Stage::Reference
-                    | Stage::DaemonReference
+                Stage::Tools | Stage::Reference | Stage::DaemonReference
             )
         })
     {
-        return Err("full-workspace/reference verification and Python tool controls still require Unix; `verify runtime` runs shared native TCP/clock/framing/Resolver checks on Windows, and `verify portable` checks protocol cores".into());
+        return Err("Python tool controls and official C reference groups require Unix; native Rust lint, workspace tests and focused runtime checks are available on every supported host".into());
     }
     Ok(())
 }
@@ -381,27 +535,26 @@ pub(crate) fn verify_matrix(group: Option<&str>) -> CheckResult<()> {
 mod tests {
     use super::*;
     #[test]
-    fn non_unix_hosts_reject_native_groups_before_starting_any_commands() -> CheckResult<()> {
+    fn native_rust_groups_are_available_on_every_host() -> CheckResult<()> {
         check_platform(
             &[
                 Stage::Portable,
                 Stage::Runtime,
                 Stage::Format,
                 Stage::Embedded,
+                Stage::Lint,
+                Stage::Test,
             ],
             false,
         )?;
         check_platform(DEFAULT, true)?;
         if check_platform(DEFAULT, false).is_ok() {
-            return Err("Windows default verification could falsely certify Unix services".into());
+            return Err(
+                "Windows default verification must identify the Unix-only Python tool controls"
+                    .into(),
+            );
         }
-        for stage in [
-            Stage::Tools,
-            Stage::Lint,
-            Stage::Test,
-            Stage::Reference,
-            Stage::DaemonReference,
-        ] {
+        for stage in [Stage::Tools, Stage::Reference, Stage::DaemonReference] {
             if check_platform(&[stage], false).is_ok() {
                 return Err(
                     format!("Unix-only group accepted on a non-Unix host: {stage:?}").into(),

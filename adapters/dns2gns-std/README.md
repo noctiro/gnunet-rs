@@ -1,9 +1,13 @@
 # DNS2GNS ordinary gateway host
 
 `Runtime` binds the configured IPv4 and IPv6 UDP listeners independently and
-retains each address or error. The PROGRAM supplies the original shared
+retains each address or error. Windows sockets disable ICMP-induced connection
+resets before bind. Isolated native receive errors keep the original listener;
+per-family counts and first causes remain bounded in the report. The PROGRAM supplies the original shared
 clock, configuration and GNS/IDENTITY/VPN CLIENT sources; no Resolver or detached
 task is created here.
+
+## Public interface
 
 Each bounded slot owns its original query future through full-name routing,
 ordinary DNS only after `NotGns`, optional VPN allocation, and the reply

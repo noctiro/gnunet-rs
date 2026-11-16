@@ -39,13 +39,13 @@ fn fixture(domain: &Instance) -> Result<Session<'_>, Error> {
     Err(Error::NotReady)
 }
 fn prepared_source<'id>(session: &mut Session<'id>, leader: usize) -> Result<SetId<'id>, Error> {
-    session.leader_setup(leader, 2)?;
+    session.leader_setup(leader, Round::Lead)?;
     let source = session.leaders[leader].source.ok_or(Error::NotReady)?;
-    session.leader_setup(leader, 2)?;
+    session.leader_setup(leader, Round::Lead)?;
     local_write(session)?;
     for _ in 0..8 {
-        session.leader_setup(leader, 2)?;
-        if session.leaders[leader].stage == LeaderStage::Run(2) {
+        session.leader_setup(leader, Round::Lead)?;
+        if session.leaders[leader].stage == LeaderStage::Run(Round::Lead) {
             return Ok(source);
         }
     }
@@ -91,14 +91,14 @@ fn one_retired_source_fails_active_and_planned_tasks_without_touching_another_ef
     check(session.leaders[0].echo_ballot.count() == 1)?;
     local_write(&mut session)?;
     check(session.tasks[next].state == TaskState::Active)?;
-    session.leader_run(0, 2)?;
+    session.leader_run(0, Round::Lead)?;
     let close = session.effect().ok_or(Error::NotReady)?;
     check(matches!(close.action, Action::CloseSet { set } if set == lost))?;
     let close_id = close.id;
     check(!session.sets[session.set_at(lost)?].closed)?;
     session.admit_effect(close_id)?;
     let _terminal = session.complete_effect(close_id, Completion::Retired)?;
-    session.leader_run(0, 2)?;
+    session.leader_run(0, Round::Lead)?;
     check(session.set_at(lost).is_err() && session.set_live(live))
 }
 
@@ -142,9 +142,9 @@ fn original_pending_dispositions_never_reactivate_the_retired_source() -> Result
 fn population_loss_keeps_uncommitted_offer_rejection_owned() -> Result<(), Error> {
     let domain = Instance::new();
     let mut session = fixture(&domain)?;
-    session.leader_setup(0, 2)?;
+    session.leader_setup(0, Round::Lead)?;
     let source = session.leaders[0].source.ok_or(Error::NotReady)?;
-    session.leader_setup(0, 2)?;
+    session.leader_setup(0, Round::Lead)?;
     let effect = session.effect().ok_or(Error::NotReady)?.id;
     let context = RoundContext {
         kind: 2,
@@ -179,9 +179,9 @@ fn population_loss_keeps_uncommitted_offer_rejection_owned() -> Result<(), Error
 fn population_loss_fails_future_plans_without_recreating_the_native_source() -> Result<(), Error> {
     let domain = Instance::new();
     let mut session = fixture(&domain)?;
-    session.leader_setup(0, 2)?;
+    session.leader_setup(0, Round::Lead)?;
     let source = session.leaders[0].source.ok_or(Error::NotReady)?;
-    session.leader_setup(0, 2)?;
+    session.leader_setup(0, Round::Lead)?;
     let effect = session.effect().ok_or(Error::NotReady)?.id;
     let _terminal = session.source_retired(
         source,
@@ -192,9 +192,9 @@ fn population_loss_fails_future_plans_without_recreating_the_native_source() -> 
         }),
     )?;
     for _ in 0..8 {
-        session.leader_setup(0, 2)?;
+        session.leader_setup(0, Round::Lead)?;
         check(session.effect().is_none())?;
-        if session.leaders[0].stage == LeaderStage::Run(2) {
+        if session.leaders[0].stage == LeaderStage::Run(Round::Lead) {
             break;
         }
     }

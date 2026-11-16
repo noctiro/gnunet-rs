@@ -2,12 +2,6 @@
 use crate::*;
 use socket2::{Domain, Protocol, Socket, Type};
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
-fn unsupported(e: &io::Error) -> bool {
-    matches!(
-        e.raw_os_error(),
-        Some(libc::EAFNOSUPPORT | libc::EPROTONOSUPPORT)
-    )
-}
 /// Actual simultaneous local bind observation, before closing all four probes.
 /// The source token records only logical per-system exclusion after this call.
 pub(crate) fn available(port: u16, families: Families) -> Result<bool, Failure> {
@@ -25,7 +19,7 @@ pub(crate) fn available(port: u16, families: Families) -> Result<bool, Failure> 
             let protocol = if udp { Protocol::UDP } else { Protocol::TCP };
             let socket = match Socket::new(domain, typ, Some(protocol)) {
                 Ok(s) => s,
-                Err(e) if unsupported(&e) => {
+                Err(e) if gnunet_native::network::socket_family_unavailable(&e) => {
                     supported = false;
                     break;
                 }
@@ -37,6 +31,19 @@ pub(crate) fn available(port: u16, families: Families) -> Result<bool, Failure> 
                     ));
                 }
             };
+            #[cfg(windows)]
+            {
+                use std::os::windows::io::AsSocket;
+                gnunet_native::network::set_exclusive_address_use(socket.as_socket()).map_err(
+                    |error| {
+                        Failure::io(
+                            "probe exclusive address",
+                            Path::new("<wildcard socket>"),
+                            error,
+                        )
+                    },
+                )?;
+            }
             if v6 {
                 socket
                     .set_only_v6(true)
@@ -50,7 +57,7 @@ pub(crate) fn available(port: u16, families: Families) -> Result<bool, Failure> 
             match socket.bind(&address.into()) {
                 Ok(()) => sockets.push(socket),
                 Err(e) if e.kind() == io::ErrorKind::AddrInUse => return Ok(false),
-                Err(e) if unsupported(&e) => {
+                Err(e) if gnunet_native::network::socket_family_unavailable(&e) => {
                     supported = false;
                     break;
                 }

@@ -1,7 +1,6 @@
 //! Actual bounded HOSTLIST bootstrap, verified publication, CORE advertisements,
 //! PEERSTORE hello-add and explicit qualified learned-metadata persistence.
 #![forbid(unsafe_code)]
-#![cfg(unix)]
 pub use gnunet_hostlist::{
     Advertiser, Core, DownloadOutcome, Fetch, HelloFrame, Job, Learned, Modes, Uri,
 };

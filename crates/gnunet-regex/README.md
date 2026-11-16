@@ -93,9 +93,8 @@ language-expression checking for finite noncyclic cases, existing
 `gnunet-block` structural/key checks, destination closure, the VPN search shape,
 synthetic entry walks including dot/empty, and representative capacity errors.
 
-This is complete callable pure core/artifact code within explicit limits. It is
-not a REGEX service, automaton/DHT interoperability qualification, a native DHT
-implementation, signed REGEX_ACCEPT producer, full node or whole-goal completion.
+Native REGEX service composition and signed accept publication belong to the
+[host adapter](../../adapters/regex-std/README.md).
 
 Central integration replaces linear synthetic-prefix deduplication with a
 fallibly growing exact-byte hash index. It grows with admitted records at load

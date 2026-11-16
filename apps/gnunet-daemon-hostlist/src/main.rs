@@ -6,21 +6,23 @@ use std::{
     process::ExitCode,
 };
 type Failure = Box<dyn Error>;
-#[cfg(unix)]
-mod control;
-#[cfg(unix)]
-mod early;
-#[cfg(unix)]
+mod drive;
+mod failure;
 mod foreground;
-#[cfg(unix)]
 mod reporting;
-#[cfg(unix)]
 mod settings;
+#[expect(
+    unsafe_code,
+    reason = "First fresh-process inheritance capture before competing native owners"
+)]
 fn main() -> ExitCode {
-    match run() {
+    // SAFETY: first and only capture in this fresh single-threaded executable.
+    let result = unsafe { gnunet_service_startup::ClientStartup::capture() }
+        .map_err(|error| Box::new(error) as Failure)
+        .and_then(run);
+    match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            #[cfg(unix)]
             if error.is::<reporting::SelectedFailure>() {
                 return ExitCode::FAILURE;
             }
@@ -29,12 +31,7 @@ fn main() -> ExitCode {
         }
     }
 }
-#[cfg(not(unix))]
-fn run() -> Result<(), Failure> {
-    Err("native HOSTLIST foreground requires Unix".into())
-}
-#[cfg(unix)]
-fn run() -> Result<(), Failure> {
+fn run(inherited: gnunet_service_startup::ClientStartup) -> Result<(), Failure> {
     use gnunet_program_host::{
         getopt::Options,
         helpers::{self, Target},
@@ -42,9 +39,7 @@ fn run() -> Result<(), Failure> {
         program::{self, Defaults, Invocation, NlsDisabled, Preparation},
         shared_clock::SharedClock,
     };
-    use gnunet_service_startup::{GroupsProfile, apply_privileges, configured_user, resolve_user};
     use std::sync::Arc;
-    let mut inherited = early::capture()?;
     let clock = SharedClock::native(1024)?;
     let config = gnunet_config::Configuration::create(
         Arc::new(gnunet_config::ProjectData::default()),
@@ -98,7 +93,8 @@ fn run() -> Result<(), Failure> {
                 };
             }
         };
-        if let Some(notice) = inherited.notice.take() {
+        #[cfg(unix)]
+        if let Some(notice) = inherited.notice {
             reports.warning(
                 "hostlist.parent.declaration",
                 format_args!("hostlist parent control declaration={notice:?}"),
@@ -125,20 +121,28 @@ fn run() -> Result<(), Failure> {
             return Ok(());
         }
         let settings = settings::Settings::read(prepared.main().config, modes)?;
-        let user = configured_user(prepared.main().config, b"hostlist")?
-            .map(|name| resolve_user(&name))
-            .transpose()?;
-        let privilege = apply_privileges(user.as_ref(), GroupsProfile::WithInitgroups)?;
-        if user.is_some() {
-            reports.debug(
-                "hostlist.process.identity",
-                format_args!("hostlist process identity: {privilege:?}"),
-            );
+        #[cfg(unix)]
+        {
+            use gnunet_service_startup::{
+                GroupsProfile, apply_privileges, configured_user, resolve_user,
+            };
+            let user = configured_user(prepared.main().config, b"hostlist")?
+                .map(|name| resolve_user(&name))
+                .transpose()?;
+            let privilege = apply_privileges(user.as_ref(), GroupsProfile::WithInitgroups)?;
+            if user.is_some() {
+                reports.debug(
+                    "hostlist.process.identity",
+                    format_args!("hostlist process identity: {privilege:?}"),
+                );
+            }
         }
+        #[cfg(windows)]
+        gnunet_service_startup::verify_configured_identity(prepared.main().config, b"hostlist")?;
         if reports.failed() {
             return Ok(());
         }
-        // No native owner, HTTP bind, disk worker or runtime before configured UID/GID.
+        // Select the native process identity before HTTP, storage or runtime setup.
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?

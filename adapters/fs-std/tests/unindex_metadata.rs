@@ -136,6 +136,11 @@ fn selected_provider_failure_preserves_its_cause_before_any_native_mutation() ->
                 Some(b"pdf:exact-options"),
                 Some(temp.0.join("missing-provider.dylib")),
             )?;
+            // SAFETY: the selected path is absent in this test's private
+            // directory throughout this attempt; loading cannot execute code.
+            #[expect(unsafe_code, reason = "This negative loader witness explicitly admits its absent private provider path; no native initializer can execute")]
+            let authorization = unsafe { extraction::NativeMetadataAuthorization::new(options.metadata.native_configuration().ok_or("native config missing")?.clone()) };
+            options.metadata = options.metadata.with_native_authorization(&authorization)?;
             let failure = timeout(
                 Duration::from_secs(2),
                 Buffers::new().unindex_file(

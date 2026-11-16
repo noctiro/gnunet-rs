@@ -1,7 +1,6 @@
 //! No-clobber commit of caller-produced artifacts, without a content-authentication claim.
 use super::{CommitStage, OutputDir, components, ensure_absent, invalid_name};
 use crate::Error;
-use nix::{fcntl::AtFlags, unistd::linkat};
 use std::{
     fmt,
     io::{self, Read, Write},
@@ -147,22 +146,20 @@ impl OutputDir {
             }
             temporary.file.sync_all()?;
             temporary.check_name()?;
-            linkat(
-                &parent,
-                temporary.name.as_os_str(),
-                &parent,
-                *name,
-                AtFlags::empty(),
-            )?;
             report.stage = CommitStage::LinkedUnknown;
+            if let Err(source) =
+                parent.link_file_from(temporary.parent, &temporary.name, &temporary.file, name)
+            {
+                return Err(Error::Io(source));
+            }
             temporary.check_link_at(&parent, name)?;
-            parent.sync_all()?;
+            let directory_sync = parent.sync()?;
             temporary.check_link_at(&parent, name)?;
-            report.stage = CommitStage::Durable;
+            report.stage = CommitStage::FileSynchronized(directory_sync);
             Ok(())
         })()
         .err();
-        let cleanup = temporary.remove().and_then(|()| parent.sync_all()).err();
+        let cleanup = temporary.remove().and_then(|()| parent.sync()).err();
         match (operation, cleanup) {
             (None, None) => Ok(report),
             (operation, cleanup) => Err(Box::new(ArtifactFailure {

@@ -1,5 +1,5 @@
 //! Real database round trips, bounded replay and publication failures.
-#![cfg(unix)]
+#![cfg(any(unix, windows))]
 #![expect(
     clippy::panic_in_result_fn,
     reason = "Fallible filesystem tests assert actual data and failure outcomes"
@@ -7,8 +7,8 @@
 
 use gnunet_statistics::{Reply, Selector, Set, Statistics};
 use gnunet_statistics_store::{
-    Cause, CommitBackend, CommitOutcome, Limits, LoadSource, NativeCommit, SaveOutcome, Stage,
-    Store,
+    Cause, CommitBackend, CommitOutcome, DirectorySync, Limits, LoadSource, NativeCommit,
+    SaveOutcome, Stage, Store,
 };
 use gnunet_types::Error;
 use std::{
@@ -31,6 +31,16 @@ const LIMITS: Limits = Limits {
     max_frame_bytes: 64,
 };
 
+fn native_directory_sync() -> DirectorySync {
+    #[cfg(unix)]
+    {
+        DirectorySync::Synchronized
+    }
+    #[cfg(windows)]
+    {
+        DirectorySync::Unavailable
+    }
+}
 struct Directory(PathBuf);
 impl Directory {
     fn new() -> io::Result<Self> {
@@ -92,9 +102,7 @@ fn frame(selector: Selector<'_>, flags: u32, value: u64) -> Result<Vec<u8>, Erro
 }
 
 #[test]
-fn durable_restart_uses_only_official_set_bytes_and_preserves_private_file_mode()
--> Result<(), Box<dyn StdError>> {
-    use std::os::unix::fs::PermissionsExt;
+fn snapshot_restart_uses_official_set_bytes_and_private_file() -> Result<(), Box<dyn StdError>> {
     let directory = Directory::new()?;
     let store = directory.store()?;
     let (mut core, loaded) = store.load::<4, 32, 1, 2, 4>()?;
@@ -118,9 +126,19 @@ fn durable_restart_uses_only_official_set_bytes_and_preserves_private_file_mode(
         fs::read(directory.file())?,
         b"\0\x14\0\xa8\0\0\0\x02\x01\x02\x03\x04\x05\x06\x07\x08s\0n\0"
     );
+    assert_eq!(saved.directory_sync, Some(native_directory_sync()));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            fs::metadata(directory.file())?.permissions().mode() & 0o777,
+            0o600
+        );
+    }
+    #[cfg(windows)]
     assert_eq!(
-        fs::metadata(directory.file())?.permissions().mode() & 0o777,
-        0o600
+        gnunet_native::identity::file_owner(&fs::File::open(directory.file())?)?,
+        gnunet_native::identity::process_user()?,
     );
     let (mut restarted, loaded) = store.load::<4, 32, 1, 2, 4>()?;
     assert_eq!(
@@ -314,8 +332,7 @@ fn refused_save_does_not_replace_existing_file_or_leave_temporary_data()
 }
 
 #[test]
-fn missing_parent_directories_are_created_and_synchronized_before_commit()
--> Result<(), Box<dyn StdError>> {
+fn missing_parent_directories_are_prepared_before_commit() -> Result<(), Box<dyn StdError>> {
     let directory = Directory::new()?;
     let path = directory.0.join("new/nested/statistics.db");
     let store = Store::new(path.clone(), LIMITS)?;
@@ -326,6 +343,80 @@ fn missing_parent_directories_are_created_and_synchronized_before_commit()
         SaveOutcome::Stored
     );
     assert_eq!(fs::read(path)?, frame(NAME, 2, 9)?);
+    Ok(())
+}
+
+#[test]
+fn an_unavailable_parent_barrier_is_not_replaced_by_a_later_sync_receipt()
+-> Result<(), Box<dyn StdError>> {
+    struct FirstUnavailable(bool);
+    impl CommitBackend for FirstUnavailable {
+        fn rename(&mut self, source: &Path, destination: &Path) -> io::Result<()> {
+            NativeCommit.rename(source, destination)
+        }
+        fn remove(&mut self, destination: &Path) -> io::Result<()> {
+            NativeCommit.remove(destination)
+        }
+        fn sync_directory(&mut self, directory: &Path) -> io::Result<DirectorySync> {
+            if !std::mem::replace(&mut self.0, true) {
+                Ok(DirectorySync::Unavailable)
+            } else {
+                NativeCommit.sync_directory(directory)
+            }
+        }
+    }
+    let directory = Directory::new()?;
+    let path = directory.0.join("new/nested/statistics.db");
+    let store = Store::new(path.clone(), LIMITS)?;
+    let mut core = Core::new();
+    update(&mut core, NAME, 9, 2)?;
+    let report = store.save_with(&core, &mut [0; 64], &mut FirstUnavailable(false))?;
+    assert_eq!(report.outcome, SaveOutcome::Stored);
+    assert_eq!(report.directory_sync, Some(DirectorySync::Unavailable));
+    assert_eq!(fs::read(path)?, frame(NAME, 2, 9)?);
+    Ok(())
+}
+
+#[cfg(windows)]
+#[test]
+fn alternate_stream_database_is_refused_before_file_creation() -> Result<(), Box<dyn StdError>> {
+    let directory = Directory::new()?;
+    let error = match Store::new(directory.0.join("statistics.db:stream"), LIMITS) {
+        Ok(_) => return Err("alternate stream target was accepted".into()),
+        Err(error) => error,
+    };
+    assert_eq!(error.stage(), Stage::Preflight);
+    assert_eq!(error.outcome(), CommitOutcome::DestinationUnchanged);
+    assert!(
+        matches!(error.cause(), Cause::Io(error) if error.kind() == io::ErrorKind::InvalidInput)
+    );
+    assert_eq!(fs::read_dir(&directory.0)?.count(), 0);
+    Ok(())
+}
+
+#[cfg(windows)]
+#[test]
+fn native_wide_filename_keeps_its_identity_across_snapshot_replacement()
+-> Result<(), Box<dyn StdError>> {
+    use std::os::windows::ffi::OsStringExt;
+    let directory = Directory::new()?;
+    let path = directory.0.join(std::ffi::OsString::from_wide(&[
+        u16::from(b'd'),
+        0xd800,
+        u16::from(b'b'),
+    ]));
+    let store = Store::new(path.clone(), LIMITS)?;
+    let mut core = Core::new();
+    for number in [19, 27] {
+        update(&mut core, NAME, number, 2)?;
+        let report = store.save(&core, &mut [0; 64])?;
+        assert_eq!(report.directory_sync, Some(DirectorySync::Unavailable));
+        let (mut loaded, report) = store.load::<4, 32, 1, 2, 4>()?;
+        assert_eq!(report.source, LoadSource::Present);
+        assert_eq!(value(&mut loaded, NAME)?, (number, true));
+        assert_eq!(fs::read(&path)?, frame(NAME, 2, number)?);
+    }
+    assert_eq!(fs::read_dir(&directory.0)?.count(), 1);
     Ok(())
 }
 
@@ -370,7 +461,7 @@ impl CommitBackend for FailingCommit {
         }
         Ok(())
     }
-    fn sync_directory(&mut self, directory: &Path) -> io::Result<()> {
+    fn sync_directory(&mut self, directory: &Path) -> io::Result<DirectorySync> {
         if matches!(self.0, Failure::DirectorySync) {
             return Err(io::Error::other("injected directory sync failure"));
         }
@@ -467,7 +558,7 @@ impl CommitBackend for PausingCommit {
     fn remove(&mut self, destination: &Path) -> io::Result<()> {
         NativeCommit.remove(destination)
     }
-    fn sync_directory(&mut self, directory: &Path) -> io::Result<()> {
+    fn sync_directory(&mut self, directory: &Path) -> io::Result<DirectorySync> {
         NativeCommit.sync_directory(directory)
     }
 }

@@ -1,15 +1,26 @@
-# Shared qualified raw snapshot storage
+# Shared snapshot storage
 
-`gnunet-snapshot-host` owns opaque `Zeroizing<Vec<u8>>` bodies and filesystem/worker receipts. It depends on no service client, Resolver or business key type. Callers interpret and bound their own format. They can use synchronous `Store::commit` from an existing owned worker, or the optional explicit snapshot worker; no per-request task or hidden service is created.
+`gnunet-snapshot-host` stores opaque `Zeroizing<Vec<u8>>` bodies in isolated Rust
+namespaces. Service codecs and business state stay in their own crates. The same
+transaction code runs on Linux, macOS, FreeBSD and Windows through
+`gnunet-native` original-directory and file operations.
+
+## Public interfaces
 
 ```text
 Store::open(namespace, directory, backend::Limits) -> (Store, Loaded)
-Store::commit(expected_generation, zeroizing_body) -> actual Committed
+Store::commit(expected_generation, zeroizing_body) -> Committed
 Worker::start(Store) -> Worker
 Worker::submit / poll / request_stop / shutdown / poll_join
 ```
 
-Loaded and Committed have private constructors and retain the namespace/generation. Loaded transfers its erased body once. Worker Job/Completion bind the original worker and checked serial; Stopped exists only after join. Worker admission has one bounded outstanding command/result.
+`Loaded` transfers its body once. `Loaded` and `Committed` have private
+constructors and report the original namespace, generation and `directory_sync`
+capability. The optional worker admits one bounded outstanding command/result;
+its job and completion bind the original worker and checked serial. A caller may
+instead run synchronous commits from its existing owned worker.
+
+## Namespaces and format
 
 | Namespace | Marker | Snapshot | Lock | Outer magic |
 | --- | --- | --- | --- | --- |
@@ -24,12 +35,54 @@ Loaded and Committed have private constructors and retain the namespace/generati
 | TransportTcp | `.tcp-rust-replay-store` | `tcp-replay.snapshot` | `.tcp-rust-replay.lock` | `GNTCPS02` |
 | GnsPublication | `.gns-publication-rust-store` | `gns-publication.snapshot` | `.gns-publication-rust.lock` | `GNGNSP01` |
 
-Namespaces have fixed distinct marker payloads and recognized temporary names. A known foreign marker is rejected before any private body is interpreted or this namespace's lock is created. Callers never import an unrecognized existing directory or temporary image. The generic store does not parse or log keys, records or labels.
 
-Every fresh ordinary namespace holds its writer lease before publishing its complete synchronized marker and keeps that lease in the returned Store through the caller's initial commit. A competing opener cannot take that lease and consume the creator's unique new-directory authority. Marker publication uses a separate create-new file, file sync and atomic rename, so an opener sees no partial marker. TransportTcp retains its separately qualified atomic directory publication. An existing unmarked/foreign directory is never adopted or modified: GnsPublication returns `initialization-pending/NotReady` for its original bounded nonce wait, while other ordinary namespaces retain their existing refusal. A present malformed marker remains an error. Store reports an existing marked directory without a canonical image as generation0/created=false; the nonce and OIDC authorities explicitly reject that state instead of resetting history or keys. Caller-specific initialization and refusal policy remain in those owners.
+Markers and pending names are fixed per namespace. Known foreign markers are
+refused before interpreting private bytes or creating this namespace's lock.
+The envelope remains 88 bytes: magic, big-endian generation/body length and a
+512-bit checksum over the header prefix and body. The body cap is 64 MiB,
+default 4 MiB. These private formats are independent of C databases; there is no
+legacy import, migration or silent reset.
 
-Directories/files retain private owner/mode, no-final-symlink, regular/single-link, exclusive writer lease and original inode fences. Store creates the final directory; a caller may create only missing parents. Successful commit requires the original generation, temporary write, file sync, atomic replacement, directory sync, same-inode readback/checksum and final fence. Original stage/errno and independent temporary cleanup errors remain available. Attempted publication or fence loss is Unknown, never rollback. Body size is capped64MiB, default4MiB.
+## Initialization and transaction contracts
 
-Canceling a wait preserves original channels/job/cursors. A caller stops admissions and closes its own MQs; it cannot force-cancel an admitted fsync/rename. Worker shutdown drains completions and joins the original thread; emergency Drop also joins, without manufacturing its discarded final result as a success receipt. Synchronous filesystem progress may block in the kernel, and File Drop exposes no extra close errno. The namespace model assumes cooperating same-UID owners, not a hostile same-UID path racer. On FreeBSD, all namespace initializers lock the original parent directory through publication and synchronization. TCP publication rechecks the destination under that lock before its atomic POSIX rename, so concurrent initializers cannot replace an existing entry.
+The parent must exist; `TransportTcp` additionally requires a private parent to
+protect replay-ledger naming authority. `Store::open` prepares a private sibling
+containing the complete flushed marker and held writer lease, then publishes the
+whole directory without replacing an existing entry. Losing concurrent creators
+retire only their own original marker, lock and empty staging directory. Stale
+sibling stages are never adopted or recursively removed. Existing unmarked,
+malformed or foreign stores are refused unchanged. `GnsPublication` retains its
+bounded `initialization-pending/NotReady` response for a missing existing marker.
 
-These private Rust storage formats are independent of C databases and external GNUnet protocols. No legacy private-state migration or silent reset is provided. Source and selected compilation do not establish namespace denial, persistence, concurrent initialization or official interoperability acceptance.
+An existing marked directory without an image reports generation 0 and
+`created_directory=false`; service-specific authorities decide whether that is
+legal. Original directory, marker, lock and image handles remain pinned and
+revalidated. Files must be private, ordinary and single-link. Unix checks the
+effective owner/mode; Windows checks the process-user owner and restrictive DACL.
+Final symlinks and name-surrogate reparse points are refused.
+
+Commit requires the expected generation, a bounded pending write, file flush,
+original-source replacement, exact checksum/body readback and final namespace
+fence. Unix completes directory synchronization; Windows flushes the renamed
+file and reports `DirectorySync::Unavailable`. Its file flush and readback do not
+assert power-loss durability of directory entries. An attempted publication or
+lost fence reports `Unknown` and permanently stops this writer. The first cause
+and independent cleanup error are retained, with any unresolved original file.
+
+Namespace administration must be serialized by cooperating owners. Linux and
+macOS use kernel no-replacement rename; Windows uses captured-handle rename.
+FreeBSD serializes cooperating publishers with an independently opened original
+parent lock across its destination check and rename. This is not protection
+against a hostile same-user namespace racer.
+
+## Ownership and source layout
+
+`backend.rs` holds the store and receipt types. Its `namespace`, `initialize`,
+`open`, `image`, `commit` and `failure` modules separate fixed formats, complete
+initialization, recovery/fences, envelope encoding, publication and error facts.
+Native syscalls and filesystem-specific behavior belong in `gnunet-native`.
+
+Canceling a wait preserves the original job/channel/cursor. Shutdown closes
+admissions, drains completions and joins the original thread. An admitted
+filesystem syscall cannot be force-canceled; emergency worker Drop also joins.
+The kernel may block, and file Drop supplies no separate close-error receipt.

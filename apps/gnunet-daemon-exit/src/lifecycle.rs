@@ -15,8 +15,13 @@ pub(super) enum Stage {
     Entropy,
     Debt,
     Advertisement,
+    #[cfg(windows)]
+    Readiness,
 }
+#[cfg(unix)]
 const N: usize = 12;
+#[cfg(windows)]
+const N: usize = 13;
 const NAMES: [&str; N] = [
     "shutdown",
     "Resolver",
@@ -30,6 +35,8 @@ const NAMES: [&str; N] = [
     "entropy",
     "unsettled original debt",
     "DNS advertisement cleanup",
+    #[cfg(windows)]
+    "parent readiness notification",
 ];
 #[derive(Debug)]
 struct Both {
@@ -54,24 +61,45 @@ pub(super) struct Facts {
     pub native: gnunet_exit_host::runtime::Report,
     pub quiescent: bool,
     pub regex: crate::announcement::Report,
-    pub unremoved_routes: usize,
+    pub unremoved_routes: Vec<gnunet_tun_host::Action>,
+    #[cfg(windows)]
+    pub recovery: crate::network::recovery::Report,
 }
 impl fmt::Debug for Facts {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Facts")
-            .field("native", &self.native)
+        let mut out = f.debug_struct("Facts");
+        out.field("native", &self.native)
             .field("quiescent", &self.quiescent)
             .field("regex", &self.regex)
-            .field("unremoved_routes", &self.unremoved_routes)
-            .finish()
+            .field("unremoved_routes", &self.unremoved_routes);
+        #[cfg(windows)]
+        out.field("recovery", &self.recovery);
+        out.finish()
     }
 }
 #[derive(Default)]
 struct State {
     errors: [Option<Failure>; N],
     facts: Option<Facts>,
+    #[cfg(unix)]
     helper: Option<gnunet_tun_host::helper::Report>,
     dns_advertisement: Option<crate::dns_advertisement::Report>,
+    packet_close: Option<gnunet_tun_host::Loss>,
+}
+impl State {
+    fn helper_failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        #[cfg(unix)]
+        {
+            self.helper
+                .as_ref()
+                .filter(|report| report.failed())
+                .map(|report| report as &(dyn std::error::Error + 'static))
+        }
+        #[cfg(windows)]
+        {
+            None
+        }
+    }
 }
 #[derive(Clone, Default)]
 pub(super) struct Cleanup(Rc<RefCell<State>>);
@@ -88,9 +116,11 @@ impl Failed {
     fn fmt_display(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "EXIT original={:?}; facts={:?}; helper={:?}; DNS advertisement={:?}",
-            self.original, self.state.facts, self.state.helper, self.state.dns_advertisement
+            "EXIT original={:?}; facts={:?}; DNS advertisement={:?}; packet close={:?}",
+            self.original, self.state.facts, self.state.dns_advertisement, self.state.packet_close
         )?;
+        #[cfg(unix)]
+        write!(f, "; helper={:?}", self.state.helper)?;
         for (name, error) in NAMES.iter().zip(&self.state.errors) {
             if let Some(error) = error {
                 write!(f, "; {name}: {error}")?;
@@ -109,16 +139,13 @@ impl std::error::Error for Failed {
         self.original
             .as_deref()
             .or_else(|| self.state.errors.iter().find_map(Option::as_deref))
-            .or_else(|| {
-                self.state
-                    .helper
-                    .as_ref()
-                    .filter(|p| p.failed())
-                    .map(|p| p as &dyn std::error::Error)
-            })
+            .or_else(|| self.state.helper_failure())
     }
 }
 impl Cleanup {
+    pub fn packet_close(&self, loss: gnunet_tun_host::Loss) {
+        self.0.borrow_mut().packet_close = Some(loss);
+    }
     pub fn retain(&self, stage: Stage, error: Failure) {
         let mut s = self.0.borrow_mut();
         let slot = &mut s.errors[stage as usize];
@@ -133,6 +160,7 @@ impl Cleanup {
     pub fn dns_advertisement(&self, report: crate::dns_advertisement::Report) {
         self.0.borrow_mut().dns_advertisement = Some(report);
     }
+    #[cfg(unix)]
     pub fn helper(&self, report: gnunet_tun_host::helper::Report) {
         self.0.borrow_mut().helper = Some(report);
     }
@@ -140,10 +168,16 @@ impl Cleanup {
         use std::io::Write;
         let s = self.0.borrow();
         let mut out = std::io::stdout().lock();
+        write!(
+            out,
+            "STOPPED exit facts={:?}; DNS advertisement={:?}; packet close={:?}",
+            s.facts, s.dns_advertisement, s.packet_close
+        )?;
+        #[cfg(unix)]
+        write!(out, "; helper={:?}", s.helper)?;
         writeln!(
             out,
-            "STOPPED exit facts={:?}; helper={:?}; DNS advertisement={:?}; independent causes retained; remote processing unclaimed",
-            s.facts, s.helper, s.dns_advertisement
+            "; independent causes retained; remote processing unclaimed"
         )?;
         out.flush()
     }
@@ -151,7 +185,7 @@ impl Cleanup {
         let state = std::mem::take(&mut *self.0.borrow_mut());
         if result.is_ok()
             && state.errors.iter().all(Option::is_none)
-            && state.helper.as_ref().is_none_or(|p| !p.failed())
+            && state.helper_failure().is_none()
         {
             result
         } else {

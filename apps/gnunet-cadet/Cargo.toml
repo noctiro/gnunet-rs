@@ -5,11 +5,11 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
-[target.'cfg(unix)'.dependencies]
+[dependencies]
 gnunet-cadet-host.workspace = true
 gnunet-client-host.workspace = true
 gnunet-config.workspace = true
-gnunet-program-host = { workspace = true, features = ["resolver-broker"] }
+gnunet-program-host = { workspace = true, features = ["resolver-broker", "binary-io"] }
 gnunet-resolver-broker.workspace = true
 gnunet-service-runtime.workspace = true
 gnunet-service-startup.workspace = true
@@ -17,7 +17,6 @@ gnunet-crypto.workspace = true
 gnunet-gnsrecord.workspace = true
 gnunet-types.workspace = true
 gnunet-wire.workspace = true
-nix = { workspace = true, features = ["poll"] }
 zeroize = { workspace = true, features = ["alloc"] }
 tokio = { workspace = true, features = ["rt", "net", "time", "signal"] }
 

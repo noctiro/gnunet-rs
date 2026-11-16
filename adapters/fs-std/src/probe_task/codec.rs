@@ -342,6 +342,7 @@ pub(super) fn decode_manifest(raw: &[u8]) -> Result<Manifest, Cause> {
             max_encoded_bytes: r.u128()?,
         },
         deadline: AbsoluteTime::from_micros(0),
+        native_deadline: None,
         anonymity: r.u32()?,
         target: r.array()?,
         local_only: r.bool()?,

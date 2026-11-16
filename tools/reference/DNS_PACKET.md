@@ -16,6 +16,8 @@ python3 -B tools/reference/dns_packet.py \
   --output target/fresh-dns-packet-proof
 ```
 
+## Compared fields
+
 Use the normal build's library paths on the host. The output directory
 must be new. The runner binds the whole tracked C tree, current repository and
 normative fingerprints, build configuration, libraries, logs and generated

@@ -88,6 +88,6 @@ impl driver::Target for Target<'_> {
         matches!(error, Error::CleanupAfterCommit { .. })
     }
     fn finish(&mut self) -> Result<(), Error> {
-        self.output()?.sync_directory()
+        self.output()?.sync_directory().map(|_| ())
     }
 }

@@ -18,7 +18,6 @@ use std::{
     ffi::{OsStr, OsString},
     future::{Future, poll_fn},
     io::{self, Write},
-    os::unix::ffi::OsStrExt,
     path::PathBuf,
     pin::Pin,
     task::Poll,
@@ -127,7 +126,7 @@ fn text(value: &OsStr) -> Result<&str> {
         .ok_or_else(|| "expected UTF-8 RECLAIM option/input".into())
 }
 fn bytes(value: &OsStr, max: usize) -> Result<Zeroizing<Vec<u8>>> {
-    let b = value.as_bytes();
+    let b = crate::argument::wire_bytes(value)?;
     if b.len() > max || b.contains(&0) {
         return Err("input is too large or contains NUL".into());
     }
@@ -231,11 +230,11 @@ fn parse(args: &[OsString]) -> Result<Command> {
                 command.kind = if let Ok(v) = text(value)?.parse::<u32>() {
                     v
                 } else if action == Action::AttributeStore {
-                    credentials::attribute_type(value.as_bytes())
+                    credentials::attribute_type(crate::argument::wire_bytes(value)?)
                         .ok_or("unknown attribute type name; use numeric type with --encoding hex")?
                         .value()
                 } else {
-                    credentials::credential_type(value.as_bytes())
+                    credentials::credential_type(crate::argument::wire_bytes(value)?)
                         .ok_or(
                             "unknown credential type name; use numeric type with --encoding hex",
                         )?
@@ -280,7 +279,7 @@ fn parse(args: &[OsString]) -> Result<Command> {
     if store {
         command.name = bytes(&inputs[0], u16::MAX.into())?;
         Name::new(&command.name)?;
-        let raw = inputs[1].as_os_str().as_bytes();
+        let raw = crate::argument::wire_bytes(&inputs[1])?;
         command.value = match encoding {
             "hex" => unhex(text(&inputs[1])?, 65535)?,
             "text" => {

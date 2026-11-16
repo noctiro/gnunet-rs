@@ -132,45 +132,29 @@ labeled input lengths and fixed expansion-context lengths are preflighted before
 KEM work. Real representability/DH failures still return their KEM error.
 No raw-PRK context import, state cloning or implicit random source is added.
 
-## Checks
+## Reference verification
 
-This Elligator context extension was source-reviewed and formatted only. Its two
-context/refusal regression sources are prepared for compilation, not executed.
-The prior0020 verifier receipts below do not qualify0022 contexts or normal-C
-interoperability for these new operations. The new source comparison uses HEAD
-`14698f19848af867f48a04521e274abd55972075`, `crypto_hpke.c:449..580,615..653`;
-its fixed schedule suite remains explicit above.
+The Elligator context source comparison uses revision
+`14698f19848af867f48a04521e274abd55972075`,
+`crypto_hpke.c:449..580,615..653`; the context schedule remains explicit above.
+Results for KEM 0x0020 do not qualify the distinct 0x0022 context operations.
 
-The portable verifier is `tools/hpke_verify.py`; it copies the production sources
-into a fresh output, renders Cargo.toml.in for the explicit repository, and
-keeps all target files and generated fixtures outside the workspace. It checks
-exact dependency/feature equality with the workspace manifest and rejects changed
-or new registry identities relative to the integrated package. HPKE itself adds
-no registry dependency; the separate GCM module's dependencies are documented in
-DEPENDENCIES.md. The normal
-dependency graph excludes std/alloc features and the production library
-compiles for thumbv6m. Existing14 secret trait refusals plus one positive control
-are re-executed; Context Clone/Debug, exporter lifetime and consumed-key reuse
-get four extra exact-code compile failures and a positive borrow control.
+The portable verifier is [tools/hpke_verify.py](tools/hpke_verify.py). It copies
+production sources into a fresh output directory, renders `Cargo.toml.in` for
+the selected repository, and verifies workspace dependency/feature equality.
+It rejects changed or additional registry identities. HPKE adds no registry
+dependency; [DEPENDENCIES.md](DEPENDENCIES.md) describes GCM's dependencies.
 
-The source-bound verifier executes 24 unit tests (10 baseline,8 contexts and6 GCM),
-7 independent primitive public-API tests and2 existing scalar docs. The two
-normal-library HPKE/primitive oracles, together with the separate GCM oracle,
-remain ignored in default tests and receive no default
-passing credit. Each new helper-O0/O2 normal-C run independently compared171
-rows, and each accepted90 Rust ciphertexts using the unchanged
-public HPKE open APIs. Both helper profiles link the same normal library;
-they do not constitute separately optimized C library builds. Actual C random
-sender/one-shot rows may differ between runs. They are checked by Rust
-receiver setup/decryption rather than expecting deterministic encapsulations.
+Checks cover the allocation-free target, secret Clone/Debug refusal, exporter
+lifetime, consumed-key reuse and positive borrow controls. Normal-library oracles
+are ignored in default tests and require fresh supplied C observations. Each
+helper optimization profile links the same normal C library; it is not a separate
+optimized library build. Random C sender outputs are checked by Rust receiver
+setup and decryption rather than deterministic encapsulation equality.
 
-Six negative controls mutate captured C key, nonce, exporter, sequence or
-ciphertext fields, or remove a row. Every one must execute and fail the named
-Rust comparator test; compiler failures and zero selected tests do not count.
-Original source, normal libraries, production sources, tools, manifests and
-locks are hashed before/after. This proof is not a CORE/TRANSPORT handshake,
-network daemon or full-GNUnet conformance claim. Function and lifecycle coverage
-must be reviewed separately;171 is an observed row count, not a requirement
-count. All inventory verification fields remain null until full owner acceptance.
-Normal setup2 observations pass valid non-NULL authentication keys in all modes,
-including the source-defined Auth refusals and Base/PSK ignored-key behavior.
+Negative controls change key, nonce, exporter, sequence or ciphertext fields,
+or remove an observation. Each must fail the named comparator; compilation
+failure and an empty test filter cannot satisfy a control. Inputs, production
+sources, normal libraries, manifests and locks are bound before and after a run.
+Normal setup observations pass valid non-NULL authentication keys in every mode,
+including source-defined Auth refusals and Base/PSK ignored-key behavior.

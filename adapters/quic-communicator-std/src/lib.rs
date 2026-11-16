@@ -1,7 +1,6 @@
 //! Actual bounded raw QUIC / HTTP3 communicator host building blocks.
 //! Caller-owned drivers, fixed source clocks/selectors and external profile loans;
 //! no detached Quinn tasks, hidden DNS, production GNUnet FFI or peer-auth claim.
-#![cfg(unix)]
 #![forbid(unsafe_code)]
 mod application;
 pub mod credentials;

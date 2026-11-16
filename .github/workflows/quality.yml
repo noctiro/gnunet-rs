@@ -88,17 +88,17 @@ jobs:
           retention-days: 7
 
   tests:
-    name: Native ${{ matrix.group }} (${{ matrix.host }})
+    name: Native workspace (${{ matrix.host }})
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-24.04, host: x86_64-unknown-linux-gnu, group: test }
-          - { os: ubuntu-24.04-arm, host: aarch64-unknown-linux-gnu, group: test }
-          - { os: macos-15-intel, host: x86_64-apple-darwin, group: test }
-          - { os: macos-15, host: aarch64-apple-darwin, group: test }
-          - { os: windows-2025, host: x86_64-pc-windows-msvc, group: runtime }
-          - { os: windows-11-arm, host: aarch64-pc-windows-msvc, group: runtime }
+          - { os: ubuntu-24.04, host: x86_64-unknown-linux-gnu }
+          - { os: ubuntu-24.04-arm, host: aarch64-unknown-linux-gnu }
+          - { os: macos-15-intel, host: x86_64-apple-darwin }
+          - { os: macos-15, host: aarch64-apple-darwin }
+          - { os: windows-2025, host: x86_64-pc-windows-msvc }
+          - { os: windows-11-arm, host: aarch64-pc-windows-msvc }
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     steps:
@@ -108,10 +108,11 @@ jobs:
       - uses: ./.github/actions/setup-rust
         with:
           host: ${{ matrix.host }}
-      - run: cargo xtask verify ${{ matrix.group }}
+      - run: cargo xtask verify lint
+      - run: cargo xtask verify test
         env:
-          # Darwin has a short Unix socket path limit.
-          TMPDIR: ${{ runner.os == 'Windows' && runner.temp || '/tmp' }}
+          # Keep Darwin paths short without using /tmp's final symlink.
+          TMPDIR: ${{ runner.os == 'Windows' && runner.temp || runner.os == 'macOS' && '/private/tmp' || '/tmp' }}
 
   portable:
     name: Portable core and feature tiers (${{ matrix.host }})
@@ -157,6 +158,7 @@ jobs:
           prepare: |
             set -eu
             pkg install -y ca_root_nss git python311 rustup-init
+            kldload -n netlink
             ln -sf /usr/local/bin/python3.11 /usr/local/bin/python3
             pw useradd -n ci -m -s /bin/sh
           run: |

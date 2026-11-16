@@ -1,7 +1,7 @@
 use crate::{Failure, input, options::Settings};
 use gnunet_program_host::{policy::Level, reporting::Reporter};
 use gnunet_service_runtime::clock::{Deadline, RuntimeClock};
-use gnunet_service_startup::{ControlReceiver, ParentControl};
+use gnunet_service_startup::{ParentControl, StopSignals};
 use gnunet_types::AbsoluteTime;
 use std::{
     fmt,
@@ -11,13 +11,10 @@ use std::{
     sync::Arc,
     task::{Context, Poll},
 };
-use tokio::{
-    signal::unix::{Signal, SignalKind, signal},
-    time::Instant,
-};
+use tokio::time::Instant;
 #[derive(Debug)]
 enum StopCause {
-    Signal(i32),
+    Requested,
     Deadline,
     Clock(gnunet_types::Error),
     Logging,
@@ -25,7 +22,7 @@ enum StopCause {
 impl fmt::Display for StopCause {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Signal(s) => write!(f, "original directory inspection cancelled by signal {s}"),
+            Self::Requested => f.write_str("original directory inspection stopped"),
             Self::Deadline => f.write_str("original directory inspection deadline reached"),
             Self::Clock(e) => write!(f, "original directory inspection Clock failed: {e}"),
             Self::Logging => f.write_str("selected directory Logger failed"),
@@ -79,9 +76,7 @@ impl std::error::Error for Failed {
 pub(super) struct Guard {
     clock: Arc<dyn RuntimeClock>,
     reporter: Reporter,
-    parent: Option<ControlReceiver>,
-    interrupt: Signal,
-    terminate: Signal,
+    stops: StopSignals,
     expires: Option<AbsoluteTime>,
     hard: Option<Instant>,
     deadline: Option<Deadline>,
@@ -128,11 +123,7 @@ impl Guard {
         Ok(Self {
             clock,
             reporter,
-            parent: parent
-                .map(|p| p.register().map_err(|f| f.error))
-                .transpose()?,
-            interrupt: signal(SignalKind::interrupt())?,
-            terminate: signal(SignalKind::terminate())?,
+            stops: StopSignals::for_client(parent)?,
             expires,
             hard,
             deadline,
@@ -144,36 +135,11 @@ impl Guard {
         })
     }
     fn signals(&mut self, cx: &mut Context<'_>) -> Result<(), Failure> {
-        if let Some(parent) = &mut self.parent {
-            match parent.poll_signal(cx) {
-                Poll::Ready(Ok(Some(value)))
-                    if value == libc::SIGINT as i8 || value == libc::SIGTERM as i8 =>
-                {
-                    return Err(Box::new(StopCause::Signal(i32::from(value))));
-                }
-                Poll::Ready(Ok(Some(_))) => cx.waker().wake_by_ref(),
-                Poll::Ready(Ok(None)) => self.parent = None,
-                Poll::Ready(Err(e)) => return Err(e.into()),
-                Poll::Pending => {}
-            }
+        match self.stops.poll_stop(cx) {
+            Poll::Ready(Ok(())) => Err(Box::new(StopCause::Requested)),
+            Poll::Ready(Err(error)) => Err(error.into()),
+            Poll::Pending => Ok(()),
         }
-        for (stream, code) in [
-            (&mut self.interrupt, libc::SIGINT),
-            (&mut self.terminate, libc::SIGTERM),
-        ] {
-            match stream.poll_recv(cx) {
-                Poll::Ready(Some(())) => return Err(Box::new(StopCause::Signal(code))),
-                Poll::Ready(None) => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::UnexpectedEof,
-                        "original directory termination stream ended",
-                    )
-                    .into());
-                }
-                Poll::Pending => {}
-            }
-        }
-        Ok(())
     }
     fn poll_check(&mut self, cx: &mut Context<'_>) -> Result<(), Failure> {
         self.reporter.register(cx);

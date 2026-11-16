@@ -164,6 +164,7 @@ pub(super) fn reply(
     sequence: u32,
     pid: u32,
     _: &mut Scan,
+    _: &[u8],
 ) -> io::Result<Option<Reply>> {
     if b.len() < 4 {
         return Err(invalid());

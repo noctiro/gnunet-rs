@@ -14,6 +14,58 @@ use std::{
         atomic::{AtomicUsize, Ordering},
     },
 };
+
+#[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "An IO diagnostic without a raw errno retains its actual typed error text instead of failing or inventing an errno"
+)]
+fn typed_io_errors_remain_renderable_without_a_numeric_errno()
+-> Result<(), Box<dyn std::error::Error>> {
+    use gnunet_config::diagnostic::{Argument, Level, Site};
+    let mut logger = Logger::new(b"owned", 7, true)?;
+    let clock = SharedClock::native(0)?;
+    let mut stderr = Vec::new();
+    logger.setup_routed(
+        b"owned",
+        Some(b"ERROR"),
+        None,
+        &Environment::default(),
+        &Stamp::setup_now()?,
+        &mut stderr,
+    )?;
+    let messages = Rc::new(RefCell::new(Vec::new()));
+    let saved = Rc::clone(&messages);
+    let id = logger.logger_add(move |record| saved.borrow_mut().push(record.message.to_vec()))?;
+    let error = io::Error::new(
+        io::ErrorKind::InvalidData,
+        "retained native error domain: literal %s",
+    );
+    config_observer::log(
+        &mut logger,
+        &clock,
+        &mut stderr,
+        Diagnostic {
+            level: Level::ERROR,
+            component: None,
+            site: Site {
+                id: "owned.config.typed_error",
+                file: b"owned.rs",
+                function: b"typed_error",
+                line: 1,
+            },
+            domain: None,
+            template: b"%s\n",
+            arguments: &[Argument::Error(&error)],
+        },
+    )?;
+    assert_eq!(
+        *messages.borrow(),
+        [b"retained native error domain: literal %s\n".to_vec()]
+    );
+    logger.logger_remove(id)?;
+    Ok(())
+}
 #[test]
 #[expect(
     clippy::panic_in_result_fn,

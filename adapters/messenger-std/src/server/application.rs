@@ -1289,7 +1289,7 @@ impl<'c, 'slots, 'p, E: Entropy, const O: usize> Server<'c, 'slots, 'p, E, O> {
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use gnunet_service_runtime::{clock::SystemClock, connection::Connection};
@@ -1385,19 +1385,24 @@ mod tests {
                     return Err("missing verified identity".into());
                 };
                 server.observe_identity(identity)?;
-                assert!(server.identity_step(&mut |_| {})?);
+                assert!(server.identity_step()?);
                 let peer = server.current_peer().ok_or(Fault::NotReady)?;
                 let until = Instant::now() + Duration::from_secs(5);
                 let mut peers = Vec::new();
                 for row in 0..3 {
-                    let (stream, peer) = tokio::net::UnixStream::pair()?;
+                    let listener =
+                        tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await?;
+                    let (peer, (stream, _)) = tokio::try_join!(
+                        tokio::net::TcpStream::connect(listener.local_addr()?),
+                        listener.accept()
+                    )?;
                     peers.push(peer);
                     server.apps[row] = Some(App {
                         client: Client {
                             domain: server.domain.clone(),
                             serial: row as u64 + 1,
                         },
-                        io: Framed::new(Connection::from_unix(stream), limits.framing())?,
+                        io: Framed::new(Connection::from_tcp(stream), limits.framing())?,
                         has_request: true,
                         public: None,
                         rooms: Vec::new(),
@@ -1528,7 +1533,7 @@ mod tests {
                 server.observe_identity(identity)?;
                 assert!(!server.identity_ready());
                 assert!(!server.entry_steps(&mut |_| {})?);
-                assert!(server.identity_step(&mut |_| {})?);
+                assert!(server.identity_step()?);
                 let replacement_peer = server.current_peer().ok_or(Fault::NotReady)?;
                 assert_ne!(peer, replacement_peer);
                 assert!(server.entry_steps(&mut |_| {})?);

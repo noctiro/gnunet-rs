@@ -2,13 +2,11 @@
 //! Native BINDTO resolution may consult NSS; callers running tests must select
 //! numeric inputs or an explicitly contained and verified hosts-only profile.
 use gnunet_config::{Configuration, Environment};
-use gnunet_native::addresses::{Hints, resolve};
+use gnunet_native::addresses::{Families, Hints, resolve};
 use socket2::{Domain, Socket, Type};
 use std::{
-    ffi::OsStr,
     io,
     net::{Ipv4Addr, Ipv6Addr, SocketAddr},
-    os::unix::ffi::OsStrExt,
     path::PathBuf,
 };
 
@@ -68,9 +66,7 @@ fn probe(domain: Domain, diagnostics: &mut Vec<Diagnostic>) -> Result<bool, Erro
             Ok(true)
         }
         Err(error) => {
-            if [libc::ENOBUFS, libc::ENOMEM, libc::ENFILE, libc::EACCES]
-                .contains(&error.raw_os_error().unwrap_or(0))
-            {
+            if gnunet_native::network::is_fatal_family_probe(&error) {
                 return Err(Error::Io(error));
             }
             diagnostics.push(Diagnostic::FamilyUnavailable {
@@ -120,15 +116,21 @@ impl Addresses {
                     .unwrap_or(false);
                 #[cfg(not(target_os = "linux"))]
                 let abstract_socket = false;
+                #[cfg(target_os = "linux")]
                 if abstract_socket {
                     // sockaddr_un.sun_path is108 bytes on the source Linux ABI.
                     // A leading pathname byte is replaced, not prepended. Passing
                     // all108 bytes keeps the official zero-padding in the name.
-                    let mut bytes = path.as_os_str().as_bytes().to_vec();
+                    let mut bytes = gnunet_native::os_bytes::encode(path.as_os_str()).into_owned();
                     bytes.resize(108, 0);
                     bytes[0] = 0;
                     Some(Address::Abstract(bytes))
                 } else {
+                    Some(Address::Unix(path))
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    let _unused = abstract_socket;
                     Some(Address::Unix(path))
                 }
             }
@@ -143,12 +145,19 @@ impl Addresses {
         }
         if port != 0 {
             if let Some(hostname) = config.get(section, b"BINDTO") {
-                let results = resolve(OsStr::from_bytes(hostname), Hints::arm(disable_v6), maximum)
-                    .map_err(Error::Resolution)?;
+                let host = gnunet_native::os_bytes::decode(hostname).map_err(Error::Io)?;
+                let families = if disable_v6 {
+                    Families::Ipv4Only
+                } else {
+                    Families::Any
+                };
+                let results =
+                    resolve(&host, Hints::arm(families), maximum).map_err(Error::Resolution)?;
                 for item in results {
-                    if (disable_v6 && item.family == libc::AF_INET6)
-                        || (item.protocol != 0 && item.protocol != libc::IPPROTO_TCP)
-                        || (item.socket_type != 0 && item.socket_type != libc::SOCK_STREAM)
+                    if (disable_v6 && item.family == i32::from(Domain::IPV6))
+                        || (item.protocol != 0
+                            && item.protocol != i32::from(socket2::Protocol::TCP))
+                        || (item.socket_type != 0 && item.socket_type != i32::from(Type::STREAM))
                     {
                         continue;
                     }

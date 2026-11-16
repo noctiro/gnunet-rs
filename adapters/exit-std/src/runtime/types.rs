@@ -1,4 +1,29 @@
 use super::*;
+/// Refused packet-source replacement with its unchanged original physical owner.
+pub struct TunReplacementFailure {
+    /// Original caller-supplied source, still owned for retry or explicit close.
+    pub source: PacketSource,
+    /// Actual runtime/core admission refusal.
+    pub error: Error,
+}
+impl fmt::Debug for TunReplacementFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TunReplacementFailure")
+            .field("epoch", &self.source.epoch())
+            .field("error", &self.error)
+            .finish()
+    }
+}
+impl fmt::Display for TunReplacementFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "EXIT packet-source replacement: {}", self.error)
+    }
+}
+impl std::error::Error for TunReplacementFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.error)
+    }
+}
 /// Actual dependency/native/resource/clock refusal, retaining concrete causes.
 #[derive(Debug)]
 pub enum Error {

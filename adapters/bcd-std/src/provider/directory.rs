@@ -1,90 +1,84 @@
+//! Private job files selected through held original native directory objects.
 use super::{Cause, Limits};
+use gnunet_native::filesystem::{
+    self, Directory as NativeDirectory, EntryInfo, FileIdentity, FileInfo,
+};
 use std::{
-    fs::{self, DirBuilder, File, OpenOptions},
-    io::{Read, Write},
-    os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt},
+    ffi::{OsStr, OsString},
+    fs::File,
+    io::{self, Read, Write},
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
 };
 static NEXT: AtomicU64 = AtomicU64::new(0);
 pub(super) struct Directory {
+    root: NativeDirectory,
+    name: OsString,
     path: PathBuf,
-    dev: u64,
-    ino: u64,
-    verified: bool,
+    original: Option<NativeDirectory>,
 }
-fn serial() -> Result<u64, Cause> {
-    for _ in 0..32 {
-        let n = NEXT.load(Ordering::Relaxed);
-        let next = n.checked_add(1).ok_or(Cause::Limit)?;
-        if NEXT
-            .compare_exchange(n, next, Ordering::Relaxed, Ordering::Relaxed)
-            .is_ok()
-        {
-            return Ok(next);
-        }
+fn observe(file: &File) -> Result<FileInfo, Cause> {
+    match filesystem::file_info(file)? {
+        EntryInfo::File(info) if filesystem::file_links(file)? == 1 => Ok(info),
+        _ => Err(Cause::Artifact),
     }
-    Err(Cause::Limit)
 }
 impl Directory {
     pub(super) fn create(root: &Path, owner: &mut Option<Self>) -> Result<(), Cause> {
         if owner.is_some() {
             return Err(Cause::Input);
         }
-        let root_meta = fs::symlink_metadata(root)?;
-        if !root_meta.is_dir() {
-            return Err(Cause::Input);
-        }
+        let parent = NativeDirectory::open(root)?;
         for _ in 0..32 {
-            let path = root.join(format!("gnunet-bcd-{}-{}", std::process::id(), serial()?));
-            match DirBuilder::new().mode(0o700).create(&path) {
-                Ok(()) => {
-                    // Retain the successful mkdir fact before fallible metadata.
-                    // Failure leaves an explicit unknown directory owner; it is
-                    // never silently dropped or used to delete a replacement.
-                    *owner = Some(Self {
-                        path,
-                        dev: 0,
-                        ino: 0,
-                        verified: false,
-                    });
-                    let created = owner.as_mut().ok_or(Cause::Artifact)?;
-                    let meta = fs::symlink_metadata(&created.path)?;
-                    if !meta.is_dir() || meta.mode() & 0o077 != 0 {
-                        return Err(Cause::Input);
-                    }
-                    created.dev = meta.dev();
-                    created.ino = meta.ino();
-                    created.verified = true;
-                    return Ok(());
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
-                Err(e) => return Err(e.into()),
+            let serial = NEXT
+                .try_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
+                .map_err(|_| Cause::Limit)?;
+            let name = OsString::from(format!("gnunet-bcd-{}-{serial}", std::process::id()));
+            let result = parent.create_private_directory(&name);
+            if result
+                .as_ref()
+                .is_err_and(|e| e.kind() == io::ErrorKind::AlreadyExists)
+            {
+                continue;
             }
+            // Any error beyond creation can leave an unqualified effect. Keep
+            // its selected name in the job report without inventing a handle.
+            *owner = Some(Self {
+                root: parent,
+                path: root.join(&name),
+                name,
+                original: None,
+            });
+            let created = owner.as_mut().ok_or(Cause::Artifact)?;
+            created.original = Some(result?);
+            created.check()?;
+            return Ok(());
         }
         Err(Cause::Limit)
+    }
+    fn native(&self) -> Result<&NativeDirectory, Cause> {
+        self.original.as_ref().ok_or(Cause::Artifact)
     }
     pub(super) fn path(&self) -> &Path {
         &self.path
     }
     pub(super) fn check(&self) -> Result<(), Cause> {
-        if !self.verified {
+        let directory = self.native()?;
+        directory.validate_private()?;
+        if !matches!(self.root.entry_info(&self.name)?, EntryInfo::Directory(info)
+            if info.identity == FileIdentity::of(directory.as_file())?)
+        {
             return Err(Cause::Artifact);
         }
-        let m = fs::symlink_metadata(&self.path)?;
-        if !m.is_dir() || m.dev() != self.dev || m.ino() != self.ino || m.mode() & 0o077 != 0 {
-            return Err(Cause::Input);
+        let selected = NativeDirectory::open(&self.path)?;
+        if FileIdentity::of(selected.as_file())? != FileIdentity::of(directory.as_file())? {
+            return Err(Cause::Artifact);
         }
         Ok(())
     }
     fn new_file(&self, name: &str) -> Result<File, Cause> {
         self.check()?;
-        Ok(OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-            .open(self.path.join(name))?)
+        Ok(self.native()?.create_private_file(OsStr::new(name))?)
     }
     pub(super) fn write(
         &self,
@@ -108,22 +102,32 @@ impl Directory {
     ) -> Result<(), Cause> {
         guard()?;
         let mut file = self.new_file(name)?;
-        for bytes in parts {
-            let mut at = 0;
-            while at < bytes.len() {
-                guard()?;
-                let n = file.write(&bytes[at..bytes.len().min(at + 4096)])?;
-                if n == 0 {
-                    return Err(Cause::Io(std::io::Error::other(
-                        "zero renderer input write",
-                    )));
+        let result = (|| {
+            for bytes in parts {
+                let mut at = 0;
+                while at < bytes.len() {
+                    guard()?;
+                    let n = file.write(&bytes[at..bytes.len().min(at + 4096)])?;
+                    if n == 0 {
+                        return Err(Cause::Io(io::ErrorKind::WriteZero.into()));
+                    }
+                    at += n;
                 }
-                at += n;
             }
+            guard()?;
+            file.flush()?;
+            Ok::<_, Cause>(())
+        })();
+        let close = filesystem::close(file);
+        match (result, close) {
+            (Err(original), Err(close)) => Err(Cause::FileClose {
+                original: Box::new(original),
+                close,
+            }),
+            (Err(original), Ok(())) => Err(original),
+            (Ok(()), Err(error)) => Err(error.into()),
+            (Ok(()), Ok(())) => Ok(()),
         }
-        guard()?;
-        file.flush()?;
-        Ok(())
     }
     pub(super) fn logs(&self, png: bool) -> Result<(File, File), Cause> {
         Ok((
@@ -133,24 +137,26 @@ impl Directory {
     }
     pub(super) fn budget(&self, limits: Limits) -> Result<(), Cause> {
         self.check()?;
-        let mut files = 0usize;
+        let directory = self.native()?;
+        let mut count = 0usize;
         let mut bytes = 0u64;
-        for entry in fs::read_dir(&self.path)? {
-            files = files.checked_add(1).ok_or(Cause::Limit)?;
-            if files > limits.work_files {
+        for name in directory.entries()? {
+            let name = name?;
+            count = count.checked_add(1).ok_or(Cause::Limit)?;
+            if count > limits.work_files {
                 return Err(Cause::Limit);
             }
-            let entry = entry?;
-            let m = fs::symlink_metadata(entry.path())?;
-            if !m.is_file() || m.nlink() != 1 {
+            let file = directory.open_file(&name)?;
+            let info = observe(&file)?;
+            if !matches!(directory.entry_info(&name)?, EntryInfo::File(named) if named.identity == info.identity)
+            {
                 return Err(Cause::Artifact);
             }
-            bytes = bytes.checked_add(m.len()).ok_or(Cause::Limit)?;
-            let name = entry.file_name();
-            let log = name.to_str().is_some_and(|n| {
-                n.ends_with(".stdout") || n.ends_with(".stderr") || n.ends_with(".log")
+            bytes = bytes.checked_add(info.bytes).ok_or(Cause::Limit)?;
+            let log = name.to_str().is_some_and(|name| {
+                name.ends_with(".stdout") || name.ends_with(".stderr") || name.ends_with(".log")
             });
-            if bytes > limits.work_bytes as u64 || (log && m.len() > limits.log_bytes as u64) {
+            if bytes > limits.work_bytes as u64 || log && info.bytes > limits.log_bytes as u64 {
                 return Err(Cause::Limit);
             }
         }
@@ -164,26 +170,14 @@ impl Directory {
     ) -> Result<Vec<u8>, Cause> {
         guard()?;
         self.check()?;
-        let path = self
-            .path
-            .join(if png { "gns-bcd.png" } else { "gns-bcd.pdf" });
-        let observed = fs::symlink_metadata(&path)?;
-        if !observed.is_file() || observed.nlink() != 1 {
+        let directory = self.native()?;
+        let name = OsStr::new(if png { "gns-bcd.png" } else { "gns-bcd.pdf" });
+        let mut file = directory.open_file(name)?;
+        let before = observe(&file)?;
+        if directory.entry_info(name)? != EntryInfo::File(before) {
             return Err(Cause::Artifact);
         }
-        let mut file = OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-            .open(path)?;
-        let actual = file.metadata()?;
-        if observed.dev() != actual.dev()
-            || observed.ino() != actual.ino()
-            || !actual.is_file()
-            || actual.nlink() != 1
-        {
-            return Err(Cause::Artifact);
-        }
-        let len = usize::try_from(actual.len()).map_err(|_| Cause::Limit)?;
+        let len = usize::try_from(before.bytes).map_err(|_| Cause::Limit)?;
         if len == 0 || len > maximum {
             return Err(Cause::Limit);
         }
@@ -203,6 +197,14 @@ impl Directory {
             at += n;
         }
         guard()?;
+        if observe(&file)? != before || directory.entry_info(name)? != EntryInfo::File(before) {
+            return Err(Cause::Artifact);
+        }
+        let mut extra = [0];
+        if file.read(&mut extra)? != 0 {
+            return Err(Cause::Artifact);
+        }
+        filesystem::close(file)?;
         let valid = if png {
             bytes.starts_with(b"\x89PNG\r\n\x1a\n") && bytes.ends_with(b"\0\0\0\0IEND\xaeB`\x82")
         } else {
@@ -216,24 +218,22 @@ impl Directory {
         }
         Ok(bytes)
     }
-    /// Only after actual child reaping. No recursive traversal or foreign path.
+    /// Only the original job directory may be removed after actual child reaping.
     pub(super) fn remove(&self, maximum: usize) -> Result<(), Cause> {
-        self.check()?;
-        let mut count = 0;
-        for entry in fs::read_dir(&self.path)? {
-            count += 1;
+        let directory = self.native()?;
+        directory.validate_private()?;
+        let mut count = 0usize;
+        for name in directory.entries()? {
+            count = count.checked_add(1).ok_or(Cause::Limit)?;
             if count > maximum {
                 return Err(Cause::Limit);
             }
-            self.check()?;
-            let entry = entry?;
-            if fs::symlink_metadata(entry.path())?.is_dir() {
-                return Err(Cause::Artifact);
-            }
-            fs::remove_file(entry.path())?;
+            let name = name?;
+            let file = directory.open_file(&name)?;
+            observe(&file)?;
+            directory.remove_file(&name, &file)?;
         }
-        self.check()?;
-        fs::remove_dir(&self.path)?;
+        self.root.remove_directory(&self.name, directory)?;
         Ok(())
     }
 }

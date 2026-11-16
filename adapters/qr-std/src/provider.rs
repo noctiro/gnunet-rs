@@ -1,89 +1,16 @@
 //! Sole standard POSIX loader/libpng1.6/libzbar ABI boundary.
-use crate::{Cleanup, Error, Limits, ProviderFailure, Symbol};
+use crate::{Cleanup, Error, LibraryPaths, Limits, ProviderFailure, Symbol};
 use gnunet_types::Error as Fault;
-use libc::{c_char, c_int, c_uint, c_ulong, c_void};
+use std::ffi::{c_char, c_int, c_uint, c_ulong, c_void};
 use std::{
     cell::Cell,
     ffi::{CStr, CString},
+    path::Path,
     ptr::{self, NonNull},
     rc::Rc,
 };
-#[cfg(any(target_os = "linux", target_os = "android"))]
-#[link(name = "dl")]
-unsafe extern "C" {}
-struct Library {
-    handle: NonNull<c_void>,
-}
-fn diagnostic(operation: &'static str, raw: *const c_char) -> Error {
-    let bytes = if raw.is_null() {
-        b"native loader supplied no diagnostic".as_slice()
-    } else {
-        // SAFETY: dlerror's original NUL-terminated thread-local diagnostic is
-        // copied immediately before the next loader operation.
-        unsafe { CStr::from_ptr(raw) }.to_bytes()
-    };
-    let n = bytes.len().min(1024);
-    let mut detail = String::new();
-    if detail.try_reserve_exact(n).is_err() {
-        return Fault::Capacity.into();
-    }
-    for b in &bytes[..n] {
-        detail.push(if b.is_ascii_graphic() || *b == b' ' {
-            char::from(*b)
-        } else {
-            '?'
-        });
-    }
-    Error::Loader {
-        operation,
-        detail,
-        truncated: bytes.len() > n,
-    }
-}
-impl Library {
-    fn open(
-        names: &[&CStr],
-        operation: &'static str,
-        before_native: &mut impl FnMut() -> Result<(), Error>,
-    ) -> Result<Rc<Self>, Error> {
-        let mut failure = None;
-        for name in names {
-            before_native()?;
-            // SAFETY: fixed NUL-terminated standard provider name and POSIX flags.
-            let raw = unsafe { libc::dlopen(name.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL) };
-            if let Some(handle) = NonNull::new(raw) {
-                return Ok(Rc::new(Self { handle }));
-            }
-            // SAFETY: read the actual current loader diagnostic before next call.
-            failure = Some(diagnostic(operation, unsafe { libc::dlerror() }));
-        }
-        Err(failure.unwrap_or_else(|| Fault::Unavailable.into()))
-    }
-    fn symbol(
-        &self,
-        name: &CStr,
-        before_native: &mut impl FnMut() -> Result<(), Error>,
-    ) -> Result<*mut c_void, Error> {
-        before_native()?;
-        // SAFETY: same live library and a fixed NUL-terminated exported name.
-        let (raw, error) = unsafe {
-            let _old = libc::dlerror();
-            let p = libc::dlsym(self.handle.as_ptr(), name.as_ptr());
-            (p, libc::dlerror())
-        };
-        if raw.is_null() || !error.is_null() {
-            Err(diagnostic("resolve standard QR provider symbol", error))
-        } else {
-            Ok(raw)
-        }
-    }
-}
-impl Drop for Library {
-    fn drop(&mut self) {
-        // SAFETY: final Rc follows every original native object/function use.
-        let _actual = unsafe { libc::dlclose(self.handle.as_ptr()) };
-    }
-}
+mod loader;
+use loader::Library;
 fn provider(name: &'static str, operation: &'static str, code: i32) -> Error {
     Error::Provider(ProviderFailure {
         provider: name,
@@ -129,12 +56,18 @@ macro_rules! bind {
     }};
 }
 impl PngApi {
-    fn load(before_native: &mut impl FnMut() -> Result<(), Error>) -> Result<Rc<Self>, Error> {
+    unsafe fn load(
+        path: Option<&Path>,
+        before_native: &mut impl FnMut() -> Result<(), Error>,
+    ) -> Result<Rc<Self>, Error> {
         #[cfg(target_os = "macos")]
         let names = [c"libpng16.16.dylib", c"libpng16.dylib", c"libpng.dylib"];
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(all(unix, not(target_os = "macos")))]
         let names = [c"libpng16.so.16", c"libpng16.so", c"libpng.so"];
-        let l = Library::open(&names, "open standard libpng", before_native)?;
+        #[cfg(windows)]
+        let names: [&CStr; 0] = [];
+        // SAFETY: caller certifies selected provider code and its public ABI.
+        let l = unsafe { Library::open(path, &names, "open libpng", before_native)? };
         Ok(Rc::new(Self {
             begin: bind!(
                 l,
@@ -245,12 +178,18 @@ struct ZbarApi {
     set_handler: SetHandler,
 }
 impl ZbarApi {
-    fn load(before_native: &mut impl FnMut() -> Result<(), Error>) -> Result<Rc<Self>, Error> {
+    unsafe fn load(
+        path: Option<&Path>,
+        before_native: &mut impl FnMut() -> Result<(), Error>,
+    ) -> Result<Rc<Self>, Error> {
         #[cfg(target_os = "macos")]
         let names = [c"libzbar.0.dylib", c"libzbar.dylib"];
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(all(unix, not(target_os = "macos")))]
         let names = [c"libzbar.so.0", c"libzbar.so"];
-        let l = Library::open(&names, "open standard libzbar", before_native)?;
+        #[cfg(windows)]
+        let names: [&CStr; 0] = [];
+        // SAFETY: caller certifies selected provider code and its public ABI.
+        let l = unsafe { Library::open(path, &names, "open libzbar", before_native)? };
         Ok(Rc::new(Self {
             scanner_create: bind!(l, c"zbar_image_scanner_create", Create, before_native),
             scanner_destroy: bind!(l, c"zbar_image_scanner_destroy", Destroy, before_native),
@@ -369,7 +308,14 @@ impl Drop for ZObject {
 }
 /// Decode an actual complete PNG to bounded grayscale then scan it with ZBar.
 /// No fabricated symbol, GNUnet C call, background decoder or device is used.
-pub fn scan_png(
+/// Decode a PNG through the selected original libpng and ZBar providers.
+///
+/// # Safety
+/// Trust both providers' initialization, exports, dependencies and loader context.
+/// They must implement the public libpng1.6 simplified and ZBar ABIs. Unix absent
+/// paths authorize the native loader search; Windows requires explicit DLL paths.
+pub unsafe fn scan_png(
+    libraries: &LibraryPaths,
     input: &[u8],
     limits: Limits,
     before_native: &mut impl FnMut() -> Result<(), Error>,
@@ -379,7 +325,8 @@ pub fn scan_png(
         return Err(Fault::TooLarge.into());
     }
     before_native()?;
-    let png = PngApi::load(before_native)?;
+    // SAFETY: caller supplies trust in the selected libpng and loader context.
+    let png = unsafe { PngApi::load(libraries.png.as_deref(), before_native)? };
     before_native()?;
     let mut state = PngState {
         api: png,
@@ -446,7 +393,8 @@ pub fn scan_png(
     }
     pixels.truncate(length);
     before_native()?;
-    let api = ZbarApi::load(before_native)?;
+    // SAFETY: caller supplies trust in the selected ZBar and loader context.
+    let api = unsafe { ZbarApi::load(libraries.zbar.as_deref(), before_native)? };
     before_native()?;
     // SAFETY: standard no-argument native constructors; NULL is an actual refusal.
     let scanner_raw = unsafe { (api.scanner_create)() };
@@ -557,7 +505,13 @@ pub struct Camera {
 impl Camera {
     /// Open the actual selected device and optional display; provider absence or
     /// unavailable platform/device is an original error, never simulated input.
-    pub fn open(
+    ///
+    /// # Safety
+    /// Trust the selected provider's initialization, exports, dependencies and
+    /// loader context and its public ZBar ABI. Unix None authorizes native loader
+    /// search; Windows requires an explicit absolute DLL path.
+    pub unsafe fn open(
+        library: Option<&Path>,
         device: &CStr,
         display: bool,
         limits: Limits,
@@ -565,7 +519,8 @@ impl Camera {
     ) -> Result<Self, Error> {
         limits.validate()?;
         before_native()?;
-        let api = ZbarApi::load(before_native)?;
+        // SAFETY: caller supplies trust in the selected ZBar and loader context.
+        let api = unsafe { ZbarApi::load(library, before_native)? };
         before_native()?;
         // SAFETY: threaded0 disables provider background processing.
         let raw = unsafe { (api.processor_create)(0) };

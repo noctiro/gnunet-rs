@@ -5,10 +5,14 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
-[target.'cfg(unix)'.dependencies]
+[dependencies]
 gnunet-program-host.workspace = true
 gnunet-config.workspace = true
 gnunet-types.workspace = true
+gnunet-native.workspace = true
+gnunet-service-runtime.workspace = true
+gnunet-service-startup.workspace = true
+tokio = { workspace = true, features = ["rt", "net", "time", "signal"] }
 rcgen.workspace = true
 base64ct = { workspace = true, features = ["alloc"] }
 time = { workspace = true, features = ["std"] }

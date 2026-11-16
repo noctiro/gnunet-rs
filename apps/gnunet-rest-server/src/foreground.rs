@@ -1,7 +1,6 @@
 //! One original PROGRAM future owns all workers through their actual finally.
 use crate::{
     Failure,
-    control::Signals,
     early::Inherited,
     lifecycle::{Cleanup, Resolver},
     settings::{self, Settings},
@@ -152,7 +151,7 @@ struct Bound {
     alarm: Pin<Box<Sleep>>,
 }
 struct Control {
-    signals: Option<Signals>,
+    signals: Option<gnunet_service_startup::StopSignals>,
     stop: Rc<Cell<bool>>,
     reports: Reporter,
     grace: Duration,
@@ -203,7 +202,7 @@ impl Control {
             .signals
             .as_mut()
             .ok_or("original REST signal owner absent")?;
-        match signals.poll(cx) {
+        match signals.poll_stop(cx) {
             Poll::Ready(result) => {
                 result?;
                 self.arm();
@@ -320,11 +319,13 @@ async fn run(input: Run) -> Result<Report, Failure> {
     // This is the finally boundary, before either worker can start. Every later
     // ? unwinds only the inner body and preserves these original driver owners.
     let outcome: Result<(), Failure> = async {
-        control.signals = Some(Signals::new(inherited.parent)?);
+        control.signals = Some(gnunet_service_startup::StopSignals::for_client(
+            inherited.parent,
+        )?);
         if control.checkpoint().await? {
             return Ok(());
         }
-        let policy = settings::policy(&config)?;
+        let policy = crate::authorization::policy(&config, &reports)?;
         let identity = gnunet_identity_client_host::Instance::new();
         let namestore = gnunet_namestore_client_host::Instance::new();
         let reclaim = gnunet_reclaim_client_host::Instance::new();
@@ -502,7 +503,7 @@ async fn serve(input: Serving<'_, '_, '_>) -> Result<(), Failure> {
     let outcome: Result<(), Failure> = async {
         let mut bound = Vec::new();
         bound.try_reserve_exact(2)?;
-        if !activation.sockets.is_empty() {
+        if !activation.is_empty() {
             if control.checkpoint().await? { return Ok(()); }
             bound.push(BoundListeners::bind(config, b"rest", activation).await?);
         } else {

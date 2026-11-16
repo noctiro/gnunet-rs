@@ -1,22 +1,18 @@
 //! Original signal/control ownership, plus an actual diagnostic-stop request.
 use crate::{Failure, reporting::Reports};
-use gnunet_service_startup::{ControlReceiver, ParentControl};
+use gnunet_service_runtime::signals::Termination;
+use gnunet_service_startup::ControlReceiver;
 use std::task::{Context, Poll};
-use tokio::signal::unix::{Signal, SignalKind};
 pub(crate) struct Control {
     parent: Option<ControlReceiver>,
-    interrupt: Signal,
-    terminate: Signal,
+    signals: Termination,
     diagnostic_stop: bool,
 }
 impl Control {
-    pub(crate) fn new(parent: Option<ParentControl>) -> Result<Self, Failure> {
+    pub(crate) fn new(parent: Option<ControlReceiver>) -> Result<Self, Failure> {
         Ok(Self {
-            parent: parent
-                .map(|p| p.register().map_err(|error| error.error))
-                .transpose()?,
-            interrupt: tokio::signal::unix::signal(SignalKind::interrupt())?,
-            terminate: tokio::signal::unix::signal(SignalKind::terminate())?,
+            parent,
+            signals: Termination::new()?,
             diagnostic_stop: false,
         })
     }
@@ -32,10 +28,7 @@ impl Control {
         }
         if let Some(parent) = &mut self.parent {
             match parent.poll_signal(cx) {
-                Poll::Ready(Ok(Some(signal)))
-                    if i32::from(signal) == SignalKind::interrupt().as_raw_value()
-                        || i32::from(signal) == SignalKind::terminate().as_raw_value() =>
-                {
+                Poll::Ready(Ok(Some(2 | 15))) => {
                     return Poll::Ready(Ok(()));
                 }
                 Poll::Ready(Ok(Some(_))) => cx.waker().wake_by_ref(),
@@ -44,15 +37,8 @@ impl Control {
                 Poll::Pending => {}
             }
         }
-        for signal in [&mut self.interrupt, &mut self.terminate] {
-            match signal.poll_recv(cx) {
-                Poll::Ready(Some(())) => return Poll::Ready(Ok(())),
-                Poll::Ready(None) => {
-                    return Poll::Ready(Err("DATASTORE signal stream ended".into()));
-                }
-                Poll::Pending => {}
-            }
-        }
-        Poll::Pending
+        self.signals
+            .poll_stop(cx)
+            .map(|result| result.map_err(|error| Box::new(error) as Failure))
     }
 }

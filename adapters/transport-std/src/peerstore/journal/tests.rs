@@ -2,6 +2,7 @@
 use super::codec::record_bytes;
 use super::*;
 use gnunet_crypto::EddsaPrivateKey;
+use std::fs;
 struct Cleanup(PathBuf);
 impl Drop for Cleanup {
     fn drop(&mut self) {
@@ -167,6 +168,7 @@ fn refuse_rename(journal: &Journal, step: TestStep) -> io::Result<()> {
     }
     Ok(())
 }
+#[cfg(unix)]
 fn obstruct_readback(journal: &Journal, step: TestStep) -> io::Result<()> {
     if step == TestStep::AfterRename {
         fs::rename(
@@ -450,6 +452,7 @@ fn rename_error_retains_original_io_and_recovery_proves_unchanged_predecessor() 
     assert_eq!(j.reserve_monotime(100, 1)?, (100, 100));
     Ok(())
 }
+#[cfg(unix)]
 #[test]
 fn after_rename_read_error_stays_unknown_until_exact_same_inode_candidate_is_recovered()
 -> Result<(), Error> {
@@ -534,7 +537,7 @@ fn changed_predecessor_and_foreign_original_handle_cannot_publish() -> Result<()
     Ok(())
 }
 #[test]
-fn old_private_formats_and_symbolic_database_paths_are_rejected_without_overwrite()
+fn foreign_formats_and_nonregular_database_paths_are_rejected_without_overwrite()
 -> Result<(), Error> {
     let d = directory()?;
     let path = d.0.join("db");
@@ -543,14 +546,23 @@ fn old_private_formats_and_symbolic_database_paths_are_rejected_without_overwrit
     assert!(matches!(Journal::open(&path), Err(Error::Storage)));
     assert_eq!(fs::read(&path).map_err(|_| Error::Storage)?, old);
     fs::remove_file(&path).map_err(|_| Error::Storage)?;
-    std::os::unix::fs::symlink(d.0.join("elsewhere"), &path).map_err(|_| Error::Storage)?;
-    assert!(matches!(Journal::open(&path), Err(Error::Storage)));
-    assert!(
-        fs::symlink_metadata(&path)
-            .map_err(|_| Error::Storage)?
-            .file_type()
-            .is_symlink()
-    );
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(d.0.join("elsewhere"), &path).map_err(|_| Error::Storage)?;
+        assert!(matches!(Journal::open(&path), Err(Error::Storage)));
+        assert!(
+            fs::symlink_metadata(&path)
+                .map_err(|_| Error::Storage)?
+                .file_type()
+                .is_symlink()
+        );
+    }
+    #[cfg(windows)]
+    {
+        fs::create_dir(&path).map_err(|_| Error::Storage)?;
+        assert!(Journal::open(&path).is_err());
+        assert!(path.is_dir());
+    }
     Ok(())
 }
 

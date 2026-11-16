@@ -1,57 +1,82 @@
-# Actual active TESTBED host utility
+# TESTBED configuration and port planning
 
-`System::create(&Instance,&mut[PortSlot],Options)` constructs a native owner for
-exact current official TESTBED system/configuration functionality. Options are
-explicit; `Options::from_environment` captures only GNUNET_TESTBED_PREFIX. A fresh
-root defaults to a short /tmp name so generated Unix socket paths remain usable. An explicit prefix must be new/empty or this Rust utility's exact marked private
-directory. It does not adopt a C GNUNET_HOME, read/import key fixtures, spawn a
-peer/controller, or start any hidden thread/task/Resolver. Private-mode roots,
-O_NOFOLLOW metadata, an File lock, namespace marker and a durable checked
-path counter guard independent owned resources. Marker-qualified reopening is
-not compatibility migration. Missing/corrupt existing counters fail closed.
+This adapter generates ordinary GNUnet configurations for isolated peers. The
+caller owns one `System`, its fixed logical `PortSlot` pool and the generated
+configurations. Peer startup and shutdown use the service runtime and ARM.
 
-`reserve_port` probes simultaneous TCP and UDP wildcard binds in both
-selected supported IPv4/v6 families; IPv6 probes are v6-only. Probe FDs are closed
-before return. Its opaque Reservation means logical per-system exclusion plus a
-past bind observation, never future kernel exclusivity or peer ready. One TESTBED system should coordinate each caller's peers, as in the active C
-contract. External processes may race to bind after the probe; no success masks
-that fact. Release checks the exact original private token, not just port number.
+## Root ownership and restart
 
-`configuration_create` duplicates the existing loaded official CONFIG and leaves
-its input unchanged. It actually commits its never-reused numeric path counter,
-creates the private GNUNET_HOME and sets PATHS.DEFAULTCONFIG, ARM.CONFIG, PORT,
-UNIXPATH, HOSTNAME, trusted IP/CIDR ACCEPT_FROM/ACCEPT_FROM6 and NAT.USE_LOCALADDR. Shared single_<service>_per_host keeps its existing port/socket. The active C's
-num_<service>_per_host sharding branches are only FIXME/breaks; nonzero sharding
-is explicitly Unsupported, not a fake implemented distribution. Actual per-config
-port vectors reserve only the exact number needed, within limits; all reserved
-ports are released on a refused generation, with separate cleanup reporting. Every generated Unix address is structurally checked by socket2 before return. No socket is bound merely by generating its name.
+`System::create` selects a new, empty or exactly marked private directory. An
+explicit `Options.prefix` takes precedence over a fresh child of
+`Options.temporary_parent`. Defaults use a short Unix `/tmp` parent or the native
+Windows temporary directory. `Options::from_environment` selects the official
+`GNUNET_TESTBED_PREFIX` override.
 
-Rust fixes local configuration defects without inventing wire: inclusive low
-range is honored (the C bucket scan skips it), key/ignore matching is safe and
-case-insensitive, ignored final tokens need no trailing semicolon, advertised
-port follows a newly assigned PORT unless explicitly ignored, IPv6 loopback ACL
-uses ::1 and appends an explicit delimiter. These are configuration helper
-semantics, not new controller messages. Shared CONFIG remains the only parser.
+The owner holds the original parent/root directories, marker file and exclusively
+locked file. Marker contents, native identity and private Unix permissions or
+Windows DACLs are checked. Root or marker/lock replacement refuses new effects.
+The checked counter is synchronized and atomically published before each numbered
+home is created. Missing or corrupt counters in an existing marked root are
+errors. Existing numbered homes are never overwritten.
 
-`write_configuration` serializes the shared CONFIG into zeroizing temporary
-storage and does private staging/write/fsync, atomic rename or no-replace
-link and parent fsync. Published is minted only after those original operations
-succeed. Failure preserves Unchanged/Staged/Installed exposure, first actual
-cause and independent cleanup cause/count; Installed followed by failure fences
-new admission rather than replaying unknown writes. Default config and exported
-files are separate publications. Filesystem fsync can block in the OS;
-this synchronous no-scheduler utility has no fictitious finite disk deadline and
-is not called from a network poll. Standard File/Socket Drop closes their owners;
-it provides no extra kernel close-errno or remote-revocation receipt.
+## Configuration generation
 
-`release_configuration` releases original logical port tokens only; it does not
-stop any external process or delete a config. `destroy(remove_paths)` stops core
-admission and explicitly keeps or actually removes only this marked original
-root, checking its original inode/marker and syncing parent. Other exported
-paths remain. First operation and independent cleanup failures remain distinct. The caller decides that removing an owned tree is appropriate; no process/remote
-quiescence is inferred. Drop alone does not claim directory removal.
+`configuration_create` duplicates the loaded CONFIG, creates a private home and
+sets `PATHS.DEFAULTCONFIG`, `ARM.CONFIG`, `PATHS.GNUNET_HOME`, selected `PORT`,
+`UNIXPATH`, `HOSTNAME`, service ACLs and `NAT.USE_LOCALADDR`. Native paths use the
+shared lossless byte encoding. Generated socket paths must fit the actual native
+address representation. The canonical home remains held through publication;
+a replacement at the same path cannot receive its configuration bytes. Official CONFIG
+serialization omits loader-derived `PATHS.DEFAULTCONFIG`; reloading initializes
+it from the selected filename. Serialized `ARM.CONFIG` retains the canonical
+path.
 
-No compiler/Cargo/model, crypto/key/entropy, filesystem/store, native bind,
-network/helper/process or C execution occurred. Central compilation and actual
-public config/port behavior qualification remain outstanding. Full GNUnet peer,
-ARM, transport/topology capabilities remain separate subsystem obligations.
+`single_<service>_per_host` retains the configured port/socket. The selected
+reference has no implemented `num_<service>_per_host` sharding semantics, so
+nonzero sharding requests return `SharedServiceSharding`. Unshared nonzero port
+fields each receive an exact logical reservation. A refused generation releases
+its reservations and attempts removal of its original empty home; the path number
+remains consumed.
+
+## Port reservations
+
+`reserve_port` simultaneously probes TCP and UDP wildcard binds for the enabled
+supported IPv4/IPv6 families. IPv6 probes use v6-only sockets; Windows probes use
+exclusive address binding. Unsupported native family/option errors remain
+distinct from other failures. Probe sockets close before return.
+
+A `Reservation` records a past bind observation and logical exclusion within one
+system. It does not reserve the kernel port for a future service. The caller
+coordinates its peers and handles later bind failures.
+
+## Publication and cleanup
+
+`write_configuration` serializes CONFIG into zeroizing storage and uses the
+shared native publication owner for private staging, complete writes, file
+synchronization, consuming writer close and atomic replacement/no-clobber linking.
+`Published` contains the selected path, byte count and separate `directory_sync`
+observation. Windows can report directory synchronization as unavailable; a
+successful file sync alone is not a durable-name receipt.
+
+Failures retain unchanged, staged, uncertain or installed exposure and the native
+publication error, including independent writer-close/staging-cleanup results.
+Uncertain or failed installed effects fence subsequent admission on that system.
+Canonical and exported configurations are separate publications.
+
+`release_configuration` releases logical port reservations. `destroy(false)`
+keeps paths; `destroy(true)` removes the original marked tree after the caller
+has stopped its external users and excluded namespace administration. Removal
+walks held native directories, checks original child identity and never traverses
+symlink targets. Marker/lock/counter metadata remain until ordinary contents are
+removed. Cleanup errors preserve the first cause and independent failure count.
+Standard owner Drop releases remaining handles without claiming a close-errno or
+successful tree-removal receipt.
+
+## Resource limits
+
+`Limits` bounds configuration attempts, ports per configuration, serialized and
+native path bytes, directory-name attempts, cleanup entries and cleanup depth.
+Defaults allow 4096 configurations, 256 ports each, 4 MiB serialized configs,
+4096 native path bytes, 4096 directory-name attempts, 131072 cleanup entries and
+64 directory levels. Limit exhaustion is an error and can leave owned paths for
+explicit recovery. Filesystem operations are synchronous and may block in the OS.

@@ -17,7 +17,6 @@ use gnunet_wire::official::datastore::{Data, Request, Response};
 pub(crate) use index_registration::{IndexAnswer, controlled as register_index_controlled};
 use std::{
     fmt, io,
-    os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
 };
 use tokio::{
@@ -43,6 +42,9 @@ pub struct BlockOptions {
 pub struct PublishOptions {
     /// One absolute target in the supplied DATASTORE client's source clock.
     pub deadline: AbsoluteTime,
+    /// Optional enclosing operation's native stop target; it can only shorten
+    /// the allowance derived from `deadline`. Never persisted or sent to peers.
+    pub native_deadline: Option<tokio::time::Instant>,
     /// Caller-selected official block metadata.
     pub blocks: BlockOptions,
     /// File and encoded-tree resource bounds.
@@ -57,6 +59,7 @@ impl PublishOptions {
     pub fn new(deadline: AbsoluteTime, blocks: BlockOptions) -> Self {
         Self {
             deadline,
+            native_deadline: None,
             blocks,
             limits: Limits::default(),
             reserve_space: false,
@@ -571,49 +574,19 @@ pub struct IndexedFile {
     /// Independent retirement trouble after known index registration acceptance.
     pub index_retirement_error: Option<ConnectError>,
 }
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct Stamp {
-    device: u64,
-    inode: u64,
-    bytes: u64,
-    modified: i64,
-    modified_nanos: i64,
-    changed: i64,
-    changed_nanos: i64,
-}
-impl Stamp {
-    fn capture(metadata: &std::fs::Metadata) -> Result<Self, Error> {
-        if !metadata.is_file() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "indexed FS source must be a regular file",
-            )
-            .into());
-        }
-        Ok(Self {
-            device: metadata.dev(),
-            inode: metadata.ino(),
-            bytes: metadata.len(),
-            modified: metadata.mtime(),
-            modified_nanos: metadata.mtime_nsec(),
-            changed: metadata.ctime(),
-            changed_nanos: metadata.ctime_nsec(),
-        })
-    }
-}
 // The duplicate descriptor is only used for metadata. Reads/seeks stay on the
 // caller's original File; no whole-file collection or path-reopen reader exists.
 struct IndexedGuard {
-    file: File,
+    file: std::fs::File,
     path: PathBuf,
-    stamp: Stamp,
+    stamp: gnunet_native::filesystem::FileInfo,
     file_id: [u8; 64],
     hash: Hash512State,
 }
 impl IndexedGuard {
     async fn stable(&self) -> Result<(), Error> {
-        let original = Stamp::capture(&self.file.metadata().await?)?;
-        let path = Stamp::capture(&tokio::fs::metadata(&self.path).await?)?;
+        let original = crate::input::file_info(&self.file)?;
+        let path = crate::input::named_info(&self.path)?;
         if original != self.stamp || path != self.stamp {
             return Err(crate::Error::SourceChanged.into());
         }
@@ -760,6 +733,7 @@ impl Buffers {
         {
             return Err(ProtocolError::NotReady.into());
         }
+        let mut time = TimeLimit::new(store.clock(), options.deadline, options.native_deadline)?;
         self.prepare(
             Content {
                 key: [0; 64],
@@ -768,7 +742,6 @@ impl Buffers {
             },
             options.limits,
         )?;
-        let mut time = TimeLimit::new(store.clock(), options.deadline)?;
         self.store_prepared(
             input,
             size,
@@ -815,11 +788,14 @@ impl Buffers {
             if store.pending() != 0 || store.retained_replies() != (0, 0) {
                 return Err(ProtocolError::NotReady.into());
             }
-            let mut time = TimeLimit::new(store.clock(), options.deadline)?;
+            let mut time =
+                TimeLimit::new(store.clock(), options.deadline, options.native_deadline)?;
             if control(progress) == Control::Cancel {
                 return Err(Error::Cancelled(progress).into());
             }
-            let original = Stamp::capture(&time.during(input.metadata()).await??)?;
+            let metadata_file = time.during(input.try_clone()).await??;
+            let metadata_file = time.during(metadata_file.into_std()).await?;
+            let original = crate::input::file_info(&metadata_file)?;
             self.prepare(
                 Content {
                     key: [0; 64],
@@ -829,11 +805,10 @@ impl Buffers {
                 options.limits,
             )?;
             let path = time.during(tokio::fs::canonicalize(filename)).await??;
-            let alias = Stamp::capture(&time.during(tokio::fs::metadata(&path)).await??)?;
+            let alias = crate::input::named_info(&path)?;
             if original != alias {
                 return Err(Error::from(crate::Error::SourceChanged).into());
             }
-            let metadata_file = time.during(input.try_clone()).await??;
             time.during(input.seek(io::SeekFrom::Start(0))).await??;
             let mut hash = Hash512State::new();
             while hashed_bytes < original.bytes {

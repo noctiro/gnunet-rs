@@ -1,5 +1,4 @@
 //! Owned real Unix CORE/PILS/subscriber composition; scripted CORE is not a remote peer.
-#![cfg(unix)]
 #![expect(
     clippy::panic_in_result_fn,
     reason = "Real effect witnesses assert actual bytes, signer, native ownership and cleanup."
@@ -33,28 +32,14 @@ use std::{
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::{UnixListener, UnixStream},
     time::Instant,
 };
 type Failure = Box<dyn Error + Send + Sync>;
-static NEXT: AtomicU64 = AtomicU64::new(0);
-struct Scratch(PathBuf);
-impl Scratch {
-    fn new() -> Result<Self, Failure> {
-        let path = std::env::temp_dir().join(format!(
-            "gnrs-nse-native-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::create_dir(&path)?;
-        Ok(Self(path))
-    }
-}
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _removed = std::fs::remove_dir_all(&self.0);
-    }
-}
+#[path = "../src/test_support.rs"]
+mod support;
+use gnunet_service_runtime::local::Stream as UnixStream;
+use support::{Directory as Scratch, Listener as UnixListener};
+
 struct UnixPorts(Arc<dyn RuntimeClock>);
 impl ResolutionContext for UnixPorts {
     fn clock(&self) -> Arc<dyn RuntimeClock> {
@@ -73,9 +58,12 @@ impl ResolutionContext for UnixPorts {
     }
 }
 fn source(path: &std::path::Path, clock: Arc<dyn RuntimeClock>) -> Result<EndpointSource, Failure> {
-    use std::os::unix::ffi::OsStrExt;
     let mut cfg = gnunet_config::Configuration::default();
-    cfg.set_value(b"service", b"UNIXPATH", Some(path.as_os_str().as_bytes()))?;
+    cfg.set_value(
+        b"service",
+        b"UNIXPATH",
+        Some(&gnunet_native::os_bytes::encode(path.as_os_str())),
+    )?;
     Ok(EndpointSource::configuration(
         cfg,
         b"service",
@@ -242,15 +230,15 @@ async fn composition_profile(
     if let Some(saved) = saved {
         std::fs::write(scratch.0.join("proof"), saved)?;
     }
-    let pils_listener = UnixListener::bind(scratch.0.join("pils"))?;
-    let core_listener = UnixListener::bind(scratch.0.join("core"))?;
-    let nse_listener = UnixListener::bind(scratch.0.join("nse"))?;
+    let pils_listener = UnixListener::bind(scratch.0.join("pils")).await?;
+    let core_listener = UnixListener::bind(scratch.0.join("core")).await?;
+    let nse_listener = UnixListener::bind(scratch.0.join("nse")).await?;
     let loss_armed = Arc::new(AtomicBool::new(false));
     let loss_cut = Arc::new(AtomicBool::new(false));
     let pils_armed = loss_armed.clone();
     let pils_cut = loss_cut.clone();
     let pils_task = tokio::spawn(async move {
-        let (mut stream, _) = pils_listener.accept().await?;
+        let (mut stream, _) = pils_listener.socket.accept().await?;
         stream.write_all(pils.announcement()).await?;
         let mut signed = 0;
         while let Some(bytes) = frame(&mut stream).await? {
@@ -305,7 +293,7 @@ async fn composition_profile(
     };
     let core_cut = loss_cut.clone();
     let core_task = tokio::spawn(async move {
-        let (mut stream, _) = core_listener.accept().await?;
+        let (mut stream, _) = core_listener.socket.accept().await?;
         let init = frame(&mut stream).await?.ok_or("missing CORE init")?;
         assert!(
             matches!(Request::decode(&init)?,Request::Init{types,..}if types.iter().eq([official::message_type::NSE_P2P_FLOOD.value()]))
@@ -465,7 +453,7 @@ async fn composition_profile(
         ServiceOptions::default(),
         proof::Store::open(scratch.0.join("proof"))?,
     )?;
-    let listeners = [Listener::Unix(&nse_listener)];
+    let listeners = [Listener::Unix(&nse_listener.socket)];
     let deadline = Instant::now() + Duration::from_secs(if scheduling_probe { 1 } else { 10 });
     let mut activated = false;
     let mut round_advance = None;
@@ -537,7 +525,7 @@ async fn composition_profile(
             && activated
             && estimates.load(Ordering::SeqCst) > 0
             && if mine_only {
-                report.proofs > 0 && report.durable > 0 && report.estimates > 0
+                report.proofs > 0 && report.commits > 0 && report.estimates > 0
             } else {
                 report.signatures > 0
                     && report.submissions > 0
@@ -719,7 +707,7 @@ fn default15_native_budgeted_discovery_is_durable_and_keeps_ipc_live() -> Result
     ))??;
     assert_eq!(report.work_calls, 2);
     assert_eq!(report.proofs, 1);
-    assert!(report.durable > 0 && report.estimates > 0);
+    assert!(report.commits > 0 && report.estimates > 0);
     Ok(())
 }
 
@@ -965,15 +953,15 @@ async fn rotating_composition(backend_failure: bool) -> Result<(), Failure> {
     assert_eq!(new_key, expected_new);
     assert_ne!(old_key, new_key);
     std::fs::write(scratch.0.join("proof"), 32508_u64.to_be_bytes())?;
-    let pils_listener = UnixListener::bind(scratch.0.join("pils"))?;
-    let core_listener = UnixListener::bind(scratch.0.join("core"))?;
-    let nse_listener = UnixListener::bind(scratch.0.join("nse"))?;
+    let pils_listener = UnixListener::bind(scratch.0.join("pils")).await?;
+    let core_listener = UnixListener::bind(scratch.0.join("core")).await?;
+    let nse_listener = UnixListener::bind(scratch.0.join("nse")).await?;
     let armed = Arc::new(AtomicBool::new(false));
     let late = Arc::new(AtomicBool::new(false));
     let pils_armed = armed.clone();
     let late_written = late.clone();
     let pils_task = tokio::spawn(async move {
-        let (mut stream, _) = pils_listener.accept().await?;
+        let (mut stream, _) = pils_listener.socket.accept().await?;
         stream.write_all(old_pils.announcement()).await?;
         let mut replacement = Some(new_pils);
         let mut signed = [0; 2];
@@ -1050,7 +1038,7 @@ async fn rotating_composition(backend_failure: bool) -> Result<(), Failure> {
             .into_iter()
             .enumerate()
         {
-            let (mut stream, _) = core_listener.accept().await?;
+            let (mut stream, _) = core_listener.socket.accept().await?;
             let init = frame(&mut stream).await?.ok_or("missing epoch INIT")?;
             assert!(matches!(Request::decode(&init)?, Request::Init { .. }));
             response(
@@ -1137,7 +1125,7 @@ async fn rotating_composition(backend_failure: bool) -> Result<(), Failure> {
         ServiceOptions::default(),
         proof::Store::open(scratch.0.join("proof"))?,
     )?;
-    let listeners = [Listener::Unix(&nse_listener)];
+    let listeners = [Listener::Unix(&nse_listener.socket)];
     let deadline = Instant::now() + Duration::from_secs(10);
     let mut retired = false;
     let mut initial_submissions = None;
