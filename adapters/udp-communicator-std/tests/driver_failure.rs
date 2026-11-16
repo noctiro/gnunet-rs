@@ -65,12 +65,13 @@ struct Harness {
 }
 impl Harness {
     async fn new(fail_entropy: bool) -> Result<Self, Failure> {
-        let scratch = Scratch(std::env::temp_dir().join(format!(
+        let path = std::env::temp_dir().join(format!(
             "udp-driver-failure-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
-        )));
-        support::private_directory(&scratch.0)?;
+        ));
+        support::private_directory(&path)?;
+        let scratch = Scratch(path);
         let local = Identity::from_seed([3; 32]);
         let peer = Identity::from_seed([5; 32]).peer();
         let remote = UdpSocket::bind("127.0.0.1:0")?;

@@ -9,6 +9,11 @@ The [test guide](../tests/README.md) documents `cargo xtask verify` groups and C
 [xtask](xtask/src/) owns workspace, dependency and feature checks.
 `python3 -B tools/check_tools.py --list` lists Python tool controls.
 
+Keep Rust build contracts in `xtask`. The small [CI bootstrap](ci/setup-rust.sh)
+delegates toolchain selection to `rustup`. Python tools own C reference builds,
+cross-language orchestration, corpora and evidence processing; they use the real
+Rust workspace rather than duplicate its Cargo configuration.
+
 ## Official reference software
 
 [Reference programs](reference/README.md) document isolated official C builds and

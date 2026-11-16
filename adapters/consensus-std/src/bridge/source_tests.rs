@@ -31,9 +31,13 @@ impl gnunet_service_runtime::clock::RuntimeClock for SourceClock {
 struct Directory(PathBuf);
 impl Directory {
     fn new() -> Result<Self, Failure> {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
         let stamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
-        let path =
-            std::env::temp_dir().join(format!("consensus-loss-{}-{stamp}", std::process::id()));
+        let path = std::env::temp_dir().join(format!(
+            "consensus-loss-{}-{stamp}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
         std::fs::create_dir(&path)?;
         Ok(Self(path))
     }

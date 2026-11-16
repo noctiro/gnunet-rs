@@ -1,9 +1,14 @@
+//! Explicitly polled AF_UNIX service over an original native stream listener.
 use gnunet_pils::{Action, Service};
 use gnunet_wire::official::MessageHeader;
+use socket2::{Socket, Type};
+#[cfg(unix)]
+use std::os::fd::AsFd;
+#[cfg(windows)]
+use std::os::windows::io::AsSocket;
 use std::{
     collections::{BTreeMap, VecDeque},
     io::{self, Read, Write},
-    os::unix::net::{UnixListener, UnixStream},
 };
 use zeroize::{Zeroize, Zeroizing};
 
@@ -34,7 +39,7 @@ pub struct Progress {
     pub closed: usize,
 }
 struct Client {
-    stream: UnixStream,
+    stream: Socket,
     rx: Vec<u8>,
     tx: VecDeque<Zeroizing<Vec<u8>>>,
     offset: usize,
@@ -84,7 +89,7 @@ impl Client {
 /// owner closes all sockets and erases queued output. Listener path cleanup and
 /// single-writer KeyLease belong to the outer lifecycle owner.
 pub struct Host<const H: usize = 4096> {
-    listener: UnixListener,
+    listener: Socket,
     service: Service<H>,
     limits: Limits,
     clients: BTreeMap<u64, Client>,
@@ -93,8 +98,23 @@ pub struct Host<const H: usize = 4096> {
     out: Zeroizing<Vec<u8>>,
 }
 impl<const H: usize> Host<H> {
-    /// Adopt an already authorized/bound listener; no private socket convention.
-    pub fn new(listener: UnixListener, service: Service<H>, limits: Limits) -> io::Result<Self> {
+    /// Adopt an already authorized AF_UNIX stream listener without replacing it.
+    /// Path access and cleanup remain owned by the caller.
+    ///
+    /// # Errors
+    /// Rejects other socket families, nonstream or nonlistening sockets, invalid
+    /// resource bounds and native inspection/nonblocking failures.
+    pub fn new(listener: Socket, service: Service<H>, limits: Limits) -> io::Result<Self> {
+        if listener.r#type()? != Type::STREAM || !listener.local_addr()?.is_unix() {
+            return Err(io::ErrorKind::InvalidInput.into());
+        }
+        #[cfg(unix)]
+        let native = listener.as_fd();
+        #[cfg(windows)]
+        let native = listener.as_socket();
+        if !gnunet_native::network::is_listener(native)? {
+            return Err(io::ErrorKind::InvalidInput.into());
+        }
         if limits.clients == 0
             || limits.receive_bytes < 4
             || limits.transmit_bytes < service.announcement().len()

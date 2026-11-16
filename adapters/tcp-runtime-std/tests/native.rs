@@ -340,9 +340,11 @@ impl Scratch {
         let mut nonce = [0; 16];
         getrandom::fill(&mut nonce)?;
         let label: String = nonce.iter().map(|b| format!("{b:02x}")).collect();
-        let p = std::env::temp_dir().join(format!("tcp-native-{label}"));
-        gnunet_service_runtime::private_parents(&p.join(".fixture"))?;
-        Ok(Self(p))
+        let temporary = std::env::temp_dir();
+        let name = format!("tcp-native-{label}");
+        gnunet_native::filesystem::Directory::open(&temporary)?
+            .create_private_directory(std::ffi::OsStr::new(&name))?;
+        Ok(Self(temporary.join(name)))
     }
 }
 impl Drop for Scratch {

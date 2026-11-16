@@ -67,7 +67,7 @@ impl Server {
             hello(),
         )?;
         let mut host = Host::new(
-            listener,
+            listener.into(),
             service,
             HostLimits {
                 clients: 2,

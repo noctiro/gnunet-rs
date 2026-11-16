@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Ten proof-boundary regressions; no native-account/socket observations."""
+"""Reference boundary controls; no native-account/socket observations."""
 import json
 import pathlib
 import tempfile
@@ -7,6 +7,7 @@ import unittest
 from _common import (local_snapshot, require_disjoint_output, sha, validated_build,
                      _validate_normal_reference_data, PINNED_REVISION, PINNED_TAG,
                      require_rust_fixture_success)
+from verify import require_rust_checks, require_tool_controls, RUST_CHECKS
 
 
 class Boundaries(unittest.TestCase):
@@ -191,6 +192,36 @@ class Boundaries(unittest.TestCase):
             require_rust_fixture_success(row)
         self.assertEqual(require_rust_fixture_success({**row, 'exit_code': 0})
                          ['observation'], {'ok': True})
+
+    def test_named_startup_witnesses_allow_additional_tests_but_never_ignored_ones(self):
+        output = ''.join('test ' + name + ' ... ok\n' for name in RUST_CHECKS)
+        output += 'test future::additional_case ... ok\ntest result: ok. 5 passed; 0 failed;\n'
+        self.assertEqual(require_rust_checks(output), RUST_CHECKS)
+        for altered in (output.replace(RUST_CHECKS[0] + ' ... ok', RUST_CHECKS[0] + ' ... ignored'),
+                        'test result: ok. 0 passed; 0 failed;\n'):
+            with self.assertRaisesRegex(ValueError, 'witnesses missing'):
+                require_rust_checks(altered)
+
+    def test_control_summary_accepts_growth_and_rejects_empty_or_failed_controls(self):
+        self.assertEqual(require_tool_controls('Ran 13 tests in 0.001s\n\nOK\n'), 13)
+        for output in ('Ran 0 tests in 0.001s\n\nOK\n',
+                       'Ran 13 tests in 0.001s\n\nFAILED (failures=1)\n',
+                       'OK\n'):
+            with self.assertRaises(ValueError):
+                require_tool_controls(output)
+
+    def test_optimized_reference_runner_refuses_before_creating_output(self):
+        import subprocess
+        import sys
+        output = self.root / 'must-not-exist'
+        runner = pathlib.Path(__file__).with_name('verify.py')
+        result = subprocess.run([sys.executable, '-O', '-B', str(runner),
+                                 '--source', str(self.root / 'source'),
+                                 '--build-receipt', str(self.root / 'receipt.json'),
+                                 '--output', str(output)], capture_output=True, timeout=5)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(b'assertion-enabled Python', result.stderr)
+        self.assertFalse(output.exists())
 
 
 if __name__ == '__main__':

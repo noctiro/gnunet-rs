@@ -30,7 +30,7 @@ fn request(interface: &Info, address: Ipv6Addr) -> io::Result<libc::in6_ifreq> {
     let mut req = libc::in6_ifreq::default();
     let name = crate::platform::name(&interface.name)?;
     for (a, b) in req.ifr_name.iter_mut().zip(name.as_bytes_with_nul()) {
-        *a = *b as libc::c_char;
+        *a = libc::c_char::from_ne_bytes([*b]);
     }
     req.ifr_ifru.ifru_addr = sockaddr(interface, address);
     Ok(req)

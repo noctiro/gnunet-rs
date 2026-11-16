@@ -2689,6 +2689,7 @@ dependencies = [
  "gnunet-types",
  "gnunet-wire",
  "serde_json",
+ "socket2",
  "tokio",
  "zeroize",
 ]
@@ -4290,6 +4291,7 @@ dependencies = [
 name = "gnunet-transport-node"
 version = "0.1.0"
 dependencies = [
+ "gnunet-service-runtime",
  "gnunet-service-startup",
  "gnunet-transport-runtime",
  "tokio",
@@ -4313,14 +4315,17 @@ dependencies = [
  "gnunet-config",
  "gnunet-crypto",
  "gnunet-hello",
+ "gnunet-native",
  "gnunet-pils",
  "gnunet-pils-host",
  "gnunet-resolver-broker",
  "gnunet-service-runtime",
+ "gnunet-service-startup",
  "gnunet-transport",
  "gnunet-transport-host",
  "gnunet-types",
  "gnunet-wire",
+ "socket2",
  "tokio",
 ]
 

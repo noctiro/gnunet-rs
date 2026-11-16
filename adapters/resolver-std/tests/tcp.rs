@@ -11,7 +11,13 @@ use gnunet_resolver_host::{
     startup::{foreground_configured, foreground_tcp, native_family},
 };
 use gnunet_wire::official::Frame;
-use std::{error::Error, io, net::IpAddr, time::Duration};
+use std::{
+    error::Error,
+    io,
+    net::IpAddr,
+    sync::atomic::{AtomicU64, Ordering},
+    time::Duration,
+};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
     net::{TcpStream, UdpSocket},
@@ -26,12 +32,17 @@ impl Drop for Directory {
     }
 }
 fn local_configuration() -> TestResult<(Directory, std::path::PathBuf, Configuration)> {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)?
         .as_nanos();
-    let directory =
-        Directory(std::env::temp_dir().join(format!("gr-{}-{nonce:x}", std::process::id())));
-    std::fs::create_dir(&directory.0)?;
+    let path = std::env::temp_dir().join(format!(
+        "gr-{}-{nonce:x}-{:x}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir(&path)?;
+    let directory = Directory(path);
     let path = directory.0.join("resolver.sock");
     let mut config = Configuration::default();
     config.set_value(

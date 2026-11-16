@@ -11,10 +11,11 @@ impl Scratch {
     fn new() -> io::Result<Self> {
         let mut nonce = [0; 16];
         getrandom::fill(&mut nonce).map_err(io::Error::other)?;
-        let path =
-            std::env::temp_dir().join(format!("tcp-epoch-{:032x}", u128::from_be_bytes(nonce)));
-        gnunet_service_runtime::private_parents(&path.join(".fixture"))?;
-        Ok(Self(path))
+        let temporary = std::env::temp_dir();
+        let name = format!("tcp-epoch-{:032x}", u128::from_be_bytes(nonce));
+        gnunet_native::filesystem::Directory::open(&temporary)?
+            .create_private_directory(std::ffi::OsStr::new(&name))?;
+        Ok(Self(temporary.join(name)))
     }
 }
 impl Drop for Scratch {

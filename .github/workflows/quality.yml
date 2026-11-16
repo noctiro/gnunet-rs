@@ -5,6 +5,8 @@ on:
     branches: [main]
     tags: ['v*']
   pull_request:
+  merge_group:
+    types: [checks_requested]
   workflow_dispatch:
 
 permissions:
@@ -22,28 +24,15 @@ env:
   CARGO_PROFILE_TEST_DEBUG: '0'
   RUSTDOCFLAGS: -D warnings
   PYTHONDONTWRITEBYTECODE: '1'
+  PYTHONOPTIMIZE: ''
 
 jobs:
-  secrets:
-    name: Secret scanning
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          fetch-depth: 0
-      - name: Prepare the fixed secret scanner
-        run: |
-          curl --fail --silent --show-error --location https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz -o "$RUNNER_TEMP/gitleaks.tar.gz"
-          echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  $RUNNER_TEMP/gitleaks.tar.gz" | sha256sum --check
-          tar -xzf "$RUNNER_TEMP/gitleaks.tar.gz" -C "$RUNNER_TEMP" gitleaks
-      - name: Scan complete Git history
-        run: |
-          "$RUNNER_TEMP/gitleaks" git --no-banner --redact=100 --config .gitleaks.toml --log-opts=--all .
+  security:
+    name: Supply chain security
+    uses: ./.github/workflows/security.yml
 
   checks:
-    name: Formatting and official architecture
+    name: Source policies and formatting
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -57,8 +46,14 @@ jobs:
           tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$RUNNER_TEMP" actionlint
           "$RUNNER_TEMP/actionlint" -color
       - uses: ./.github/actions/setup-rust
-      - run: cargo xtask verify format
-      - run: cargo xtask verify lint
+      - run: cargo xtask verify source --log-dir target/ci/source
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: failure()
+        with:
+          name: source-check-logs
+          path: target/ci/source
+          if-no-files-found: ignore
+          retention-days: 7
 
   tools:
     name: Tool controls (${{ matrix.os }})
@@ -87,7 +82,8 @@ jobs:
           path: target/tool-controls
           retention-days: 7
 
-  tests:
+  native:
+    needs: checks
     name: Native workspace (${{ matrix.host }})
     strategy:
       fail-fast: false
@@ -108,34 +104,20 @@ jobs:
       - uses: ./.github/actions/setup-rust
         with:
           host: ${{ matrix.host }}
-      - run: cargo xtask verify profiles
-      - run: cargo xtask verify lint
-      - run: cargo xtask verify test
+      - run: cargo xtask verify native --log-dir target/ci/native
         env:
           # Keep Darwin paths short without using /tmp's final symlink.
           TMPDIR: ${{ runner.os == 'Windows' && runner.temp || runner.os == 'macOS' && '/private/tmp' || '/tmp' }}
-
-  portable:
-    name: Portable core and feature tiers (${{ matrix.host }})
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { os: ubuntu-24.04, host: x86_64-unknown-linux-gnu }
-          - { os: windows-2025, host: x86_64-pc-windows-msvc }
-          - { os: windows-11-arm, host: aarch64-pc-windows-msvc }
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: failure()
         with:
-          persist-credentials: false
-      - uses: ./.github/actions/setup-rust
-        with:
-          host: ${{ matrix.host }}
-      - run: cargo xtask verify portable
+          name: native-logs-${{ matrix.host }}
+          path: target/ci/native
+          if-no-files-found: ignore
+          retention-days: 7
 
   freebsd:
+    needs: checks
     name: Native workspace (FreeBSD ${{ matrix.release }} x86_64)
     strategy:
       fail-fast: false
@@ -147,7 +129,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Run unprivileged tests in FreeBSD
+      - name: Run unprivileged checks and transfer diagnostics
+        id: vm
         uses: vmactions/freebsd-vm@c46abacb49f09938ca4e1702d15d836285d694cc
         with:
           release: ${{ matrix.release }}
@@ -155,7 +138,7 @@ jobs:
           mem: 6144
           cpu: 2
           sync: rsync
-          copyback: false
+          copyback: true
           prepare: |
             set -eu
             pkg install -y ca_root_nss git python311 rustup-init
@@ -164,10 +147,41 @@ jobs:
             pw useradd -n ci -m -s /bin/sh
           run: |
             set -eu
-            chown -R ci:ci .
-            su -l ci -c "cd '$PWD' && sh tools/ci/freebsd.sh"
+            source_directory=$PWD
+            build_directory=$(mktemp -d /tmp/gnunet-ci.XXXXXX)
+            cp -R "$source_directory/." "$build_directory"
+            chown -R ci:ci "$build_directory"
+            status=0
+            su -l ci -c "cd '$build_directory' && sh tools/ci/freebsd.sh" || status=$?
+            diagnostics="$source_directory/target/ci/freebsd"
+            mkdir -p "$diagnostics"
+            printf '%s\n' "$status" > "$diagnostics/exit-code"
+            if [ -d "$build_directory/target/ci" ]; then
+              cp -R "$build_directory/target/ci/." "$diagnostics"
+            fi
+            if [ -d "$build_directory/target/tool-controls" ]; then
+              cp -R "$build_directory/target/tool-controls" "$diagnostics/tool-controls"
+            fi
+            # The action copies back only after a successful transport step.
+            # This synced tree contains diagnostics; builds stay in /tmp.
+      - name: Require successful FreeBSD checks
+        run: |
+          status=$(cat target/ci/freebsd/exit-code)
+          if ! [[ "$status" =~ ^(0|[1-9][0-9]{0,2})$ ]] || (( status > 255 )); then
+            echo 'Invalid FreeBSD check result' >&2
+            exit 1
+          fi
+          exit "$status"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: failure()
+        with:
+          name: freebsd-logs-${{ matrix.release }}-x86_64
+          path: target/ci/freebsd
+          if-no-files-found: ignore
+          retention-days: 7
 
   embedded:
+    needs: checks
     name: Official no_std Cortex-M0 and Cortex-M4
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -178,7 +192,14 @@ jobs:
       - uses: ./.github/actions/setup-rust
         with:
           targets: thumbv6m-none-eabi, thumbv7em-none-eabi
-      - run: cargo xtask verify embedded
+      - run: cargo xtask verify embedded --log-dir target/ci/embedded
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: failure()
+        with:
+          name: embedded-check-logs
+          path: target/ci/embedded
+          if-no-files-found: ignore
+          retention-days: 7
 
   reference:
     needs: [checks, tools]
@@ -204,12 +225,14 @@ jobs:
           test "$(git -C "$GNUNET_REFERENCE_SOURCE" rev-parse HEAD)" = 346358e26d4dcc2dc4f51bef5d52dca29c7d8165
           git -C "$GNUNET_REFERENCE_SOURCE" diff --exit-code HEAD --
       - name: Run implemented official boundaries against the fixed reference
-        run: cargo xtask verify reference
+        run: cargo xtask verify reference --log-dir target/ci/reference
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: official-reference-results
-          path: target/reference
+          path: |
+            target/reference
+            target/ci/reference
           if-no-files-found: warn
           retention-days: 7
 
@@ -246,13 +269,14 @@ jobs:
         run: |
           python3 -B tools/reference/build_reference.py --source "$GNUNET_REFERENCE_SOURCE" --output "$RUNNER_TEMP/gnunet-daemon-reference-build" --prefix "$RUNNER_TEMP/gnunet-daemon-reference-prefix" --deps-prefix "$RUNNER_TEMP/gnunet-reference-dependencies/prefix" --meson "$RUNNER_TEMP/gnunet-reference-dependencies/venv/bin/meson" --ninja "$RUNNER_TEMP/gnunet-reference-dependencies/venv/bin/ninja" --jobs 4
       - name: Run actual C and Rust programs in both directions
-        run: cargo xtask verify daemon-reference
+        run: cargo xtask verify daemon-reference --log-dir target/ci/daemon-reference
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: official-statistics-daemon-reference-results
           path: |
             target/reference-daemons
+            target/ci/daemon-reference
             ${{ runner.temp }}/gnunet-daemon-reference-build/*.json
             ${{ runner.temp }}/gnunet-daemon-reference-build/*.log
             ${{ runner.temp }}/gnunet-reference-dependencies/*.json
@@ -261,50 +285,16 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
-  audit:
-    name: Dependency audit
+  ci-complete:
+    name: ci-complete
+    if: always()
+    needs: [checks, tools, native, freebsd, embedded, reference, daemon-reference, security]
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    env:
-      CARGO_AUDIT_VERSION: 0.22.2
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: ./.github/actions/setup-rust
-      - name: Cache the pinned audit executable
-        id: audit-cache
-        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
-        with:
-          path: ${{ runner.temp }}/cargo-audit/bin
-          key: cargo-audit-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.CARGO_AUDIT_VERSION }}
-      - name: Install cargo-audit
-        if: steps.audit-cache.outputs.cache-hit != 'true'
-        run: cargo install cargo-audit --version "=$CARGO_AUDIT_VERSION" --locked --no-default-features --root "$RUNNER_TEMP/cargo-audit"
-      - name: Add the audit executable to PATH
-        run: echo "$RUNNER_TEMP/cargo-audit/bin" >> "$GITHUB_PATH"
-      - name: Audit all source lockfiles
+      - name: Require every mandatory check to succeed
+        env:
+          JOB_RESULTS: ${{ toJSON(needs) }}
         run: |
-          mkdir -p target/audit
-          database="$RUNNER_TEMP/advisory-db"
-          git clone --depth 1 https://github.com/RustSec/advisory-db "$database"
-          git -C "$database" rev-parse HEAD > target/audit/database-revision.txt
-          failed=0
-          while IFS= read -r -d '' lockfile; do
-            profile="${lockfile//\//_}"
-            if cargo audit --db "$database" --no-fetch --file "$lockfile" --json --deny warnings > "target/audit/$profile.json"; then
-              echo "$profile audit passed"
-            else
-              failed=1
-              echo "$profile audit failed"
-            fi
-            cat "target/audit/$profile.json"
-          done < <(git ls-files -z -- Cargo.lock '**/Cargo.lock')
-          exit "$failed"
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: always()
-        with:
-          name: dependency-audit-results
-          path: target/audit
-          if-no-files-found: ignore
-          retention-days: 7
+          printf '%s\n' "$JOB_RESULTS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          printf '%s\n' "$JOB_RESULTS" | jq -e 'length > 0 and all(.[]; .result == "success")'

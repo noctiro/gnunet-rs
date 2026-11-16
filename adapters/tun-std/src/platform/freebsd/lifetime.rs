@@ -75,7 +75,7 @@ impl InterfaceLease {
             .map_err(|_| invalid("invalid created interface name"))
     }
     fn update(&mut self, bytes: &[libc::c_char; libc::IFNAMSIZ]) {
-        self.name = bytes.map(|c| c as u8);
+        self.name = bytes.map(|byte| u8::from_ne_bytes(byte.to_ne_bytes()));
     }
     pub(super) fn recovered(
         socket: OwnedFd,

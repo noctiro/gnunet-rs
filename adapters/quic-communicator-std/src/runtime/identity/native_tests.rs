@@ -33,12 +33,15 @@ fn drain(stream: &Stream, bytes: &mut Vec<u8>) -> io::Result<bool> {
     }
 }
 async fn case(profile: crate::tls::Profile, changed_peer: bool) -> Result<(), Failure> {
-    let directory = Directory(std::env::temp_dir().join(format!(
+    let temporary = std::env::temp_dir();
+    let name = format!(
         "quic-source-{}-{}",
         std::process::id(),
         NEXT.fetch_add(1, Ordering::Relaxed)
-    )));
-    gnunet_service_runtime::private_parents(&directory.0.join(".fixture"))?;
+    );
+    gnunet_native::filesystem::Directory::open(&temporary)?
+        .create_private_directory(std::ffi::OsStr::new(&name))?;
+    let directory = Directory(temporary.join(name));
     let p = directory.0.join("p");
     let t = directory.0.join("t");
     let p_listener = Listener::bind(&p)?;

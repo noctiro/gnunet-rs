@@ -4,13 +4,14 @@ use crate::{
     budget::{Budget, Stop},
     types::SessionInput,
 };
-use gnunet_service_runtime::accepted::{AcceptError, AcceptState, SocketEvent};
+use gnunet_service_runtime::accepted::{
+    AcceptError, AcceptState, SocketEvent, initialize_tcp_stream,
+};
 use gnunet_types::{Error as Fault, Rejected};
 use std::{
     future::Future,
     io,
     net::SocketAddr,
-    os::fd::AsFd,
     pin::Pin,
     task::{Context, Poll},
 };
@@ -338,13 +339,9 @@ impl Runtime {
                     diagnostics: None,
                 }));
             }
-            let diagnostics = match gnunet_native::network::initialize_reactor_stream(
-                socket.as_fd(),
-                gnunet_native::network::StreamKind::Tcp,
-            ) {
+            let (socket, diagnostics) = match initialize_tcp_stream(socket) {
                 Ok(v) => v,
                 Err(e) => {
-                    drop(socket);
                     return Ok(Some(Event::AcceptFailed(
                         self.accept.failed(AcceptError::Initialization(e)),
                     )));

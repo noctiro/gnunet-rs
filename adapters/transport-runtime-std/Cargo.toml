@@ -19,7 +19,14 @@ gnunet-hello.workspace = true
 gnunet-wire.workspace = true
 getrandom.workspace = true
 tokio = { workspace = true, features = ["net", "time", "rt", "io-util"] }
+
+[target.'cfg(windows)'.dependencies]
+gnunet-service-startup.workspace = true
+
 [lints]
 workspace = true
 [dev-dependencies]
+gnunet-native.workspace = true
+gnunet-pils-host = { workspace = true, features = ["service"] }
+socket2.workspace = true
 tokio = { workspace = true, features = ["macros"] }

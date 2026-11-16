@@ -36,9 +36,10 @@ impl BuildProfile {
             "-p",
             self.package,
             "--no-default-features",
-            "--features",
-            self.features,
         ];
+        if !self.features.is_empty() {
+            command.extend(["--features", self.features]);
+        }
         match self.target {
             Target::Library => command.push("--lib"),
             Target::Binary(binary) => command.extend(["--bin", binary]),
@@ -57,6 +58,10 @@ const PROFILES: &[BuildProfile] = &[
     BuildProfile::library("gnunet-fs-host", "server"),
     BuildProfile::library("gnunet-quic-communicator-host", "program"),
     BuildProfile::library("gnunet-quic-communicator-host", "program,h3-profile"),
+    BuildProfile::library("gnunet-gns-proxy-host", ""),
+    BuildProfile::library("gnunet-dns2gns-host", ""),
+    BuildProfile::library("gnunet-pils-host", "service"),
+    BuildProfile::binary("gnunet-transport-node", "gnunet-transport-node", ""),
     BuildProfile::library("gnunet", "official-dht-client"),
     BuildProfile::library("gnunet", "official-gns-client"),
     BuildProfile::library("gnunet", "official-fs-extraction"),
@@ -88,6 +93,9 @@ mod tests {
                 .iter()
                 .any(|flag| command.contains(flag))
                 || command.contains(&"--lib") == command.contains(&"--bin")
+                || command
+                    .windows(2)
+                    .any(|pair| pair[0] == "--features" && pair[1].is_empty())
             {
                 return Err(format!("production profile lost isolation: {command:?}").into());
             }

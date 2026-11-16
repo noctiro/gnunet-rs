@@ -49,7 +49,7 @@ fn request(interface: &Info, address: Ipv6Addr) -> io::Result<Request> {
     };
     let name = crate::platform::name(&interface.name)?;
     for (a, b) in req.name.iter_mut().zip(name.as_bytes_with_nul()) {
-        *a = *b as libc::c_char;
+        *a = libc::c_char::from_ne_bytes([*b]);
     }
     req.value.address = sockaddr(interface, address);
     Ok(req)

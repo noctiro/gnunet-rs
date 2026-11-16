@@ -1,92 +1,119 @@
 # Testing
 
-## Local checks
+## Verification commands
 
 Run from the repository root using the pinned Rust toolchain.
 
 | Command | Scope |
 | --- | --- |
 | `cargo test -p PACKAGE --locked` | Affected package |
+| `cargo xtask verify source` | Formatting, dependency and feature boundaries, lint policy and recorded external status |
+| `cargo xtask verify native` | Portable feature tiers, isolated production builds, native Clippy, rustdoc and workspace tests |
 | `cargo xtask verify format` | Workspace and embedded-fixture formatting |
-| `cargo xtask verify lint` | Dependency/feature boundaries, Clippy and rustdoc |
+| `cargo xtask verify lint` | Native Clippy and rustdoc |
 | `cargo xtask verify tools` | Python syntax and tool controls |
-| `cargo xtask verify profiles` | Independent production PROGRAM, FS, QUIC/HTTP3, SDK client and CLI feature selections |
+| `cargo xtask verify profiles` | Independent production adapter, service, SDK and CLI feature selections |
 | `cargo xtask verify portable` | Core feature profiles and facade allocation tiers |
-| `cargo xtask verify runtime` | Configuration, native files/sockets/processes, DATASTORE WAL/checkpoint/worker recovery, CADET monotime reservations/recovery, FS block retention/anchored output/index/provider/publication/automatic sharing/download/search/probe recovery, startup/control, clock/framing, snapshot/restart, CLIENT/Resolver IPC, normal STATISTICS service/full CLI and Resolver CLI |
-| `cargo xtask verify test` | Unix workspace with all features |
+| `cargo xtask verify runtime` | Focused IPC, service, storage, startup and recovery scenarios |
+| `cargo xtask verify test` | Native workspace with all features |
 | `cargo xtask verify embedded` | Cortex-M0/M4 compilation and no-allocation closure |
 
-`cargo xtask verify` runs format, lint, tools, production profiles, portable, workspace and embedded
-groups. Workspace tests include the runtime tests. External C groups require
-explicit invocation.
+`cargo xtask verify` runs the source, tool, native and embedded checks.
+Workspace tests include the focused runtime tests. External C comparisons
+require explicit invocation. Prefer the affected package or group during local
+development.
 
-Native tests use private files and Unix/loopback sockets. Keep socket paths short,
-for example `TMPDIR=/tmp cargo xtask verify test` on macOS.
+Portable checks run core packages without default features and with all core
+features, then check the facade with no features, `alloc` and `std`. Native
+adapters stay outside those selections. Production profiles use separate Cargo
+invocations, so development dependencies and other workspace packages cannot
+supply a missing feature.
 
-The portable group selects core packages from the architecture inventory. It
-runs without default features, then with all core features, and tests the facade
-with no features, `alloc` and `std`. Native adapters stay outside these profiles.
-The runtime group includes the available native client SDKs and their facade
-profile. PILS is checked as a client library separately from its Unix host and
-identity fixtures. Unix-specific witnesses remain additional coverage until
-their native counterparts are implemented; compiling an SDK does not run them.
-The profiles group runs each supported production selection separately, using
-library or named binary targets. Other workspace packages and development
-dependencies cannot fill in a missing production feature. The same profiles
-run on Linux, macOS, Windows and FreeBSD.
-The runtime group executes the configuration suite and the same TCP wire and
-ownership scenarios, shared DATASTORE WAL/checkpoint/worker recovery, CADET monotime reservations/recovery, FS index/provider/publication/automatic-sharing/download/search/probe recovery, extraction/inspection, normal CLI binary output and bounded pipe-backpressure retirement,
-and native-execution capability/compile-fail tests on Windows and Unix, with additional native file/ACL tests
-on Windows. Complete Windows services, recovery and devices remain open work in
-[implementation status](../IMPLEMENTATION_STATUS.md); portable or runtime success
-does not establish complete workspace support.
+Native tests use private files and local or loopback sockets. Keep local socket
+paths short; on macOS, use `TMPDIR=/private/tmp`. Platform-specific filesystem,
+process, credential and device tests supplement the shared scenarios.
 
-## Tool controls
+## Logs and failure results
+
+Add `--log-dir PATH` to any verification group:
+
+```sh
+cargo xtask verify native --log-dir target/ci/native
+```
+
+Each run creates a separate directory containing an incremental `result.json`
+and per-command stdout/stderr logs. Output also streams to the console with
+fixed-size buffers. A command or policy failure stops that group and records its
+original cause; an independent reporting failure cannot turn it into success.
+An interrupted run can leave a `running` result, which is not a passing result.
+
+Generated logs, C build receipts and performance results belong under `target/`.
+Do not commit them.
+
+## Continuous integration
+
+[Quality checks](../.github/workflows/quality.yml) run on pull requests, merge
+groups, pushes to `main`, version tags and manual dispatch.
+
+| Target | Contract |
+| --- | --- |
+| Linux x86_64 / ARM64 | `verify native` |
+| macOS Intel / ARM64 | `verify native` |
+| Windows x86_64 / ARM64 | `verify native` |
+| FreeBSD 14.5 / 15.1 x86_64 | The same native contract, plus Python controls, as an unprivileged VM user |
+| Cortex-M0 / M4 | Embedded compilation and no-allocation checks |
+
+Source policies run once before native and reference jobs. The native matrix
+keeps `fail-fast: false`, so one platform failure does not cancel the others.
+Failures upload diagnostic files. FreeBSD builds in a VM-private checkout and
+returns logs and its actual exit status separately from the VM transfer result.
+
+The fixed `ci-complete` job runs after every required job, including the C
+references and security checks. It succeeds only when all required jobs succeed;
+failed, canceled or skipped jobs cannot satisfy it. Select this check in the
+repository's branch protection or ruleset when requiring CI before merge.
+
+The [shared Rust setup](../tools/ci/setup-rust.sh) lets `rustup` read
+`rust-toolchain.toml`, then verifies the expected compiler host and required
+tools. It runs on disposable CI hosts and requires no Python. CI caches
+downloaded Cargo inputs rather than compiled output.
+
+[Security checks](../.github/workflows/security.yml) run from quality CI and on
+a separate daily schedule. They scan Git history and audit every tracked Cargo
+lockfile against the recorded RustSec database revision.
+[Dependabot](../.github/dependabot.yml) proposes grouped weekly Action updates
+while retaining full commit pins.
+
+## Python controls and reference tooling
+
+Rust build and verification contracts belong to `xtask`. Python tools own
+independent C builds, reference-program orchestration, corpus and evidence
+processing, and their own controls. Production package checks use the actual
+Rust workspace; separate component probes retain their explicitly narrower scope.
 
 ```sh
 python3 -B tools/check_tools.py --list
 cargo xtask verify tools
 ```
 
-The runner checks Python syntax and discovers `test_*.py`, `*_tests.py`,
-`tests.py`, `selftest.py` and explicit self-test entry points. Suites run in
-separate processes with a 120-second timeout. Failures are collected; logs go to
-`target/tool-controls/`. These controls need no C checkout or running services.
-
-## Continuous integration
-
-[GitHub Actions](../.github/workflows/quality.yml) runs on pull requests, pushes
-to `main`, version tags and manual dispatch.
-
-| Platform | Tests |
-| --- | --- |
-| Linux x86_64 / ARM64 | Native workspace, including shared runtime scenarios |
-| macOS Intel / ARM64 | Native workspace, including shared runtime scenarios |
-| FreeBSD 14.5 / 15.1 x86_64 | Native workspace, portable core and tool controls in an unprivileged VM |
-| Windows x86_64 / ARM64 | Native runtime/child startup, DATASTORE WAL/checkpoint/worker recovery, CADET monotime reservations/recovery, FS storage/index/provider/publication/automatic-sharing/download/search/probe recovery, STATISTICS IPC/service snapshot restart/full CLI, CLIENT/Resolver local/TCP, Resolver CLI, portable core and facade allocation tiers |
-| Cortex-M0 / M4 | Compilation and no-allocation closure |
-
-All four OS families are full native targets; this table records current coverage.
-Linux also runs architecture, lint/docs, isolated core feature profiles and C
-comparisons. Python controls run on Linux and macOS. CI scans Git history for
-credentials and checks all tracked Cargo lockfiles against RustSec.
-
-The [Rust setup](../.github/actions/setup-rust/action.yml) reads
-`rust-toolchain.toml` and verifies the native host. It caches downloaded Cargo
-inputs; compiled output is not cached. Unix runtime jobs use `/tmp`.
+Use Python 3.11 or newer with assertions enabled. The runner checks source syntax
+and discovers conventional test scripts and explicit self-test entry points.
+Suites run in separate processes with a 120-second timeout; failures are
+collected under `target/tool-controls/`. These controls need no official C
+checkout or running services.
 
 ## Official C comparisons
 
-The component and STATISTICS groups pin GNUnet v0.29.1 and require a clean
-reference checkout.
+The component and normal STATISTICS groups require a clean, pinned GNUnet
+v0.29.1 checkout.
 
 ```sh
 GNUNET_REFERENCE_SOURCE=/path/to/pinned/gnunet cargo xtask verify reference
 ```
 
-This runs framing/registry, crypto/data-format, configuration and STATISTICS
-component comparisons. For normal STATISTICS client/service execution, prepare
-the C build using the [reference guide](../tools/reference/README.md), then run:
+This compares selected framing, crypto/data-format, configuration and STATISTICS
+boundaries. For normal C client/service execution, prepare the C build using the
+[reference guide](../tools/reference/README.md), then run:
 
 ```sh
 GNUNET_REFERENCE_SOURCE=/path/to/pinned/gnunet \
@@ -95,7 +122,8 @@ cargo xtask verify daemon-reference
 ```
 
 The daemon group runs C client→Rust service and Rust client→C service, including
-WATCH, persistence and selected failure/restart cases. Results go under `target/`.
+WATCH, persistence and selected restart/failure cases. Results identify their
+actual source, binary and reference inputs.
 
 ## Specialized profiles
 
@@ -111,17 +139,10 @@ WATCH, persistence and selected failure/restart cases. Results go under `target/
 | Conversation | [Controller](../tools/reference/CONVERSATION.md) |
 
 Public-network, privileged/device, audio and benchmark profiles require their
-own setup. For cross-compilation, select the target standard library and
-`CARGO_TARGET_<TRIPLE>_LINKER`; C dependencies may also need target-specific
-`CC_<triple>` and `AR_<triple>`. Execute tests on the target platform.
+own setup. Cross-compilation needs target standard libraries and a suitable
+linker; native C dependencies can also need target-specific compiler settings.
+Run tests on the target platform.
 
-## Full conformance
-
-```sh
-cargo xtask check-conformance --strict
-```
-
-This enforces the [external release criteria](../spec/gnunet/external/RELEASE.md),
-including reviewed contracts and current-source C interoperability evidence.
-Missing or unknown behavior fails the gate. Open work is tracked in
-[implementation status](../IMPLEMENTATION_STATUS.md).
+Release acceptance follows the [external release criteria](../spec/gnunet/external/RELEASE.md)
+and `cargo xtask check-conformance --strict`. Open implementation and qualification
+work remains in [implementation status](../IMPLEMENTATION_STATUS.md).

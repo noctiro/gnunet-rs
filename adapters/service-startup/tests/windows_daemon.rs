@@ -20,6 +20,7 @@ mod windows {
         io::{self, Read, Write},
         os::windows::io::AsHandle,
         path::{Path, PathBuf},
+        sync::atomic::{AtomicU64, Ordering},
         time::{Duration, SystemTime, UNIX_EPOCH},
     };
     type Failure = Box<dyn Error>;
@@ -38,15 +39,23 @@ mod windows {
     struct Directory(PathBuf);
     impl Directory {
         fn new() -> io::Result<Self> {
+            static NEXT: AtomicU64 = AtomicU64::new(0);
             let nonce = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map_err(io::Error::other)?
                 .as_nanos();
-            let path =
-                std::env::temp_dir().join(format!("gn-detach-{}-{nonce:x}", std::process::id()));
+            let path = std::env::temp_dir().join(format!(
+                "gn-detach-{}-{nonce:x}-{:x}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
             fs::create_dir(&path)?;
-            fs::write(path.join("cwd-marker"), b"detached working directory")?;
-            Ok(Self(path))
+            let directory = Self(path);
+            fs::write(
+                directory.0.join("cwd-marker"),
+                b"detached working directory",
+            )?;
+            Ok(directory)
         }
     }
     impl Drop for Directory {

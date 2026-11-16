@@ -31,10 +31,18 @@ is read by service mode, and an absent key file does not block that mode.
 
 The process entry is `gnunet-transport-node -c official.conf --state-directory
 NEW_RUST_STATE [--local-pils-key]`. It binds official TRANSPORT and companion
-public PEERSTORE IPC, accepts the common original inherited TRANSPORT sockets and
-control stream, and handles SIGINT/SIGTERM. It does not launch PILS, CORE or a
-communicator. The state path is a new-format Rust journal, never a C sqlite path. Configured USERNAME and Unix credential matching remain explicit shared-platform
-limits.
+public PEERSTORE IPC, accepts the original inherited TRANSPORT sockets and
+parent control stream, and observes shared native termination subscriptions.
+Windows materializes transferred sockets before runtime registration and verifies
+configured service identity against the current token. Unix foreground startup
+does not switch configured USERNAME; Unix credential matching remains unsupported
+in this composition. The state path is a new-format Rust journal, never a C sqlite
+path. It does not launch PILS, CORE or a communicator.
+
+Foreground readiness callbacks are asynchronous and run only after a verified
+identity activates. The original shutdown future stays polled during notification;
+stopping cancels that wait and retires the original runtime. Caller-owned status
+outboxes retain their original intent and partial submission across cancellation.
 
 The normal entry selects `[PILS] PROFILE` before creating the state directory or
 opening sockets. The default is `reference029` (`reference-0.29.1` is an alias). `deterministic` (`reference-deterministic`) selects the official conditional

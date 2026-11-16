@@ -401,24 +401,9 @@ async fn tcp(
         };
         match acknowledge(&mut *lookup, attempt).await {
             Ok(socket) => {
-                #[cfg(unix)]
-                use std::os::fd::AsFd;
-                #[cfg(windows)]
-                use std::os::windows::io::AsSocket;
-                #[cfg(unix)]
-                let native = socket.as_fd();
-                #[cfg(windows)]
-                let native = socket.as_socket();
-                let diagnostics = match gnunet_native::network::initialize_reactor_stream(
-                    native,
-                    gnunet_native::network::StreamKind::Tcp,
-                ) {
-                    Ok(diagnostics) => diagnostics,
-                    Err(error) => {
-                        drop(socket);
-                        return Err(Error::Initialization(error));
-                    }
-                };
+                let (socket, diagnostics) =
+                    gnunet_service_runtime::accepted::initialize_tcp_stream(socket)
+                        .map_err(Error::Initialization)?;
                 if !diagnostics.is_empty() {
                     let mut retained = counts.diagnostics.lock().map_err(|_| Fault::Conflict)?;
                     for diagnostic in diagnostics {

@@ -13,7 +13,9 @@ GnuTLS and IDN2. The [reference CI jobs](../../.github/workflows/quality.yml)
 define the package setup.
 
 `bootstrap_dependencies.py` pins and verifies its dependency archives, builds
-private libraries and creates a local Meson/Ninja environment. It installs
+private libraries and creates a local Meson/Ninja environment from the
+[hash-pinned wheel requirements](requirements-build.txt). Missing platform wheels
+fail explicitly; source-build tooling is not downloaded implicitly. It installs
 nothing into the system. On macOS, existing Homebrew libraries may supply the
 remaining headers and libraries. Compiler probes require the host's normal
 read-only system access.

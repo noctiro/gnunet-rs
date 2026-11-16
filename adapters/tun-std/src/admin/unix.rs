@@ -70,12 +70,9 @@ fn ipv4(fd: &OwnedFd, name: &str, command: libc::c_ulong) -> io::Result<Ipv4Obse
                     "native IPv4 getter family",
                 ));
             }
-            Ok(Ipv4Observation::Present(Ipv4Addr::from([
-                a.sa_data[2] as u8,
-                a.sa_data[3] as u8,
-                a.sa_data[4] as u8,
-                a.sa_data[5] as u8,
-            ])))
+            let octets = [a.sa_data[2], a.sa_data[3], a.sa_data[4], a.sa_data[5]]
+                .map(|byte| u8::from_ne_bytes(byte.to_ne_bytes()));
+            Ok(Ipv4Observation::Present(Ipv4Addr::from(octets)))
         }
     }
 }

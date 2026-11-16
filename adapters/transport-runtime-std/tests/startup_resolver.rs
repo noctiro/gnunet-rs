@@ -5,6 +5,7 @@
 )]
 use gnunet_config::Configuration;
 use gnunet_service_runtime::Activation;
+use gnunet_service_runtime::local::Listener as UnixListener;
 use gnunet_transport_runtime::{
     Limits, LocalKeyCapability,
     startup::{self, LocalStartup},
@@ -15,10 +16,7 @@ use std::{
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
     time::Duration,
 };
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::UnixListener,
-};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 static NEXT: AtomicU64 = AtomicU64::new(0);
 struct Directory(PathBuf);
 impl Drop for Directory {
@@ -29,12 +27,13 @@ impl Drop for Directory {
 #[tokio::test(flavor = "current_thread")]
 async fn pending_identity_does_not_repoll_completed_original_resolver_future()
 -> Result<(), Box<dyn Error>> {
-    let d = Directory(std::env::temp_dir().join(format!(
+    let path = std::env::temp_dir().join(format!(
         "gnrs-tr-start-resolver-{}-{}",
         std::process::id(),
         NEXT.fetch_add(1, Ordering::SeqCst)
-    )));
-    std::fs::create_dir(&d.0)?;
+    ));
+    std::fs::create_dir(&path)?;
+    let d = Directory(path);
     let resolver_path = d.0.join("resolver");
     let listener = UnixListener::bind(&resolver_path)?;
     let mut cfg = Configuration::default();
@@ -46,7 +45,7 @@ async fn pending_identity_does_not_repoll_completed_original_resolver_future()
         cfg.set_value(
             section,
             b"UNIXPATH",
-            Some(path.as_os_str().as_encoded_bytes()),
+            Some(&gnunet_native::os_bytes::encode(path.as_os_str())),
         )?;
     }
     cfg.set_value(
@@ -89,7 +88,7 @@ async fn pending_identity_does_not_repoll_completed_original_resolver_future()
             },
             limits: Limits::default(),
         },
-        |_, _, _| {
+        async |_, _, _| {
             announced.store(true, Ordering::SeqCst);
             Ok(())
         },

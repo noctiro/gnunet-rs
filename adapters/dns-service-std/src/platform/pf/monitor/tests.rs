@@ -6,6 +6,7 @@ use std::{
     future::{Future, poll_fn},
     os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt},
     path::PathBuf,
+    sync::atomic::{AtomicU64, Ordering},
     task::Poll,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -18,13 +19,15 @@ impl Drop for Directory {
 }
 
 fn fixture() -> io::Result<(Directory, Controls, String)> {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(io::Error::other)?
         .as_nanos();
     let directory = std::env::temp_dir().join(format!(
-        "gnunet-pf-observation-{}-{stamp}",
-        std::process::id()
+        "gnunet-pf-observation-{}-{stamp}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
     ));
     DirBuilder::new().mode(0o700).create(&directory)?;
     let directory = Directory(directory);

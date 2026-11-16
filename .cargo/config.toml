@@ -2,5 +2,5 @@
 target-dir = "target"
 
 [alias]
-xtask = "run -p xtask --"
+xtask = "run --locked -p xtask --"
 

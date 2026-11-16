@@ -98,7 +98,7 @@ impl PngState {
             return Fault::Capacity.into();
         }
         for b in &self.image.message[..n] {
-            let b = *b as u8;
+            let b = u8::from_ne_bytes(b.to_ne_bytes());
             detail.push(if b.is_ascii_graphic() || b == b' ' {
                 char::from(b)
             } else {

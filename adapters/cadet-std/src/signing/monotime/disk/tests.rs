@@ -8,17 +8,20 @@ use gnunet_types::Error as ProtocolError;
 use std::{
     fs::{self, OpenOptions},
     io::Write,
+    sync::atomic::{AtomicU64, Ordering},
 };
 struct Directory(PathBuf);
 impl Directory {
     fn new() -> io::Result<Self> {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_err(io::Error::other)?
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "gnrs-cadet-monotime-{}-{nanos}",
-            std::process::id()
+            "gnrs-cadet-monotime-{}-{nanos}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         gnunet_native::filesystem::Directory::open(&std::env::temp_dir())?
             .create_private_directory(path.file_name().ok_or(io::ErrorKind::InvalidInput)?)?;

@@ -199,7 +199,7 @@ unsafe extern "C" {
 #[cfg(unix)]
 pub(crate) fn ipv6_text(address: [u8; 16]) -> io::Result<Vec<u8>> {
     let source = libc::in6_addr { s6_addr: address };
-    let mut destination = [0 as libc::c_char; 46];
+    let mut destination = [0_u8; 46];
     #[expect(
         unsafe_code,
         reason = "Aligned initialized in6_addr input and 46-byte writable destination cover the exact POSIX IPv6 conversion contract"
@@ -209,7 +209,7 @@ pub(crate) fn ipv6_text(address: [u8; 16]) -> io::Result<Vec<u8>> {
         inet_ntop(
             libc::AF_INET6,
             (&source as *const libc::in6_addr).cast(),
-            destination.as_mut_ptr(),
+            destination.as_mut_ptr().cast(),
             46,
         )
     };
@@ -220,7 +220,7 @@ pub(crate) fn ipv6_text(address: [u8; 16]) -> io::Result<Vec<u8>> {
         .iter()
         .position(|&b| b == 0)
         .ok_or_else(|| io::Error::other("native IPv6 formatter omitted terminator"))?;
-    Ok(destination[..length].iter().map(|&b| b as u8).collect())
+    Ok(destination[..length].to_vec())
 }
 #[cfg(windows)]
 pub(crate) use gnunet_native::ipv6_text;

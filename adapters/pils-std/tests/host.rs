@@ -1,22 +1,18 @@
-//! Real Unix stream framing, connection isolation, FIFO and host drop regressions.
-#![cfg_attr(
-    unix,
-    expect(
-        clippy::panic_in_result_fn,
-        reason = "Fallible protocol and real resource regressions assert independent expected outcomes"
-    )
+//! Native AF_UNIX framing, connection isolation, FIFO and host drop regressions.
+#![expect(
+    clippy::panic_in_result_fn,
+    reason = "Fallible protocol and real resource regressions assert independent expected outcomes"
 )]
-#![cfg(unix)]
 use gnunet_pils::{HelloLimits, MasterKey, Profile, Service};
 use gnunet_pils_host::{Host, Limits};
 use gnunet_wire::official::{
     MessageHeader, MessageType, SignaturePurpose,
     pils::{PeerUpdate, Request, Response},
 };
+use socket2::{Domain, SockAddr, Socket, Type};
 use std::{
     fs,
     io::{self, Read, Write},
-    os::unix::net::{UnixListener, UnixStream},
     path::PathBuf,
 };
 struct Scratch(PathBuf);
@@ -35,8 +31,13 @@ impl Drop for Scratch {
     }
 }
 fn host(scratch: &Scratch) -> Result<Host, Box<dyn std::error::Error>> {
-    let listener = UnixListener::bind(scratch.0.join("socket"))?;
-    let service = Service::new(
+    let listener = Socket::new(Domain::UNIX, Type::STREAM, None)?;
+    listener.bind(&SockAddr::unix(scratch.0.join("socket"))?)?;
+    listener.listen(128)?;
+    Ok(Host::new(listener, service()?, limits())?)
+}
+fn service() -> Result<Service<4096>, gnunet_types::Error> {
+    Service::new(
         MasterKey::from_seed([7; 32]),
         Profile::Reference029,
         100,
@@ -45,28 +46,24 @@ fn host(scratch: &Scratch) -> Result<Host, Box<dyn std::error::Error>> {
             maximum_address_bytes: 2048,
             maximum_addresses: 32,
         },
-    )?;
-    Ok(Host::new(
-        listener,
-        service,
-        Limits {
-            clients: 4,
-            receive_bytes: 65535,
-            transmit_bytes: 262140,
-            accepts_per_step: 4,
-            address_bytes: 2048,
-        },
-    )?)
+    )
 }
-fn connect(scratch: &Scratch) -> io::Result<UnixStream> {
-    let stream = UnixStream::connect(scratch.0.join("socket"))?;
+fn limits() -> Limits {
+    Limits {
+        clients: 4,
+        receive_bytes: 65535,
+        transmit_bytes: 262140,
+        accepts_per_step: 4,
+        address_bytes: 2048,
+    }
+}
+fn connect(scratch: &Scratch) -> io::Result<Socket> {
+    let stream = Socket::new(Domain::UNIX, Type::STREAM, None)?;
+    stream.connect(&SockAddr::unix(scratch.0.join("socket"))?)?;
     stream.set_nonblocking(true)?;
     Ok(stream)
 }
-fn receive(
-    host: &mut Host,
-    stream: &mut UnixStream,
-) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+fn receive(host: &mut Host, stream: &mut Socket) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let mut bytes = Vec::new();
     for _ in 0..256 {
         host.poll_once(100)?;
@@ -88,6 +85,21 @@ fn receive(
         }
     }
     Err("bounded host receive made no progress".into())
+}
+#[test]
+fn host_requires_an_actual_local_stream_listener() -> Result<(), Box<dyn std::error::Error>> {
+    let scratch = Scratch::new()?;
+    let tcp = Socket::new(Domain::IPV4, Type::STREAM, None)?;
+    tcp.bind(&std::net::SocketAddrV4::new(std::net::Ipv4Addr::LOCALHOST, 0).into())?;
+    tcp.listen(128)?;
+    let datagram = Socket::new(Domain::IPV4, Type::DGRAM, None)?;
+    let unlistened = Socket::new(Domain::UNIX, Type::STREAM, None)?;
+    unlistened.bind(&SockAddr::unix(scratch.0.join("unlistened"))?)?;
+    for socket in [tcp, datagram, unlistened] {
+        let result = Host::new(socket, service()?, limits());
+        assert!(matches!(result, Err(error) if error.kind() == io::ErrorKind::InvalidInput));
+    }
+    Ok(())
 }
 #[test]
 fn fragmented_original_signature_reply_never_reaches_another_client()

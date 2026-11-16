@@ -5,14 +5,16 @@ use std::{
     ffi::OsString,
     io::{self, Write},
     path::{Path, PathBuf},
-    process::Command,
     time::{SystemTime, UNIX_EPOCH},
 };
+mod output;
+use output::{Recorder, combine};
 
 type CheckResult<T> = Result<T, Box<dyn Error>>;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Stage {
     Format,
+    Policy,
     Lint,
     Tools,
     Profiles,
@@ -25,6 +27,7 @@ enum Stage {
 }
 const DEFAULT: &[Stage] = &[
     Stage::Format,
+    Stage::Policy,
     Stage::Tools,
     Stage::Lint,
     Stage::Profiles,
@@ -32,11 +35,61 @@ const DEFAULT: &[Stage] = &[
     Stage::Test,
     Stage::Embedded,
 ];
-const USAGE: &str = "expected verify [all|format|lint|tools|profiles|portable|runtime|test|embedded|reference|daemon-reference]; reference groups require GNUNET_REFERENCE_SOURCE; daemon-reference also requires GNUNET_REFERENCE_BUILD";
+const SOURCE: &[Stage] = &[Stage::Format, Stage::Policy];
+const NATIVE: &[Stage] = &[Stage::Portable, Stage::Profiles, Stage::Lint, Stage::Test];
+const USAGE: &str = "expected verify [all|source|native|format|lint|tools|profiles|portable|runtime|test|embedded|reference|daemon-reference] [--log-dir PATH]; reference groups require GNUNET_REFERENCE_SOURCE; daemon-reference also requires GNUNET_REFERENCE_BUILD";
+
+impl Stage {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Format => "format",
+            Self::Policy => "policy",
+            Self::Lint => "lint",
+            Self::Tools => "tools",
+            Self::Profiles => "profiles",
+            Self::Portable => "portable",
+            Self::Runtime => "runtime",
+            Self::Test => "test",
+            Self::Embedded => "embedded",
+            Self::Reference => "reference",
+            Self::DaemonReference => "daemon-reference",
+        }
+    }
+}
+
+struct Options<'a> {
+    group: &'a str,
+    log_dir: Option<&'a Path>,
+}
+
+fn options(args: &[String]) -> CheckResult<Options<'_>> {
+    let mut group = None;
+    let mut log_dir = None;
+    let mut args = args.iter();
+    while let Some(argument) = args.next() {
+        if argument == "--log-dir" && log_dir.is_none() {
+            let value = args
+                .next()
+                .filter(|value| !value.is_empty() && !value.starts_with('-'))
+                .ok_or(USAGE)?;
+            log_dir = Some(Path::new(value));
+        } else if !argument.starts_with('-') && group.is_none() {
+            group = Some(argument.as_str());
+        } else {
+            return Err(USAGE.into());
+        }
+    }
+    Ok(Options {
+        group: group.unwrap_or("all"),
+        log_dir,
+    })
+}
 
 fn stages(group: Option<&str>) -> CheckResult<Vec<Stage>> {
     Ok(match group {
         None | Some("all") => DEFAULT.to_vec(),
+        Some("source") => SOURCE.to_vec(),
+        Some("native") => NATIVE.to_vec(),
         Some("format") => vec![Stage::Format],
         Some("lint") => vec![Stage::Lint],
         Some("tools") => vec![Stage::Tools],
@@ -52,6 +105,7 @@ fn stages(group: Option<&str>) -> CheckResult<Vec<Stage>> {
 }
 fn commands(stage: Stage) -> Vec<Vec<&'static str>> {
     match stage {
+        Stage::Policy => Vec::new(),
         Stage::Format => vec![
             vec!["cargo", "fmt", "--all", "--", "--check"],
             vec![
@@ -376,13 +430,6 @@ fn commands(stage: Stage) -> Vec<Vec<&'static str>> {
         ]],
     }
 }
-fn run(program: &str, args: &[impl AsRef<std::ffi::OsStr>]) -> CheckResult<()> {
-    let status = Command::new(program).args(args).status()?;
-    if !status.success() {
-        return Err(format!("{program} failed with {status}").into());
-    }
-    Ok(())
-}
 fn reference_source(value: Option<OsString>) -> CheckResult<PathBuf> {
     let value = value.filter(|value| !value.is_empty()).ok_or(
         "reference requires GNUNET_REFERENCE_SOURCE pointing to the clean pinned v0.29.1 checkout",
@@ -432,83 +479,96 @@ fn check_platform(stages: &[Stage], unix: bool) -> CheckResult<()> {
     Ok(())
 }
 
-pub(crate) fn verify_matrix(group: Option<&str>) -> CheckResult<()> {
-    let selected = stages(group)?;
-    check_platform(&selected, cfg!(unix))?;
-    for stage in selected {
-        writeln!(io::stdout().lock(), "verify {stage:?}")?;
-        let source = if matches!(stage, Stage::Reference | Stage::DaemonReference) {
-            Some(reference_source(env::var_os("GNUNET_REFERENCE_SOURCE"))?)
-        } else {
-            None
-        };
-        let reference_build = if stage == Stage::DaemonReference {
-            let path = PathBuf::from(env::var_os("GNUNET_REFERENCE_BUILD").filter(|value| !value.is_empty())
+pub(crate) fn verify_matrix(args: &[String]) -> CheckResult<()> {
+    let options = options(args)?;
+    let mut recorder = Recorder::new(options.group, options.log_dir)?;
+    let result = (|| {
+        let selected = stages(Some(options.group))?;
+        check_platform(&selected, cfg!(unix))?;
+        for stage in selected {
+            recorder.begin_stage(stage.name())?;
+            writeln!(io::stdout().lock(), "verify {stage:?}")?;
+            verify_stage(stage, &mut recorder)?;
+        }
+        Ok(())
+    })();
+    let reported = recorder.finish(&result);
+    combine(result, reported)
+}
+
+fn verify_stage(stage: Stage, recorder: &mut Recorder) -> CheckResult<()> {
+    let source = if matches!(stage, Stage::Reference | Stage::DaemonReference) {
+        Some(reference_source(env::var_os("GNUNET_REFERENCE_SOURCE"))?)
+    } else {
+        None
+    };
+    let reference_build = if stage == Stage::DaemonReference {
+        let path = PathBuf::from(env::var_os("GNUNET_REFERENCE_BUILD").filter(|value| !value.is_empty())
                 .ok_or("daemon-reference requires GNUNET_REFERENCE_BUILD pointing to build_reference.py's successful build-result.json")?).canonicalize()?;
-            if !path.is_file() {
-                return Err("reference build receipt must be a file".into());
-            }
-            Some(path)
+        if !path.is_file() {
+            return Err("reference build receipt must be a file".into());
+        }
+        Some(path)
+    } else {
+        None
+    };
+    if stage == Stage::Policy {
+        recorder.check("dependencies", crate::checks::check_deps)?;
+        recorder.check("features", crate::checks::check_features)?;
+        recorder.check("lint-policy", crate::checks::check_lints)?;
+        recorder.check("external-status", || {
+            crate::external_contracts::check_external_release(false)
+        })?;
+    }
+    for command in commands(stage) {
+        let (program, args) = command.split_first().ok_or("empty matrix command")?;
+        recorder.command(program, args)?;
+    }
+    if stage == Stage::Embedded {
+        recorder.check("noalloc", crate::checks::check_noalloc)?;
+    }
+    if let Some(source) = source {
+        let nanos = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+        let folder = if reference_build.is_some() {
+            "reference-daemons"
         } else {
-            None
+            "reference"
         };
-        if stage == Stage::Lint {
-            crate::checks::check_deps()?;
-            crate::checks::check_features()?;
-            crate::checks::check_lints()?;
-            crate::external_contracts::check_external_release(false)?;
-        }
-        if stage == Stage::Portable {
-            crate::checks::check_deps()?;
-        }
-        for command in commands(stage) {
-            let (program, args) = command.split_first().ok_or("empty matrix command")?;
-            run(program, args)?;
-        }
-        if stage == Stage::Embedded {
-            crate::checks::check_noalloc()?;
-        }
-        if let Some(source) = source {
-            let nanos = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
-            let folder = if reference_build.is_some() {
-                "reference-daemons"
-            } else {
-                "reference"
-            };
-            let output = PathBuf::from(format!("target/{folder}/{nanos}-{}", std::process::id()));
-            if let Some(receipt) = reference_build {
-                crate::external_contracts::check_external_release(false)?;
-                run("python3", &daemon_reference_args(&receipt, &output))?;
-            } else {
-                run("python3", &reference_args(&source, &output))?;
-                for (script, directory) in [
-                    (
-                        "adapters/config-std/tests/upstream_oracle.py",
-                        "configuration",
-                    ),
-                    (
-                        "adapters/statistics-store/tests/upstream_oracle.py",
-                        "statistics-store",
-                    ),
-                ] {
-                    run(
-                        "python3",
-                        &[
-                            OsString::from(script),
-                            OsString::from("--source"),
-                            source.as_os_str().to_owned(),
-                            OsString::from("--output"),
-                            output.join(directory).into_os_string(),
-                        ],
-                    )?;
-                }
+        let output = PathBuf::from(format!("target/{folder}/{nanos}-{}", std::process::id()));
+        if let Some(receipt) = reference_build {
+            recorder.check("external-status", || {
+                crate::external_contracts::check_external_release(false)
+            })?;
+            recorder.command("python3", &daemon_reference_args(&receipt, &output))?;
+        } else {
+            recorder.command("python3", &reference_args(&source, &output))?;
+            for (script, directory) in [
+                (
+                    "adapters/config-std/tests/upstream_oracle.py",
+                    "configuration",
+                ),
+                (
+                    "adapters/statistics-store/tests/upstream_oracle.py",
+                    "statistics-store",
+                ),
+            ] {
+                recorder.command(
+                    "python3",
+                    &[
+                        OsString::from(script),
+                        OsString::from("--source"),
+                        source.as_os_str().to_owned(),
+                        OsString::from("--output"),
+                        output.join(directory).into_os_string(),
+                    ],
+                )?;
             }
-            writeln!(
-                io::stdout().lock(),
-                "reference report: {}/result.json",
-                output.display()
-            )?;
         }
+        writeln!(
+            io::stdout().lock(),
+            "reference report: {}/result.json",
+            output.display()
+        )?;
     }
     Ok(())
 }
@@ -516,6 +576,53 @@ pub(crate) fn verify_matrix(group: Option<&str>) -> CheckResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn source_and_native_contracts_partition_global_policy_from_native_work() -> CheckResult<()> {
+        let source = stages(Some("source"))?;
+        let native = stages(Some("native"))?;
+        if source != [Stage::Format, Stage::Policy]
+            || native != [Stage::Portable, Stage::Profiles, Stage::Lint, Stage::Test]
+            || native.iter().any(|stage| {
+                matches!(
+                    stage,
+                    Stage::Format | Stage::Policy | Stage::Tools | Stage::Embedded
+                )
+            })
+        {
+            return Err("source checks and portable/native feature execution lost their independent contracts".into());
+        }
+        check_platform(&native, false)?;
+        if stages(Some("lint"))? != [Stage::Lint] {
+            return Err("native lint must not depend on source-policy tooling".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn logging_arguments_are_explicit_and_never_absorb_another_option() -> CheckResult<()> {
+        let arguments = ["native", "--log-dir", "target/ci/native"].map(String::from);
+        let parsed = options(&arguments)?;
+        if parsed.group != "native" || parsed.log_dir != Some(Path::new("target/ci/native")) {
+            return Err("verification logging split the selected group or output path".into());
+        }
+        for invalid in [
+            vec!["native", "--log-dir"],
+            vec!["native", "--log-dir", "--other"],
+            vec![
+                "native",
+                "--log-dir",
+                "target/ci",
+                "--log-dir",
+                "target/other",
+            ],
+            vec!["native", "source"],
+        ] {
+            if options(&invalid.into_iter().map(String::from).collect::<Vec<_>>()).is_ok() {
+                return Err("ambiguous verification options were accepted".into());
+            }
+        }
+        Ok(())
+    }
     #[test]
     fn native_rust_groups_are_available_on_every_host() -> CheckResult<()> {
         check_platform(
@@ -554,7 +661,6 @@ mod tests {
         }
         for (group, stage) in [
             ("format", Stage::Format),
-            ("lint", Stage::Lint),
             ("tools", Stage::Tools),
             ("profiles", Stage::Profiles),
             ("portable", Stage::Portable),
@@ -568,7 +674,7 @@ mod tests {
                 return Err(format!("missing matrix group {group}").into());
             }
         }
-        for removed in ["host", "native", "legacy-native", "", "full"] {
+        for removed in ["host", "legacy-native", "", "full"] {
             if stages(Some(removed)).is_ok() {
                 return Err(format!("removed group accepted: {removed}").into());
             }

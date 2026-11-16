@@ -6,6 +6,17 @@ the configured PILS service and uses asynchronous signing. `--local-pils-key`
 explicitly enables matching against the existing configured peer private root;
 service mode does not read that root. It does not start the other node services.
 
+## Native lifecycle
+
+Unix and Windows use shared native termination and original parent-control
+subscriptions. TRANSPORT accepts transferred listeners; PEERSTORE binds its own
+configured endpoints. Windows verifies configured service identity against the
+current token and sends parent readiness only after actual identity activation.
+An interrupted status write retains its original intent; it is never replaced
+with a different startup status.
+
+## Configuration
+
 `[PILS] PROFILE` selects the identity client and local managed HELLO policy
 before storage or socket setup. The default is `reference029`; `deterministic`
 selects the official conditional address-derived identity. Their aliases are

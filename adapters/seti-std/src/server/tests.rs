@@ -5,12 +5,12 @@
 use super::*;
 use gnunet_cadet::service as cadet_core;
 use gnunet_cadet_host::server as cadet_server;
-use gnunet_service_runtime::clock::SystemClock;
+use gnunet_service_runtime::{clock::SystemClock, local::Listener as UnixListener};
 use gnunet_wire::official::seti::{ADD_LOCAL, DEL_LOCAL, DONE, Response};
 use std::{error::Error as StdError, path::PathBuf};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::{TcpListener, TcpStream, UnixListener},
+    net::{TcpListener, TcpStream},
 };
 type Failure = Box<dyn StdError>;
 struct Directory(PathBuf);
@@ -19,7 +19,7 @@ impl Directory {
         let stamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
             .as_nanos();
-        let path = PathBuf::from(format!("/tmp/gsi-{}-{stamp:x}", std::process::id()));
+        let path = std::env::temp_dir().join(format!("gsi-{}-{stamp:x}", std::process::id()));
         std::fs::create_dir(&path)?;
         Ok(Self(path))
     }

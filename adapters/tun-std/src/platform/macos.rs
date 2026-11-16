@@ -8,7 +8,7 @@ fn ioctl_info(fd: &OwnedFd) -> io::Result<libc::ctl_info> {
         ctl_name: [0; libc::MAX_KCTL_NAME],
     };
     for (a, b) in info.ctl_name.iter_mut().zip(CONTROL) {
-        *a = *b as libc::c_char
+        *a = libc::c_char::from_ne_bytes([*b]);
     }
     #[expect(
         unsafe_code,
@@ -187,7 +187,7 @@ fn legacy_apply(info: &Info, action: &Action) -> io::Result<()> {
             req.ifr_ifru.ifru_addr = libc::sockaddr {
                 sa_len: 16,
                 sa_family: libc::AF_INET as u8,
-                sa_data: bytes.map(|b| b as libc::c_char),
+                sa_data: bytes.map(|byte| libc::c_char::from_ne_bytes([byte])),
             };
             let command = if matches!(action, Action::Ipv4Address(_)) {
                 libc::SIOCSIFADDR
@@ -244,7 +244,7 @@ fn address6(info: &Info, address: std::net::Ipv6Addr, prefix: u8) -> io::Result<
     req.ifra_dstaddr.sin6_family = 0;
     let name = super::name(&info.name)?;
     for (a, b) in req.ifra_name.iter_mut().zip(name.as_bytes_with_nul()) {
-        *a = *b as libc::c_char
+        *a = libc::c_char::from_ne_bytes([*b]);
     }
     #[expect(
         unsafe_code,

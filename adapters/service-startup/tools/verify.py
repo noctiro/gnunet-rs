@@ -9,15 +9,17 @@ import hashlib
 import json
 import os
 import pathlib
+import re
 import subprocess
+import sys
 import time
 from _common import local_snapshot, require_disjoint_output, sha, unchanged, normal_reference, require_rust_fixture_success
 
 RUST_CHECKS = [
-    'early::tests::native_hex_prefix_and_full_unsigned_profiles_are_distinct',
-    'early::tests::full_count_preflight_rejects_missing_extra_and_preserves_empty_components',
-    'privilege::tests::original_primary_success_conditional_groups_and_raw_name_do_not_normalize',
-    'privilege::tests::original_primary_short_circuit_and_every_fallback_failure_position',
+    'unix::capture::tests::native_hex_prefix_and_full_unsigned_profiles_are_distinct',
+    'unix::capture::tests::full_count_preflight_rejects_missing_extra_and_preserves_empty_components',
+    'unix::privilege::tests::original_primary_success_conditional_groups_and_raw_name_do_not_normalize',
+    'unix::privilege::tests::original_primary_short_circuit_and_every_fallback_failure_position',
 ]
 PROCESS_CHECKS = {
     'ready-46', 'ready-73', 'ready-83', 'ready-EPIPE', 'close-stdio-0',
@@ -50,6 +52,23 @@ NORMAL_C_LABELS = {
 COMPONENT_CHECK = 'original-set_user_id-current-native-sequence'
 
 
+def require_tool_controls(output):
+    """A successful nonempty control suite may grow without changing this runner."""
+    counts = re.findall(r'^Ran ([1-9][0-9]*) tests? in ', output, re.M)
+    if len(counts) != 1 or not output.rstrip().endswith('OK'):
+        raise ValueError('nonempty tool-boundary controls did not complete')
+    return int(counts[0])
+
+
+def require_rust_checks(output):
+    """Keep named startup witnesses mandatory without freezing unrelated tests."""
+    completed = set(re.findall(r'^test (\S+) \.\.\. ok$', output, re.M))
+    missing = set(RUST_CHECKS) - completed
+    if missing:
+        raise ValueError('required Rust startup witnesses missing: ' + ', '.join(sorted(missing)))
+    return list(RUST_CHECKS)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--package', type=pathlib.Path,
@@ -60,6 +79,8 @@ def main():
     parser.add_argument('--cargo', default='cargo')
     parser.add_argument('--toolchain', default='1.99.1')
     args = parser.parse_args()
+    if sys.flags.optimize:
+        parser.error('reference verification requires assertion-enabled Python')
     package = args.package.resolve()
     manifest = package / 'Cargo.toml'
     tools = pathlib.Path(__file__).resolve().parent
@@ -101,6 +122,8 @@ def main():
 
     def run(label, argv, timeout=240):
         completed = subprocess.run([str(item) for item in argv], cwd=package,
+                                   env={**os.environ, 'PYTHONOPTIMIZE': '',
+                                        'PYTHONDONTWRITEBYTECODE': '1'},
                                    capture_output=True, timeout=timeout)
         (output / (label + '.stdout')).write_bytes(completed.stdout)
         (output / (label + '.stderr')).write_bytes(completed.stderr)
@@ -113,22 +136,16 @@ def main():
     try:
         run('tool-boundaries', ['python3', '-B', tools / 'test_tools.py'])
         boundary_output = (output / 'tool-boundaries.stderr').read_text()
-        if 'Ran 10 tests' not in boundary_output or not boundary_output.rstrip().endswith('OK'):
-            raise RuntimeError('ten exact tool-boundary tests did not execute')
-        result['tool_boundary_checks'] = 10
+        result['tool_boundary_checks'] = require_tool_controls(boundary_output)
         run('cargo-version', cargo + ['--version', '--verbose'])
         run('fmt', cargo + ['fmt', '--manifest-path', manifest, '--package',
                             selected['name'], '--check'])
         target = output / 'cargo-target'
-        # --lib runs exactly this package's four unit witnesses, not the whole
-        # workspace and not an empty name filter. Actual output is checked below.
+        # Run the actual package library, then require the named source witnesses.
         tests = run('rust-tests', cargo + ['test', *pinned, '--package',
             selected['name'], '--lib', '--target-dir', target, '--', '--nocapture'])
         decoded = tests.decode()
-        if (not all('test ' + name + ' ... ok' in decoded for name in RUST_CHECKS)
-                or 'test result: ok. 4 passed; 0 failed;' not in decoded):
-            raise RuntimeError('four exact Rust witnesses did not execute')
-        result['rust_named_checks'] = RUST_CHECKS
+        result['rust_named_checks'] = require_rust_checks(decoded)
         run('clippy', cargo + ['clippy', *pinned, '--package', selected['name'],
             '--all-targets', '--target-dir', target, '--', '-D', 'warnings'])
         run('rust-probe', cargo + ['build', *pinned, '--package', selected['name'],

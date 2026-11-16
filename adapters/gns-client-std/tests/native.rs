@@ -1,4 +1,4 @@
-//! Real Unix framing, original query debt and independent reply budgets.
+//! Native local framing, original query debt and independent reply budgets.
 #![expect(
     clippy::panic_in_result_fn,
     reason = "Actual native IO assertions verify original ownership and independent query progress"
@@ -8,6 +8,7 @@ use gnunet_gns_client_host::{
     BoundedClient, EndpointSource, Instance, Limits, LocalOptions, LossCause, Parameters, Progress,
     RecordData, RecordFlags, RecordType, ZoneKey, ZoneKeyType,
 };
+use gnunet_service_runtime::local::{Listener as UnixListener, Stream as UnixStream};
 use std::{
     error::Error,
     future::Future,
@@ -16,10 +17,7 @@ use std::{
     task::{Context, Poll, Waker},
     time::{Duration, Instant},
 };
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::{UnixListener, UnixStream},
-};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 type Failure = Box<dyn Error + Send + Sync>;
 static NEXT: AtomicU64 = AtomicU64::new(0);
 struct Directory(PathBuf);

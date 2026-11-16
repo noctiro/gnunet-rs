@@ -22,6 +22,15 @@ events use a reserved clients+1 queue. Partial frames survive canceled drives.
 Shutdown closes physical streams, erases pure service secrets, then releases the
 writer lease. Write progress describes local transfer, not remote processing.
 
+## Polled native host
+
+The `service` feature also exposes `Host`, `Limits` and `Progress` for bounded
+synchronous polling of an already bound AF_UNIX stream listener. `Host::new`
+takes the original `socket2::Socket` and rejects other families, nonstream sockets
+and sockets that are not listening. The caller retains private-root and socket
+path policy. This host owns its pure service and client buffers; `poll_once`
+returns actual local activity without a background task.
+
 ## Private root
 
 `identity::load_or_create` reads or creates the exact official raw32 seed at

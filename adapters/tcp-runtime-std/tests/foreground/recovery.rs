@@ -29,12 +29,7 @@ fn clean(path: &std::path::Path) -> Result<bool, Failure> {
     Ok(!image.dirty && image.minimum > 0 && image.reserved > 0)
 }
 async fn source_replacement(changed_master: bool) -> Result<(), Failure> {
-    let directory = Directory(std::env::temp_dir().join(format!(
-        "gn-tcp-source-{}-{}",
-        std::process::id(),
-        u8::from(changed_master)
-    )));
-    gnunet_service_runtime::private_parents(&directory.0.join(".fixture"))?;
+    let directory = Directory::create("gn-tcp-source")?;
     let root = &directory.0;
     let seed = root.join("seed");
     let mut file = gnunet_native::filesystem::Directory::open(root)?

@@ -59,10 +59,13 @@ def bootstrap(args):
     try:
         if platform.system() not in ("Darwin", "Linux"):
             raise ValueError("the reference bootstrap currently supports macOS and Linux")
+        requirements = Path(__file__).resolve().with_name("requirements-build.txt")
+        report["build_tools_requirements"] = {"path": str(requirements), "sha256": digest(requirements)}
         downloads = output / "downloads"
         downloads.mkdir()
         run("python-venv", [sys.executable, "-m", "venv", str(venv)])
-        run("build-tools", [str(venv / "bin/python"), "-m", "pip", "install", "--disable-pip-version-check", "meson==1.9.1", "ninja==1.13.0"])
+        run("build-tools", [str(venv / "bin/python"), "-m", "pip", "install", "--disable-pip-version-check",
+                            "--require-hashes", "--only-binary=:all:", "--no-deps", "--requirement", str(requirements)])
         for package, url, expected in PACKAGES:
             archive = downloads / (package + ".tar.gz")
             run(package + "-download", ["curl", "--fail", "--location", "--retry", "2", "--output", str(archive), url])

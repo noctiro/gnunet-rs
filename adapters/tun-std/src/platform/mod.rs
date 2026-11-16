@@ -83,7 +83,10 @@ pub(super) fn read_name(bytes: &[libc::c_char]) -> io::Result<String> {
     if end == 0 {
         return Err(invalid("empty kernel interface name"));
     }
-    let v: Vec<u8> = bytes[..end].iter().map(|b| *b as u8).collect();
+    let v: Vec<u8> = bytes[..end]
+        .iter()
+        .map(|byte| u8::from_ne_bytes(byte.to_ne_bytes()))
+        .collect();
     String::from_utf8(v).map_err(|_| invalid("non-UTF8 kernel interface name"))
 }
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
@@ -96,7 +99,7 @@ pub(super) fn request(name: &str) -> io::Result<libc::ifreq> {
     let mut req: libc::ifreq = unsafe { std::mem::zeroed() };
     let n = self::name(name)?;
     for (a, b) in req.ifr_name.iter_mut().zip(n.as_bytes_with_nul()) {
-        *a = *b as libc::c_char
+        *a = libc::c_char::from_ne_bytes([*b]);
     }
     Ok(req)
 }

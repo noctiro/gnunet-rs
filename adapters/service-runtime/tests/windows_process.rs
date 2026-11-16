@@ -14,7 +14,11 @@ mod windows {
             io::{AsHandle, FromRawHandle},
         },
         path::{Path, PathBuf},
-        sync::{Arc, Mutex, mpsc},
+        sync::{
+            Arc, Mutex,
+            atomic::{AtomicU64, Ordering},
+            mpsc,
+        },
         task::{Context, Poll, Wake, Waker},
         thread,
         time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -65,15 +69,20 @@ mod windows {
     struct Directory(PathBuf);
     impl Directory {
         fn new() -> io::Result<Self> {
+            static NEXT: AtomicU64 = AtomicU64::new(0);
             let nonce = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map_err(io::Error::other)?
                 .as_nanos();
-            let path =
-                std::env::temp_dir().join(format!("gn-process-{}-{nonce:x}", std::process::id()));
+            let path = std::env::temp_dir().join(format!(
+                "gn-process-{}-{nonce:x}-{:x}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
             fs::create_dir(&path)?;
-            fs::write(path.join("cwd-marker"), b"correct directory")?;
-            Ok(Self(path))
+            let directory = Self(path);
+            fs::write(directory.0.join("cwd-marker"), b"correct directory")?;
+            Ok(directory)
         }
     }
     impl Drop for Directory {

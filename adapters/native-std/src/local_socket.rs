@@ -3,7 +3,7 @@ use std::{
     io,
     mem::{offset_of, size_of},
     os::windows::io::{AsRawSocket, BorrowedSocket},
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 use windows_sys::Win32::Networking::WinSock::{
     AF_UNIX, SO_ACCEPTCONN, SOCKADDR_UN, SOCKET_ERROR, SOL_SOCKET, WSAENOTCONN, WSAGetLastError,
@@ -17,6 +17,17 @@ pub enum Address {
     Unnamed,
     /// Native UTF-8 AF_UNIX name decoded without a lossy substitution.
     Path(PathBuf),
+}
+impl Address {
+    /// Borrow the native pathname of a named AF_UNIX endpoint.
+    /// Unnamed endpoints have no filesystem name.
+    #[must_use]
+    pub fn as_pathname(&self) -> Option<&Path> {
+        match self {
+            Self::Unnamed => None,
+            Self::Path(path) => Some(path),
+        }
+    }
 }
 #[derive(Clone, Copy)]
 enum End {

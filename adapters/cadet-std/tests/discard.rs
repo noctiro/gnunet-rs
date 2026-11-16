@@ -39,20 +39,19 @@ fn discard_proves_no_write_and_restores_only_the_original_credit() -> Result<(),
         .block_on(async { tokio::time::timeout(Duration::from_secs(5), exercise_discard()).await? })
 }
 async fn exercise_discard() -> Result<(), Failure> {
-    let directory = Directory(std::env::temp_dir().join(format!(
+    let path = std::env::temp_dir().join(format!(
         "cadet-discard-{}-{}",
         std::process::id(),
         NEXT.fetch_add(1, Ordering::Relaxed)
-    )));
+    ));
     #[cfg(unix)]
     {
         use std::os::unix::fs::DirBuilderExt;
-        std::fs::DirBuilder::new()
-            .mode(0o700)
-            .create(&directory.0)?;
+        std::fs::DirBuilder::new().mode(0o700).create(&path)?;
     }
     #[cfg(windows)]
-    std::fs::create_dir(&directory.0)?;
+    std::fs::create_dir(&path)?;
+    let directory = Directory(path);
     let path = directory.0.join("c");
     let listener = Listener::bind(&path)?;
     let mut domain = Instance::new();

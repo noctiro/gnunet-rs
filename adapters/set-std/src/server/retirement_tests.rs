@@ -35,10 +35,10 @@ fn actual_partial_input_detach_retains_forced_trigger_beside_requested() -> Resu
                 let stamp = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)?
                     .as_nanos();
-                let directory = Directory(
-                    std::env::temp_dir().join(format!("set-loss-{}-{stamp:x}", std::process::id())),
-                );
-                std::fs::create_dir(&directory.0)?;
+                let path =
+                    std::env::temp_dir().join(format!("set-loss-{}-{stamp:x}", std::process::id()));
+                std::fs::create_dir(&path)?;
+                let directory = Directory(path);
                 let path = directory.0.join("c");
                 let listener = Listener::bind(&path)?;
                 let mut set_instance = gnunet_set::Instance::new();
@@ -202,9 +202,9 @@ async fn two_channel_retirement() -> Result<(), Failure> {
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)?
         .as_nanos();
-    let directory =
-        Directory(std::env::temp_dir().join(format!("set-two-{}-{stamp:x}", std::process::id())));
-    std::fs::create_dir(&directory.0)?;
+    let path = std::env::temp_dir().join(format!("set-two-{}-{stamp:x}", std::process::id()));
+    std::fs::create_dir(&path)?;
+    let directory = Directory(path);
     let path = directory.0.join("c");
     let listener = Listener::bind(&path)?;
     let now = cadet::clock::SystemClock.sample()?.now.as_micros();

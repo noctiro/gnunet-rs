@@ -1,6 +1,33 @@
 //! Literal safe Rust diagnostic parsing controls. The original C %x/int* call is
 //! source-only and is never executed or credited as a compatible scanf oracle.
 use gnunet_program_host::diagnostics::{hex_to_bytes, print_bytes};
+
+#[test]
+fn native_ipv6_text_preserves_complete_address_and_port() {
+    use gnunet_program_host::diagnostics::{Address, address};
+    use std::net::Ipv6Addr;
+
+    for (ip, port, expected) in [
+        (Ipv6Addr::UNSPECIFIED, 0, "::"),
+        (Ipv6Addr::LOCALHOST, 42, "[::1]:42"),
+        (
+            Ipv6Addr::from([0xff; 16]),
+            u16::MAX,
+            "[ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff]:65535",
+        ),
+    ] {
+        assert_eq!(
+            address(Address::V6 {
+                ip,
+                port,
+                valid_size: true,
+            }),
+            Ok(expected.as_bytes().to_vec()),
+            "native IPv6 text for {ip} port {port}",
+        );
+    }
+}
+
 #[test]
 fn bounded_hex_preserves_prior_assignments_inverse_tail_and_c_string_prefix() {
     let mut out = [0xa5; 8];

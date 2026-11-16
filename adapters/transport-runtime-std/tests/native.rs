@@ -1,4 +1,4 @@
-//! Actual Unix/crypto/clock/fence and original asynchronous signing lifecycles.
+//! Actual local IPC, crypto, clock, fences and asynchronous signing lifecycles.
 #![expect(
     clippy::panic_in_result_fn,
     reason = "Assertions verify independent lifecycle and signature boundaries"
@@ -11,6 +11,7 @@ use gnunet_crypto::{EddsaPublicKey, EddsaSignature};
 use gnunet_pils::{MasterKey, Profile, Service};
 use gnunet_service_runtime::{
     clock::{self, ClockSample, ClockSubscription, RuntimeClock, SystemClock},
+    local::{Listener as UnixListener, Stream as UnixStream},
     service::Listener,
 };
 use gnunet_transport::{
@@ -22,8 +23,10 @@ use gnunet_transport_runtime::{
     Limits, LocalKeyCapability, LocalPorts, Policies, Progress, Runtime, ServicePorts,
 };
 use gnunet_types::Error;
+use socket2::{Domain, SockAddr, Socket, Type};
 use std::{
     error::Error as StdError,
+    ffi::OsStr,
     future::Future,
     io,
     path::{Path, PathBuf},
@@ -34,23 +37,31 @@ use std::{
     task::{Context, Poll, Waker},
     time::{Duration, Instant},
 };
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::{UnixListener, UnixStream},
-};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 type Failure = Box<dyn StdError>;
 static NEXT: AtomicU64 = AtomicU64::new(0);
 struct Directory(PathBuf);
 impl Directory {
     fn new() -> Result<Self, Failure> {
-        use std::os::unix::fs::DirBuilderExt;
-        let p = std::env::temp_dir().join(format!(
-            "gn-trf-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::SeqCst)
-        ));
-        std::fs::DirBuilder::new().mode(0o700).create(&p)?;
-        Ok(Self(p))
+        let base = std::env::temp_dir();
+        let parent = gnunet_native::filesystem::Directory::open(&base)?;
+        for _ in 0..32 {
+            let name = format!(
+                "gn-trf-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            );
+            match parent.create_private_directory(OsStr::new(&name)) {
+                Ok(_) => return Ok(Self(base.join(name))),
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "transport fixture namespace exhausted",
+        )
+        .into())
     }
 }
 impl Drop for Directory {
@@ -168,9 +179,12 @@ impl ResolutionContext for UnixPorts {
     }
 }
 fn source(path: &Path, clock: Arc<dyn RuntimeClock>) -> Result<EndpointSource, Failure> {
-    use std::os::unix::ffi::OsStrExt;
     let mut cfg = gnunet_config::Configuration::default();
-    cfg.set_value(b"service", b"UNIXPATH", Some(path.as_os_str().as_bytes()))?;
+    cfg.set_value(
+        b"service",
+        b"UNIXPATH",
+        Some(&gnunet_native::os_bytes::encode(path.as_os_str())),
+    )?;
     Ok(EndpointSource::configuration(
         cfg,
         b"service",
@@ -178,9 +192,18 @@ fn source(path: &Path, clock: Arc<dyn RuntimeClock>) -> Result<EndpointSource, F
     ))
 }
 fn seed(path: &Path, value: u8) -> Result<(), Failure> {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::write(path, [value; 32])?;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    let parent =
+        gnunet_native::filesystem::Directory::open(path.parent().ok_or("seed parent missing")?)?;
+    let name = path.file_name().ok_or("seed filename missing")?;
+    let mut file = match parent.open_file_for_update(name) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            parent.create_private_file(name)?
+        }
+        Err(error) => return Err(error.into()),
+    };
+    file.set_len(0)?;
+    std::io::Write::write_all(&mut file, &[value; 32])?;
     Ok(())
 }
 fn hello() -> gnunet_pils::HelloLimits {
@@ -191,7 +214,7 @@ fn hello() -> gnunet_pils::HelloLimits {
     }
 }
 fn pils(path: &Path, value: u8) -> Result<gnunet_pils_host::Host<4096>, Failure> {
-    let listener = std::os::unix::net::UnixListener::bind(path)?;
+    let listener = pils_listener(path)?;
     let service = Service::new(
         MasterKey::from_seed([value; 32]),
         Profile::Reference029,
@@ -209,6 +232,12 @@ fn pils(path: &Path, value: u8) -> Result<gnunet_pils_host::Host<4096>, Failure>
             address_bytes: 4096,
         },
     )?)
+}
+fn pils_listener(path: &Path) -> io::Result<Socket> {
+    let listener = Socket::new(Domain::UNIX, Type::STREAM, None)?;
+    listener.bind(&SockAddr::unix(path)?)?;
+    listener.listen(128)?;
+    Ok(listener)
 }
 async fn step<'a>(
     runtime: &mut Runtime<'a>,
@@ -278,7 +307,7 @@ async fn profile_conditional_service_and_local_capability_adopt_actual_nonempty_
         ));
         let peer = *service.identity().public_key().as_bytes();
         let mut service = gnunet_pils_host::Host::new(
-            std::os::unix::net::UnixListener::bind(&pp)?,
+            pils_listener(&pp)?,
             service,
             gnunet_pils_host::Limits {
                 clients: 16,
@@ -1909,7 +1938,7 @@ async fn address_quota65_uses_configured_publication_and_real_pils_observation()
         large,
     )?;
     let mut service = gnunet_pils_host::Host::<4096>::new(
-        std::os::unix::net::UnixListener::bind(&pp)?,
+        pils_listener(&pp)?,
         service,
         gnunet_pils_host::Limits {
             clients: 16,

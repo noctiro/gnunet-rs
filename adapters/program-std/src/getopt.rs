@@ -259,7 +259,7 @@ impl<'a> Options<'a> {
         self.specs.push(definition.spec);
         self.handlers.push(definition.handler);
     }
-    /// Source PROGRAM option order: native toupper(short), then native signed char.
+    /// Source PROGRAM option order: native toupper(short), then native char value.
     /// Equal keys retain insertion order, one permitted order of C qsort ties.
     pub fn sort_program(&mut self) {
         let mut order = (0..self.specs.len()).collect::<Vec<_>>();
@@ -439,7 +439,7 @@ impl<'a> Options<'a> {
     }
 }
 fn native_char(value: u8) -> i32 {
-    value as libc::c_char as i32
+    i32::from(libc::c_char::from_ne_bytes([value]))
 }
 fn prefix(value: &[u8]) -> &[u8] {
     &value[..value.iter().position(|&v| v == 0).unwrap_or(value.len())]

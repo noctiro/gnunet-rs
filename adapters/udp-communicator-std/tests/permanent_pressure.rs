@@ -40,10 +40,9 @@ async fn impossible_empty_effect_budget_discards_original_large_receipt_then_acc
 -> Result<(), Box<dyn std::error::Error>> {
     let local = Identity::from_seed([3; 32]);
     let remote = Identity::from_seed([5; 32]);
-    let scratch = Scratch(
-        std::env::temp_dir().join(format!("udp-permanent-pressure-{}", std::process::id())),
-    );
-    support::private_directory(&scratch.0)?;
+    let path = std::env::temp_dir().join(format!("udp-permanent-pressure-{}", std::process::id()));
+    support::private_directory(&path)?;
+    let scratch = Scratch(path);
     let raw = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
     let buffer = raw.set_send_buffer_size(262144);
     eprintln!("ACTUAL_RAW_SEND_BUFFER_SET {buffer:?}");
@@ -137,10 +136,9 @@ async fn transient_effect_pressure_retains_original_signed_receipt_until_registr
 -> Result<(), Box<dyn std::error::Error>> {
     let local = Identity::from_seed([3; 32]);
     let remote = Identity::from_seed([5; 32]);
-    let scratch = Scratch(
-        std::env::temp_dir().join(format!("udp-transient-pressure-{}", std::process::id())),
-    );
-    support::private_directory(&scratch.0)?;
+    let path = std::env::temp_dir().join(format!("udp-transient-pressure-{}", std::process::id()));
+    support::private_directory(&path)?;
+    let scratch = Scratch(path);
     let raw = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
     raw.bind(&"127.0.0.1:0".parse::<std::net::SocketAddr>()?.into())?;
     let mut socket = DatagramSocket::bind("127.0.0.1:0".parse()?)?;

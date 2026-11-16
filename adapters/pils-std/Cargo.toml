@@ -7,7 +7,7 @@ license.workspace = true
 
 [features]
 default = []
-service = ["dep:gnunet-config", "dep:gnunet-service-runtime", "dep:gnunet-service-startup", "dep:tokio", "tokio/net"]
+service = ["dep:gnunet-config", "dep:gnunet-service-runtime", "dep:gnunet-service-startup", "dep:socket2", "dep:tokio", "tokio/net"]
 client = ["gnunet-pils/alloc", "dep:gnunet-hello", "dep:gnunet-client-host", "dep:gnunet-service-runtime", "dep:tokio"]
 
 [dependencies]
@@ -16,6 +16,7 @@ gnunet-types.workspace = true
 gnunet-wire.workspace = true
 getrandom.workspace = true
 gnunet-native.workspace = true
+socket2 = { workspace = true, optional = true }
 zeroize = { workspace = true, features = ["alloc"] }
 
 gnunet-config = { workspace = true, optional = true }
@@ -41,3 +42,11 @@ required-features = ["client"]
 [[test]]
 name = "service"
 required-features = ["service", "client"]
+
+[[test]]
+name = "host"
+required-features = ["service"]
+
+[[test]]
+name = "client"
+required-features = ["client", "service"]

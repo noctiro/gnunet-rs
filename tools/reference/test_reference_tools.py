@@ -1,12 +1,18 @@
 #!/usr/bin/env python3
 """Isolated harness-boundary tests; not reference daemon interoperability."""
+import contextlib
+import io
+import json
 import os
 from pathlib import Path
 import signal
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
+import bootstrap_dependencies
 from statistics_daemons import Harness, read_dump
 
 
@@ -58,6 +64,50 @@ class HarnessBoundaries(unittest.TestCase):
                 harness.cleanup()
 
 
+class BootstrapBuildTools(unittest.TestCase):
+    def test_rejected_wheel_cannot_fall_back_to_unhashed_build_tools_or_start_c_builds(self):
+        with tempfile.TemporaryDirectory() as folder:
+            output = Path(folder).resolve() / "private-build"
+            commands = []
+
+            def run(command, **options):
+                commands.append(command)
+                options["stdout"].write(b"controlled installer result\n")
+                return SimpleNamespace(returncode=1 if "pip" in command else 0)
+
+            with patch.object(bootstrap_dependencies.platform, "system", return_value="Linux"), \
+                    patch.object(bootstrap_dependencies.subprocess, "run", side_effect=run), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                status = bootstrap_dependencies.bootstrap(SimpleNamespace(output=output, jobs=2))
+            self.assertEqual(status, 1)
+            self.assertEqual(len(commands), 2)
+            install = commands[1]
+            self.assertEqual(install[:5], [str(output / "venv/bin/python"), "-m", "pip", "install", "--disable-pip-version-check"])
+            for option in ("--require-hashes", "--only-binary=:all:", "--no-deps"):
+                self.assertIn(option, install)
+            requirements = Path(install[install.index("--requirement") + 1])
+            self.assertEqual(requirements.name, "requirements-build.txt")
+            receipt = json.loads((output / "dependency-result.json").read_text())
+            self.assertEqual(receipt["status"], "failed")
+            self.assertEqual(receipt["commands"][-1]["name"], "build-tools")
+            self.assertEqual(receipt["commands"][-1]["exit_code"], 1)
+            self.assertEqual(receipt["build_tools_requirements"]["sha256"], bootstrap_dependencies.digest(requirements))
+            self.assertEqual(receipt["packages"], [])
+
+    def test_unsupported_host_is_rejected_before_installing_anything(self):
+        with tempfile.TemporaryDirectory() as folder:
+            output = Path(folder).resolve() / "private-build"
+            with patch.object(bootstrap_dependencies.platform, "system", return_value="Windows"), \
+                    patch.object(bootstrap_dependencies.subprocess, "run") as run, \
+                    contextlib.redirect_stdout(io.StringIO()):
+                status = bootstrap_dependencies.bootstrap(SimpleNamespace(output=output, jobs=2))
+            self.assertEqual(status, 1)
+            run.assert_not_called()
+            receipt = json.loads((output / "dependency-result.json").read_text())
+            self.assertEqual(receipt["status"], "failed")
+            self.assertIn("supports macOS and Linux", receipt["failure"])
+
+
 if __name__ == "__main__":
-    result = unittest.TextTestRunner(verbosity=2).run(unittest.defaultTestLoader.loadTestsFromTestCase(HarnessBoundaries))
+    result = unittest.TextTestRunner(verbosity=2).run(unittest.defaultTestLoader.loadTestsFromModule(sys.modules[__name__]))
     raise SystemExit(0 if result.wasSuccessful() and result.testsRun else 1)

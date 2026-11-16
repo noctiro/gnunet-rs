@@ -1,4 +1,4 @@
-//! One actual Unix IPC ownership model. The explicitly controlled CADET actor
+//! One actual native IPC ownership model. The explicitly controlled CADET actor
 //! supplies official service IPC credits/metadata; this is not C/underlay interop.
 #![expect(
     clippy::panic_in_result_fn,
@@ -7,6 +7,7 @@
 use gnunet_cadet_host as cadet;
 use gnunet_service_runtime::{
     credentials::UnixAccess,
+    local::{Listener as UnixListener, Stream as UnixStream},
     service::{Listener, ServiceOptions},
 };
 use gnunet_setu::{
@@ -18,15 +19,29 @@ use gnunet_wire::official::cadet::{Request as CRequest, Response as CResponse};
 use std::{
     error::Error,
     future::{Future, poll_fn},
+    path::PathBuf,
     task::Poll,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::{UnixListener, UnixStream},
     sync::oneshot,
     time::Instant,
 };
+struct Directory(PathBuf);
+impl Directory {
+    fn new() -> Result<Self, Box<dyn Error>> {
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+        let path = std::env::temp_dir().join(format!("gsetu-{}-{nonce:x}", std::process::id()));
+        std::fs::create_dir(&path)?;
+        Ok(Self(path))
+    }
+}
+impl Drop for Directory {
+    fn drop(&mut self) {
+        let _cleanup = std::fs::remove_dir_all(&self.0);
+    }
+}
 async fn read(stream: &mut UnixStream) -> Result<Vec<u8>, Box<dyn Error>> {
     let mut h = [0; 4];
     stream.read_exact(&mut h).await?;
@@ -57,9 +72,8 @@ fn original_ports_receive_done_cancel_and_outgoing_channel() -> Result<(), Box<d
         .enable_all()
         .build()?;
     runtime.block_on(async{
-        let nonce=SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
-        let dir=std::path::PathBuf::from(format!("/tmp/gsetu-{}-{nonce:x}",std::process::id()));std::fs::create_dir(&dir)?;
-        let app_path=dir.join("a");let cadet_path=dir.join("c");
+        let directory=Directory::new()?;
+        let app_path=directory.0.join("a");let cadet_path=directory.0.join("c");
         let app_listener=UnixListener::bind(&app_path)?;let cadet_listener=UnixListener::bind(&cadet_path)?;
         let mut instance=cadet::Instance::new();let mut ports=[cadet::PortSlot::new();2];let mut channels=[cadet::ChannelSlot::new();4];
         let abi=Abi::native();let core=Service::new(CoreLimits{clients:2,operations:4,..CoreLimits::default()},abi)?;
@@ -116,6 +130,6 @@ fn original_ports_receive_done_cancel_and_outgoing_channel() -> Result<(), Box<d
         };
         let stopped=server.shutdown(|_|{});drop(server);outcome?;if let Some(e)=stopped.failure{return Err(e.into())}
         assert_eq!(stopped.report.accepted,2);assert_eq!(stopped.report.closed,2);assert_eq!(stopped.report.receive_done,1);assert_eq!(stopped.report.peer_frames,2);
-        drop(app_listener);drop(cadet_listener);std::fs::remove_dir_all(dir)?;Ok(())
+        drop(app_listener);drop(cadet_listener);Ok(())
     })
 }

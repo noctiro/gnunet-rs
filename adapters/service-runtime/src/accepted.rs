@@ -103,6 +103,45 @@ pub struct AcceptedConnection {
     peer: PeerAddress,
     diagnostics: Diagnostics,
 }
+
+/// Initialize an owned reactor TCP stream without replacing its native socket.
+///
+/// The original stream and bounded nonfatal diagnostics are returned together.
+/// This applies equally to accepted and outgoing streams and grants no protocol
+/// admission or peer authentication.
+///
+/// # Errors
+///
+/// Fatal native initialization closes the original stream before returning its
+/// error and any earlier nonfatal diagnostics.
+pub fn initialize_tcp_stream(
+    stream: tokio::net::TcpStream,
+) -> Result<(tokio::net::TcpStream, Diagnostics), InitializationError> {
+    initialize_tcp_with(stream, network::initialize_reactor_stream)
+}
+
+fn initialize_tcp_with(
+    stream: tokio::net::TcpStream,
+    initialize: impl FnOnce(
+        network::BorrowedStream<'_>,
+        StreamKind,
+    ) -> Result<Diagnostics, InitializationError>,
+) -> Result<(tokio::net::TcpStream, Diagnostics), InitializationError> {
+    let diagnostics = initialize(tcp_handle(&stream), StreamKind::Tcp)?;
+    Ok((stream, diagnostics))
+}
+
+fn tcp_handle(stream: &tokio::net::TcpStream) -> network::BorrowedStream<'_> {
+    #[cfg(unix)]
+    {
+        stream.as_fd()
+    }
+    #[cfg(windows)]
+    {
+        stream.as_socket()
+    }
+}
+
 impl AcceptedConnection {
     /// Borrow this exact original connection without replacing its descriptor.
     pub fn connection(&self) -> &Connection {
@@ -138,12 +177,9 @@ fn canonical_with(
     let diagnostics = match &stream {
         #[cfg(unix)]
         Stream::Unix(s) => initialize(s.as_fd(), StreamKind::Unix),
-        #[cfg(unix)]
-        Stream::Tcp(s) => initialize(s.as_fd(), StreamKind::Tcp),
+        Stream::Tcp(s) => initialize(tcp_handle(s), StreamKind::Tcp),
         #[cfg(windows)]
         Stream::Unix(s) => initialize(s.as_socket(), StreamKind::Unix),
-        #[cfg(windows)]
-        Stream::Tcp(s) => initialize(s.as_socket(), StreamKind::Tcp),
     };
     match diagnostics {
         Err(error) => {
@@ -214,7 +250,7 @@ fn poll_accept(
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
     //! Real owner close/continuation checks with explicitly injected init policy.
     #![expect(
@@ -222,12 +258,72 @@ mod tests {
         reason = "Actual resource invariants use assertions while setup errors propagate"
     )]
     use super::*;
+    #[cfg(unix)]
+    use std::os::fd::AsRawFd;
+    #[cfg(windows)]
+    use std::os::windows::io::AsRawSocket;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     fn runtime() -> io::Result<tokio::runtime::Runtime> {
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
     }
+    async fn tcp_pair() -> io::Result<(tokio::net::TcpStream, tokio::net::TcpStream)> {
+        let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await?;
+        let stream = tokio::net::TcpStream::connect(listener.local_addr()?).await?;
+        let (peer, _) = listener.accept().await?;
+        Ok((stream, peer))
+    }
+    #[test]
+    fn tcp_initialization_returns_original_usable_socket() -> io::Result<()> {
+        runtime()?.block_on(async {
+            let (stream, mut peer) = tcp_pair().await?;
+            #[cfg(unix)]
+            let original = stream.as_raw_fd();
+            #[cfg(windows)]
+            let original = stream.as_raw_socket();
+            let (mut stream, _diagnostics) =
+                initialize_tcp_stream(stream).map_err(io::Error::other)?;
+            #[cfg(unix)]
+            assert_eq!(stream.as_raw_fd(), original);
+            #[cfg(windows)]
+            assert_eq!(stream.as_raw_socket(), original);
+            assert!(stream.nodelay()?);
+            peer.write_all(b"q").await?;
+            let mut byte = [0];
+            stream.read_exact(&mut byte).await?;
+            assert_eq!(byte, *b"q");
+            Ok(())
+        })
+    }
+    #[test]
+    fn tcp_fatal_initialization_closes_original_socket_before_returning_error() -> io::Result<()> {
+        runtime()?.block_on(async {
+            let (stream, mut peer) = tcp_pair().await?;
+            let result = initialize_tcp_with(stream, |_native, kind| {
+                assert_eq!(kind, StreamKind::Tcp);
+                Err(InitializationError {
+                    error: io::Error::new(io::ErrorKind::PermissionDenied, "native initialization"),
+                    diagnostics: Diagnostics::default(),
+                })
+            });
+            let error = match result {
+                Err(error) => error,
+                Ok(_) => {
+                    return Err(io::Error::other(
+                        "fatal initialization returned a live socket",
+                    ));
+                }
+            };
+            assert_eq!(error.error.kind(), io::ErrorKind::PermissionDenied);
+            assert_eq!(error.error.to_string(), "native initialization");
+            assert!(error.diagnostics.is_empty());
+            let mut byte = [0];
+            assert_eq!(peer.read(&mut byte).await?, 0);
+            Ok(())
+        })
+    }
+    #[cfg(unix)]
     #[test]
     fn injected_fatal_initialization_closes_only_actual_accepted_owner() -> io::Result<()> {
         runtime()?.block_on(async{
@@ -237,6 +333,7 @@ mod tests {
         let mut byte=[0];assert_eq!(peer.read(&mut byte).await?,0);Ok(())
     })
     }
+    #[cfg(unix)]
     #[test]
     fn injected_wrong_kind_actual_nonfatal_setter_error_returns_original_usable_stream()
     -> io::Result<()> {

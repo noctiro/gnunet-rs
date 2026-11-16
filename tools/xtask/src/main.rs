@@ -14,7 +14,7 @@ mod inputs;
 mod profiles;
 mod verify;
 
-const USAGE: &str = "usage: cargo xtask check-deps|check-features|check-noalloc|check-lints|check-external-contracts [--strict]|check-external-release [--strict]|check-conformance [--strict]|check-legacy-conformance [--strict]|check-api-inventory [--strict]|evidence-inputs|verify [all|format|lint|tools|profiles|portable|runtime|test|embedded|reference|daemon-reference]";
+const USAGE: &str = "usage: cargo xtask check-deps|check-features|check-noalloc|check-lints|check-external-contracts [--strict]|check-external-release [--strict]|check-conformance [--strict]|check-legacy-conformance [--strict]|check-api-inventory [--strict]|evidence-inputs|verify [all|source|native|format|lint|tools|profiles|portable|runtime|test|embedded|reference|daemon-reference] [--log-dir PATH]";
 
 fn main() -> ExitCode {
     match run() {
@@ -63,10 +63,7 @@ fn run() -> Result<(), Box<dyn Error>> {
             };
         }
         "verify" => {
-            if args.len() > 2 {
-                return Err(USAGE.into());
-            }
-            verify::verify_matrix(args.get(1).map(String::as_str))?;
+            verify::verify_matrix(&args[1..])?;
         }
         check if args.len() == 1 => match check {
             "check-deps" => checks::check_deps()?,

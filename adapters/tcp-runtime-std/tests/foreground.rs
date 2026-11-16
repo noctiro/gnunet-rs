@@ -122,6 +122,26 @@ impl RuntimeClock for Clock {
 }
 
 struct Directory(PathBuf);
+impl Directory {
+    fn create(prefix: &str) -> std::io::Result<Self> {
+        let temporary = std::env::temp_dir();
+        let parent = gnunet_native::filesystem::Directory::open(&temporary)?;
+        for _ in 0..128 {
+            let mut nonce = [0; 8];
+            gnunet_native::entropy::fill(&mut nonce)?;
+            let name = format!("{prefix}-{:016x}", u64::from_ne_bytes(nonce));
+            match parent.create_private_directory(std::ffi::OsStr::new(&name)) {
+                Ok(_) => return Ok(Self(temporary.join(name))),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(error),
+            }
+        }
+        Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "private foreground fixture name retries exhausted",
+        ))
+    }
+}
 impl Drop for Directory {
     fn drop(&mut self) {
         let _removed = std::fs::remove_dir_all(&self.0);
@@ -141,8 +161,7 @@ fn drain(stream: &UnixStream) -> std::io::Result<bool> {
 #[tokio::test(flavor = "current_thread")]
 async fn actual_foreground_clock_refusal_drains_original_sockets_and_cleans_same_epoch()
 -> Result<(), Failure> {
-    let directory = Directory(std::env::temp_dir().join(format!("gn-tcpf-{}", std::process::id())));
-    gnunet_service_runtime::private_parents(&directory.0.join(".fixture"))?;
+    let directory = Directory::create("gn-tcpf")?;
     let root = &directory.0;
     let seed = root.join("seed");
     let mut keyfile = gnunet_native::filesystem::Directory::open(root)?

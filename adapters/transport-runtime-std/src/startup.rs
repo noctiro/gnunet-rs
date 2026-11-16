@@ -20,6 +20,7 @@ use std::{
     future::{Future, poll_fn},
     io,
     path::{Path, PathBuf},
+    pin::Pin,
     sync::Arc,
     task::Poll,
 };
@@ -78,7 +79,7 @@ fn configured_limits(
 /// Standard no-IKM signing uses `foreground_service` instead.
 pub async fn foreground_local(
     setup: LocalStartup<'_>,
-    ready: impl FnMut(&BoundListeners, &BoundListeners, [u8; 32]) -> io::Result<()>,
+    ready: impl AsyncFnMut(&BoundListeners, &BoundListeners, [u8; 32]) -> io::Result<()>,
     shutdown: impl Future<Output = io::Result<()>>,
     observe_socket: impl FnMut(SocketEvent),
     observe_pils: impl for<'a> FnMut(gnunet_pils_host::client::Progress<'a>),
@@ -97,7 +98,7 @@ pub async fn foreground_local(
 /// current verified service announcement activates the transport identity.
 pub async fn foreground_service(
     setup: ServiceStartup<'_>,
-    ready: impl FnMut(&BoundListeners, &BoundListeners, [u8; 32]) -> io::Result<()>,
+    ready: impl AsyncFnMut(&BoundListeners, &BoundListeners, [u8; 32]) -> io::Result<()>,
     shutdown: impl Future<Output = io::Result<()>>,
     observe_socket: impl FnMut(SocketEvent),
     observe_pils: impl for<'a> FnMut(gnunet_pils_host::client::Progress<'a>),
@@ -115,7 +116,7 @@ pub async fn foreground_service(
 /// Join the explicit process clock with the asynchronous identity-service mode.
 pub async fn foreground_service_with_clock(
     setup: ServiceStartup<'_>,
-    ready: impl FnMut(&BoundListeners, &BoundListeners, [u8; 32]) -> io::Result<()>,
+    ready: impl AsyncFnMut(&BoundListeners, &BoundListeners, [u8; 32]) -> io::Result<()>,
     shutdown: impl Future<Output = io::Result<()>>,
     observe_socket: impl FnMut(SocketEvent),
     observe_pils: impl for<'a> FnMut(gnunet_pils_host::client::Progress<'a>),
@@ -136,7 +137,7 @@ pub async fn foreground_service_with_clock(
 /// a larger caller-driven node. All endpoint/broker/runtime ports share it.
 pub async fn foreground_local_with_clock(
     setup: LocalStartup<'_>,
-    ready: impl FnMut(&BoundListeners, &BoundListeners, [u8; 32]) -> io::Result<()>,
+    ready: impl AsyncFnMut(&BoundListeners, &BoundListeners, [u8; 32]) -> io::Result<()>,
     shutdown: impl Future<Output = io::Result<()>>,
     observe_socket: impl FnMut(SocketEvent),
     observe_pils: impl for<'a> FnMut(gnunet_pils_host::client::Progress<'a>),
@@ -168,7 +169,7 @@ pub async fn foreground_local_with_clock(
 async fn foreground_with_clock(
     setup: ServiceStartup<'_>,
     local_key: Option<LocalKeyCapability>,
-    mut ready: impl FnMut(&BoundListeners, &BoundListeners, [u8; 32]) -> io::Result<()>,
+    mut ready: impl AsyncFnMut(&BoundListeners, &BoundListeners, [u8; 32]) -> io::Result<()>,
     shutdown: impl Future<Output = io::Result<()>>,
     mut observe_socket: impl FnMut(SocketEvent),
     mut observe_pils: impl for<'a> FnMut(gnunet_pils_host::client::Progress<'a>),
@@ -182,9 +183,12 @@ async fn foreground_with_clock(
     } = setup;
     let limits = configured_limits(config, limits)?;
     for section in [b"transport".as_slice(), b"peerstore"] {
+        #[cfg(unix)]
         if config.get(section, b"USERNAME").is_some() {
             return Err("shared foreground does not switch configured USERNAME".into());
         }
+        #[cfg(windows)]
+        gnunet_service_startup::verify_configured_identity(config, section)?;
         for field in [b"UNIX_MATCH_UID".as_slice(), b"UNIX_MATCH_GID"] {
             if config.get(section, field).is_some() && config.get_yesno(section, field)? {
                 return Err("shared listeners do not implement Unix credential matching".into());
@@ -294,9 +298,23 @@ async fn foreground_with_clock(
                 stopping = true;
             }
             Ok(Some(Progress::Drained { .. } | Progress::Closed)) => break Ok(()),
-            Ok(Some(Progress::Activated(peer))) => {
-                if let Err(error) = ready(&transport_bound, &peerstore_bound, peer) {
-                    break Err(error.into());
+            Ok(Some(Progress::Activated(peer))) if !stopping => {
+                match readiness_or_stop(
+                    ready(&transport_bound, &peerstore_bound, peer),
+                    shutdown.as_mut(),
+                )
+                .await
+                {
+                    Ok(ReadinessOutcome::Ready) => {}
+                    Ok(ReadinessOutcome::Stopped) => {
+                        let budget =
+                            std::num::NonZeroU64::new(30_000_000).ok_or("shutdown budget")?;
+                        if let Err(error) = runtime.begin_shutdown(budget) {
+                            break Err(error.into());
+                        }
+                        stopping = true;
+                    }
+                    Err(error) => break Err(error.into()),
                 }
             }
             Ok(Some(Progress::Pils(original))) => observe_pils(original),
@@ -317,6 +335,31 @@ async fn foreground_with_clock(
     outcome?;
     closed?;
     Ok(report)
+}
+
+enum ReadinessOutcome {
+    Ready,
+    Stopped,
+}
+
+// Notification can yield without transferring the original shutdown owner.
+// Cancellation drops only this wait; a caller-owned readiness outbox retains
+// its original intent and any partial native submission.
+async fn readiness_or_stop(
+    ready: impl Future<Output = io::Result<()>>,
+    mut shutdown: Pin<&mut impl Future<Output = io::Result<()>>>,
+) -> io::Result<ReadinessOutcome> {
+    let mut ready = std::pin::pin!(ready);
+    poll_fn(|cx| {
+        if let Poll::Ready(result) = shutdown.as_mut().poll(cx) {
+            return Poll::Ready(result.map(|()| ReadinessOutcome::Stopped));
+        }
+        ready
+            .as_mut()
+            .poll(cx)
+            .map(|result| result.map(|()| ReadinessOutcome::Ready))
+    })
+    .await
 }
 
 /// Report an actual own-publication cause after the original state outcome was
@@ -362,6 +405,44 @@ pub fn diagnose_address(original: &gnunet_transport::addresses::AddressRejection
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn original_shutdown_cancels_a_pending_readiness_wait() {
+        use std::{cell::Cell, task::Waker};
+        let stop = Cell::new(false);
+        let stop_completed = Cell::new(false);
+        let ready_polls = Cell::new(0);
+        let mut shutdown = std::pin::pin!(poll_fn(|_| {
+            assert!(
+                !stop_completed.get(),
+                "completed shutdown future was polled again"
+            );
+            if stop.get() {
+                stop_completed.set(true);
+                Poll::Ready(Ok(()))
+            } else {
+                Poll::Pending
+            }
+        }));
+        let ready = poll_fn(|_| {
+            ready_polls.set(ready_polls.get() + 1);
+            Poll::<io::Result<()>>::Pending
+        });
+        let mut waiting = std::pin::pin!(readiness_or_stop(ready, shutdown.as_mut()));
+        let mut cx = std::task::Context::from_waker(Waker::noop());
+        assert!(waiting.as_mut().poll(&mut cx).is_pending());
+        assert_eq!(ready_polls.get(), 1);
+        stop.set(true);
+        assert!(matches!(
+            waiting.as_mut().poll(&mut cx),
+            Poll::Ready(Ok(ReadinessOutcome::Stopped))
+        ));
+        assert_eq!(
+            ready_polls.get(),
+            1,
+            "readiness advanced after the original stop"
+        );
+        assert!(stop_completed.get());
+    }
     #[test]
     #[expect(
         clippy::panic_in_result_fn,

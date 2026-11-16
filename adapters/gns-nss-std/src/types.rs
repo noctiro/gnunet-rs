@@ -159,6 +159,7 @@ pub struct Completion {
     /// Original native and cleanup facts.
     pub report: Report,
 }
+#[cfg(unix)]
 impl Completion {
     pub(crate) fn failed(error: Error) -> Self {
         Self {

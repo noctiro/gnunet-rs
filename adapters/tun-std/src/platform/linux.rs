@@ -92,7 +92,7 @@ fn legacy_apply(info: &Info, action: &Action) -> io::Result<()> {
             bytes[2..6].copy_from_slice(&address.octets());
             req.ifr_ifru.ifru_addr = libc::sockaddr {
                 sa_family: libc::AF_INET as libc::sa_family_t,
-                sa_data: bytes.map(|b| b as libc::c_char),
+                sa_data: bytes.map(|byte| libc::c_char::from_ne_bytes([byte])),
             };
             let command = if matches!(action, Action::Ipv4Address(_)) {
                 libc::SIOCSIFADDR

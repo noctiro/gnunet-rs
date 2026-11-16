@@ -192,7 +192,7 @@ pub(crate) fn apply(info: &Info, action: &Action) -> io::Result<()> {
             req.ifr_ifru.ifru_addr = libc::sockaddr {
                 sa_len: size_of::<libc::sockaddr_in>() as u8,
                 sa_family: libc::AF_INET as u8,
-                sa_data: data.map(|b| b as libc::c_char),
+                sa_data: data.map(|byte| libc::c_char::from_ne_bytes([byte])),
             };
             ioctl(
                 &socket,
@@ -276,7 +276,7 @@ fn address6(info: &Info, address: Ipv6Addr, prefix: u8) -> io::Result<()> {
     req.destination.sin6_family = 0;
     let interface = name(&info.name)?;
     for (a, b) in req.name.iter_mut().zip(interface.as_bytes_with_nul()) {
-        *a = *b as libc::c_char;
+        *a = libc::c_char::from_ne_bytes([*b]);
     }
     let socket = socket2::Socket::new(socket2::Domain::IPV6, socket2::Type::DGRAM, None)?;
     #[expect(

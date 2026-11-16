@@ -1,6 +1,6 @@
 //! Rust TRANSPORT/public-PEERSTORE foreground with explicit PILS signing modes.
 #![deny(unsafe_code)]
-use gnunet_service_startup::{InheritedMode, InheritedResources};
+use gnunet_service_runtime::BoundListeners;
 use gnunet_transport_runtime::{
     Limits, LocalKeyCapability,
     startup::{self, LocalStartup, ServiceStartup},
@@ -10,23 +10,16 @@ use std::{
     io::{self, Write},
     path::PathBuf,
     process::ExitCode,
-    task::Poll,
 };
-fn run() -> Result<(), Box<dyn Error>> {
+type Failure = Box<dyn Error>;
+mod bootstrap;
+fn run() -> Result<(), Failure> {
     #[expect(
         unsafe_code,
         reason = "Early capture exclusively transfers inherited descriptors before runtime initialization"
     )]
     // SAFETY: first initialization operation, owning parent-transferred descriptors.
-    let captured =
-        unsafe { gnunet_service_startup::capture_from_environment(InheritedMode::AdoptListeners)? };
-    let activation = match captured.inherited {
-        InheritedResources::Listeners(a) => a,
-        InheritedResources::CloseAfterBind(_) => {
-            return Err("wrong foreground startup route".into());
-        }
-    };
-    let parent_control = captured.parent_control;
+    let (activation, parent_control) = unsafe { bootstrap::capture()? };
     let mut selected = None;
     let mut directory = None;
     let mut local_key = false;
@@ -35,7 +28,7 @@ fn run() -> Result<(), Box<dyn Error>> {
         if arg == "--help" || arg == "-h" {
             writeln!(
                 io::stdout().lock(),
-                "Rust TRANSPORT + public PEERSTORE node: -c official.conf --state-directory NEW_RUST_STATE [--local-pils-key]; asynchronous PILS signing by default, optional verified local-key capability; SIGINT/SIGTERM shutdown"
+                "Rust TRANSPORT + public PEERSTORE node: -c official.conf --state-directory NEW_RUST_STATE [--local-pils-key]; asynchronous PILS signing by default, optional verified local-key capability; native or parent-control shutdown"
             )?;
             return Ok(());
         }
@@ -83,73 +76,81 @@ fn run() -> Result<(), Box<dyn Error>> {
         .enable_all()
         .build()?
         .block_on(async {
-            let interrupt_kind = tokio::signal::unix::SignalKind::interrupt();
-            let terminate_kind = tokio::signal::unix::SignalKind::terminate();
-            let mut interrupt = tokio::signal::unix::signal(interrupt_kind)?;
-            let mut terminate = tokio::signal::unix::signal(terminate_kind)?;
-            let mut control = parent_control
-                .map(|p| p.register().map_err(|e| e.error))
-                .transpose()?;
-            let shutdown = std::future::poll_fn(|cx| {
-                if let Some(pipe) = &mut control {
-                    match pipe.poll_signal(cx) {
-                        Poll::Ready(Ok(Some(signal)))
-                            if i32::from(signal) == interrupt_kind.as_raw_value()
-                                || i32::from(signal) == terminate_kind.as_raw_value() =>
-                        {
-                            return Poll::Ready(Ok(()));
+            let bootstrap::Registered {
+                control,
+                #[cfg(windows)]
+                mut ready,
+            } = bootstrap::register(parent_control)?;
+            let result = async {
+                let mut signals = gnunet_service_startup::StopSignals::new(control)?;
+                let shutdown = std::future::poll_fn(|cx| {
+                    signals
+                        .poll_stop(cx)
+                        .map(|result| result.map_err(io::Error::other))
+                });
+                let activated = async |_: &BoundListeners, _: &BoundListeners, peer: [u8; 32]| {
+                    {
+                        let mut out = io::stdout().lock();
+                        write!(out, "READY ")?;
+                        for byte in peer {
+                            write!(out, "{byte:02x}")?;
                         }
-                        Poll::Ready(Ok(Some(_))) => cx.waker().wake_by_ref(),
-                        Poll::Ready(Ok(None)) => control = None,
-                        Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
-                        Poll::Pending => {}
+                        writeln!(out)?;
+                        out.flush()?;
                     }
-                }
-                if interrupt.poll_recv(cx).is_ready() || terminate.poll_recv(cx).is_ready() {
-                    Poll::Ready(Ok(()))
+                    #[cfg(windows)]
+                    if let Some(writer) = &mut ready {
+                        tokio::time::timeout(
+                            std::time::Duration::from_secs(10),
+                            writer.signal(gnunet_service_startup::ReadyStatus::AcceptRegistered),
+                        )
+                        .await
+                        .map_err(|_| {
+                            io::Error::new(io::ErrorKind::TimedOut, "node readiness deadline")
+                        })?
+                        .map_err(io::Error::other)?;
+                        drop(ready.take());
+                    }
+                    Ok(())
+                };
+                let observe_socket = |event| {
+                    let _diagnostic = writeln!(io::stderr().lock(), "node socket: {event:?}");
+                };
+                if let Some(ikm_file) = ikm_file {
+                    startup::foreground_local(
+                        LocalStartup {
+                            config: &config,
+                            activation,
+                            state_directory,
+                            local_key: LocalKeyCapability { ikm_file },
+                            limits: Limits::default(),
+                        },
+                        activated,
+                        shutdown,
+                        observe_socket,
+                        startup::diagnose_pils,
+                    )
+                    .await
                 } else {
-                    Poll::Pending
+                    startup::foreground_service(
+                        ServiceStartup {
+                            config: &config,
+                            activation,
+                            state_directory,
+                            limits: Limits::default(),
+                        },
+                        activated,
+                        shutdown,
+                        observe_socket,
+                        startup::diagnose_pils,
+                    )
+                    .await
                 }
-            });
-            let ready = |_: &_, _: &_, peer: [u8; 32]| {
-                let key: String = peer.iter().map(|b| format!("{b:02x}")).collect();
-                let mut out = io::stdout().lock();
-                writeln!(out, "READY {key}")?;
-                out.flush()
-            };
-            let observe_socket = |event| {
-                let _diagnostic = writeln!(io::stderr().lock(), "node socket: {event:?}");
-            };
-            let report = if let Some(ikm_file) = ikm_file {
-                startup::foreground_local(
-                    LocalStartup {
-                        config: &config,
-                        activation,
-                        state_directory,
-                        local_key: LocalKeyCapability { ikm_file },
-                        limits: Limits::default(),
-                    },
-                    ready,
-                    shutdown,
-                    observe_socket,
-                    startup::diagnose_pils,
-                )
-                .await?
-            } else {
-                startup::foreground_service(
-                    ServiceStartup {
-                        config: &config,
-                        activation,
-                        state_directory,
-                        limits: Limits::default(),
-                    },
-                    ready,
-                    shutdown,
-                    observe_socket,
-                    startup::diagnose_pils,
-                )
-                .await?
-            };
+            }
+            .await;
+            #[cfg(windows)]
+            let result = bootstrap::finish(result, &mut ready).await;
+            let report = result?;
             writeln!(io::stdout().lock(), "STOPPED {report:?}")?;
             Ok::<_, Box<dyn Error>>(())
         })

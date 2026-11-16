@@ -105,7 +105,7 @@ fn request(name: &[u8]) -> Result<libc::ifreq, Failure> {
     // representations are valid. The selected union member is written before ioctl.
     let mut request: libc::ifreq = unsafe { std::mem::zeroed() };
     for (dst, src) in request.ifr_name.iter_mut().zip(name) {
-        *dst = *src as libc::c_char;
+        *dst = libc::c_char::from_ne_bytes([*src]);
     }
     Ok(request)
 }
@@ -244,7 +244,7 @@ fn ipv4(
         data[2..6].copy_from_slice(&value.octets());
         req.ifr_ifru.ifru_addr = libc::sockaddr {
             sa_family: libc::AF_INET as libc::sa_family_t,
-            sa_data: data.map(|byte| byte as libc::c_char),
+            sa_data: data.map(|byte| libc::c_char::from_ne_bytes([byte])),
         };
         ioctl(fd, code as _, &mut req, stage)?;
     }
@@ -272,7 +272,7 @@ pub(super) fn create(options: &Options) -> Result<Tun, Failure> {
             .ok_or_else(|| Failure::invalid("interface", "unterminated actual kernel name"))?;
         let name: Vec<u8> = req.ifr_name[..used]
             .iter()
-            .map(|byte| *byte as u8)
+            .map(|byte| u8::from_ne_bytes(byte.to_ne_bytes()))
             .collect();
         if name.is_empty() {
             return Err(Failure::invalid("interface", "kernel returned empty name"));

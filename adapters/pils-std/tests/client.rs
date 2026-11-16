@@ -1,5 +1,4 @@
-//! Real owned Unix Native client progress, cancellation and local service composition.
-#![cfg(all(unix, feature = "client"))]
+//! Native AF_UNIX client progress, cancellation and local service composition.
 #![expect(
     clippy::panic_in_result_fn,
     reason = "Fallible real socket regressions assert independent protocol and ownership facts"
@@ -15,10 +14,10 @@ use gnunet_pils_host::{
 use gnunet_service_runtime::clock::{RuntimeClock, SystemClock};
 use gnunet_types::Error;
 use gnunet_wire::official::SignaturePurpose;
+use socket2::{Domain, SockAddr, Socket, Type};
 use std::{
     io,
-    os::unix::net::UnixListener,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -43,7 +42,7 @@ impl Server {
         Self::at(path)
     }
     fn at(path: PathBuf) -> Result<Self> {
-        let listener = UnixListener::bind(path.join("socket"))?;
+        let listener = listener(&path.join("socket"))?;
         let service = Service::<4096>::new(
             MasterKey::from_seed([17; 32]),
             Profile::Reference029,
@@ -89,6 +88,12 @@ impl Server {
             .join()
             .map_err(|_| io::Error::other("owned server thread panicked"))??)
     }
+}
+fn listener(path: &Path) -> io::Result<Socket> {
+    let listener = Socket::new(Domain::UNIX, Type::STREAM, None)?;
+    listener.bind(&SockAddr::unix(path)?)?;
+    listener.listen(128)?;
+    Ok(listener)
 }
 impl Drop for Server {
     fn drop(&mut self) {
@@ -317,7 +322,9 @@ mod clock_ports {
             self.0.clone()
         }
         fn lookup(&self, _: &[u8], _: Duration) -> io::Result<Option<Box<dyn AddressLookup>>> {
-            Err(io::Error::other("unexpected DNS in Unix-only clock test"))
+            Err(io::Error::other(
+                "unexpected DNS in local socket clock test",
+            ))
         }
         fn timer(&self, duration: Duration) -> io::Result<ResolutionTimer> {
             let timer = Deadline::after(self.0.clone(), duration).map_err(io::Error::other)?;
@@ -341,7 +348,9 @@ mod clock_ports {
         cfg.set_value(
             b"pils",
             b"UNIXPATH",
-            Some(server.path.join("socket").as_os_str().as_encoded_bytes()),
+            Some(&gnunet_native::os_bytes::encode(
+                server.path.join("socket").as_os_str(),
+            )),
         )?;
         let client = Client::new(
             instance,
@@ -557,7 +566,7 @@ impl RawPeer {
         let path =
             std::env::temp_dir().join(format!("pils-fragment-{:016x}", u64::from_be_bytes(random)));
         std::fs::create_dir(&path)?;
-        let listener = UnixListener::bind(path.join("socket"))?;
+        let listener = listener(&path.join("socket"))?;
         listener.set_nonblocking(true)?;
         let stop = Arc::new(AtomicBool::new(false));
         let stopping = stop.clone();

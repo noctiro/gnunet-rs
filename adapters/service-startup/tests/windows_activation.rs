@@ -24,6 +24,7 @@ mod windows {
         net::{Ipv4Addr, Ipv6Addr, SocketAddr},
         os::windows::io::AsSocket,
         path::{Path, PathBuf},
+        sync::atomic::{AtomicU64, Ordering},
         task::{Context, Waker},
         time::{Duration, SystemTime, UNIX_EPOCH},
     };
@@ -53,12 +54,16 @@ mod windows {
     struct Directory(PathBuf);
     impl Directory {
         fn new() -> io::Result<Self> {
+            static NEXT: AtomicU64 = AtomicU64::new(0);
             let nonce = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map_err(io::Error::other)?
                 .as_nanos();
-            let path =
-                std::env::temp_dir().join(format!("gn-act-{}-{nonce:x}", std::process::id()));
+            let path = std::env::temp_dir().join(format!(
+                "gn-act-{}-{nonce:x}-{:x}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
             fs::create_dir(&path)?;
             Ok(Self(path))
         }

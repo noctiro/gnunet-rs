@@ -10,23 +10,49 @@ use std::{
     collections::BTreeSet,
     ffi::{OsStr, OsString},
     fs, io,
-    path::PathBuf,
-    time::{SystemTime, UNIX_EPOCH},
+    path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
 };
 type Result = std::result::Result<(), Box<dyn std::error::Error>>;
 struct Scratch(PathBuf);
 impl Scratch {
     fn create() -> io::Result<Self> {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(io::Error::other)?
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "gnunet-input-native-{}-{nonce}",
-            std::process::id()
-        ));
-        fs::create_dir(&path)?;
-        Ok(Self(path))
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let mut nonce = [0; 8];
+        gnunet_native::entropy::fill(&mut nonce)?;
+        let prefix = format!(
+            "gnunet-input-native-{}-{:016x}",
+            std::process::id(),
+            u64::from_ne_bytes(nonce)
+        );
+        Self::create_with(&std::env::temp_dir(), || {
+            OsString::from(format!("{prefix}-{}", NEXT.fetch_add(1, Ordering::Relaxed)))
+        })
+    }
+
+    fn create_with(parent: &Path, mut next_name: impl FnMut() -> OsString) -> io::Result<Self> {
+        let directory = Directory::open(parent)?;
+        for _ in 0..128 {
+            let name = next_name();
+            let path = parent.join(&name);
+            match directory.create_private_directory(&name) {
+                Ok(_) => return Ok(Self(path)),
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+                Err(error) => {
+                    return Err(io::Error::new(
+                        error.kind(),
+                        format!("create scratch directory {}: {error}", path.display()),
+                    ));
+                }
+            }
+        }
+        Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            format!(
+                "scratch directory name retries exhausted in {}",
+                parent.display()
+            ),
+        ))
     }
 }
 impl Drop for Scratch {
@@ -34,6 +60,45 @@ impl Drop for Scratch {
         let _cleanup = fs::remove_dir_all(&self.0);
     }
 }
+fn create_directory(path: &Path) -> io::Result<()> {
+    fs::create_dir(path).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("create input fixture directory {}: {error}", path.display()),
+        )
+    })
+}
+
+#[test]
+fn scratch_collisions_never_take_cleanup_ownership_of_existing_directories() -> Result {
+    let parent = Scratch::create()?;
+    let existing = parent.0.join("existing");
+    create_directory(&existing)?;
+    fs::write(existing.join("marker"), b"foreign directory")?;
+    let mut names = [OsString::from("existing"), OsString::from("created")].into_iter();
+    let scratch = Scratch::create_with(&parent.0, || {
+        names.next().unwrap_or_else(|| OsString::from("existing"))
+    })?;
+    assert_eq!(scratch.0, parent.0.join("created"));
+    drop(scratch);
+    assert!(!parent.0.join("created").exists());
+    let error = Scratch::create_with(&parent.0, || OsString::from("existing"))
+        .err()
+        .ok_or("occupied scratch name unexpectedly accepted")?;
+    assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+    assert_eq!(fs::read(existing.join("marker"))?, b"foreign directory");
+    let mut attempts = 0;
+    let error = Scratch::create_with(&parent.0, || {
+        attempts += 1;
+        OsString::from("missing/child")
+    })
+    .err()
+    .ok_or("invalid child scratch name unexpectedly accepted")?;
+    assert_eq!(attempts, 1);
+    assert_ne!(error.kind(), io::ErrorKind::AlreadyExists);
+    Ok(())
+}
+
 fn native_name() -> OsString {
     #[cfg(target_os = "macos")]
     {
@@ -54,19 +119,35 @@ fn native_name() -> OsString {
 fn independent_multi_batch_cursors_and_input_opens_stay_on_the_original_directory() -> Result {
     let scratch = Scratch::create()?;
     let selected = scratch.0.join("selected");
-    fs::create_dir(&selected)?;
+    create_directory(&selected)?;
     let original = Directory::open(&selected)?;
     let input = InputDir::open(&selected)?;
     let mut expected = BTreeSet::new();
     // This exceeds one Windows 4 KiB enumeration batch.
     for index in 0..160 {
         let name = OsString::from(format!("entry-{index:03}"));
-        let file = original.create_private_file(&name)?;
+        let file = original.create_private_file(&name).map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!(
+                    "create input fixture {}: {error}",
+                    selected.join(&name).display()
+                ),
+            )
+        })?;
         file.set_len(index)?;
         expected.insert(name);
     }
     let native = native_name();
-    drop(original.create_private_file(&native)?);
+    drop(original.create_private_file(&native).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!(
+                "create native-name fixture {}: {error}",
+                selected.join(&native).display()
+            ),
+        )
+    })?);
     expected.insert(native.clone());
     let observation = file_info(&input.open_child(&native)?)?;
     assert!(matches!(observation, EntryInfo::File(info) if info.bytes == 0));
@@ -79,7 +160,7 @@ fn independent_multi_batch_cursors_and_input_opens_stay_on_the_original_director
     assert_eq!(second, expected);
     let retained = scratch.0.join("retained");
     fs::rename(&selected, &retained)?;
-    fs::create_dir(&selected)?;
+    create_directory(&selected)?;
     fs::write(selected.join("foreign"), b"replacement")?;
     let mut seen = BTreeSet::from([head]);
     for name in first {
