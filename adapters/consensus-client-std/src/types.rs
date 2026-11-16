@@ -1,5 +1,6 @@
 //! Native facts and finite source-local resources; none is a private wire field.
-use crate::{Bounds, budget::Bound};
+use crate::Bounds;
+use gnunet_service_runtime::clock::Alarm;
 use gnunet_service_runtime::framing::{self, OwnedFrame};
 use gnunet_types::Error as Fault;
 use std::{
@@ -20,6 +21,16 @@ pub enum Error {
     Client(gnunet_client_host::ConnectError),
     /// Actual native read/write error.
     Io(io::Error),
+}
+impl From<gnunet_service_runtime::clock::BoundsError> for Error {
+    fn from(error: gnunet_service_runtime::clock::BoundsError) -> Self {
+        use gnunet_service_runtime::clock::BoundsError;
+        match error {
+            BoundsError::Deadline => Fault::Deadline.into(),
+            BoundsError::Overflow => Fault::Overflow.into(),
+            error @ BoundsError::Clock(_) => gnunet_client_host::ConnectError::from(error).into(),
+        }
+    }
 }
 impl From<Fault> for Error {
     fn from(e: Fault) -> Self {
@@ -115,7 +126,7 @@ pub struct Pending {
     pub original: Bounds,
     pub(crate) tag: Tag,
     pub(crate) bytes: Option<Vec<u8>>,
-    pub(crate) bound: Option<Bound>,
+    pub(crate) bound: Option<Alarm>,
     pub(crate) capacity: usize,
 }
 /// Whole local write of an original request, never a processing/peer ACK.

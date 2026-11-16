@@ -84,7 +84,7 @@ fn time(
     };
     if d.is_zero()
         || d.as_micros() >= u128::from(u64::MAX)
-        || std::time::Instant::now().checked_add(d).is_none()
+        || tokio::time::Instant::now().checked_add(d).is_none()
     {
         return Err("RPS local deadlines must be finite and nonzero".into());
     }

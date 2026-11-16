@@ -17,6 +17,23 @@ struct Policy {
     dependencies: &'static [&'static str],
 }
 
+impl Policy {
+    fn is_service(&self) -> bool {
+        self.directory.starts_with("apps/gnunet-service-")
+    }
+}
+
+fn validate_layer_edge(owner: &Policy, dependency: &str) -> CheckResult<()> {
+    if owner.is_service() && dependency == "gnunet" {
+        return Err(format!(
+            "service {} must depend on owning packages rather than the public facade",
+            owner.name
+        )
+        .into());
+    }
+    Ok(())
+}
+
 const POLICIES: &[Policy] = &[
     Policy {
         name: "gnunet-directory-command",
@@ -4181,7 +4198,10 @@ const POLICIES: &[Policy] = &[
         directory: "apps/gnunet-service-statistics",
         core: false,
         dependencies: &[
-            "gnunet",
+            "gnunet-config",
+            "gnunet-ipc-unix",
+            "gnunet-statistics",
+            "gnunet-statistics-store",
             "gnunet-native",
             "gnunet-program-host",
             "gnunet-service-runtime",
@@ -4299,6 +4319,7 @@ fn validate_dependencies(meta: &Value) -> CheckResult<()> {
             // Cargo exposes the package name independently of local renames and
             // target/optional/build flags. None can bypass this boundary.
             let dependency_name = field(dependency, "name")?;
+            validate_layer_edge(rule, dependency_name)?;
             let fixture =
                 dependency["kind"] == "dev" && DEVELOPMENT_ONLY.contains(&(name, dependency_name));
             if c_gnunet(dependency_name)
@@ -4333,8 +4354,48 @@ fn validate_dependencies(meta: &Value) -> CheckResult<()> {
             return Err(format!("required workspace package absent: {}", required.name).into());
         }
     }
+    validate_service_composition(meta)?;
     validate_generic_runtime_boundary(meta)?;
     validate_shared_io_boundaries(meta)
+}
+
+fn validate_service_composition(meta: &Value) -> CheckResult<()> {
+    let packages: BTreeMap<_, _> = members(meta)?
+        .into_iter()
+        .map(|package| Ok((field(package, "name")?, package)))
+        .collect::<CheckResult<_>>()?;
+    for service in POLICIES.iter().filter(|owner| owner.is_service()) {
+        let mut pending = vec![(service.name, vec![service.name])];
+        let mut visited = BTreeSet::new();
+        while let Some((name, path)) = pending.pop() {
+            if !visited.insert(name) {
+                continue;
+            }
+            let package = packages
+                .get(name)
+                .ok_or("service dependency package absent")?;
+            for dependency in array(package, "dependencies")? {
+                if !dependency["kind"].is_null() {
+                    continue;
+                }
+                let dependency_name = field(dependency, "name")?;
+                if !packages.contains_key(dependency_name) {
+                    continue;
+                }
+                let mut dependency_path = path.clone();
+                dependency_path.push(dependency_name);
+                if dependency_name == "gnunet" {
+                    return Err(format!(
+                        "service production closure reaches the public facade: {}",
+                        dependency_path.join(" -> ")
+                    )
+                    .into());
+                }
+                pending.push((dependency_name, dependency_path));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Check the workspace production closure across optional/target configurations.
@@ -5133,6 +5194,72 @@ fn validate_noalloc_graph(meta: &Value) -> CheckResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn service_layers_reject_facades_even_when_an_edge_is_allowlisted() -> CheckResult<()> {
+        let service = Policy {
+            name: "renamed-daemon",
+            directory: "apps/gnunet-service-example",
+            core: false,
+            dependencies: &["gnunet"],
+        };
+        if validate_layer_edge(&service, "gnunet").is_ok() {
+            return Err("allowlist overrode the service composition boundary".into());
+        }
+        validate_layer_edge(&service, "gnunet-statistics")?;
+        validate_layer_edge(policy("gnunet-cli")?, "gnunet")?;
+        for kind in [Value::Null, "dev".into(), "build".into()] {
+            let mut meta = fixture();
+            let package = meta["packages"]
+                .as_array_mut()
+                .ok_or("packages absent")?
+                .iter_mut()
+                .find(|package| package["name"] == "gnunet-service-statistics")
+                .ok_or("service absent")?;
+            package["dependencies"] = serde_json::json!([{
+                "name":"gnunet","rename":"sdk_alias","kind":kind,
+                "target":"cfg(windows)","optional":true,"features":[]
+            }]);
+            let error = validate_dependencies(&meta)
+                .err()
+                .ok_or("service facade edge accepted")?;
+            if !error.to_string().contains("rather than the public facade") {
+                return Err(
+                    format!("service edge failed through the wrong boundary: {error}").into(),
+                );
+            }
+        }
+        Ok(())
+    }
+    #[test]
+    fn service_composition_rejects_optional_transitive_facades_on_other_targets() -> CheckResult<()>
+    {
+        for kind in [Value::Null, "dev".into(), "build".into()] {
+            let mut meta = fixture();
+            for (owner, dependency, edge_kind) in [
+                (
+                    "gnunet-service-statistics",
+                    "gnunet-program-host",
+                    Value::Null,
+                ),
+                ("gnunet-program-host", "gnunet", kind.clone()),
+            ] {
+                let package = meta["packages"]
+                    .as_array_mut()
+                    .ok_or("packages absent")?
+                    .iter_mut()
+                    .find(|package| package["name"] == owner)
+                    .ok_or("edge owner absent")?;
+                package["dependencies"] = serde_json::json!([{
+                    "name":dependency,"rename":"library_alias","kind":edge_kind,
+                    "target":"cfg(windows)","optional":true,"features":[]
+                }]);
+            }
+            if validate_service_composition(&meta).is_ok() == kind.is_null() {
+                return Err("service production closure misclassified a transitive edge".into());
+            }
+        }
+        Ok(())
+    }
     fn fixture() -> Value {
         let packages: Vec<_> = POLICIES.iter().map(|rule| serde_json::json!({"id":rule.name,"name":rule.name,"manifest_path":format!("/workspace/{}/Cargo.toml",rule.directory),"features":{"default":[]},"dependencies":[],"links":null})).collect();
         serde_json::json!({"workspace_root":"/workspace","workspace_members":packages.iter().map(|p|p["id"].clone()).collect::<Vec<_>>(),"packages":packages})

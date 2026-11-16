@@ -25,6 +25,16 @@ pub enum Error {
     /// Actual locally produced commitment failed the same original admission.
     LocalCommitment(Rejection),
 }
+impl From<gnunet_service_runtime::clock::BoundsError> for Error {
+    fn from(error: gnunet_service_runtime::clock::BoundsError) -> Self {
+        use gnunet_service_runtime::clock::BoundsError;
+        match error {
+            BoundsError::Deadline => Fault::Deadline.into(),
+            BoundsError::Overflow => Fault::Overflow.into(),
+            error @ BoundsError::Clock(_) => gnunet_client_host::ConnectError::from(error).into(),
+        }
+    }
+}
 impl From<Fault> for Error {
     fn from(e: Fault) -> Self {
         Self::Protocol(e)

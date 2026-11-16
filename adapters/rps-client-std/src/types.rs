@@ -2,11 +2,8 @@ use gnunet_client_host::ConnectError;
 use gnunet_service_runtime::framing::{Accounting, Budget, Limits as FrameLimits, OwnedFrame};
 use gnunet_types::Error as Fault;
 use gnunet_wire::official::rps::ClientResponse;
-use std::{
-    fmt, io,
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{fmt, io, sync::Arc, time::Duration};
+use tokio::time::Instant;
 
 /// Original native, protocol or actual entropy-provider failure.
 #[derive(Debug)]
@@ -17,6 +14,16 @@ pub enum Error {
     Fault(Fault),
     /// Actual first entropy failure; no replacement entropy is supplied.
     Entropy(getrandom::Error),
+}
+impl From<gnunet_service_runtime::clock::BoundsError> for Error {
+    fn from(error: gnunet_service_runtime::clock::BoundsError) -> Self {
+        use gnunet_service_runtime::clock::BoundsError;
+        match error {
+            BoundsError::Deadline => Fault::Deadline.into(),
+            BoundsError::Overflow => Fault::Overflow.into(),
+            error @ BoundsError::Clock(_) => gnunet_client_host::ConnectError::from(error).into(),
+        }
+    }
 }
 impl From<Fault> for Error {
     fn from(value: Fault) -> Self {

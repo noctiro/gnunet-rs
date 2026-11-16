@@ -16,7 +16,7 @@ pub(crate) async fn scheduled(
     startup: ClientStartup,
 ) -> Result<(), Failure> {
     let canonical: Arc<dyn RuntimeClock> = Arc::new(clock.clone());
-    let original = Bounds::new(canonical.as_ref(), selection.lifetime)?;
+    let original = Bounds::after(canonical.as_ref(), selection.lifetime)?;
     let signals = StopSignals::for_client(startup.parent)?;
     let config = prepared.main().config.duplicate()?;
     let live = gnunet_resolver_broker::LiveConfiguration::new(config);

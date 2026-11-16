@@ -28,11 +28,11 @@ impl Gate {
 
 pub(super) fn check(bound: Bound, clock: &dyn RuntimeClock) -> Result<u64, Fault> {
     // Drop the shared-state lock before entering a fallible external provider.
-    Bounds {
-        expires: bound.until,
-        hard: bound.hard,
-    }
-    .check(clock)
+    Bounds::from_targets(
+        gnunet_types::AbsoluteTime::from_micros(bound.until),
+        bound.hard,
+    )
+    .and_then(|bounds| bounds.check(clock))
     .map_err(|error| match error {
         BoundsError::Deadline => Fault::Deadline,
         BoundsError::Overflow => Protocol::Overflow.into(),

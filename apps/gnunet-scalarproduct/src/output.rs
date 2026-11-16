@@ -9,8 +9,9 @@ use std::{
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
-    time::{Duration, Instant},
+    time::Duration,
 };
+use tokio::time::Instant;
 use tokio::time::Sleep;
 #[derive(Debug)]
 struct OutputFailure {
@@ -70,12 +71,13 @@ impl Output {
         self.hard.is_some()
     }
     fn check(&self) -> Result<(), Failure> {
-        if Instant::now() >= self.original.hard || self.hard.is_some_and(|h| Instant::now() >= h) {
+        if Instant::now() >= self.original.hard() || self.hard.is_some_and(|h| Instant::now() >= h)
+        {
             return Err("SCALARPRODUCT original stdout/native deadline expired".into());
         }
         let now = self.clock.sample()?.now.as_micros();
-        if Instant::now() >= self.original.hard
-            || now >= self.original.expires
+        if Instant::now() >= self.original.hard()
+            || now >= self.original.expires()
             || self.hard.is_some_and(|h| Instant::now() >= h)
         {
             return Err("SCALARPRODUCT original stdout/canonical deadline expired".into());
@@ -96,7 +98,7 @@ impl Output {
             Instant::now()
                 .checked_add(self.timeout)
                 .ok_or("SCALARPRODUCT stdout deadline overflow")?
-                .min(self.original.hard),
+                .min(self.original.hard()),
         );
         Ok(())
     }
@@ -109,12 +111,12 @@ impl Output {
         })
     }
     fn delay(&mut self) {
-        let hard = self.hard.unwrap_or(self.original.hard);
+        let hard = self.hard.unwrap_or(self.original.hard());
         let until = Instant::now()
             .checked_add(Duration::from_millis(10))
             .unwrap_or(hard)
             .min(hard);
-        self.wait = Some(Box::pin(tokio::time::sleep_until(until.into())));
+        self.wait = Some(Box::pin(tokio::time::sleep_until(until)));
     }
     /// One bounded synchronous write/flush attempt. Actual late return becomes
     /// failure even when bytes escaped; no deadline is claimed to preempt stdio.

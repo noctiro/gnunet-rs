@@ -1,6 +1,6 @@
 //! One explicit selected Logger and first diagnostic failure, no global fd2.
 use crate::Failure;
-use gnunet::ipc::server::{CloseReason, ServiceEvent};
+use gnunet_ipc_unix::server::{CloseReason, ServiceEvent};
 use gnunet_program_host::{logging::Logger, policy::Level, service, shared_clock::SharedClock};
 use gnunet_service_runtime::accepted::SocketEvent;
 use std::{

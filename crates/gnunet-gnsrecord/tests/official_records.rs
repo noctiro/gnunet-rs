@@ -19,6 +19,34 @@ fn address() -> RecordData<'static> {
 }
 
 #[test]
+fn streamed_record_views_use_one_pass_and_the_same_first_record_padding() -> Result<(), Error> {
+    let visits = core::cell::Cell::new(0);
+    let key = [0; 32];
+    let delegation = RecordData {
+        record_type: RecordType::PKEY,
+        data: &key,
+        ..address()
+    };
+    for (records, expected) in [
+        ([delegation, address()], 68),
+        ([address(), delegation], 128),
+    ] {
+        visits.set(0);
+        let views = records
+            .into_iter()
+            .inspect(|_| visits.set(visits.get() + 1));
+        assert_eq!(serialized_len(views)?, expected);
+        assert_eq!(
+            visits.get(),
+            2,
+            "sizing must consume each original record once"
+        );
+    }
+    assert_eq!(serialized_len(core::iter::empty::<RecordData<'_>>())?, 0);
+    Ok(())
+}
+
+#[test]
 fn record_header_is_official_microseconds_flags_and_u32_type() -> Result<(), Error> {
     let literal = [1, 2, 3, 4, 5, 6, 7, 8, 0, 4, 0, 5, 0, 0, 0, 1, 192, 0, 2, 1];
     let mut actual = [0x55; 22];
@@ -92,8 +120,8 @@ fn pinned_c_serialization_fixtures_match_exactly() -> Result<(), Error> {
         assert_eq!(found?, records);
         assert_eq!(RecordSet::parse_padded(&output[..size], 3)?, set);
     }
-    assert_eq!(serialized_len(&[pkey, a])?, 68);
-    assert_eq!(serialized_len(&[a, edkey])?, 128);
+    assert_eq!(serialized_len([pkey, a])?, 68);
+    assert_eq!(serialized_len([a, edkey])?, 128);
     Ok(())
 }
 

@@ -1509,7 +1509,7 @@ impl<'id> Server<'id> {
             && transport.idle()
         {
             let bound = Bound::new(self.clock.as_ref(), self.limits.output_lifetime)?;
-            transport.preference(change.peer, change.cancel, transport_bounds(bound))?;
+            transport.preference(change.peer, change.cancel, transport_bounds(bound)?)?;
             self.preferences.admitted(change)?;
             return Ok(true);
         }
@@ -2381,11 +2381,11 @@ fn reserve<T>(n: usize) -> Result<Vec<T>, Error> {
     Ok(v)
 }
 
-fn transport_bounds(bound: Bound) -> application::Bounds {
-    application::Bounds {
-        expires: bound.until,
-        hard: bound.hard.into_std(),
-    }
+fn transport_bounds(bound: Bound) -> Result<application::Bounds, Error> {
+    Ok(
+        application::Bounds::from_targets(AbsoluteTime::from_micros(bound.until), bound.hard)
+            .map_err(gnunet_client_host::ConnectError::from)?,
+    )
 }
 
 impl Drop for Server<'_> {

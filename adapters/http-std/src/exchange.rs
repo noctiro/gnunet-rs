@@ -1,6 +1,5 @@
 use crate::{
     Error, Fault, HttpLimits, IoLease, Method, Proxy, ProxyKind, Request, State,
-    gate::cooperate,
     transport::{Socket, authority, basic, copy, unescape},
 };
 use http_body_util::Full;
@@ -339,7 +338,7 @@ pub(crate) async fn exchange(socket: Socket, input: Exchange<'_>) -> Result<Repl
             }
             body.extend_from_slice(&bytes);
         }
-        cooperate().await;
+        tokio::task::yield_now().await;
     }
     // Framing has actually completed. A failed post-response lease check must
     // deny subsequent progress without erasing these already received bytes.

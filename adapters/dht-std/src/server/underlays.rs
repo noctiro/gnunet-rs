@@ -316,7 +316,7 @@ pub(super) fn hint<'id>(
         if !transport.idle() {
             return Ok(false);
         }
-        transport.hint(peer, address, transport_bounds(bound))?;
+        transport.hint(peer, address, transport_bounds(bound)?)?;
     }
     Ok(true)
 }

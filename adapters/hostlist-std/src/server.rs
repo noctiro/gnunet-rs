@@ -1,11 +1,11 @@
 //! Public HTTP provider over shared canonical accepted streams and bounded Hyper.
 use crate::{
     Error, Fault,
-    gate::Gate,
     http::{Counted, Counters, HttpLimits, IoLease, WireReport},
     publication::View,
 };
 use bytes::Bytes;
+use gnunet_service_runtime::clock::DeadlineGuard;
 use gnunet_service_runtime::{
     clock::RuntimeClock,
     service::{Listener, PeerAddress},
@@ -91,7 +91,7 @@ pub(crate) struct Options {
 struct Session {
     id: HttpId,
     ip: IpAddr,
-    gate: Gate,
+    gate: DeadlineGuard,
     lease: Rc<IoLease>,
     future: Option<ConnectionFuture>,
     counts: Arc<Counters>,
@@ -160,7 +160,7 @@ async fn answer(
             prepared.set(Some((None, 400)));
             return response(400, Bytes::new(), false);
         }
-        crate::gate::cooperate().await;
+        tokio::task::yield_now().await;
     }
     let now = clock.sample().map_err(Error::Clock)?.now.as_micros();
     let publication = view
@@ -169,14 +169,14 @@ async fn answer(
         .filter(|p| p.observed <= now && now < p.expires)
         .cloned()
         .ok_or(Fault::NotReady)?;
-    lease.until.set(lease.until.get().min(publication.expires));
-    lease.checked.set(publication.observed);
+    let mut hard = lease.bounds().hard();
     if publication.expires != u64::MAX {
         let bound = Instant::now()
             .checked_add(Duration::from_micros(publication.expires - now))
             .ok_or(Fault::Overflow)?;
-        lease.hard.set(lease.hard.get().min(bound));
+        hard = hard.min(bound);
     }
+    lease.tighten(publication.expires, hard, publication.observed);
     let json = request
         .headers()
         .get_all(hyper::header::ACCEPT)
@@ -263,9 +263,9 @@ impl Server {
         for offset in 0..self.sessions.len() {
             let index = (self.cursor + offset) % self.sessions.len();
             let session = &mut self.sessions[index];
-            session.gate.until = session.gate.until.min(session.lease.until.get());
-            session.gate.hard = session.gate.hard.min(session.lease.hard.get());
-            let result = match session.gate.poll(cx) {
+            let bounds = session.lease.bounds();
+            session.gate.tighten(bounds.expires(), bounds.hard());
+            let result = match session.gate.poll(cx).map_err(Error::from) {
                 Poll::Pending => continue,
                 Poll::Ready(Err(error)) => Poll::Ready(Err(error)),
                 Poll::Ready(Ok(_)) => match &mut session.future {
@@ -336,21 +336,18 @@ impl Server {
                 .filter(|n| *n < u64::MAX)
                 .ok_or(Fault::Overflow)?
                 .min(self.daemon_until);
-            let mut gate = Gate::new(self.clock.clone(), until)?;
-            gate.hard = gate
-                .hard
-                .min(
-                    accepted_at
-                        .checked_add(self.lifetime)
-                        .ok_or(Fault::Overflow)?,
-                )
-                .min(self.daemon_hard);
-            let lease = Rc::new(IoLease {
-                clock: self.clock.clone(),
-                until: Cell::new(until),
-                hard: Cell::new(gate.hard),
-                checked: Cell::new(0),
-            });
+            let mut gate = DeadlineGuard::until(
+                self.clock.clone(),
+                gnunet_types::AbsoluteTime::from_micros(until),
+            )?;
+            gate.tighten(
+                until,
+                accepted_at
+                    .checked_add(self.lifetime)
+                    .ok_or(Fault::Overflow)?
+                    .min(self.daemon_hard),
+            );
+            let lease = Rc::new(IoLease::new(self.clock.clone(), gate.bounds()));
             let counts = Arc::new(Counters::default());
             let io = TokioIo::new(Counted {
                 inner: connection,

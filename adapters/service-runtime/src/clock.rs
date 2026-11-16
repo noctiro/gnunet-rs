@@ -1,10 +1,14 @@
 //! Common logical scheduler clock for caller-driven native service owners.
 //! Logical GNUnet absolute time can regress. A driver owns one change-listener;
 //! sampling a clock never submits native work or creates a background task.
+mod alarm;
 mod bounds;
+mod guard;
+pub use alarm::Alarm;
 pub use bounds::{Bounds, BoundsError};
 pub use gnunet_types::AbsoluteTime;
 use gnunet_types::Error;
+pub use guard::DeadlineGuard;
 use std::{
     future::Future,
     pin::Pin,

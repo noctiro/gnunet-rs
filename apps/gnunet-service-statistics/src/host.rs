@@ -1,16 +1,14 @@
 //! Actual STATISTICS protocol/store assembly; no private readiness/control files.
 use crate::{Failure, aggregate, control::Control, reporting::Reports, settings::Settings};
-use gnunet::{
-    ipc::{
-        IpcError,
-        server::{ServeContext, serve_statistics_controlled_with_async_ready},
-    },
-    statistics::AllocatedStatistics,
-    statistics_store::Store,
+use gnunet_ipc_unix::{
+    IpcError,
+    server::{ServeContext, serve_statistics_controlled_with_async_ready},
 };
 use gnunet_program_host::policy::Level;
 use gnunet_service_runtime::{BoundListeners, clock::RuntimeClock, private_parents};
 use gnunet_service_startup::ControlReceiver;
+use gnunet_statistics::AllocatedStatistics;
+use gnunet_statistics_store::Store;
 use std::{
     cell::RefCell,
     future::{Future, poll_fn},

@@ -144,23 +144,23 @@ fn client(
     let path = directory.0.join("s");
     let listener = UnixListener::bind(&path)?;
     let source = EndpointSource::unix(path);
-    let bounds = Bounds::new(source.clock().as_ref(), Duration::from_secs(30))?;
+    let bounds = Bounds::after(source.clock().as_ref(), Duration::from_secs(30))?;
     let peers = vec![3; 2045 * 32];
     let serialized = [0; ipc::SHARE_PREFIX];
     let ciphertext = [0; ipc::CIPHERTEXT_BYTES];
     let request = if large {
         ipc::Request::Generate(ipc::Generate {
             session: &[7; 64],
-            start: bounds.expires - 1_000_000,
-            deadline: bounds.expires,
+            start: bounds.expires() - 1_000_000,
+            deadline: bounds.expires(),
             threshold: 1,
             peers: &peers,
         })
     } else {
         // Only transport shape is relevant; no share mathematics is run.
         ipc::Request::Decrypt {
-            start: bounds.expires - 1_000_000,
-            deadline: bounds.expires,
+            start: bounds.expires() - 1_000_000,
+            deadline: bounds.expires(),
             ciphertext: &ciphertext,
             share: ipc::Share::decode(&serialized)?,
         }
@@ -202,7 +202,7 @@ fn native_partial_request_pending_still_observes_original_read_half_eof() -> Res
             .write
             .as_ref()
             .ok_or("original write target missing")?
-            .targets;
+            .bounds();
         peer.shutdown().await?;
         client.io_class = 0; // Pending TX must fall through to the same original RX.
         let (loss, last) = lost(&mut client).await?;
@@ -213,9 +213,9 @@ fn native_partial_request_pending_still_observes_original_read_half_eof() -> Res
             || loss.receipt.request_written
             || loss.receipt.request_bytes != before.request_bytes
             || loss.receipt.response_bytes != 0
-            || client.bounds().hard != original.hard
-            || client.bounds().expires != original.expires
-            || Instant::now() >= write_target.hard
+            || client.bounds().hard() != original.hard()
+            || client.bounds().expires() != original.expires()
+            || Instant::now() >= write_target.hard()
             || !client.closed
         {
             return Err(

@@ -194,7 +194,7 @@ async fn observed_with_tls(
         Request::soap(
             &domain,
             url.as_str().as_bytes(),
-            bounds.expires,
+            bounds.expires(),
             action.as_bytes(),
             body,
         )?
@@ -202,7 +202,7 @@ async fn observed_with_tls(
         Request::get(
             &domain,
             url.as_str().as_bytes(),
-            bounds.expires,
+            bounds.expires(),
             Redirects::None,
         )?
     };
@@ -217,7 +217,7 @@ async fn observed_with_tls(
         frames: limits.wire.clamp(1, 65536),
         redirects: 0,
     };
-    let mut client = Client::new(request, resolver.clone(), tls, None, profile, bounds.hard)?;
+    let mut client = Client::new(request, resolver.clone(), tls, None, profile, bounds.hard())?;
     written.bind(client.progress())?;
     // Borrowed exchange future lives inside the original NAT Job future. Dropping
     // it actually drops this exclusive Client/connection, with evidence retained

@@ -412,7 +412,7 @@ pub(super) async fn run(inputs: Inputs) -> Result<Report, Cause> {
             if !paused && let Some(event)=addresses.advance(owner,&mut pils,identity.binding()?,Some(anchor))?{address_event(event,&reporter);continue;}
             if !paused && owner.transport_ready() && application.idle() && let Some(hint)=owner.take_discovered(){
                 let address=format!("udp-{}",hint.source);
-                application.validate(hint.peer,address.as_bytes(),hint.network,Bounds::new(clock.as_ref(),Duration::from_secs(30))?)?;
+                application.validate(hint.peer,address.as_bytes(),hint.network,Bounds::after(clock.as_ref(),Duration::from_secs(30))?)?;
             }
             let target=(!paused).then(||owner.next_wakeup()).flatten().and_then(|t|origin.checked_add(Duration::from_micros(t))).unwrap_or_else(||Instant::now()+Duration::from_secs(86400));
             wake.as_mut().reset(target.into());

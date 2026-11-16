@@ -12,6 +12,16 @@ pub enum Error {
     /// Actual original OS error.
     Io(io::Error),
 }
+impl From<gnunet_service_runtime::clock::BoundsError> for Error {
+    fn from(error: gnunet_service_runtime::clock::BoundsError) -> Self {
+        use gnunet_service_runtime::clock::BoundsError;
+        match error {
+            BoundsError::Deadline => Fault::Deadline.into(),
+            BoundsError::Overflow => Fault::Overflow.into(),
+            error @ BoundsError::Clock(_) => gnunet_client_host::ConnectError::from(error).into(),
+        }
+    }
+}
 impl From<Fault> for Error {
     fn from(v: Fault) -> Self {
         Self::Protocol(v)
@@ -405,7 +415,7 @@ impl Limits {
             return Err(Fault::InvalidInput.into());
         }
         for d in [self.initial_timeout, self.write_timeout, self.input_timeout] {
-            if d.is_zero() || std::time::Instant::now().checked_add(d).is_none() {
+            if d.is_zero() || tokio::time::Instant::now().checked_add(d).is_none() {
                 return Err(Fault::InvalidInput.into());
             }
         }

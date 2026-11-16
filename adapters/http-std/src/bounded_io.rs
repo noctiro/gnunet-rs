@@ -1,6 +1,6 @@
 //! Bounded original native IO for both HTTP clients and explicit accepted servers.
 use crate::{Error, Fault, SocketDiagnostic, State};
-use gnunet_service_runtime::clock::RuntimeClock;
+use gnunet_service_runtime::clock::{Bounds, BoundsError, RuntimeClock};
 use std::{
     cell::Cell,
     io,
@@ -63,42 +63,49 @@ impl Counters {
 
 /// Explicit live expiry guard. It never creates an HTTP response receipt.
 pub struct IoLease {
-    /// Exact caller-owned source clock.
-    pub clock: Arc<dyn RuntimeClock>,
-    /// Original logical expiry, or a stricter signed-publication expiry.
-    pub until: Cell<u64>,
-    /// Independent native target, only tightened by the caller.
-    pub hard: Cell<Instant>,
-    /// Earliest logical sample under which this source was observed.
-    pub checked: Cell<u64>,
+    clock: Arc<dyn RuntimeClock>,
+    bounds: Cell<Bounds>,
+    checked: Cell<u64>,
 }
 impl IoLease {
+    /// Retain one original clock and finite bounds without performing I/O.
+    #[must_use]
+    pub fn new(clock: Arc<dyn RuntimeClock>, bounds: Bounds) -> Self {
+        Self {
+            clock,
+            bounds: Cell::new(bounds),
+            checked: Cell::new(0),
+        }
+    }
+    /// Original limits, including every later tightening.
+    #[must_use]
+    pub fn bounds(&self) -> Bounds {
+        self.bounds.get()
+    }
+    /// Tighten limits and the earliest canonical observation without retagging this stream.
+    pub fn tighten(&self, expires: u64, hard: Instant, observed: u64) {
+        self.bounds.set(self.bounds.get().tightened(expires, hard));
+        self.checked.set(self.checked.get().max(observed));
+    }
     /// Refuse expired, clock-failed or retroactively retagged native IO.
     pub fn check(&self) -> io::Result<()> {
-        if Instant::now() >= self.hard.get() {
-            return Err(io::Error::new(
-                io::ErrorKind::TimedOut,
-                "original HTTP native bound",
-            ));
-        }
         let now = self
-            .clock
-            .sample()
-            .map_err(io::Error::other)?
-            .now
-            .as_micros();
-        if now >= self.until.get() {
-            return Err(io::Error::new(
-                io::ErrorKind::TimedOut,
-                "original HTTP logical bound",
-            ));
-        }
+            .bounds
+            .get()
+            .check(self.clock.as_ref())
+            .map_err(|error| match error {
+                BoundsError::Deadline => io::Error::new(io::ErrorKind::TimedOut, error),
+                other => io::Error::other(other),
+            })?;
         if now < self.checked.get() {
             return Err(io::Error::other(Fault::TimeUncertain));
         }
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests;
 /// Bound each native IO call by the original lease and exact byte allowance.
 pub struct Counted<T> {
     /// Actual original IO owner.

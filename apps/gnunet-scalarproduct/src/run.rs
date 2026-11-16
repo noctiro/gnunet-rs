@@ -261,7 +261,7 @@ async fn run(input: Inputs) -> Result<(), Failure> {
         dropped,
         mut signals,
     } = input;
-    let bounds = Bounds::new(clock.as_ref(), settings.total)?;
+    let bounds = Bounds::after(clock.as_ref(), settings.total)?;
     let role = selection.role;
     let source = EndpointSource::live(
         live,

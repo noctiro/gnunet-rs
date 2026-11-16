@@ -1,7 +1,7 @@
 //! Mature HTTP/1 and verified TLS with explicit sockets, Resolver and no spawned
 //! connection task. Proxy negotiation is bounded and tied to its original job.
 use crate::bounded_io::{Counted, Counters, IoLease};
-use crate::{Error, Fault, gate::cooperate};
+use crate::{Error, Fault};
 use gnunet_client_host::resolution::{AddressLookup, SharedResolution};
 use gnunet_service_runtime::connection::ConnectionLease;
 use std::{
@@ -367,7 +367,10 @@ async fn tcp(
     limits: HttpLimits,
 ) -> Result<Socket, Error> {
     lease.check()?;
-    let timeout = lease.hard.get().saturating_duration_since(Instant::now());
+    let timeout = lease
+        .bounds()
+        .hard()
+        .saturating_duration_since(Instant::now());
     let mut lookup = resolution
         .lookup(host.as_bytes(), timeout)?
         .ok_or(Fault::Unavailable)?;
@@ -439,7 +442,7 @@ async fn tcp(
             Err(Error::Io(error)) => last = Some(error),
             Err(error) => return Err(error),
         }
-        cooperate().await;
+        tokio::task::yield_now().await;
     }
 }
 async fn encrypted(socket: Socket, host: &str, tls: &Tls) -> Result<Socket, Error> {
@@ -619,7 +622,7 @@ async fn connect_tunnel(
             break;
         }
         if response.len().is_multiple_of(256) {
-            cooperate().await
+            tokio::task::yield_now().await
         }
     }
     let text = std::str::from_utf8(&response).map_err(|_| Fault::Malformed)?;
@@ -719,7 +722,10 @@ pub(crate) async fn socket(
             )
             .await?;
             let mut initial = Some(first_io);
-            let timeout = lease.hard.get().saturating_duration_since(Instant::now());
+            let timeout = lease
+                .bounds()
+                .hard()
+                .saturating_duration_since(Instant::now());
             let mut lookup = if proxy.kind == ProxyKind::Socks4 {
                 resolution.lookup_ipv4(host.as_bytes(), timeout)?
             } else {
@@ -762,7 +768,7 @@ pub(crate) async fn socket(
                     }
                     Err(Error::Fault(Fault::Unavailable)) => {
                         drop(io);
-                        cooperate().await;
+                        tokio::task::yield_now().await;
                     }
                     Err(error) => return Err(error),
                 }

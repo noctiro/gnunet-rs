@@ -407,7 +407,7 @@ fn record(
     }];
     let mut bytes = Zeroizing::new(vec![
         0;
-        gnsrecord::serialized_len(&record)
+        gnsrecord::serialized_len(record)
             .map_err(io::Error::other)?
     ]);
     gnsrecord::serialize(&record, &mut bytes).map_err(io::Error::other)?;

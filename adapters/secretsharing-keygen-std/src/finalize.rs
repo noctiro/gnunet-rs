@@ -13,8 +13,8 @@ use gnunet_wire::official::secretsharing as ipc;
 use std::{
     mem::{replace, size_of},
     sync::Arc,
-    time::Instant,
 };
+use tokio::time::Instant;
 
 /// Exact original dealer disposition after the real Round2 source closed.
 /// Rejected packets are not contributions and cannot mutate an accepted owner.
@@ -466,11 +466,11 @@ pub struct FinalizedParts<'id> {
 }
 
 fn check_target(bounds: Bounds, deadline: u64, clock: &dyn RuntimeClock) -> Result<(), Error> {
-    if Instant::now() >= bounds.hard {
+    if Instant::now() >= bounds.hard() {
         return Err(Fault::Deadline.into());
     }
     let now = clock.sample()?.now.as_micros();
-    if Instant::now() >= bounds.hard || now >= bounds.expires || now >= deadline {
+    if Instant::now() >= bounds.hard() || now >= bounds.expires() || now >= deadline {
         return Err(Fault::Deadline.into());
     }
     Ok(())

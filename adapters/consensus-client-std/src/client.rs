@@ -1,12 +1,13 @@
 //! Retained original JOIN/INSERT/CONCLUDE FIFO and actual523/525 receive owner.
 use crate::{
     Bounds, Cause, Epoch, Error, InsertId, Kind, Limits, Loss, Observation, Pending, Progress,
-    Receipt, budget::Bound, types::Tag,
+    Receipt, types::Tag,
 };
 use gnunet_client_host::{
     EndpointSource,
     channel::{Channel, ConnectionStep},
 };
+use gnunet_service_runtime::clock::Alarm;
 use gnunet_service_runtime::framing::{Class, OwnedFrame, ReadStep};
 use gnunet_types::Error as Fault;
 use gnunet_wire::official::consensus::{ClientRequest, ClientResponse, Join, USER_TYPE_MAX};
@@ -17,8 +18,8 @@ use std::{
     pin::Pin,
     sync::{Arc, atomic::AtomicBool},
     task::{Context, Poll},
-    time::Instant,
 };
+use tokio::time::Instant;
 /// One native original session. Waiting future cancellation preserves all cursors;
 /// explicit close destroys this exact MQ, with no private cancel frame or replay.
 pub struct Client {
@@ -29,9 +30,9 @@ pub struct Client {
     owner: Arc<()>,
     next: Option<u64>,
     epoch: Option<Epoch>,
-    overall: Bound,
-    initial: Option<Bound>,
-    input: Option<Bound>,
+    overall: Alarm,
+    initial: Option<Alarm>,
+    input: Option<Alarm>,
     queue: VecDeque<Pending>,
     queue_bytes: usize,
     queue_capacity_bytes: usize,
@@ -50,6 +51,20 @@ pub struct Client {
 enum DriveMode {
     Duplex,
     Transmit,
+}
+fn clamp_deadline(
+    original: Bounds,
+    clock: &dyn gnunet_service_runtime::clock::RuntimeClock,
+    expires: u64,
+) -> Result<Bounds, Error> {
+    original.check_native()?;
+    let bounds = Bounds::until(
+        clock,
+        gnunet_types::AbsoluteTime::from_micros(expires.min(original.expires())),
+    )?
+    .capped_by(original);
+    bounds.check(clock)?;
+    Ok(bounds)
 }
 fn encode(request: ClientRequest<'_>) -> Result<Vec<u8>, Error> {
     let n = request.encoded_len()?;
@@ -76,11 +91,11 @@ impl Client {
             return Err(Fault::Capacity.into());
         }
         let framing = limits.framing()?;
-        let overall = original.clamp(source.clock().as_ref(), join.deadline)?;
+        let overall = clamp_deadline(original, source.clock().as_ref(), join.deadline)?;
         if join.start >= join.deadline {
             return Err(Fault::InvalidInput.into());
         }
-        let initial = Bound::phase(source.clock().as_ref(), limits.initial_timeout, overall)?;
+        let initial = Alarm::phase(source.clock().as_ref(), limits.initial_timeout, overall)?;
         let request = encode(ClientRequest::Join(join))?;
         let channel = Channel::new(source.duplicate()?, framing)?;
         let mut this = Self {
@@ -91,7 +106,7 @@ impl Client {
             owner: Arc::new(()),
             next: Some(1),
             epoch: None,
-            overall: Bound::new(overall),
+            overall: Alarm::new(overall),
             initial: Some(initial),
             input: None,
             queue: VecDeque::new(),
@@ -221,12 +236,12 @@ impl Client {
         {
             return Err(Fault::Capacity.into());
         }
-        let bound = Bound::phase(
+        let bound = Alarm::phase(
             self.source.clock().as_ref(),
             self.limits.write_timeout,
-            self.overall.target,
+            self.overall.bounds(),
         )?;
-        let original = bound.target;
+        let original = bound.bounds();
         let length = bytes.len();
         let capacity = bytes.capacity();
         self.queue.push_back(Pending {
@@ -337,24 +352,17 @@ impl Client {
         if self.closed {
             return Err(Fault::Closed.into());
         }
-        let hard = self.native_deadline();
-        if Instant::now() >= hard {
-            return Err(Fault::Deadline.into());
-        }
-        let mut expires = self.overall.target.expires;
-        for b in [self.initial.as_ref(), self.input.as_ref()]
+        let bounds = [self.initial.as_ref(), self.input.as_ref()]
             .into_iter()
             .flatten()
-        {
-            expires = expires.min(b.target.expires);
-        }
-        for p in &self.queue {
-            expires = expires.min(p.original.expires);
-        }
-        let now = self.source.clock().sample()?.now.as_micros();
-        if now >= expires || Instant::now() >= hard {
-            return Err(Fault::Deadline.into());
-        }
+            .fold(self.overall.bounds(), |bounds, phase| {
+                bounds.capped_by(phase.bounds())
+            });
+        let bounds = self
+            .queue
+            .iter()
+            .fold(bounds, |bounds, pending| bounds.capped_by(pending.original));
+        bounds.check(self.source.clock().as_ref())?;
         Ok(())
     }
     fn native(&mut self, cx: &mut Context<'_>) -> bool {
@@ -364,22 +372,22 @@ impl Client {
         }
         let timer = self
             .alarm
-            .get_or_insert_with(|| Box::pin(tokio::time::sleep_until(at.into())));
-        timer.as_mut().reset(at.into());
+            .get_or_insert_with(|| Box::pin(tokio::time::sleep_until(at)));
+        timer.as_mut().reset(at);
         timer.as_mut().poll(cx).is_ready()
     }
     /// Earliest original native target, usable while external output is blocked.
     #[must_use]
     pub fn native_deadline(&self) -> Instant {
-        let mut at = self.overall.target.hard;
+        let mut at = self.overall.bounds().hard();
         for b in [self.initial.as_ref(), self.input.as_ref()]
             .into_iter()
             .flatten()
         {
-            at = at.min(b.target.hard);
+            at = at.min(b.bounds().hard());
         }
         for p in &self.queue {
-            at = at.min(p.original.hard);
+            at = at.min(p.original.hard());
         }
         at
     }
@@ -581,10 +589,10 @@ impl Client {
             }
             Poll::Ready(Ok(ReadStep::Progress { bytes, .. })) => {
                 if bytes > 0 && self.input.is_none() {
-                    self.input = Some(Bound::phase(
+                    self.input = Some(Alarm::phase(
                         self.source.clock().as_ref(),
                         self.limits.input_timeout,
-                        self.overall.target,
+                        self.overall.bounds(),
                     )?);
                 }
                 self.partial_input = self

@@ -15,6 +15,7 @@ enum Stage {
     Format,
     Lint,
     Tools,
+    Profiles,
     Portable,
     Runtime,
     Test,
@@ -26,11 +27,12 @@ const DEFAULT: &[Stage] = &[
     Stage::Format,
     Stage::Tools,
     Stage::Lint,
+    Stage::Profiles,
     Stage::Portable,
     Stage::Test,
     Stage::Embedded,
 ];
-const USAGE: &str = "expected verify [all|format|lint|tools|portable|runtime|test|embedded|reference|daemon-reference]; reference groups require GNUNET_REFERENCE_SOURCE; daemon-reference also requires GNUNET_REFERENCE_BUILD";
+const USAGE: &str = "expected verify [all|format|lint|tools|profiles|portable|runtime|test|embedded|reference|daemon-reference]; reference groups require GNUNET_REFERENCE_SOURCE; daemon-reference also requires GNUNET_REFERENCE_BUILD";
 
 fn stages(group: Option<&str>) -> CheckResult<Vec<Stage>> {
     Ok(match group {
@@ -38,6 +40,7 @@ fn stages(group: Option<&str>) -> CheckResult<Vec<Stage>> {
         Some("format") => vec![Stage::Format],
         Some("lint") => vec![Stage::Lint],
         Some("tools") => vec![Stage::Tools],
+        Some("profiles") => vec![Stage::Profiles],
         Some("portable") => vec![Stage::Portable],
         Some("runtime") => vec![Stage::Runtime],
         Some("test") => vec![Stage::Test],
@@ -83,29 +86,8 @@ fn commands(stage: Stage) -> Vec<Vec<&'static str>> {
                 "--locked",
             ],
         ],
+        Stage::Profiles => crate::profiles::commands(),
         Stage::Runtime => vec![
-            vec![
-                "cargo",
-                "check",
-                "-p",
-                "gnunet-cli",
-                "--no-default-features",
-                "--features",
-                "fs",
-                "--all-targets",
-                "--locked",
-            ],
-            vec![
-                "cargo",
-                "check",
-                "-p",
-                "gnunet-program-host",
-                "--no-default-features",
-                "--features",
-                "service-runtime",
-                "--all-targets",
-                "--locked",
-            ],
             vec![
                 "cargo",
                 "test",
@@ -539,6 +521,7 @@ mod tests {
         check_platform(
             &[
                 Stage::Portable,
+                Stage::Profiles,
                 Stage::Runtime,
                 Stage::Format,
                 Stage::Embedded,
@@ -573,6 +556,7 @@ mod tests {
             ("format", Stage::Format),
             ("lint", Stage::Lint),
             ("tools", Stage::Tools),
+            ("profiles", Stage::Profiles),
             ("portable", Stage::Portable),
             ("runtime", Stage::Runtime),
             ("test", Stage::Test),

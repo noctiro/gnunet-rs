@@ -144,7 +144,7 @@ fn client(
     let path = directory.0.join("s");
     let listener = UnixListener::bind(&path)?;
     let source = EndpointSource::unix(path);
-    let bounds = Bounds::new(source.clock().as_ref(), Duration::from_secs(30))?;
+    let bounds = Bounds::after(source.clock().as_ref(), Duration::from_secs(30))?;
     let attribute = vec![b'a'; if large { 65_400 } else { 1 }];
     let mut key = [3; ipc::KEY_BYTES];
     key[..4].copy_from_slice(&ipc::EDKEY.to_be_bytes());
@@ -196,7 +196,7 @@ fn native_partial_request_pending_still_observes_original_read_half_eof() -> Res
             .write
             .as_ref()
             .ok_or("original write target missing")?
-            .targets;
+            .bounds();
         peer.shutdown().await?;
         client.io_class = 0; // Pending TX must fall through to the same original RX.
         let (loss, last) = lost(&mut client).await?;
@@ -207,9 +207,9 @@ fn native_partial_request_pending_still_observes_original_read_half_eof() -> Res
             || loss.receipt.request_written
             || loss.receipt.request_bytes != before.request_bytes
             || loss.receipt.response_bytes != 0
-            || client.bounds().hard != original.hard
-            || client.bounds().expires != original.expires
-            || Instant::now() >= write_target.hard
+            || client.bounds().hard() != original.hard()
+            || client.bounds().expires() != original.expires()
+            || Instant::now() >= write_target.hard()
             || !client.closed
         {
             return Err(
@@ -244,8 +244,8 @@ fn complete_expected_reply_before_whole_request_is_a_refusal() -> Result<(), Fai
             || loss.receipt.written_bytes != last.written_bytes
             || loss.receipt.written_bytes < before.written_bytes
             || loss.receipt.request_bytes != before.request_bytes
-            || client.bounds().hard != original.hard
-            || client.bounds().expires != original.expires
+            || client.bounds().hard() != original.hard()
+            || client.bounds().expires() != original.expires()
             || loss.receipt.response_bytes != response.len()
             || loss.receipt.epoch.as_ref() != Some(&epoch)
             || !client.closed

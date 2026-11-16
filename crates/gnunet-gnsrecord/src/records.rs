@@ -1,5 +1,6 @@
 //! Official record framing and the reference implementation's padding rule.
 use crate::{RecordFlags, RecordType};
+use core::borrow::Borrow;
 use gnunet_types::Error;
 
 /// Bytes in one `NetworkRecord`: expiration64, data size16, flags16, type32.
@@ -113,13 +114,27 @@ fn unpadded_len(records: &[RecordData<'_>]) -> Result<usize, Error> {
 ///
 /// The first-record rule matches v0.29.1 even for mixed sets. This helper does
 /// not validate the higher-level rule that a delegation is normally standalone.
-pub fn serialized_len(records: &[RecordData<'_>]) -> Result<usize, Error> {
-    let length = unpadded_len(records)?;
-    if length == 0
-        || records
-            .first()
-            .is_some_and(|record| record.record_type.is_zone_delegation())
-    {
+/// Borrowed collections and single-pass record views need no temporary allocation.
+///
+/// # Errors
+/// Returns an error when a record value exceeds its wire length or the total overflows.
+pub fn serialized_len<'data, R>(records: impl IntoIterator<Item = R>) -> Result<usize, Error>
+where
+    R: Borrow<RecordData<'data>>,
+{
+    let mut records = records.into_iter();
+    let Some(first) = records.next() else {
+        return Ok(0);
+    };
+    let first = first.borrow();
+    let unpadded = first.record_type.is_zone_delegation();
+    let mut length = first.encoded_len()?;
+    for record in records {
+        length = length
+            .checked_add(record.borrow().encoded_len()?)
+            .ok_or(Error::Overflow)?;
+    }
+    if unpadded {
         return Ok(length);
     }
     length.checked_next_power_of_two().ok_or(Error::Overflow)

@@ -93,12 +93,12 @@ fn check(
     peer: [u8; 32],
     source: Bounds,
 ) -> io::Result<()> {
-    if Instant::now() >= source.hard {
+    if Instant::now() >= source.hard().into_std() {
         return Err(io::Error::other(Fault::Deadline));
     }
     let now = clock.sample().map_err(io::Error::other)?.now.as_micros();
     let native = Instant::now();
-    if native >= source.hard || now >= source.expires {
+    if native >= source.hard().into_std() || now >= source.expires() {
         return Err(io::Error::other(Fault::Deadline));
     }
     let live = live.lock().map_err(|_| io::Error::other(Fault::Conflict))?;
@@ -140,10 +140,10 @@ fn capped(
         present = true;
         // Opening targets belong to the shared native epoch. CLIENT's Unix
         // target remains unchanged; no elapsed value may truncate it.
-        bounds.hard = bounds
-            .hard
-            .min(hard)
-            .min(timebase.native_bound(original.expires)?.into_std());
+        bounds = bounds.tightened(
+            bounds.expires(),
+            tokio::time::Instant::from_std(hard).min(timebase.native_bound(original.expires)?),
+        );
     }
     if !present {
         return Err(Fault::Stale.into());
@@ -264,7 +264,7 @@ impl<'node, 'app> Driver<'node, 'app> {
             } else {
                 if let Some(bounds) = self.jobs[index].bounds {
                     let cap = capped(&self.next, &self.timebase, peer, bounds)?;
-                    if cap.expires < bounds.expires || cap.hard < bounds.hard {
+                    if cap.expires() < bounds.expires() || cap.hard() < bounds.hard() {
                         // An established authorizer may have retired, leaving
                         // shorter original openings. Retire before any later IO;
                         // never silently retag its already admitted old frame.
@@ -361,7 +361,7 @@ impl<'node, 'app> Driver<'node, 'app> {
                 &self.original,
                 &self.timebase,
                 peer,
-                Bounds::new(self.clock.as_ref(), self.lease)?,
+                Bounds::after(self.clock.as_ref(), self.lease)?,
             )?;
             let live = self.live.clone();
             let clock = self.clock.clone();
@@ -438,7 +438,7 @@ impl<'node, 'app> Driver<'node, 'app> {
         let next = self
             .jobs
             .iter()
-            .map(|j| j.bounds.map_or(j.retry, |b| b.hard))
+            .map(|j| j.bounds.map_or(j.retry, |b| b.hard().into_std()))
             .min();
         if let Some(next) = next {
             if self.timer.as_ref().is_none_or(|(at, _)| *at != next) {
@@ -526,10 +526,10 @@ mod tests {
         let hard = Instant::now()
             .checked_add(Duration::from_secs(3600))
             .ok_or(Fault::Overflow)?;
-        let bounds = Bounds {
-            expires: 10_000_000,
-            hard,
-        };
+        let bounds = Bounds::from_targets(
+            gnunet_types::AbsoluteTime::from_micros(10_000_000),
+            hard.into(),
+        )?;
         let live = Mutex::new(vec![Live {
             peer: [7; 32],
             opening: Some(hard),

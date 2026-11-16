@@ -18,16 +18,17 @@ use std::{
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
-    time::{Duration, Instant},
+    time::Duration,
 };
+use tokio::time::Instant;
 
 // Local-quorum IO uses the exact original targets after provider work too.
 fn target_time(bounds: Bounds, clock: &dyn RuntimeClock) -> Result<u64, Fault> {
-    if Instant::now() >= bounds.hard {
+    if Instant::now() >= bounds.hard() {
         return Err(Fault::Deadline);
     }
     let now = clock.sample()?.now.as_micros();
-    if Instant::now() >= bounds.hard || now >= bounds.expires {
+    if Instant::now() >= bounds.hard() || now >= bounds.expires() {
         return Err(Fault::Deadline);
     }
     Ok(now)
@@ -129,7 +130,7 @@ impl<'a> Decrypt<'a> {
         let clock = sources.pils.clock();
         let native = Instant::now();
         let now = clock.sample()?.now.as_micros();
-        let expires = original.expires.min(request.deadline);
+        let expires = original.expires().min(request.deadline);
         let remaining = expires
             .checked_sub(now)
             .filter(|v| *v != 0)
@@ -137,11 +138,11 @@ impl<'a> Decrypt<'a> {
         let hard = native
             .checked_add(Duration::from_micros(remaining))
             .ok_or(Fault::Overflow)?
-            .min(original.hard);
+            .min(original.hard());
         if Instant::now() >= hard {
             return Err(Fault::Deadline.into());
         }
-        let bounds = Bounds { expires, hard };
+        let bounds = Bounds::from_targets(gnunet_types::AbsoluteTime::from_micros(expires), hard)?;
         let threshold = usize::from(request.share()?.threshold());
         let local_threshold_one = threshold == 1;
         if local_threshold_one && request.start >= expires {
@@ -396,11 +397,11 @@ impl<'a> Decrypt<'a> {
         if self.closed {
             return Err(Fault::Closed.into());
         }
-        if Instant::now() >= self.bounds.hard {
+        if Instant::now() >= self.bounds.hard() {
             return Err(Fault::Deadline.into());
         }
         if self.timer.is_none() {
-            self.timer = Some(Box::pin(tokio::time::sleep_until(self.bounds.hard.into())));
+            self.timer = Some(Box::pin(tokio::time::sleep_until(self.bounds.hard())));
         }
         if self
             .timer
@@ -432,7 +433,7 @@ impl<'a> Decrypt<'a> {
         self.native(cx)?;
         let now = self.clock.sample()?.now.as_micros();
         self.native(cx)?;
-        if now >= self.bounds.expires {
+        if now >= self.bounds.expires() {
             return Err(Fault::Deadline.into());
         }
         if let Some(original) = self.identity {
@@ -1079,9 +1080,9 @@ impl<'a> Decrypt<'a> {
                 Ok(())
             };
             self.pils
-                .poll_guarded(cx, Some(bounds.hard.into()), &mut before_io)
+                .poll_guarded(cx, Some(bounds.hard()), &mut before_io)
         } else {
-            let mut wait = std::pin::pin!(self.pils.drive(Some(self.bounds.hard.into())));
+            let mut wait = std::pin::pin!(self.pils.drive(Some(self.bounds.hard())));
             wait.as_mut().poll(cx)
         };
         let mut activity = false;

@@ -19,7 +19,6 @@ unsafe_code = "deny"
 unsafe_op_in_unsafe_fn = "deny"
 unfulfilled_lint_expectations = "deny"
 unused_must_use = "deny"
-warnings = "deny"
 
 [workspace.lints.clippy]
 allow_attributes = "deny"

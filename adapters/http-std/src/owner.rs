@@ -2,12 +2,11 @@ use crate::{
     Counters, Error, Fault, HttpLimits, IoLease, Job, Method, Progress, Proxy, Redirects, Request,
     SocketDiagnostic, Tls, WireReport,
     exchange::{Exchange, exchange},
-    gate::{Gate, cooperate},
     transport::{basic, socket, unescape, validate_uri},
 };
 use gnunet_client_host::resolution::SharedResolution;
+use gnunet_service_runtime::clock::DeadlineGuard;
 use std::{
-    cell::Cell,
     fmt,
     future::{Future, poll_fn},
     pin::Pin,
@@ -115,7 +114,7 @@ type Task = Pin<Box<dyn Future<Output = Result<Finished, Error>>>>;
 /// preserves the same IO cursor. Actual cancellation drops its whole connection.
 pub struct Client {
     request: Request,
-    gate: Gate,
+    gate: DeadlineGuard,
     task: Option<Task>,
     result: Option<ObservedResponse>,
     counts: Arc<Counters>,
@@ -161,9 +160,12 @@ impl Client {
         if Instant::now() >= original_hard {
             return Err(Fault::Deadline.into());
         }
-        let mut gate = Gate::new(clock.clone(), request.until())?;
-        gate.hard = gate.hard.min(original_hard);
-        if Instant::now() >= gate.hard {
+        let mut gate = DeadlineGuard::until(
+            clock.clone(),
+            gnunet_types::AbsoluteTime::from_micros(request.until()),
+        )?;
+        gate.tighten(request.until(), original_hard);
+        if Instant::now() >= gate.bounds().hard() {
             return Err(Fault::Deadline.into());
         }
         let mut url = validate_uri(request.uri())?;
@@ -177,12 +179,7 @@ impl Client {
         } else {
             None
         };
-        let lease = Rc::new(IoLease {
-            clock,
-            until: Cell::new(request.until()),
-            hard: Cell::new(gate.hard),
-            checked: Cell::new(0),
-        });
+        let lease = Rc::new(IoLease::new(clock, gate.bounds()));
         let progress = Progress::new(request.job().clone());
         let counts = Arc::new(Counters::reserved(limits.probes, progress.state.clone())?);
         let recording = counts.clone();
@@ -242,7 +239,7 @@ impl Client {
                         return Err(Fault::PermissionDenied.into());
                     }
                     url = validate_uri(next.as_str().as_bytes())?;
-                    cooperate().await;
+                    tokio::task::yield_now().await;
                     continue;
                 }
                 return Ok(Finished {
@@ -277,7 +274,7 @@ impl Client {
     }
     /// Immutable native target retained across all negotiation/redirect phases.
     pub fn hard_deadline(&self) -> Instant {
-        self.gate.hard
+        self.gate.bounds().hard()
     }
     /// Exact native byte/socket counts; TLS plaintext is reported separately.
     pub fn wire(&self) -> WireReport {
@@ -318,7 +315,7 @@ impl Client {
         if self.stopped {
             return Poll::Ready(Err(Fault::Closed.into()));
         }
-        match self.gate.poll(cx) {
+        match self.gate.poll(cx).map_err(Error::from) {
             Poll::Pending => return Poll::Pending,
             Poll::Ready(Err(e)) => {
                 if self.result.is_some() {
@@ -378,7 +375,7 @@ impl Client {
         {
             return self.finish_observed(None);
         }
-        match self.gate.poll(cx) {
+        match self.gate.poll(cx).map_err(Error::from) {
             Poll::Pending => return Poll::Pending,
             Poll::Ready(Err(e)) => return self.finish_observed(Some(e)),
             Poll::Ready(Ok(_)) => {}

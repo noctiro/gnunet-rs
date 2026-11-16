@@ -68,7 +68,7 @@ impl<'id> Session<'id> {
         let mut i = 0;
         while i < self.writes.len() {
             let (write, bounds) = self.writes[i];
-            if Instant::now() >= bounds.hard || now.is_some_and(|n| n >= bounds.expires) {
+            if Instant::now() >= bounds.hard() || now.is_some_and(|n| n >= bounds.expires()) {
                 self.writes.swap_remove(i);
                 match self.registration.cancel_write(write)? {
                     client::Cancel::Unsent(end) => {
@@ -133,20 +133,22 @@ impl<'id> Session<'id> {
         }
         let native = Instant::now();
         for row in &mut self.stun {
-            if native >= row.request.bounds().hard {
+            if native >= row.request.bounds().hard() {
                 row.request.cancel();
             }
         }
-        self.stun.retain(|r| native < r.request.bounds().hard);
+        self.stun.retain(|r| native < r.request.bounds().hard());
         let due = self
             .stun
             .iter()
-            .map(|r| r.request.bounds().hard)
-            .chain(self.writes.iter().map(|(_, b)| b.hard))
+            .map(|r| r.request.bounds().hard())
+            .chain(self.writes.iter().map(|(_, b)| b.hard()))
             .chain((self.next_stun > native).then_some(self.next_stun))
             .min();
         if let Some(due) = due {
-            self.timer.as_mut().reset(due.min(self.gate.bounds().hard));
+            self.timer
+                .as_mut()
+                .reset(due.min(self.gate.bounds().hard()));
             let _wake = self.timer.as_mut().poll(cx);
         }
         match self.gate.poll(cx) {
@@ -191,7 +193,7 @@ impl<'id> Session<'id> {
                 let write = self.registration.reverse(
                     RawAddress::decode(&lb[..ln], self.profile)?,
                     RawAddress::decode(&rb[..rn], self.profile)?,
-                    bounds.expires,
+                    bounds.expires(),
                 )?;
                 self.writes.push((write, bounds));
                 *remote_admitted = true;
@@ -214,10 +216,7 @@ impl<'id> Session<'id> {
                     }
                     let remaining = self.gate.bounds();
                     let b = Bounds::after(&**self.gate.clock(), request_timeout)?;
-                    let bounds = Bounds {
-                        expires: b.expires.min(remaining.expires),
-                        hard: b.hard.min(remaining.hard),
-                    };
+                    let bounds = b.capped_by(remaining);
                     match StunRequest::start(
                         resolution.clone(),
                         self.gate.clock().clone(),
@@ -311,7 +310,7 @@ impl<'id> Session<'id> {
                             let write = self.registration.stun(
                                 RawAddress::decode(&raw[..n], self.profile)?,
                                 packet,
-                                row.request.bounds().expires,
+                                row.request.bounds().expires(),
                             )?;
                             self.writes.push((write, row.request.bounds()));
                             self.registration_first = true;
@@ -427,9 +426,9 @@ pub(super) async fn nat_monitor(
             },
             Profiles::same(profile),
             Deadlines {
-                send_until: send.expires.min(bounds.expires),
+                send_until: send.expires().min(bounds.expires()),
                 first_input_until: None,
-                until: bounds.expires,
+                until: bounds.expires(),
             },
             Default::default(),
         )?;
@@ -442,7 +441,7 @@ pub(super) async fn nat_monitor(
             gate: Gate::new(clock.clone(), bounds)?,
             stun: Vec::new(),
             next_stun: Instant::now(),
-            timer: Box::pin(tokio::time::sleep_until(bounds.hard)),
+            timer: Box::pin(tokio::time::sleep_until(bounds.hard())),
             buffer,
             profile,
             writes: Vec::new(),

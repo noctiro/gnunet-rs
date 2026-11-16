@@ -1,96 +1,42 @@
-//! Original logical/native dual bound with independent native alarms before
-//! canonical clock stabilization. A racing clock cannot starve hard shutdown.
+//! Original finite NAT work with shared deadline checks and exclusive wake ownership.
 use crate::Error;
 /// Original process-clock and native targets shared with helper admission.
 pub use gnunet_service_runtime::clock::{Bounds, BoundsError};
-use gnunet_service_runtime::clock::{ClockSubscription, RuntimeClock};
+use gnunet_service_runtime::clock::{DeadlineGuard, RuntimeClock};
 use gnunet_types::Error as Fault;
 use std::{
     future::{Future, poll_fn},
-    pin::Pin,
     sync::Arc,
     task::{Context, Poll},
-    time::Duration,
 };
-use tokio::time::{Instant, Sleep};
-/// One exclusive logical waiter plus exact native hard/earliest logical alarms.
-/// Every blocked IO must be polled through this owner; dropping it cancels only
-/// this logical waiter/timer, not some other original operation or socket.
-pub struct Gate {
-    clock: Arc<dyn RuntimeClock>,
-    subscription: Box<dyn ClockSubscription>,
-    revision: u64,
-    bounds: Bounds,
-    hard: Pin<Box<Sleep>>,
-    logical: Pin<Box<Sleep>>,
-}
+/// NAT error mapping and retained-result execution over one shared deadline guard.
+pub struct Gate(DeadlineGuard);
 impl Gate {
-    /// Reserve exactly one clock waiter for an admitted original operation.
+    /// Reserve exactly one clock waiter for the unchanged original targets.
     pub fn new(clock: Arc<dyn RuntimeClock>, bounds: Bounds) -> Result<Self, Error> {
-        let now = bounds.check(&*clock)?;
-        let subscription = clock.subscribe().map_err(Error::Clock)?;
-        let revision = clock.sample().map_err(Error::Clock)?.revision;
-        let wake = Instant::now()
-            .checked_add(Duration::from_micros(bounds.expires - now))
-            .ok_or(Fault::Overflow)?
-            .min(bounds.hard);
-        Ok(Self {
-            clock,
-            subscription,
-            revision,
-            bounds,
-            hard: Box::pin(tokio::time::sleep_until(bounds.hard)),
-            logical: Box::pin(tokio::time::sleep_until(wake)),
-        })
+        DeadlineGuard::new(clock, bounds)
+            .map(Self)
+            .map_err(Into::into)
     }
     /// Original source clock, shared by identity with the selected Resolver.
     pub fn clock(&self) -> &Arc<dyn RuntimeClock> {
-        &self.clock
+        self.0.clock()
     }
     /// Original immutable targets.
     pub const fn bounds(&self) -> Bounds {
-        self.bounds
+        self.0.bounds()
     }
-    /// Immediate admission/receipt guard. Independent hard check is first.
+    /// Check both original targets at the current effect boundary.
     pub fn check(&self) -> Result<u64, Error> {
-        self.bounds.check(&*self.clock).map_err(Into::into)
+        self.0.check().map_err(Into::into)
     }
-    /// Register hard alarm first, then stabilize the canonical source and
-    /// register the absolute logical target (including actual rollback).
+    /// Stabilize the original source while retaining its independent native bound.
     pub fn poll(&mut self, cx: &mut Context<'_>) -> Poll<Result<u64, Error>> {
-        if Instant::now() >= self.bounds.hard || self.hard.as_mut().poll(cx).is_ready() {
-            return Poll::Ready(Err(Fault::Deadline.into()));
-        }
-        match self.subscription.poll_changed(cx, self.revision) {
-            Poll::Ready(Err(e)) => return Poll::Ready(Err(Error::Clock(e))),
-            Poll::Ready(Ok(sample)) => self.revision = sample.revision,
-            Poll::Pending => {}
-        }
-        let sample = self.clock.sample().map_err(Error::Clock)?;
-        match self.subscription.poll_changed(cx, sample.revision) {
-            Poll::Ready(Err(e)) => return Poll::Ready(Err(Error::Clock(e))),
-            Poll::Ready(Ok(_)) => {
-                cx.waker().wake_by_ref();
-                return Poll::Pending;
-            }
-            Poll::Pending => {}
-        }
-        self.revision = sample.revision;
-        if Instant::now() >= self.bounds.hard || sample.now.as_micros() >= self.bounds.expires {
-            return Poll::Ready(Err(Fault::Deadline.into()));
-        }
-        let wake = Instant::now()
-            .checked_add(Duration::from_micros(
-                self.bounds.expires - sample.now.as_micros(),
-            ))
-            .ok_or(Fault::Overflow)?
-            .min(self.bounds.hard);
-        self.logical.as_mut().reset(wake);
-        if self.logical.as_mut().poll(cx).is_ready() {
-            cx.waker().wake_by_ref();
-            return Poll::Pending;
-        }
-        Poll::Ready(Ok(sample.now.as_micros()))
+        self.0.poll(cx).map(|result| {
+            result
+                .map(|sample| sample.now.as_micros())
+                .map_err(Into::into)
+        })
     }
     /// Run real bounded IO, retaining an actual completed result during a clock
     /// revision race instead of polling an already-completed future again.

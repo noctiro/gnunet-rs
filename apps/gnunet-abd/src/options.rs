@@ -283,7 +283,7 @@ impl Arguments {
         };
         if lifetime.is_zero()
             || lifetime.as_micros() >= u128::from(u64::MAX)
-            || std::time::Instant::now().checked_add(lifetime).is_none()
+            || tokio::time::Instant::now().checked_add(lifetime).is_none()
         {
             return Err("--timeout must be finite and representable".into());
         }
@@ -391,7 +391,7 @@ impl Settings {
         let name_bytes = size(b"NAME_BYTES", gnunet_abd::Limits::default().name_bytes)?;
         if life == 0
             || life == u64::MAX
-            || std::time::Instant::now().checked_add(operation).is_none()
+            || tokio::time::Instant::now().checked_add(operation).is_none()
             || !(1..=(64 << 20)).contains(&output_bytes)
             || !(1..=(4 << 20)).contains(&text_bytes)
             || !(1..=65535).contains(&records)

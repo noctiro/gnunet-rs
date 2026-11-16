@@ -1,10 +1,11 @@
 //! Bounded absolute counter snapshots on the actual STATISTICS MQ. No SET ACK is
 //! invented; retired partial frames are reported before a fresh snapshot intent.
-use crate::{Error, Fault, gate::Gate};
+use crate::{Error, Fault};
 use gnunet_client_host::{
     EndpointSource,
     channel::{Channel, ConnectionStep},
 };
+use gnunet_service_runtime::clock::DeadlineGuard;
 use gnunet_service_runtime::framing::{Accounting, Budget, Class, Limits, OwnedFrame, ReadStep};
 use std::{
     task::{Context, Poll},
@@ -104,7 +105,7 @@ struct Pending {
     metric: usize,
     value: u64,
     bytes: usize,
-    gate: Gate,
+    gate: DeadlineGuard,
 }
 pub(crate) struct Statistics {
     channel: Channel<Tag>,
@@ -200,7 +201,7 @@ impl Statistics {
             return Poll::Ready(Ok(()));
         }
         if let Some(pending) = &mut self.pending {
-            match pending.gate.poll(cx) {
+            match pending.gate.poll(cx).map_err(Error::from) {
                 Poll::Pending => return Poll::Pending,
                 Poll::Ready(Err(error)) => {
                     self.retire(Fault::Deadline, observe);
@@ -256,11 +257,17 @@ impl Statistics {
                 u64::try_from(self.operation.as_micros()).map_err(|_| Fault::Overflow)?;
             let until = now.saturating_add(duration).min(self.until);
             let native_start = Instant::now();
-            let mut gate = Gate::new(self.clock.clone(), until)?;
-            gate.hard = gate.hard.min(self.hard).min(
-                native_start
-                    .checked_add(self.operation)
-                    .ok_or(Fault::Overflow)?,
+            let mut gate = DeadlineGuard::until(
+                self.clock.clone(),
+                gnunet_types::AbsoluteTime::from_micros(until),
+            )?;
+            gate.tighten(
+                until,
+                self.hard.min(
+                    native_start
+                        .checked_add(self.operation)
+                        .ok_or(Fault::Overflow)?,
+                ),
             );
             let tag = Tag {
                 epoch: self.epoch,

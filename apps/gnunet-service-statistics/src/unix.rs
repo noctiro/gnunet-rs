@@ -35,7 +35,7 @@ pub(super) fn run() -> Result<ExitCode, Failure> {
     let mut logger = Logger::new(b"statistics", std::process::id(), true)?;
     let selected = match service::prepare(
         b"statistics",
-        &gnunet::config::ProjectData::default(),
+        &gnunet_config::ProjectData::default(),
         std::env::args_os(),
         &Environment::capture(),
         &mut logger,
@@ -147,7 +147,7 @@ pub(super) fn run() -> Result<ExitCode, Failure> {
                     clock: Arc::new(clock.clone()),
                     reports: &reports,
                 },
-                || std::future::ready(child.ready().map_err(gnunet::ipc::IpcError::Io)),
+                || std::future::ready(child.ready().map_err(gnunet_ipc_unix::IpcError::Io)),
             ))
         })()
         .map_err(|source| Box::new(PhaseFailure { stage, source }) as Failure);

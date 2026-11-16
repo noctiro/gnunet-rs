@@ -40,9 +40,9 @@ pub(super) async fn auto(
             source,
             config,
             Deadlines {
-                send_until: until.expires,
+                send_until: until.expires(),
                 first_input_until: None,
-                until: until.expires,
+                until: until.expires(),
             },
             Default::default(),
         )?)

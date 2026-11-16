@@ -1,5 +1,6 @@
 //! Explicit registration recovery after observing the original physical loss.
 use super::*;
+use gnunet_service_runtime::clock::Alarm;
 
 pub(super) struct Registration {
     pub port: [u8; 64],
@@ -75,7 +76,7 @@ impl Line {
         }
         let registration = self.registration.as_ref().ok_or(Fault::Conflict)?;
         let port = registration.port;
-        let original = self.overall.targets;
+        let original = self.overall.bounds();
         let established = self.registration_established();
         let unconfirmed = (!established).then_some((registration.initial, self.initializer.bounds));
         original.check(self.source.clock().as_ref())?;
@@ -92,12 +93,12 @@ impl Line {
             .ok_or(Fault::Conflict)?
             .established = established;
         if let Some((initial, write)) = unconfirmed {
-            next.initial = Some(Bound::new(initial));
+            next.initial = Some(Alarm::new(initial));
             next.registration.as_mut().ok_or(Fault::Conflict)?.initial = initial;
             next.initializer.bounds = write;
             let pending = next.pending.front_mut().ok_or(Fault::Conflict)?;
             pending.receipt.bounds = write;
-            pending.bound = Bound::new(write);
+            pending.bound = Alarm::new(write);
         }
         next.check()?;
         Ok(next)
@@ -115,7 +116,7 @@ mod tests {
             std::path::PathBuf::from("/no-connection-created-by-this-constructor"),
             Arc::new(SystemClock),
         );
-        let whole = Bounds::new(source.clock().as_ref(), Duration::from_secs(60))?;
+        let whole = Bounds::after(source.clock().as_ref(), Duration::from_secs(60))?;
         Line::register(source, &[7; 64], Limits::default(), whole)
     }
 
@@ -131,7 +132,7 @@ mod tests {
         let _entered = runtime.enter();
         let mut old = line()?;
         let original = old.bounds();
-        let initial = old.initial.as_ref().ok_or(Fault::NotReady)?.targets;
+        let initial = old.initial.as_ref().ok_or(Fault::NotReady)?.bounds();
         let write = old.initializer.bounds;
         let operation = old.initializer.operation.clone();
         let stale_call = Call {
@@ -142,22 +143,26 @@ mod tests {
         let loss = old.lost(Cause::Eof);
         assert!(!loss.initializer.complete && loss.initializer.written_bytes == 0);
         let mut next = old.reregister()?;
-        assert_eq!(next.bounds().hard, original.hard);
-        assert_eq!(next.bounds().expires, original.expires);
+        assert_eq!(next.bounds().hard(), original.hard());
+        assert_eq!(next.bounds().expires(), original.expires());
         assert_eq!(
-            next.initial.as_ref().ok_or(Fault::NotReady)?.targets.hard,
-            initial.hard
+            next.initial
+                .as_ref()
+                .ok_or(Fault::NotReady)?
+                .bounds()
+                .hard(),
+            initial.hard()
         );
         assert_eq!(
             next.initial
                 .as_ref()
                 .ok_or(Fault::NotReady)?
-                .targets
-                .expires,
-            initial.expires
+                .bounds()
+                .expires(),
+            initial.expires()
         );
-        assert_eq!(next.initializer.bounds.hard, write.hard);
-        assert_eq!(next.initializer.bounds.expires, write.expires);
+        assert_eq!(next.initializer.bounds.hard(), write.hard());
+        assert_eq!(next.initializer.bounds.expires(), write.expires());
         assert_ne!(next.initializer.operation, operation);
         assert!(matches!(
             next.info(&stale_call),
@@ -203,13 +208,14 @@ mod tests {
         let loss = old.lost(Cause::Eof);
         assert!(loss.initializer.complete);
         let mut next = old.reregister()?;
-        assert_eq!(next.bounds().hard, whole.hard);
-        assert_eq!(next.bounds().expires, whole.expires);
+        assert_eq!(next.bounds().hard(), whole.hard());
+        assert_eq!(next.bounds().expires(), whole.expires());
         assert!(!next.initializer.complete && next.initializer.written_bytes == 0);
-        assert!(next.initializer.bounds.hard <= whole.hard);
+        assert!(next.initializer.bounds.hard() <= whole.hard());
         // An established phone remains established when a later physical
         // registration times out without any call/input/control admitted.
-        next.initial.as_mut().ok_or(Fault::NotReady)?.targets.hard = Instant::now();
+        let initial = next.initial.as_mut().ok_or(Fault::NotReady)?;
+        initial.tighten(initial.bounds().tightened(u64::MAX, Instant::now()));
         assert!(matches!(
             next.check(),
             Err(Error::Protocol(Fault::Deadline))
@@ -219,10 +225,12 @@ mod tests {
         assert!(next.can_reregister());
         let mut resumed = next.reregister()?;
         assert!(resumed.registration_established());
-        assert_eq!(resumed.bounds().hard, whole.hard);
-        assert_eq!(resumed.bounds().expires, whole.expires);
+        assert_eq!(resumed.bounds().hard(), whole.hard());
+        assert_eq!(resumed.bounds().expires(), whole.expires());
         // The same eligibility can never renew the original whole native cap.
-        resumed.overall.targets.hard = Instant::now();
+        resumed
+            .overall
+            .tighten(resumed.overall.bounds().tightened(u64::MAX, Instant::now()));
         assert!(matches!(
             resumed.check(),
             Err(Error::Protocol(Fault::Deadline))
@@ -247,11 +255,8 @@ mod tests {
             .build()?;
         let _entered = runtime.enter();
         let mut old = line()?;
-        old.registration
-            .as_mut()
-            .ok_or(Fault::NotReady)?
-            .initial
-            .hard = Instant::now();
+        let registration = old.registration.as_mut().ok_or(Fault::NotReady)?;
+        registration.initial = registration.initial.tightened(u64::MAX, Instant::now());
         let _source_loss = old.lost(Cause::Eof);
         assert!(matches!(
             old.reregister(),

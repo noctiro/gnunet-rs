@@ -4,6 +4,7 @@
 //! Rust retains ownership, copies native strings and formats arguments safely.
 use crate::program::{Failure, LocaleSetup};
 use gnunet_config::{Installation, PathKind, ProcessEnvironment, ProjectData};
+use gnunet_native::library::Library;
 #[cfg(unix)]
 use std::os::unix::ffi::OsStrExt;
 use std::{
@@ -100,69 +101,29 @@ impl Drop for Lease {
         CLAIMED.store(false, Ordering::Release);
     }
 }
-#[cfg(unix)]
-struct Library(*mut libc::c_void);
-#[cfg(unix)]
-impl Library {
-    fn open(path: &Path) -> io::Result<Self> {
-        let path = CString::new(path.as_os_str().as_bytes()).map_err(io::Error::other)?;
-        #[expect(
-            unsafe_code,
-            reason = "Unsafe outer constructor requires a trusted standard backend and exclusive early native initialization"
-        )]
-        // SAFETY: C path is live, flags are valid and selected binary trust is a caller precondition.
-        let handle = unsafe { libc::dlopen(path.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL) };
-        if handle.is_null() {
-            return Err(io::Error::other(
-                "selected gettext library could not be loaded",
-            ));
-        }
-        Ok(Self(handle))
+/// Resolve the selected provider without changing native search configuration.
+///
+/// # Safety
+/// The caller certifies provider code, dependencies, ABI and loader context.
+#[expect(
+    unsafe_code,
+    reason = "The enclosing ProcessLocale acquisition certifies the selected native provider and loader search context"
+)]
+unsafe fn open_library(path: &Path) -> io::Result<Library> {
+    #[cfg(unix)]
+    if !path.as_os_str().as_bytes().contains(&b'/') {
+        let name = CString::new(path.as_os_str().as_bytes()).map_err(io::Error::other)?;
+        // SAFETY: the caller explicitly trusts every provider selected by the
+        // native basename search, including dependencies and initializers.
+        return unsafe { Library::load_basename(&name) };
     }
-    fn symbol(&self, name: &CStr) -> io::Result<*mut libc::c_void> {
-        #[expect(
-            unsafe_code,
-            reason = "Live loaded handle and static NUL-terminated symbol name, with no retained borrowed name"
-        )]
-        // SAFETY: this Library keeps its successful dlopen handle live through the call.
-        let ptr = unsafe { libc::dlsym(self.0, name.as_ptr()) };
-        if ptr.is_null() {
-            return Err(io::Error::other(format!(
-                "selected gettext ABI is missing {}",
-                name.to_string_lossy()
-            )));
-        }
-        Ok(ptr)
-    }
-}
-#[cfg(unix)]
-impl Drop for Library {
-    fn drop(&mut self) {
-        #[expect(
-            unsafe_code,
-            reason = "Library is the unique owner of one successful dlopen reference and all copied symbols drop before this release"
-        )]
-        // SAFETY: this exact successful dlopen reference has not previously been closed.
-        let status = unsafe { libc::dlclose(self.0) };
-        if status != 0 { /* Drop cannot report loader failure. */ }
-    }
-}
-#[cfg(windows)]
-struct Library(gnunet_native::library::Library);
-#[cfg(windows)]
-impl Library {
-    #[expect(
-        unsafe_code,
-        reason = "The enclosing ProcessLocale::load contract requires a trusted standard backend, its dependencies and exclusive initialization"
-    )]
-    fn open(path: &Path) -> io::Result<Self> {
-        // SAFETY: the public unsafe acquisition certifies this DLL's complete
-        // loader, ABI, initialization and destruction requirements.
-        unsafe { gnunet_native::library::Library::load(path) }.map(Self)
-    }
-    fn symbol(&self, name: &CStr) -> io::Result<*mut libc::c_void> {
-        self.0.symbol(name)
-    }
+    #[cfg(unix)]
+    let absolute = std::path::absolute(path)?;
+    #[cfg(unix)]
+    let path = absolute.as_path();
+    // SAFETY: the selected path, its dependencies and native lifetime/ABI
+    // requirements are certified by the enclosing unsafe acquisition.
+    unsafe { Library::load(path) }
 }
 struct Backend {
     setlocale: SetLocale,
@@ -285,7 +246,9 @@ impl ProcessLocale {
     /// implementation exporting the exact selected standard ABI (including
     /// function-pointer calling conventions), compatible with this process/libc.
     /// Its dependencies, initializers/destructors and process loader environment
-    /// must also be trusted. Windows requires a fully qualified DLL path and the
+    /// must also be trusted. Unix basenames use the trusted native search path;
+    /// explicit Unix paths are resolved against the current directory. Windows
+    /// requires a fully qualified DLL path and the
     /// GNU libintl profile, including wide directory binding and LC_MESSAGES1729.
     /// A definitely absent path may be supplied to observe the ordinary loader
     /// error; no native object or function can be used on that failed path. During load's native backend setup and every configure, all unrelated
@@ -313,7 +276,9 @@ impl ProcessLocale {
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .map_err(|_| io::Error::other("locale capability already held"))?;
         let lease = Lease;
-        let library = Library::open(&path)?;
+        // SAFETY: this acquisition requires the selected provider and loader
+        // environment to satisfy the documented trust and lifetime contract.
+        let library = unsafe { open_library(&path) }?;
         let names = match profile {
             AbiProfile::Libintl => [
                 c"libintl_setlocale",

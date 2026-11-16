@@ -409,7 +409,7 @@ impl Supervisor {
     pub fn poll_native(&mut self, cx: &mut Context<'_>) -> Option<Event> {
         let now = Instant::now();
         for i in 0..self.rows.len() {
-            if self.rows[i].bounds.is_some_and(|b| now >= b.hard)
+            if self.rows[i].bounds.is_some_and(|b| now >= b.hard())
                 || self.rows[i].line_until.is_some_and(|t| now >= t)
             {
                 self.stop_index(i, Some(Fault::Deadline.into()));
@@ -420,7 +420,7 @@ impl Supervisor {
             .iter()
             .flat_map(|r| {
                 r.bounds
-                    .map(|b| b.hard)
+                    .map(|b| b.hard())
                     .into_iter()
                     .chain(r.line_until)
                     .chain(r.retiring)
@@ -534,7 +534,7 @@ impl Supervisor {
         }
         for n in 0..self.rows.len() {
             let i = (self.cursor + n) % self.rows.len();
-            if now.is_some_and(|now| self.rows[i].bounds.is_some_and(|b| now >= b.expires)) {
+            if now.is_some_and(|now| self.rows[i].bounds.is_some_and(|b| now >= b.expires())) {
                 self.stop_index(i, Some(Fault::Deadline.into()));
             }
             if self.rows[i].retiring.is_some_and(|t| Instant::now() >= t) {

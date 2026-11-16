@@ -49,8 +49,8 @@ pub(super) async fn lookup(
         initial,
     } = input;
     initial.check(source.as_ref())?;
-    let hard: Instant = initial.hard;
-    let until = AbsoluteTime::from_micros(initial.expires);
+    let hard: Instant = initial.hard();
+    let until = AbsoluteTime::from_micros(initial.expires());
     let mut native = Box::pin(tokio::time::sleep_until(hard));
     let mut logical = Box::pin(LogicalDeadline::at(source.clone(), until)?);
     let mut owner = identity::Lookup::exact(

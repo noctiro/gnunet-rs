@@ -10,8 +10,8 @@ use gnunet_wire::official::secretsharing::{self as ipc, SignedElement};
 use std::{
     mem::{replace, size_of, take},
     sync::Arc,
-    time::Instant,
 };
+use tokio::time::Instant;
 
 // The original polynomial lives exclusively in Phase while all other original
 // material stays here. No dummy polynomial or second secret owner is needed.
@@ -620,11 +620,11 @@ fn check_target(
     deadline: u64,
     clock: &dyn RuntimeClock,
 ) -> Result<(), Fault> {
-    if Instant::now() >= bounds.hard {
+    if Instant::now() >= bounds.hard() {
         return Err(Fault::Deadline);
     }
     let now = clock.sample()?.now.as_micros();
-    if Instant::now() >= bounds.hard || now >= bounds.expires || now >= deadline {
+    if Instant::now() >= bounds.hard() || now >= bounds.expires() || now >= deadline {
         return Err(Fault::Deadline);
     }
     Ok(())

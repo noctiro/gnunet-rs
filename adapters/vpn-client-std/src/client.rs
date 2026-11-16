@@ -182,10 +182,10 @@ impl<'a> Client<'a> {
             rid,
             desired,
             source: Some(OwnedFrame::new(bytes)),
-            bounds: Bounds {
-                expires: response_until,
+            bounds: Bounds::from_targets(
+                gnunet_types::AbsoluteTime::from_micros(response_until),
                 hard,
-            },
+            )?,
             epoch: None,
             pending: false,
             exposed: false,
@@ -256,7 +256,7 @@ impl<'a> Client<'a> {
         self.slots
             .iter()
             .filter_map(|s| s.as_ref())
-            .map(|s| s.retirement.unwrap_or(s.bounds).expires)
+            .map(|s| s.retirement.unwrap_or(s.bounds).expires())
             .min()
     }
     /// Earliest unchanged native response or partial-retirement target. This
@@ -266,7 +266,7 @@ impl<'a> Client<'a> {
         self.slots
             .iter()
             .filter_map(|slot| slot.as_ref())
-            .map(|state| state.retirement.unwrap_or(state.bounds).hard)
+            .map(|state| state.retirement.unwrap_or(state.bounds).hard())
             .min()
     }
     /// Consume one retained local completion, without IO.
@@ -315,17 +315,19 @@ impl<'a> Client<'a> {
         state.source = None;
         state.reason = Some(reason);
         if state.pending {
-            state.retirement = Some(Bounds {
-                expires: state
-                    .bounds
-                    .expires
-                    .checked_add(self.limits.retirement_grace_micros)
-                    .ok_or(ProtocolError::Overflow)?,
-                hard: native
-                    .min(state.bounds.hard)
+            state.retirement = Some(Bounds::from_targets(
+                gnunet_types::AbsoluteTime::from_micros(
+                    state
+                        .bounds
+                        .expires()
+                        .checked_add(self.limits.retirement_grace_micros)
+                        .ok_or(ProtocolError::Overflow)?,
+                ),
+                native
+                    .min(state.bounds.hard())
                     .checked_add(Duration::from_micros(self.limits.retirement_grace_micros))
                     .ok_or(ProtocolError::Overflow)?,
-            });
+            )?);
             self.alarm = None;
             self.alarm_at = None;
             return Ok(Cancel::Draining);

@@ -1,4 +1,4 @@
-use crate::{EndpointSource, Epoch, Error, Instance, Observation};
+use crate::{Bounds, EndpointSource, Epoch, Error, Instance, Observation};
 use gnunet_client::nse::{Client as Pure, START_LEN, Start};
 use gnunet_client_host::channel::{Channel, ConnectionStep};
 use gnunet_service_runtime::{
@@ -15,37 +15,6 @@ use std::{
     time::Duration,
 };
 use tokio::time::{Instant, Sleep};
-/// Two original targets for a finite subscription; neither is reminted on retry.
-#[derive(Clone, Copy, Debug)]
-pub struct Bounds {
-    /// Finite canonical absolute microseconds.
-    pub expires: u64,
-    /// Independent original native target.
-    pub hard: Instant,
-}
-impl Bounds {
-    /// Mint once at explicit admission from the original actual clock.
-    pub fn after(clock: &dyn RuntimeClock, timeout: Duration) -> Result<Self, Error> {
-        if timeout.is_zero() {
-            return Err(Fault::Deadline.into());
-        }
-        let delta = u64::try_from(timeout.as_micros()).map_err(|_| Fault::Overflow)?;
-        if delta == 0 {
-            return Err(Fault::Deadline.into());
-        }
-        let expires = clock
-            .sample()?
-            .now
-            .as_micros()
-            .checked_add(delta)
-            .filter(|n| *n != u64::MAX)
-            .ok_or(Fault::Overflow)?;
-        Ok(Self {
-            expires,
-            hard: Instant::now().checked_add(timeout).ok_or(Fault::Overflow)?,
-        })
-    }
-}
 /// Explicit bounded receive resources and finite original phase lifetimes.
 #[derive(Clone, Copy, Debug)]
 pub struct Limits {
@@ -225,14 +194,13 @@ impl<'a> Subscription<'a> {
     ) -> Result<Self, Error> {
         let frame = limits.framing()?;
         let clock = source.clock();
-        if let Some(b) = total
-            && (b.hard <= Instant::now()
-                || b.expires == u64::MAX
-                || b.expires <= clock.sample()?.now.as_micros())
-        {
-            return Err(Fault::Deadline.into());
+        if let Some(bounds) = total {
+            bounds.check(clock.as_ref())?;
         }
         let channel = Channel::new(source, frame)?;
+        if let Some(bounds) = total {
+            bounds.check(clock.as_ref())?;
+        }
         Ok(Self {
             pure: Pure::new(instance),
             channel,
@@ -351,10 +319,10 @@ impl<'a> Subscription<'a> {
             return None;
         }
         let now = Instant::now();
-        if self.total.is_some_and(|b| now >= b.hard) {
+        if self.total.is_some_and(|b| now >= b.hard()) {
             return Some(Ok(self.deadline()));
         }
-        if self.session.is_some_and(|b| now >= b.hard)
+        if self.session.is_some_and(|b| now >= b.hard())
             || self.initial.is_some_and(|at| now >= at)
             || self.input.is_some_and(|at| now >= at)
         {
@@ -362,9 +330,9 @@ impl<'a> Subscription<'a> {
         }
         let at = self
             .total
-            .map(|b| b.hard)
+            .map(|b| b.hard())
             .into_iter()
-            .chain(self.session.map(|b| b.hard))
+            .chain(self.session.map(|b| b.hard()))
             .chain(self.initial)
             .chain(self.input)
             .min();
@@ -384,9 +352,9 @@ impl<'a> Subscription<'a> {
     fn logical_guard(&mut self, cx: &mut Context<'_>) -> Result<(), Error> {
         let at = self
             .total
-            .map(|b| b.expires)
+            .map(|b| b.expires())
             .into_iter()
-            .chain(self.session.map(|b| b.expires))
+            .chain(self.session.map(|b| b.expires()))
             .min();
         if at != self.logical_at {
             self.logical_at = at;
@@ -551,10 +519,13 @@ impl<'a> Subscription<'a> {
                 return Poll::Ready(self.lost(Cause::Clock(error), false));
             }
         };
-        if self.total.is_some_and(|b| b.expires <= now) {
+        if let Some(progress) = self.poll_native_guard(cx) {
+            return Poll::Ready(progress);
+        }
+        if self.total.is_some_and(|b| b.expires() <= now) {
             return Poll::Ready(Ok(self.deadline()));
         }
-        if self.session.is_some_and(|b| b.expires <= now) {
+        if self.session.is_some_and(|b| b.expires() <= now) {
             return Poll::Ready(self.lost(Cause::SourceDeadline, true));
         }
         if self.blocked {
@@ -564,17 +535,10 @@ impl<'a> Subscription<'a> {
                 .map(|r| r.map(|()| Progress::Wait));
         }
         if self.session.is_none() {
-            let delta = u64::try_from(self.limits.source_lifetime.as_micros())
-                .map_err(|_| Fault::Overflow)?;
-            self.session = Some(Bounds {
-                expires: now
-                    .checked_add(delta)
-                    .filter(|n| *n != u64::MAX)
-                    .ok_or(Fault::Overflow)?,
-                hard: Instant::now()
-                    .checked_add(self.limits.source_lifetime)
-                    .ok_or(Fault::Overflow)?,
-            });
+            self.session = Some(Bounds::after(
+                self.clock.as_ref(),
+                self.limits.source_lifetime,
+            )?);
         }
         self.logical_guard(cx)?;
         if self.epoch.is_none() {

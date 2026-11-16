@@ -1,8 +1,9 @@
 use crate::{
     Bounds, Call, CallInfo, Cause, Epoch, Error, Kind, Limits, Loss, Operation, Phase, Progress,
-    Receipt, Role, budget::Bound, ipc, types::Domain,
+    Receipt, Role, ipc, types::Domain,
 };
 use gnunet_client_host::{EndpointSource, channel::Channel};
+use gnunet_service_runtime::clock::Alarm;
 use gnunet_service_runtime::framing::OwnedFrame;
 use gnunet_types::Error as Fault;
 use std::{
@@ -11,8 +12,8 @@ use std::{
     mem::size_of,
     sync::Arc,
     task::{Context, Poll},
-    time::Instant,
 };
+use tokio::time::Instant;
 use zeroize::Zeroizing;
 mod input;
 mod output;
@@ -26,7 +27,7 @@ struct Pending {
     receipt: Receipt,
     frame: Option<OwnedFrame>,
     capacity: usize,
-    bound: Bound,
+    bound: Alarm,
     queued: bool,
 }
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -47,9 +48,9 @@ pub struct Line {
     recoverable: bool,
     registration_timeout: bool,
     limits: Limits,
-    overall: Bound,
-    initial: Option<Bound>,
-    input: Option<Bound>,
+    overall: Alarm,
+    initial: Option<Alarm>,
+    input: Option<Alarm>,
     input_bytes: usize,
     pending: VecDeque<Pending>,
     queued_bytes: usize,
@@ -135,12 +136,12 @@ impl Line {
         if n > limits.frame_bytes {
             return Err(Fault::TooLarge.into());
         }
-        let initial = Bound::phase(source.clock().as_ref(), limits.initial_timeout, original)?;
-        let write = Bound::phase(source.clock().as_ref(), limits.write_timeout, original)?;
+        let initial = Alarm::phase(source.clock().as_ref(), limits.initial_timeout, original)?;
+        let write = Alarm::phase(source.clock().as_ref(), limits.write_timeout, original)?;
         let registration = match &message {
             ipc::Message::Register { port, .. } => Some(recovery::Registration {
                 port: **port,
-                initial: initial.targets,
+                initial: initial.bounds(),
                 established: false,
             }),
             _ => None,
@@ -165,7 +166,7 @@ impl Line {
             .try_reserve_exact(limits.calls)
             .map_err(|_| Fault::Capacity)?;
         let initializer = Receipt {
-            bounds: write.targets,
+            bounds: write.bounds(),
             operation,
             call: call.clone(),
             kind: if mode == Mode::Call {
@@ -215,7 +216,7 @@ impl Line {
             recoverable: false,
             registration_timeout: false,
             limits,
-            overall: Bound::new(original),
+            overall: Alarm::new(original),
             initial: Some(initial),
             input: None,
             input_bytes: 0,
@@ -241,7 +242,7 @@ impl Line {
     }
     /// Exact original finite whole-Line targets, never refreshed by observations.
     pub const fn bounds(&self) -> Bounds {
-        self.overall.targets
+        self.overall.bounds()
     }
     /// Actual original initializer exposure, including partial/whole write.
     pub fn initializer(&self) -> Receipt {
@@ -365,25 +366,19 @@ impl Line {
         if self.closed {
             return Err(Fault::Closed.into());
         }
-        if Instant::now() >= self.overall.targets.hard {
-            return Err(Fault::Deadline.into());
-        }
-        // Provider errors stay provider errors. Only comparisons against an
-        // actual sampled time may authorize a registration-only phase retry.
-        let now = self.source.clock().sample()?.now.as_micros();
+        // Only expiry against a valid shared sample authorizes a
+        // registration-only retry; source refusal retains its own cause.
+        let now = self.overall.bounds().check(self.source.clock().as_ref())?;
         let native = Instant::now();
-        if native >= self.overall.targets.hard || now >= self.overall.targets.expires {
-            return Err(Fault::Deadline.into());
-        }
-        let expired = |bounds: Bounds| native >= bounds.hard || now >= bounds.expires;
-        if self.initial.as_ref().is_some_and(|b| expired(b.targets)) {
+        let expired = |bounds: Bounds| native >= bounds.hard() || now >= bounds.expires();
+        if self.initial.as_ref().is_some_and(|b| expired(b.bounds())) {
             self.registration_timeout = self.replacement_registration();
             return Err(Fault::Deadline.into());
         }
-        if self.input.as_ref().is_some_and(|b| expired(b.targets)) {
+        if self.input.as_ref().is_some_and(|b| expired(b.bounds())) {
             return Err(Fault::Deadline.into());
         }
-        if let Some(pending) = self.pending.iter().find(|p| expired(p.bound.targets)) {
+        if let Some(pending) = self.pending.iter().find(|p| expired(p.bound.bounds())) {
             self.registration_timeout =
                 pending.receipt.kind == Kind::Register && self.replacement_registration();
             return Err(Fault::Deadline.into());
@@ -392,19 +387,19 @@ impl Line {
     }
     fn expired(&mut self, cx: &mut Context<'_>) -> bool {
         self.registration_timeout = false;
-        if self.overall.native(cx) {
+        if self.overall.poll_expired(cx) {
             return true;
         }
-        if self.initial.as_mut().is_some_and(|b| b.native(cx)) {
+        if self.initial.as_mut().is_some_and(|b| b.poll_expired(cx)) {
             self.registration_timeout = self.replacement_registration();
             return true;
         }
-        if self.input.as_mut().is_some_and(|b| b.native(cx)) {
+        if self.input.as_mut().is_some_and(|b| b.poll_expired(cx)) {
             return true;
         }
         let replacement = self.replacement_registration();
         for pending in &mut self.pending {
-            if pending.bound.native(cx) {
+            if pending.bound.poll_expired(cx) {
                 self.registration_timeout = replacement && pending.receipt.kind == Kind::Register;
                 return true;
             }
@@ -417,26 +412,26 @@ impl Line {
             .iter()
             .chain(self.input.iter())
             .chain(self.pending.iter().map(|p| &p.bound))
-            .map(|b| b.targets.hard)
+            .map(|b| b.bounds().hard())
             .chain(
                 self.registration
                     .as_ref()
                     .filter(|_| self.recoverable && !self.registration_established())
-                    .map(|r| r.initial.hard),
+                    .map(|r| r.initial.hard()),
             )
             .chain(
                 (self.recoverable && !self.registration_established())
-                    .then_some(self.initializer.bounds.hard),
+                    .then_some(self.initializer.bounds.hard()),
             )
-            .chain(std::iter::once(self.overall.targets.hard))
+            .chain(std::iter::once(self.overall.bounds().hard()))
             .min()
-            .unwrap_or(self.overall.targets.hard)
+            .unwrap_or(self.overall.bounds().hard())
     }
     fn lost(&mut self, cause: Cause) -> Loss {
         // Actual physical source first; no clock, allocator or port provider is
         // needed to preserve all original exposure and observed call facts.
-        let initial = self.initial.as_ref().map(|b| b.targets);
-        let input = self.input.as_ref().map(|b| b.targets);
+        let initial = self.initial.as_ref().map(|b| b.bounds());
+        let input = self.input.as_ref().map(|b| b.bounds());
         self.channel.close();
         self.closed = true;
         self.recoverable = recovery::allowed(&cause)
@@ -452,7 +447,7 @@ impl Line {
         }
         self.queued_bytes = 0;
         Loss {
-            overall: self.overall.targets,
+            overall: self.overall.bounds(),
             initial,
             input,
             cause,

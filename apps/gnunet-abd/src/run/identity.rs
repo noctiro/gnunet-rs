@@ -79,7 +79,7 @@ pub(super) async fn lookup(
         &domain,
         source,
         name,
-        control.original.expires,
+        control.original.expires(),
         control.settings.identity,
     )?;
     let original = lookup.operation();
@@ -90,7 +90,7 @@ pub(super) async fn lookup(
     };
     let result = async {
         loop {
-            let hard = control.original.hard.into();
+            let hard = control.original.hard();
             let event = control
                 .next(|cx| native.lookup.poll(cx, Some(hard)))
                 .await?;

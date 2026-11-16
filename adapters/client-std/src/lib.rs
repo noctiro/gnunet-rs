@@ -234,3 +234,15 @@ impl From<gnunet_types::Error> for ConnectError {
         Self::Protocol(value)
     }
 }
+impl From<gnunet_service_runtime::clock::BoundsError> for ConnectError {
+    fn from(error: gnunet_service_runtime::clock::BoundsError) -> Self {
+        use gnunet_service_runtime::clock::BoundsError;
+        match error {
+            BoundsError::Deadline => Self::Protocol(gnunet_types::Error::Deadline),
+            BoundsError::Overflow => Self::Protocol(gnunet_types::Error::Overflow),
+            BoundsError::Clock(cause) => {
+                Self::Io(crate::resolution::PortError::mark(io::Error::other(cause)))
+            }
+        }
+    }
+}

@@ -332,9 +332,9 @@ impl<'id> Test<'id> {
             },
             request.profiles,
             Deadlines {
-                send_until: request.bounds.expires,
+                send_until: request.bounds.expires(),
                 first_input_until: None,
-                until: request.bounds.expires,
+                until: request.bounds.expires(),
             },
             limits.registration,
         )?;
@@ -369,8 +369,8 @@ impl<'id> Test<'id> {
             next: 1,
             challenge,
             network_events: 0,
-            timer: Box::pin(tokio::time::sleep_until(request.bounds.hard)),
-            wait: Box::pin(tokio::time::sleep_until(request.bounds.hard)),
+            timer: Box::pin(tokio::time::sleep_until(request.bounds.hard())),
+            wait: Box::pin(tokio::time::sleep_until(request.bounds.hard())),
             cursor: 0,
             nat_first: false,
             ended: false,
@@ -560,14 +560,14 @@ impl<'id> Test<'id> {
         }
     }
     fn native(&mut self, cx: &mut Context<'_>, until: Option<Instant>) -> Result<(), Failure> {
-        if Instant::now() >= self.gate.bounds().hard {
+        if Instant::now() >= self.gate.bounds().hard() {
             return Err(Fault::Deadline.into());
         }
         let _alarm = self.timer.as_mut().poll(cx);
         let now = Instant::now();
         self.incoming.retain(|r| now < r.until);
         if let Some(due) = self.incoming.iter().map(|r| r.until).chain(until).min() {
-            self.wait.as_mut().reset(due.min(self.gate.bounds().hard));
+            self.wait.as_mut().reset(due.min(self.gate.bounds().hard()));
             let _alarm = self.wait.as_mut().poll(cx);
         }
         Ok(())
@@ -804,7 +804,7 @@ impl<'id> Test<'id> {
                         let until = Instant::now()
                             .checked_add(self.limits.incoming_lifetime)
                             .ok_or(Fault::Overflow)?
-                            .min(self.gate.bounds().hard);
+                            .min(self.gate.bounds().hard());
                         self.incoming.push(Incoming {
                             stream,
                             peer,

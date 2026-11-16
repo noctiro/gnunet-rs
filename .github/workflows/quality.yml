@@ -108,6 +108,7 @@ jobs:
       - uses: ./.github/actions/setup-rust
         with:
           host: ${{ matrix.host }}
+      - run: cargo xtask verify profiles
       - run: cargo xtask verify lint
       - run: cargo xtask verify test
         env:

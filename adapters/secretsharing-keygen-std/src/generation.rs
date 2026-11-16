@@ -16,8 +16,8 @@ use std::{
     mem::size_of,
     sync::Arc,
     task::{Context, Poll},
-    time::Instant,
 };
+use tokio::time::Instant;
 
 /// Actual original source facts, retained independently of the final result.
 #[derive(Default)]
@@ -235,11 +235,11 @@ impl<'id> Generation<'id> {
         Poll::Ready(Err(error))
     }
     fn guard(&self) -> Result<(), Error> {
-        if Instant::now() >= self.bounds.hard {
+        if Instant::now() >= self.bounds.hard() {
             return Err(Fault::Deadline.into());
         }
         let now = self.clock.sample()?.now.as_micros();
-        if Instant::now() >= self.bounds.hard || now >= self.bounds.expires {
+        if Instant::now() >= self.bounds.hard() || now >= self.bounds.expires() {
             return Err(Fault::Deadline.into());
         }
         if self.retained_bytes()? > self.plan.maximum_bytes {
@@ -416,7 +416,7 @@ mod tests {
     #[test]
     fn closed_generation_charges_original_unwritten_loss_until_report_transfer() -> Result {
         let clock: Arc<dyn RuntimeClock> = Arc::new(SystemClock);
-        let bounds = Bounds::new(clock.as_ref(), std::time::Duration::from_secs(30))?;
+        let bounds = Bounds::after(clock.as_ref(), std::time::Duration::from_secs(30))?;
         let source = EndpointSource::unix_with_clock(
             std::env::temp_dir().join("gnunet-no-poll-consensus"),
             clock.clone(),
@@ -425,8 +425,8 @@ mod tests {
             source,
             gnunet_consensus_client_host::Join {
                 session: [7; 64],
-                start: bounds.expires - 1_000_000,
-                deadline: bounds.expires,
+                start: bounds.expires() - 1_000_000,
+                deadline: bounds.expires(),
                 peers: &[],
             },
             Default::default(),

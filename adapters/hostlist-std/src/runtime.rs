@@ -2,7 +2,6 @@
 //! protocol, replayed mutation, synthetic store result or inferred peer connection.
 use crate::{
     Core, Durable, DurableEvent, Error, Fault, Fetch, HelloFrame, Job, Uri,
-    gate::Gate,
     http::{DownloadJob, HttpLimits, Proxy, Tls, WireReport},
     peerstore::{AddStatus, PeerstoreEvent, Port},
     publication::{PublicationLimits, Publisher},
@@ -12,6 +11,7 @@ use crate::{
 use gnunet_client_host::{EndpointSource, resolution::SharedResolution};
 use gnunet_core_client_host as core;
 use gnunet_peerstore_client_host as ps;
+use gnunet_service_runtime::clock::DeadlineGuard;
 use gnunet_service_runtime::clock::RuntimeClock;
 use std::{
     future::{Future, poll_fn},
@@ -301,7 +301,7 @@ pub struct Runtime<'id> {
     proxy: Option<Arc<Proxy>>,
     advertised: Option<Uri>,
     clock: Arc<dyn RuntimeClock>,
-    gate: Gate,
+    gate: DeadlineGuard,
     limits: Limits,
     links: Vec<Link<'id>>,
     sends: Vec<Send<'id>>,
@@ -374,8 +374,12 @@ impl<'id> Runtime<'id> {
             .checked_add(micros(limits.lifetime)?)
             .filter(|n| *n < u64::MAX)
             .ok_or(Fault::Overflow)?;
-        let mut gate = Gate::new(clock.clone(), until)?;
-        gate.hard = gate.hard.min(
+        let mut gate = DeadlineGuard::until(
+            clock.clone(),
+            gnunet_types::AbsoluteTime::from_micros(until),
+        )?;
+        gate.tighten(
+            until,
             native_start
                 .checked_add(limits.lifetime)
                 .ok_or(Fault::Overflow)?,
@@ -455,7 +459,7 @@ impl<'id> Runtime<'id> {
                     per_ip: limits.per_ip,
                     lifetime: limits.http_lifetime,
                 },
-                (until, gate.hard),
+                (until, gate.bounds().hard()),
             )?)
         } else {
             None
@@ -463,7 +467,7 @@ impl<'id> Runtime<'id> {
         let stats = Statistics::new(
             statistics_source,
             until,
-            gate.hard,
+            gate.bounds().hard(),
             limits.operation,
             limits.io_slice,
         )?;
@@ -832,7 +836,7 @@ impl<'id> Runtime<'id> {
             return Ok(false);
         }
         if self.core.modes().provide {
-            self.port.start_monitor(self.gate.until)?;
+            self.port.start_monitor(self.gate.bounds().expires())?;
         }
         if self.core.modes().advertise
             && self.server.as_ref().is_some_and(|s| s.listeners() != 0)
@@ -858,8 +862,10 @@ impl<'id> Runtime<'id> {
             let hard = Instant::now()
                 .checked_add(duration)
                 .ok_or(Fault::Overflow)?
-                .min(self.gate.hard);
-            let until = now.saturating_add(300_000_000).min(self.gate.until);
+                .min(self.gate.bounds().hard());
+            let until = now
+                .saturating_add(300_000_000)
+                .min(self.gate.bounds().expires());
             match self.client.send(
                 peer,
                 AD_PRIORITY,
@@ -889,8 +895,11 @@ impl<'id> Runtime<'id> {
             let hard = Instant::now()
                 .checked_add(self.limits.operation)
                 .ok_or(Fault::Overflow)?
-                .min(self.gate.hard);
-            if let Some(fetch) = self.core.next(now, self.links.len(), self.gate.until)? {
+                .min(self.gate.bounds().hard());
+            if let Some(fetch) =
+                self.core
+                    .next(now, self.links.len(), self.gate.bounds().expires())?
+            {
                 let origin = if fetch.advertiser.is_some() {
                     self.candidate_origin
                 } else {
@@ -1144,7 +1153,7 @@ impl<'id> Runtime<'id> {
         let mut at = Instant::now()
             .checked_add(self.limits.tick)
             .ok_or(Fault::Overflow)?
-            .min(self.gate.hard);
+            .min(self.gate.bounds().hard());
         if let Some(next) = self.port.next_native() {
             at = at.min(next)
         }
@@ -1187,7 +1196,7 @@ impl<'id> Runtime<'id> {
         }
         self.expire(None, observe)?;
         self.alarm(cx)?;
-        let sample = match self.gate.poll(cx) {
+        let sample = match self.gate.poll(cx).map_err(Error::from) {
             Poll::Pending => return Poll::Pending,
             Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
             Poll::Ready(Ok(sample)) => sample,

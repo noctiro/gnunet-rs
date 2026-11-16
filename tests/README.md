@@ -10,12 +10,13 @@ Run from the repository root using the pinned Rust toolchain.
 | `cargo xtask verify format` | Workspace and embedded-fixture formatting |
 | `cargo xtask verify lint` | Dependency/feature boundaries, Clippy and rustdoc |
 | `cargo xtask verify tools` | Python syntax and tool controls |
+| `cargo xtask verify profiles` | Independent production PROGRAM, FS, QUIC/HTTP3, SDK client and CLI feature selections |
 | `cargo xtask verify portable` | Core feature profiles and facade allocation tiers |
 | `cargo xtask verify runtime` | Configuration, native files/sockets/processes, DATASTORE WAL/checkpoint/worker recovery, CADET monotime reservations/recovery, FS block retention/anchored output/index/provider/publication/automatic sharing/download/search/probe recovery, startup/control, clock/framing, snapshot/restart, CLIENT/Resolver IPC, normal STATISTICS service/full CLI and Resolver CLI |
 | `cargo xtask verify test` | Unix workspace with all features |
 | `cargo xtask verify embedded` | Cortex-M0/M4 compilation and no-allocation closure |
 
-`cargo xtask verify` runs format, lint, tools, portable, workspace and embedded
+`cargo xtask verify` runs format, lint, tools, production profiles, portable, workspace and embedded
 groups. Workspace tests include the runtime tests. External C groups require
 explicit invocation.
 
@@ -29,6 +30,10 @@ The runtime group includes the available native client SDKs and their facade
 profile. PILS is checked as a client library separately from its Unix host and
 identity fixtures. Unix-specific witnesses remain additional coverage until
 their native counterparts are implemented; compiling an SDK does not run them.
+The profiles group runs each supported production selection separately, using
+library or named binary targets. Other workspace packages and development
+dependencies cannot fill in a missing production feature. The same profiles
+run on Linux, macOS, Windows and FreeBSD.
 The runtime group executes the configuration suite and the same TCP wire and
 ownership scenarios, shared DATASTORE WAL/checkpoint/worker recovery, CADET monotime reservations/recovery, FS index/provider/publication/automatic-sharing/download/search/probe recovery, extraction/inspection, normal CLI binary output and bounded pipe-backpressure retirement,
 and native-execution capability/compile-fail tests on Windows and Unix, with additional native file/ACL tests

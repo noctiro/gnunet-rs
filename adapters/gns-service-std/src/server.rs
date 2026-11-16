@@ -1,7 +1,7 @@
 //! Official GNS500/501 frontend over the actual retained business Manager.
 use crate::{Bounds, Manager, Provider};
 use gnunet_client::gns::{self, Lookup as WireLookup, WireId};
-use gnunet_gns::{Failure, Policy, QueryId, Record};
+use gnunet_gns::{Failure, Policy, QueryId};
 use gnunet_service_runtime::{
     accepted::{AcceptState, SocketEvent},
     clock::{ClockSubscription, Deadline, RuntimeClock},
@@ -18,6 +18,9 @@ use std::{
     task::{Context, Poll},
 };
 use tokio::time::{Instant, Sleep};
+
+mod reply;
+use reply::{CallState, ReplyPlan};
 
 /// Stable peer identity storage, independent of protocol request ID bytes.
 pub struct Instance {
@@ -246,12 +249,10 @@ struct Peer<'p> {
 }
 struct Call<'p, 'q> {
     peer: PeerId<'p>,
-    query: Option<QueryId<'q>>,
     serial: u64,
     wire: WireId,
     bounds: Bounds,
-    outcome: Option<Result<Vec<Record>, Failure>>,
-    queued: bool,
+    state: CallState<'q>,
 }
 /// Caller-driven frontend. Borrowing Manager keeps constructor failure from
 /// destroying an already live provider and lets the foreground finally retire it.
@@ -437,7 +438,7 @@ impl<'p, 'q, P: Provider> Server<'p, 'q, P> {
                 i += 1;
                 continue;
             }
-            if let Some(query) = self.calls[i].query {
+            if let Some(query) = self.calls[i].state.query() {
                 if let Err(error) = self.manager.cancel(query) {
                     peer.cancel_errors.push(error);
                 }
@@ -479,6 +480,15 @@ impl<'p, 'q, P: Provider> Server<'p, 'q, P> {
         {
             return Ok(Some(self.close_peer(i, Some(Fault::Timeout.into()))));
         }
+        if let Some(peer) = self
+            .calls
+            .iter()
+            .find(|call| matches!(call.state, CallState::Ready(_)) && now >= call.bounds.hard())
+            .map(|call| call.peer)
+            && let Some(i) = self.peers.iter().position(|candidate| candidate.id == peer)
+        {
+            return Ok(Some(self.close_peer(i, Some(Fault::Timeout.into()))));
+        }
         let target = self
             .peers
             .iter()
@@ -488,6 +498,9 @@ impl<'p, 'q, P: Provider> Server<'p, 'q, P> {
                     .iter()
                     .flat_map(|peer| peer.output.iter().map(|reply| reply.hard)),
             )
+            .chain(self.calls.iter().filter_map(|call| {
+                matches!(call.state, CallState::Ready(_)).then_some(call.bounds.hard())
+            }))
             .min();
         if self.alarm_at != target {
             self.alarm_at = target;
@@ -722,12 +735,10 @@ impl<'p, 'q, P: Provider> Server<'p, 'q, P> {
         self.call_serial = serial;
         self.calls.push(Call {
             peer,
-            query: Some(query),
             serial,
             wire,
             bounds,
-            outcome: None,
-            queued: false,
+            state: CallState::Resolving(query),
         });
         if self.peers[i]
             .input_hard
@@ -827,18 +838,14 @@ impl<'p, 'q, P: Provider> Server<'p, 'q, P> {
         for _ in 0..self.calls.len() {
             let i = self.call_cursor % self.calls.len();
             self.call_cursor = (i + 1) % self.calls.len();
-            if self.calls[i].queued {
+            if matches!(self.calls[i].state, CallState::Queued) {
                 continue;
             }
-            if self.calls[i].outcome.is_none() {
-                let Some(query) = self.calls[i].query else {
-                    return Err(Fault::NotReady.into());
-                };
+            if let Some(query) = self.calls[i].state.query() {
                 let Some(outcome) = self.manager.take_result(query)? else {
                     continue;
                 };
-                self.calls[i].query = None;
-                self.calls[i].outcome = Some(outcome);
+                self.calls[i].state = CallState::Ready(ReplyPlan::new(outcome));
             }
             let peer = self.calls[i].peer;
             let Some(p) = self.peers.iter().position(|candidate| candidate.id == peer) else {
@@ -848,54 +855,25 @@ impl<'p, 'q, P: Provider> Server<'p, 'q, P> {
             if self.stopping == Some(ShutdownMode::Immediate) {
                 continue;
             }
-            let outcome = self.calls[i].outcome.as_ref().ok_or(Fault::NotReady)?;
-            let mut failure = outcome.as_ref().err().copied();
-            let mut views = Vec::new();
-            if let Ok(records) = outcome {
-                views
-                    .try_reserve_exact(records.len())
-                    .map_err(Error::Allocation)?;
-                views.extend(records.iter().map(Record::as_data));
-            }
-            let body = match gnunet_gnsrecord::serialized_len(&views)
-                .and_then(|body| body.checked_add(12).ok_or(Fault::Overflow))
-            {
-                Ok(bytes) if bytes <= 65535 => bytes,
-                Ok(_) | Err(_) => {
-                    failure = Some(Failure::Fault(Fault::TooLarge));
-                    views.clear();
-                    12
-                }
-            };
-            if !self.peers[p].io.capacity(body, Class::Ordinary) {
-                continue;
-            }
-            self.peers[p].io.reserve(body, Class::Ordinary)?;
-            let mut bytes = Vec::new();
-            bytes.try_reserve_exact(body).map_err(Error::Allocation)?;
-            bytes.resize(body, 0);
             let wire = self.calls[i].wire;
-            gns::encode_result(wire, &views, &mut bytes)?;
             let origin = Reply {
                 peer,
                 wire,
                 serial: self.calls[i].serial,
                 hard: self.calls[i].bounds.hard(),
             };
-            self.peers[p]
-                .io
-                .enqueue_owned(OwnedFrame::new(bytes), origin, Class::Ordinary)
-                .map_err(|rejected| Error::Protocol(rejected.reason))?;
+            let Some(queued) = self.calls[i]
+                .state
+                .try_queue(&mut self.peers[p].io, origin)?
+            else {
+                continue;
+            };
             self.peers[p].output.push(origin);
-            let records = views.len();
-            drop(views);
-            self.calls[i].queued = true;
-            self.calls[i].outcome = None;
             return Ok(Some(Event::Reply {
                 peer,
                 wire,
-                records,
-                failure,
+                records: queued.records,
+                failure: queued.failure,
             }));
         }
         Ok(None)
@@ -998,7 +976,7 @@ impl<'p, 'q, P: Provider> Server<'p, 'q, P> {
             // retired. No output is manufactured for already closed clients.
             let mut i = 0;
             while i < self.calls.len() {
-                if let Some(query) = self.calls[i].query
+                if let Some(query) = self.calls[i].state.query()
                     && self.manager.take_result(query)?.is_none()
                 {
                     i += 1;

@@ -224,7 +224,7 @@ fn activated_loopback_service_persists_and_restarts() -> Result<()> {
     reason = "Assert refusal and unchanged native socket identity after an actual database load attempt"
 )]
 fn database_loading_refuses_an_actual_local_socket_node() -> Result<()> {
-    use gnunet::statistics_store::{Limits, Stage, Store};
+    use gnunet_statistics_store::{Limits, Stage, Store};
     let directory = Directory::new()?;
     let path = directory.0.join("ipc");
     let socket = Socket::new(Domain::UNIX, Type::STREAM, None)?;

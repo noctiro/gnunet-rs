@@ -5,7 +5,6 @@
 /// These guards report IO only and do not construct transport response receipts.
 pub mod bounded_io;
 mod exchange;
-mod gate;
 mod owner;
 mod progress;
 mod request;
@@ -42,6 +41,16 @@ pub enum Error {
 impl From<Fault> for Error {
     fn from(e: Fault) -> Self {
         Self::Fault(e)
+    }
+}
+impl From<gnunet_service_runtime::clock::BoundsError> for Error {
+    fn from(error: gnunet_service_runtime::clock::BoundsError) -> Self {
+        use gnunet_service_runtime::clock::BoundsError;
+        match error {
+            BoundsError::Deadline => Self::Fault(Fault::Deadline),
+            BoundsError::Overflow => Self::Fault(Fault::Overflow),
+            BoundsError::Clock(cause) => Self::Clock(cause),
+        }
     }
 }
 impl From<std::io::Error> for Error {

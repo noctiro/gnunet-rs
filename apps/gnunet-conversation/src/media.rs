@@ -1,4 +1,5 @@
 use crate::{Failure, options::Settings};
+use tokio::time::Instant;
 #[cfg(unix)]
 mod unix;
 #[cfg(windows)]
@@ -14,7 +15,6 @@ use std::{
     future::Future,
     pin::Pin,
     task::{Context, Poll},
-    time::Instant,
 };
 #[cfg(unix)]
 use unix as platform;
@@ -44,17 +44,15 @@ impl FrameBudget {
         life: std::time::Duration,
         original: Bounds,
     ) -> Result<Self, Failure> {
-        let mut bounds = Bounds::new(clock.as_ref(), life)?;
-        bounds.expires = bounds.expires.min(original.expires);
-        bounds.hard = bounds.hard.min(original.hard);
+        let bounds = Bounds::after(clock.as_ref(), life)?.capped_by(original);
         let canonical = Box::pin(Deadline::at(
             clock,
-            gnunet_types::AbsoluteTime::from_micros(bounds.expires),
+            gnunet_types::AbsoluteTime::from_micros(bounds.expires()),
         )?);
         Ok(Self {
             bounds,
             canonical,
-            native: Box::pin(tokio::time::sleep_until(bounds.hard.into())),
+            native: Box::pin(tokio::time::sleep_until(bounds.hard())),
         })
     }
     fn poll(&mut self, cx: &mut Context<'_>, clock: &dyn RuntimeClock) -> Result<(), Failure> {
@@ -300,7 +298,7 @@ impl Media {
         let kill_at = start.checked_add(grace / 2).unwrap_or(start);
         self.stop = Some(Stop {
             hard,
-            alarm: Box::pin(tokio::time::sleep_until(kill_at.into())),
+            alarm: Box::pin(tokio::time::sleep_until(kill_at)),
             killed: false,
         });
         self.signal_all(false);
@@ -377,9 +375,8 @@ impl Media {
                 .as_ref()
                 .ok_or("record original report missing")?
                 .bounds;
-            let mut bounds = Bounds::new(self.clock.as_ref(), self.input_timeout)?;
-            bounds.expires = bounds.expires.min(original.expires);
-            bounds.hard = bounds.hard.min(original.hard);
+            let bounds =
+                Bounds::after(self.clock.as_ref(), self.input_timeout)?.capped_by(original);
             Some(bounds)
         } else {
             None
@@ -423,9 +420,9 @@ impl Media {
                         bounds,
                         canonical: Box::pin(Deadline::at(
                             self.clock.clone(),
-                            gnunet_types::AbsoluteTime::from_micros(bounds.expires),
+                            gnunet_types::AbsoluteTime::from_micros(bounds.expires()),
                         )?),
-                        native: Box::pin(tokio::time::sleep_until(bounds.hard.into())),
+                        native: Box::pin(tokio::time::sleep_until(bounds.hard())),
                     });
                 }
                 if self.used == 4 && self.need == 4 {
@@ -552,7 +549,7 @@ impl Media {
             if stop.alarm.as_mut().poll(cx).is_ready() {
                 if !stop.killed {
                     stop.killed = true;
-                    stop.alarm.as_mut().reset(stop.hard.into());
+                    stop.alarm.as_mut().reset(stop.hard);
                     self.signal_all(true);
                 } else {
                     if let Some(report) = &mut self.report {

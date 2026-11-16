@@ -80,12 +80,12 @@ impl math::Entropy for Draw<'_> {
 fn expired_provider_boundary_stops_more_draws_and_inner_error_keeps_precedence() -> Result<(), Error>
 {
     let clock = Clock(std::sync::atomic::AtomicU64::new(1));
-    let bounds = crate::Bounds {
-        expires: 100,
-        hard: Instant::now()
+    let bounds = crate::Bounds::from_targets(
+        gnunet_types::AbsoluteTime::from_micros(100),
+        Instant::now()
             .checked_add(std::time::Duration::from_secs(2))
             .ok_or(Fault::Overflow)?,
-    };
+    )?;
     let mut bytes = [0; 32];
     let mut draw = Draw {
         clock: &clock,

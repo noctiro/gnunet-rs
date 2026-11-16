@@ -2,16 +2,15 @@
 //! never address authentication, connection success or a service ACK.
 #![forbid(unsafe_code)]
 #![cfg(any(unix, windows))]
-mod budget;
+use gnunet_service_runtime::clock::Alarm;
 /// Actual public TRANSPORT monitor/link listing owner, separate from hints.
 pub mod observation;
-use crate::budget::Bound;
-pub use budget::Bounds;
 pub use gnunet_client_host::ConnectError as Error;
 use gnunet_client_host::{
     ConnectGuard, EndpointSource,
     channel::{Channel, ConnectionStep},
 };
+pub use gnunet_service_runtime::clock::Bounds;
 use gnunet_service_runtime::framing::{
     Accounting, Budget, Class, Limits as FrameLimits, OwnedFrame, ReadStep,
 };
@@ -68,7 +67,7 @@ pub enum Step {
     Retry(io::Error),
 }
 struct Pending {
-    bound: Bound,
+    bound: Alarm,
     sequence: u64,
     written: usize,
 }
@@ -81,7 +80,7 @@ pub struct Application {
     next: u64,
     attached: bool,
     pending: Option<Pending>,
-    initial: Bound,
+    initial: Alarm,
     source_life: Option<Duration>,
     guard: Option<ConnectGuard>,
     io: usize,
@@ -108,7 +107,7 @@ impl Application {
         initial: Duration,
         source_life: Duration,
     ) -> Result<Self, Error> {
-        let first = Bound::new(source.clock().as_ref(), initial)?;
+        let first = Alarm::after(source.clock().as_ref(), initial)?;
         Ok(Self {
             channel: Channel::new(source.duplicate()?, framing(io))?,
             source,
@@ -139,11 +138,14 @@ impl Application {
         let clock = source.clock();
         let callback = guard.clone();
         let connect: ConnectGuard = std::sync::Arc::new(move || {
-            if std::time::Instant::now() >= bounds.hard {
+            if tokio::time::Instant::now() >= bounds.hard() {
                 return Err(io::Error::other(Fault::Deadline));
             }
             callback()?;
-            bounds.check(clock.as_ref()).map_err(io::Error::other)
+            bounds
+                .check(clock.as_ref())
+                .map(|_| ())
+                .map_err(io::Error::other)
         });
         let channel = Channel::new_guarded(source.duplicate()?, framing(io), connect)?;
         Ok(Self {
@@ -153,7 +155,7 @@ impl Application {
             next: 0,
             attached: false,
             pending: None,
-            initial: Bound::targets(bounds),
+            initial: Alarm::new(bounds),
             source_life: None,
             guard: Some(guard),
             io,
@@ -161,29 +163,15 @@ impl Application {
         })
     }
     fn check_io(&self, admission: Option<Bounds>) -> Result<(), Error> {
-        let pending = admission.or_else(|| self.pending.as_ref().map(|p| p.bound.targets));
-        let native_expired = || {
-            let now = std::time::Instant::now();
-            now >= self.initial.targets.hard || pending.is_some_and(|b| now >= b.hard)
-        };
-        if native_expired() {
-            return Err(Fault::Deadline.into());
-        }
+        let pending = admission.or_else(|| self.pending.as_ref().map(|p| p.bound.bounds()));
+        let bounds = pending.map_or(self.initial.bounds(), |pending| {
+            self.initial.bounds().capped_by(pending)
+        });
+        bounds.check_native()?;
         if let Some(guard) = &self.guard {
             guard()?;
         }
-        if native_expired() {
-            return Err(Fault::Deadline.into());
-        }
-        // One final coherent canonical sample checks the source and this
-        // original pending/admitting operation after every external callback.
-        let now = self.source.clock().sample()?.now.as_micros();
-        if native_expired()
-            || now >= self.initial.targets.expires
-            || pending.is_some_and(|b| now >= b.expires)
-        {
-            return Err(Fault::Deadline.into());
-        }
+        bounds.check(self.source.clock().as_ref())?;
         Ok(())
     }
     /// Whether one new operation can be admitted to this attached original MQ.
@@ -200,7 +188,7 @@ impl Application {
     /// enqueue validation with unspecified network type0. No remote result is
     /// inferred. Use validate for an actual network-classified address.
     pub fn hint(&mut self, peer: [u8; 32], uri: &[u8], bounds: Bounds) -> Result<(), Error> {
-        let bound = Bound::targets(bounds);
+        let bound = Alarm::new(bounds);
         bound.check(self.source.clock().as_ref())?;
         let address = gnunet_hello::Address::from_uri(uri)?;
         let n = address
@@ -236,7 +224,7 @@ impl Application {
         network: u32,
         bounds: Bounds,
     ) -> Result<(), Error> {
-        let bound = Bound::targets(bounds);
+        let bound = Alarm::new(bounds);
         bound.check(self.source.clock().as_ref())?;
         let total = address
             .len()
@@ -262,7 +250,7 @@ impl Application {
         cancel: bool,
         bounds: Bounds,
     ) -> Result<(), Error> {
-        let bound = Bound::targets(bounds);
+        let bound = Alarm::new(bounds);
         let mut bytes = buffer(44)?;
         Preference {
             priority: 1,
@@ -272,17 +260,17 @@ impl Application {
         .encode(cancel, &mut bytes)?;
         self.enqueue(OwnedFrame::new(bytes), bound)
     }
-    fn enqueue(&mut self, frame: OwnedFrame, bound: Bound) -> Result<(), Error> {
+    fn enqueue(&mut self, frame: OwnedFrame, bound: Alarm) -> Result<(), Error> {
         if !self.idle() {
             return Err(Fault::WouldBlock.into());
         }
-        self.check_io(Some(bound.targets))?;
+        self.check_io(Some(bound.bounds()))?;
         let sequence = self.next.checked_add(1).ok_or(Fault::Overflow)?;
         let framed = self.channel.framing_mut().ok_or(Fault::NotReady)?;
         framed.reserve(frame.len(), Class::Ordinary)?;
         // Preserve the same hard after clock/reservation, immediately before
         // actual queue admission. This is still not a complete write receipt.
-        if std::time::Instant::now() >= bound.targets.hard {
+        if tokio::time::Instant::now() >= bound.bounds().hard() {
             return Err(Fault::Deadline.into());
         }
         framed
@@ -309,11 +297,11 @@ impl Application {
         if self.closed {
             return None;
         }
-        if self.initial.poll_native(cx)
+        if self.initial.poll_expired(cx)
             || self
                 .pending
                 .as_mut()
-                .is_some_and(|p| p.bound.poll_native(cx))
+                .is_some_and(|p| p.bound.poll_expired(cx))
         {
             return Some(self.close());
         }
@@ -339,7 +327,7 @@ impl Application {
                     self.epoch = self.epoch.checked_add(1).ok_or(Fault::Overflow)?;
                     self.attached = true;
                     if let Some(life) = self.source_life {
-                        self.initial = Bound::new(self.source.clock().as_ref(), life)?;
+                        self.initial = Alarm::after(self.source.clock().as_ref(), life)?;
                     }
                     Poll::Ready(Ok(Step::Attached(self.epoch)))
                 }
@@ -438,7 +426,7 @@ impl Application {
             return Err(Fault::Conflict.into());
         }
         let channel = Channel::new(self.source.duplicate()?, framing(self.io))?;
-        let first = Bound::new(self.source.clock().as_ref(), initial)?;
+        let first = Alarm::after(self.source.clock().as_ref(), initial)?;
         self.channel = channel;
         self.initial = first;
         self.closed = false;

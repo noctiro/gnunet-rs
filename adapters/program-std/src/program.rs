@@ -66,7 +66,17 @@ impl std::fmt::Display for Failure {
         }
     }
 }
-impl std::error::Error for Failure {}
+impl std::error::Error for Failure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(match self {
+            Self::Configuration(error) => error,
+            Self::Io(error) => error,
+            Self::State(error) => error,
+            #[cfg(feature = "resolver-broker")]
+            Self::Broker(error) => error,
+        })
+    }
+}
 impl From<gnunet_config::Error> for Failure {
     fn from(e: gnunet_config::Error) -> Self {
         Self::Configuration(e)

@@ -1,11 +1,12 @@
 use crate::{
-    Bounds, Cause, Decryption, Epoch, Error, Kind, Limits, Loss, Progress, Receipt, Share,
-    budget::Bound, ipc, types::freeze,
+    Bounds, Cause, Decryption, Epoch, Error, Kind, Limits, Loss, Progress, Receipt, Share, ipc,
+    types::freeze,
 };
 use gnunet_client_host::{
     EndpointSource,
     channel::{Channel, ConnectionStep},
 };
+use gnunet_service_runtime::clock::Alarm;
 use gnunet_service_runtime::framing::{Class, OwnedFrame, ReadStep};
 use gnunet_types::Error as Fault;
 use gnunet_wire::official::Frame;
@@ -13,8 +14,8 @@ use std::{
     future::poll_fn,
     sync::Arc,
     task::{Context, Poll},
-    time::Instant,
 };
+use tokio::time::Instant;
 use zeroize::Zeroizing;
 
 /// One official operation on its own original MQ. Use inside an entered Tokio
@@ -24,10 +25,10 @@ pub struct Client {
     source: EndpointSource,
     channel: Channel<Kind>,
     limits: Limits,
-    overall: Bound,
-    initial: Option<Bound>,
-    write: Option<Bound>,
-    input: Option<Bound>,
+    overall: Alarm,
+    initial: Option<Alarm>,
+    write: Option<Alarm>,
+    input: Option<Alarm>,
     original: Option<OwnedFrame>,
     kind: Kind,
     total: usize,
@@ -51,7 +52,7 @@ impl Client {
     ) -> Result<Self, Error> {
         original.check(source.clock().as_ref())?;
         limits.validate()?;
-        let initial = Bound::phase(source.clock().as_ref(), limits.initial_timeout, original)?;
+        let initial = Alarm::phase(source.clock().as_ref(), limits.initial_timeout, original)?;
         let source = source.fixed_endpoint()?;
         original.check(source.clock().as_ref())?;
         let kind = match request {
@@ -85,7 +86,7 @@ impl Client {
             source,
             channel,
             limits,
-            overall: Bound::new(original),
+            overall: Alarm::new(original),
             initial: Some(initial),
             write: None,
             input: None,
@@ -118,33 +119,37 @@ impl Client {
     /// Original overall canonical/native targets, never renewed by observation.
     #[must_use]
     pub const fn bounds(&self) -> Bounds {
-        self.overall.targets
+        self.overall.bounds()
     }
     /// Earliest retained original native target, for caller wait/output guards.
     #[must_use]
     pub fn native_deadline(&self) -> Instant {
-        Some(self.overall.targets.hard)
+        Some(self.overall.bounds().hard())
             .into_iter()
-            .chain(self.initial.as_ref().map(|b| b.targets.hard))
-            .chain(self.write.as_ref().map(|b| b.targets.hard))
-            .chain(self.input.as_ref().map(|b| b.targets.hard))
+            .chain(self.initial.as_ref().map(|b| b.bounds().hard()))
+            .chain(self.write.as_ref().map(|b| b.bounds().hard()))
+            .chain(self.input.as_ref().map(|b| b.bounds().hard()))
             .min()
-            .unwrap_or(self.overall.targets.hard)
+            .unwrap_or(self.overall.bounds().hard())
     }
     fn expired(&mut self, cx: &mut Context<'_>) -> bool {
-        self.overall.native(cx)
-            || self.initial.as_mut().is_some_and(|b| b.native(cx))
-            || self.write.as_mut().is_some_and(|b| b.native(cx))
-            || self.input.as_mut().is_some_and(|b| b.native(cx))
+        self.overall.poll_expired(cx)
+            || self.initial.as_mut().is_some_and(|b| b.poll_expired(cx))
+            || self.write.as_mut().is_some_and(|b| b.poll_expired(cx))
+            || self.input.as_mut().is_some_and(|b| b.poll_expired(cx))
     }
     fn check(&self) -> Result<(), Error> {
-        self.overall.targets.check(self.source.clock().as_ref())?;
-        for bound in [&self.initial, &self.write, &self.input]
-            .into_iter()
-            .flatten()
-        {
-            bound.targets.check(self.source.clock().as_ref())?;
-        }
+        let bounds = [
+            self.initial.as_ref(),
+            self.write.as_ref(),
+            self.input.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        .fold(self.overall.bounds(), |bounds, phase| {
+            bounds.capped_by(phase.bounds())
+        });
+        bounds.check(self.source.clock().as_ref())?;
         Ok(())
     }
     fn physical_close(&mut self) {
@@ -188,10 +193,10 @@ impl Client {
             return Ok(());
         }
         self.check()?;
-        let bound = Bound::phase(
+        let bound = Alarm::phase(
             self.source.clock().as_ref(),
             self.limits.write_timeout,
-            self.overall.targets,
+            self.overall.bounds(),
         )?;
         self.check()?;
         let frame = self.original.take().ok_or(Fault::Conflict)?;
@@ -265,10 +270,10 @@ impl Client {
             Poll::Ready(Ok(ReadStep::Progress { bytes, complete })) => {
                 self.input_bytes = self.input_bytes.checked_add(bytes).ok_or(Fault::Overflow)?;
                 if bytes > 0 && self.input.is_none() {
-                    self.input = Some(Bound::phase(
+                    self.input = Some(Alarm::phase(
                         self.source.clock().as_ref(),
                         self.limits.input_timeout,
-                        self.overall.targets,
+                        self.overall.bounds(),
                     )?);
                 }
                 if self.expired(cx) {

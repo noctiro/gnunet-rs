@@ -14,8 +14,8 @@ use std::{
     rc::Rc,
     sync::Arc,
     task::{Context, Poll},
-    time::Instant,
 };
+use tokio::time::Instant;
 mod identity;
 mod scheduling;
 pub(super) use scheduling::scheduled;
@@ -112,7 +112,7 @@ pub(super) struct Control {
 }
 impl Control {
     fn guard(&mut self, cx: &mut Context<'_>) -> Result<(), Failure> {
-        if Instant::now() >= self.original.hard || self.native.as_mut().poll(cx).is_ready() {
+        if Instant::now() >= self.original.hard() || self.native.as_mut().poll(cx).is_ready() {
             return Err(gnunet_types::Error::Deadline.into());
         }
         self.reporter.register(cx);
@@ -271,9 +271,9 @@ async fn run(input: Inputs) -> Result<(), Failure> {
     let sources = Sources::new(live, &resolver, &selection.action)?;
     let canonical = Box::pin(Deadline::at(
         clock.clone(),
-        gnunet_types::AbsoluteTime::from_micros(original.expires),
+        gnunet_types::AbsoluteTime::from_micros(original.expires()),
     )?);
-    let native = Box::pin(tokio::time::sleep_until(original.hard.into()));
+    let native = Box::pin(tokio::time::sleep_until(original.hard()));
     let mut control = Control {
         clock,
         settings,

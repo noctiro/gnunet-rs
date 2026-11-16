@@ -1,5 +1,6 @@
 use super::*;
 use gnunet_client_host::channel::ConnectionStep;
+use gnunet_service_runtime::clock::Alarm;
 use gnunet_service_runtime::framing::Class;
 
 impl Line {
@@ -52,14 +53,14 @@ impl Line {
         {
             return Err(Fault::WouldBlock.into());
         }
-        let bound = match Bound::phase(
+        let bound = match Alarm::phase(
             self.source.clock().as_ref(),
             self.limits.write_timeout,
-            self.overall.targets,
+            self.overall.bounds(),
         ) {
             Ok(b) => b,
             Err(error) => {
-                self.pending_loss = Some(self.lost(cause(error)));
+                self.pending_loss = Some(self.lost(cause(error.into())));
                 return Err(Fault::Closed.into());
             }
         };
@@ -68,7 +69,7 @@ impl Line {
             serial: self.next_operation,
         };
         let receipt = Receipt {
-            bounds: bound.targets,
+            bounds: bound.bounds(),
             operation: operation.clone(),
             call: Some(call.clone()),
             kind,

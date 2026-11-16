@@ -37,6 +37,15 @@ discarding that original received message. SEND_OK is flow control; no remote
 application delivery receipt is invented. Retiring a failed TRANSPORT MQ drops
 its peer generations, request reservations and unadmitted work before reconnect. Late SEND_OK for a disconnected peer is legal and does not retire other peers.
 
+The local peer limit declines excess CONNECT notifications without retiring the
+shared MQ or existing sessions. Their subsequent RECV messages are discarded
+and return exactly one original receive credit; no session or refusal history
+is allocated. A later real CONNECT can use capacity released by a disconnect.
+The ingress module distinguishes these consumed admission outcomes from source
+framing/control failures and local host failures. Source failures retire the MQ;
+local host failures return their cause to the foreground. Reports retain fixed
+peer-refusal and unadmitted-record counters and the latest protocol-loss cause.
+
 The record receiver classifies the two public epoch-policy refusals at the
 record-open boundary. Too-far future and expired-ring epochs discard only
 their original RECV, increment the existing rejected-record count, wipe scratch
@@ -46,7 +55,7 @@ does not refresh liveness or alter replay state. The plaintext epoch is not
 AEAD-covered by the reference wire. `Session::receive_classified` and
 `Receiver::open_classified` retain this provenance while the existing `receive`
 and `open` APIs project to their original error values. Arbitrary `Stale` or
-`TooLarge` from a different step remain local failures, not silent discards. Capacity, ownership, crypto/provider and physical-MQ failure policy is unchanged. The normal stop Report retains the total `rejected_records` and separate
+`TooLarge` from a different step remain local failures, not silent discards. The normal stop Report retains the total `rejected_records` and separate
 saturating counts for the original receive classifications `RejectedEpoch`,
 `Authentication`, `Replay`, `Truncated`, `Malformed`, `InvalidInput` and
 `Unsupported`. Epoch refusals combine the existing TooNew/TooOld policy cases;

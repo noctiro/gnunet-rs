@@ -86,7 +86,7 @@ async fn completion<'a>(
     original: ns::Operation<'a>,
 ) -> Result<ns::Completion<'a>, Failure> {
     loop {
-        let hard = control.original.hard.into();
+        let hard = control.original.hard();
         match control
             .next(|cx| native.client.poll(cx, Some(hard)))
             .await?
@@ -160,7 +160,7 @@ pub(super) async fn prepend(
         // preexisting record set; this is an explicit public lookup filter.
         let lookup = native
             .client
-            .lookup(&secret, label, 1, control.original.expires)?;
+            .lookup(&secret, label, 1, control.original.expires())?;
         native.operation = Some(lookup);
         let lookup = completion(control, &mut native, lookup).await?;
         let ns::Outcome::Reply(reply) = lookup.outcome else {
@@ -250,7 +250,7 @@ pub(super) async fn prepend(
             &secret,
             ns::ipc::RecordSets::new(&batch, 1)?,
             true,
-            control.original.expires,
+            control.original.expires(),
         )?;
         native.operation = Some(store);
         native.store_phase = true;

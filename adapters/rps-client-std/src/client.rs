@@ -1,13 +1,11 @@
+use crate::ports::{HmacRank, NativeRandom};
 use crate::{Bounds, Cause, Epoch, Error, Limits, Loss, Observation, Progress, Query};
-use crate::{
-    budget::Bound,
-    ports::{HmacRank, NativeRandom},
-};
 use gnunet_client_host::{
     EndpointSource,
     channel::{Channel, ConnectionStep},
 };
 use gnunet_rps::ClientSampler;
+use gnunet_service_runtime::clock::Alarm;
 use gnunet_service_runtime::framing::{Class, OwnedFrame, ReadStep};
 use gnunet_types::Error as Fault;
 use gnunet_wire::official::{
@@ -18,8 +16,8 @@ use std::{
     future::poll_fn,
     sync::Arc,
     task::{Context, Poll},
-    time::Instant,
 };
+use tokio::time::Instant;
 
 #[derive(Clone, Copy)]
 enum Mode {
@@ -57,9 +55,9 @@ pub struct Client {
     group_id: Option<[u8; 64]>,
     mode: Mode,
     limits: Limits,
-    overall: Bound,
-    initial: Option<Bound>,
-    input: Option<Bound>,
+    overall: Alarm,
+    initial: Option<Alarm>,
+    input: Option<Alarm>,
     epoch: Option<Epoch>,
     written: usize,
     request_written: bool,
@@ -125,7 +123,7 @@ impl Client {
         limits: Limits,
         original: Bounds,
     ) -> Result<Self, Error> {
-        let overall = Bound::targets(original);
+        let overall = Alarm::new(original);
         overall.check(source.clock().as_ref())?;
         let (mode, request, count) = match query {
             Query::Sample { count } => {
@@ -165,7 +163,7 @@ impl Client {
         let (channel, initial, request, group) = if local_empty {
             (None, None, None, None)
         } else {
-            let initial = Bound::new(source.clock().as_ref(), limits.initial_timeout)?;
+            let initial = Alarm::after(source.clock().as_ref(), limits.initial_timeout)?;
             let request = encode(request)?;
             let group = group
                 .map(|(group, round_interval)| {
@@ -287,22 +285,22 @@ impl Client {
         self.cancel()
     }
     fn guard(&mut self, cx: &mut Context<'_>) -> Result<(), Error> {
-        if self.overall.poll_native(cx)
-            || self.initial.as_mut().is_some_and(|b| b.poll_native(cx))
-            || self.input.as_mut().is_some_and(|b| b.poll_native(cx))
+        if self.overall.poll_expired(cx)
+            || self.initial.as_mut().is_some_and(|b| b.poll_expired(cx))
+            || self.input.as_mut().is_some_and(|b| b.poll_expired(cx))
         {
             return Err(Fault::Deadline.into());
         }
         Ok(())
     }
     fn check(&self) -> Result<(), Error> {
-        self.overall.check(self.source.clock().as_ref())?;
-        if let Some(b) = &self.initial {
-            b.check(self.source.clock().as_ref())?;
-        }
-        if let Some(b) = &self.input {
-            b.check(self.source.clock().as_ref())?;
-        }
+        let bounds = [self.initial.as_ref(), self.input.as_ref()]
+            .into_iter()
+            .flatten()
+            .fold(self.overall.bounds(), |bounds, phase| {
+                bounds.capped_by(phase.bounds())
+            });
+        bounds.check(self.source.clock().as_ref())?;
         Ok(())
     }
     /// Earliest unchanged phase/overall native target, including during output.
@@ -310,13 +308,13 @@ impl Client {
     pub fn native_deadline(&self) -> Instant {
         self.initial
             .as_ref()
-            .map_or(self.overall.targets.hard, |b| {
-                b.targets.hard.min(self.overall.targets.hard)
+            .map_or(self.overall.bounds().hard(), |b| {
+                b.bounds().hard().min(self.overall.bounds().hard())
             })
             .min(
                 self.input
                     .as_ref()
-                    .map_or(self.overall.targets.hard, |b| b.targets.hard),
+                    .map_or(self.overall.bounds().hard(), |b| b.bounds().hard()),
             )
     }
     /// Clock-free bound check with no new IO, usable while output is blocked.
@@ -600,7 +598,7 @@ impl Client {
             }
             Poll::Ready(Ok(ReadStep::Progress { bytes, .. })) => {
                 if bytes > 0 && self.input.is_none() {
-                    self.input = Some(Bound::new(
+                    self.input = Some(Alarm::after(
                         self.source.clock().as_ref(),
                         self.limits.input_timeout,
                     )?);

@@ -3842,11 +3842,14 @@ dependencies = [
 name = "gnunet-service-statistics"
 version = "0.1.0"
 dependencies = [
- "gnunet",
+ "gnunet-config",
+ "gnunet-ipc-unix",
  "gnunet-native",
  "gnunet-program-host",
  "gnunet-service-runtime",
  "gnunet-service-startup",
+ "gnunet-statistics",
+ "gnunet-statistics-store",
  "libc",
  "socket2",
  "tokio",

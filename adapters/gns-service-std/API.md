@@ -188,6 +188,13 @@ from whole local write. Bad input/client loss cancels only that peer's
 original calls. Soft stop gates new input and finishes previously admitted
 results, while Immediate physically retires peers and drives native cleanup.
 
+Calls move from resolving to a prepared reply and then to queued output. Reply
+length and empty-result failure classification are computed once without a
+temporary record array. Backpressure retains the original prepared records;
+queue admission preflights capacity before allocating views and the immutable
+wire frame. A successful synchronous transfer releases the records and prevents
+another enqueue for that call.
+
 `native::diagnostics` consumes owned causes/reports into static diagnostics. It
 erases only borrowed token authority into diagnostic serials; no static token,
 completion or cancellation authority is reconstructed. Whole service completion

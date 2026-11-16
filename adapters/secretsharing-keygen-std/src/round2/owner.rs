@@ -21,8 +21,8 @@ use std::{
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
-    time::Instant,
 };
+use tokio::time::Instant;
 
 #[expect(
     clippy::large_enum_variant,
@@ -118,11 +118,11 @@ fn blocked(error: &consensus::Error) -> bool {
     )
 }
 fn check_target(clock: &dyn RuntimeClock, bounds: Bounds, deadline: u64) -> Result<u64, Fault> {
-    if Instant::now() >= bounds.hard {
+    if Instant::now() >= bounds.hard() {
         return Err(Fault::Deadline);
     }
     let now = clock.sample()?.now.as_micros();
-    if Instant::now() >= bounds.hard || now >= bounds.expires || now >= deadline {
+    if Instant::now() >= bounds.hard() || now >= bounds.expires() || now >= deadline {
         return Err(Fault::Deadline);
     }
     Ok(now)
@@ -384,7 +384,7 @@ impl<'id> Round2<'id> {
         }
         self.account()?;
         if self.timer.is_none() {
-            self.timer = Some(Box::pin(tokio::time::sleep_until(self.bounds.hard.into())));
+            self.timer = Some(Box::pin(tokio::time::sleep_until(self.bounds.hard())));
         }
         if self
             .timer
@@ -923,7 +923,7 @@ impl<'id> Round2<'id> {
                 match self
                     .session
                     .client
-                    .poll_guarded(cx, Some(bounds.hard.into()), &mut before_io)
+                    .poll_guarded(cx, Some(bounds.hard()), &mut before_io)
                 {
                     Poll::Pending => false,
                     Poll::Ready(event) => self.pils_event(event?)?,

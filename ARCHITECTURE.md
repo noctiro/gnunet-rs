@@ -60,6 +60,11 @@ These outcomes are distinct. Preserve observed results when later clock or
 cleanup work fails, and return the initiating cause with independent cleanup
 errors. Diagnostic output and idleness establish none of these outcomes.
 
+Domain input outcomes distinguish consumed work, local admission refusal and
+physical-source failure. Capacity refusal for one peer cannot implicitly retire
+unrelated sessions. Shared framing owns byte cursors and control capacity;
+the consuming domain decides when that physical source must retire.
+
 Canceling a wait retains its original operation and byte cursors. Explicit
 cancellation settles children or transfers their outstanding effects before
 termination. Remove only provably unwritten work; drain exposed stream prefixes
@@ -76,6 +81,10 @@ failure have different scope and must be reported accordingly.
 - Keep canonical absolute time, engine-relative monotonic time and native wait
   bounds in distinct typed domains. Capture bounds once; polling, clock changes
   and provider waits do not renew them.
+- Share finite bounds and per-owner wake registration through the service runtime.
+  Recheck native expiry after clock or subscription callbacks and before effects.
+  Tightening wakes the original owner; a sampled timestamp is not reusable I/O
+  authority across later waits.
 - Register native alarms before asynchronous clock or provider waits. Cleanup
   has a separate finite allowance. Deadline expiry does not prove child exit or
   native cancellation.

@@ -5,6 +5,7 @@
 )]
 #[path = "more_tests.rs"]
 mod more_tests;
+mod peer_admission;
 #[path = "review_generation_credit.rs"]
 mod review_generation_credit;
 #[path = "review_late_credit.rs"]

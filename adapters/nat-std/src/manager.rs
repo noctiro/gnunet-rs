@@ -83,8 +83,8 @@ impl Due {
     fn after(clock: &dyn RuntimeClock, d: Duration) -> Result<Self, Error> {
         let b = Bounds::after(clock, d)?;
         Ok(Self {
-            absolute: b.expires,
-            native: b.hard,
+            absolute: b.expires(),
+            native: b.hard(),
         })
     }
     fn reached(self, now: u64) -> bool {
@@ -1231,7 +1231,7 @@ impl Manager {
         if result.is_err() {
             return Ok(true);
         }
-        if row.bounds.hard <= Instant::now() || now >= row.bounds.expires {
+        if row.bounds.hard() <= Instant::now() || now >= row.bounds.expires() {
             return Err(Fault::Deadline.into());
         }
         if row.kind.source().is_some_and(|s| !self.current(s))
@@ -1457,7 +1457,7 @@ impl Manager {
         let now = Instant::now();
         let mut i = 0;
         while i < self.jobs.len() {
-            if self.jobs[i].bounds.hard <= now {
+            if self.jobs[i].bounds.hard() <= now {
                 let row = self.jobs.swap_remove(i);
                 self.job_failure(row, Fault::Deadline.into(), observe)?;
             } else {
@@ -1466,7 +1466,7 @@ impl Manager {
         }
         let mut i = 0;
         while i < self.cleanup_queue.len() {
-            if self.cleanup_queue[i].bounds.hard <= now {
+            if self.cleanup_queue[i].bounds.hard() <= now {
                 let cleanup = self.cleanup_queue.remove(i).ok_or(Fault::Stale)?;
                 self.unresolved = self.unresolved.saturating_add(1);
                 observe(Event::MappingUnknown {
@@ -1489,10 +1489,10 @@ impl Manager {
             }
         };
         for j in &self.jobs {
-            include(j.bounds.hard);
+            include(j.bounds.hard());
         }
         for c in &self.cleanup_queue {
-            include(c.bounds.hard);
+            include(c.bounds.hard());
         }
         for f in &self.fresh {
             include(f.until.native);

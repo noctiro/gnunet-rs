@@ -484,7 +484,7 @@ pub async fn discover(
     let until = Instant::now()
         .checked_add(limits.discovery_window)
         .ok_or(Fault::Overflow)?
-        .min(gate.bounds().hard);
+        .min(gate.bounds().hard());
     let mut locations = Vec::new();
     locations
         .try_reserve_exact(limits.devices)

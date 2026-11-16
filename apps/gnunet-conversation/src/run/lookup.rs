@@ -53,7 +53,7 @@ pub(super) async fn call(
             options: gns::LocalOptions::DEFAULT,
             recursion_depth: 128,
         },
-        tld::Bounds::bounded(bounds.expires, bounds.hard.into()),
+        tld::Bounds::bounded(bounds.expires(), bounds.hard()),
         tld::Limits::default(),
     )?;
     let mut owner = Original {

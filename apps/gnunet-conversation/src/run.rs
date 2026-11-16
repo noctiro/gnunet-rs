@@ -14,8 +14,8 @@ use std::{
     rc::Rc,
     sync::Arc,
     task::{Context, Poll},
-    time::Instant,
 };
+use tokio::time::Instant;
 mod lookup;
 mod sources;
 mod state;
@@ -214,11 +214,8 @@ impl Control {
         .await
     }
     fn bounded(&self, duration: std::time::Duration) -> Result<Bounds, Failure> {
-        let cap = Bounds::new(self.clock.as_ref(), duration)?;
-        Ok(Bounds {
-            expires: cap.expires.min(self.original.expires),
-            hard: cap.hard.min(self.original.hard),
-        })
+        let cap = Bounds::after(self.clock.as_ref(), duration)?;
+        Ok(cap.capped_by(self.original))
     }
 }
 
@@ -333,12 +330,12 @@ async fn run(input: Inputs) -> Result<(), Failure> {
         reporter,
         facts,
     } = input;
-    let original = Bounds::new(clock.as_ref(), selection.life)?;
+    let original = Bounds::after(clock.as_ref(), selection.life)?;
     let canonical = Box::pin(Deadline::at(
         clock.clone(),
-        gnunet_types::AbsoluteTime::from_micros(original.expires),
+        gnunet_types::AbsoluteTime::from_micros(original.expires()),
     )?);
-    let native = Box::pin(tokio::time::sleep_until(original.hard.into()));
+    let native = Box::pin(tokio::time::sleep_until(original.hard()));
     let signals = Signals::new()?;
     let mut control = Control {
         clock,
@@ -375,7 +372,7 @@ async fn run(input: Inputs) -> Result<(), Failure> {
         original,
         facts.clone(),
     )?;
-    let mut startup_alarm = Box::pin(tokio::time::sleep_until(startup.hard.into()));
+    let mut startup_alarm = Box::pin(tokio::time::sleep_until(startup.hard()));
     let outcome = async {
         while !state.ready() && !state.quit_requested() {
             control
@@ -416,7 +413,7 @@ async fn run(input: Inputs) -> Result<(), Failure> {
         .checked_add(settings.shutdown)
         .ok_or(gnunet_types::Error::Overflow)?;
     state.begin_cleanup(hard);
-    let mut alarm = Box::pin(tokio::time::sleep_until(hard.into()));
+    let mut alarm = Box::pin(tokio::time::sleep_until(hard));
     let cleanup = poll_fn(|cx| {
         if state.cleanup_done() {
             return Poll::Ready(Ok::<(), Failure>(()));

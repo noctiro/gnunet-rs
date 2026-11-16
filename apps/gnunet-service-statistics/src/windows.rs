@@ -21,7 +21,7 @@ pub(super) fn run() -> Result<ExitCode, Failure> {
     let mut logger = Logger::new(b"statistics", std::process::id(), true)?;
     let selected = match service::prepare(
         b"statistics",
-        &gnunet::config::ProjectData::default(),
+        &gnunet_config::ProjectData::default(),
         std::env::args_os(),
         &Environment::capture(),
         &mut logger,
@@ -80,56 +80,56 @@ pub(super) fn run() -> Result<ExitCode, Failure> {
     let result = {
         let reports = reporting::Reports::new(&mut logger, &clock);
         let mut stage = "configuration";
-        let result = (|| -> Result<(), Failure> {
-            let config = settings::configuration(selected.configuration())?;
-            stage = "clock configuration";
-            clock.testing_skew(&config)?;
-            stage = "settings";
-            let settings = settings::Settings::read(&config)?;
-            stage = "process identity";
-            gnunet_service_startup::verify_configured_identity(&config, b"statistics")?;
-            stage = "listener binding";
-            let bound = if activation.is_empty() {
-                runtime.block_on(BoundListeners::bind_configured(
-                    &config,
-                    b"statistics",
-                    settings.access.into(),
-                ))?
-            } else {
-                let _entered = runtime.enter();
-                BoundListeners::from_activation(activation)?
-            };
-            for error in bound.failures() {
-                reports.warning(
-                    "statistics.listener.alternate",
-                    format_args!("statistics alternate listener: {error}"),
-                );
-            }
-            reports.startup_check()?;
-            stage = "service";
-            runtime.block_on(host::run(
-                host::Inputs {
-                    bound: &bound,
-                    parent,
-                    settings: &settings,
-                    clock: Arc::new(clock.clone()),
-                    reports: &reports,
-                },
-                || async {
-                    if let Some(writer) = &mut ready {
-                        writer
-                            .signal(ReadyStatus::AcceptRegistered)
-                            .await
-                            .map_err(|error| gnunet::ipc::IpcError::Io(io::Error::other(error)))?;
-                    }
-                    // Preserve control as the service lifetime owner; successful
-                    // ready admission does not retain a dead one-shot write outbox.
-                    drop(ready.take());
-                    Ok(())
-                },
-            ))
-        })()
-        .map_err(|source| Box::new(PhaseFailure { stage, source }) as Failure);
+        let result =
+            (|| -> Result<(), Failure> {
+                let config = settings::configuration(selected.configuration())?;
+                stage = "clock configuration";
+                clock.testing_skew(&config)?;
+                stage = "settings";
+                let settings = settings::Settings::read(&config)?;
+                stage = "process identity";
+                gnunet_service_startup::verify_configured_identity(&config, b"statistics")?;
+                stage = "listener binding";
+                let bound = if activation.is_empty() {
+                    runtime.block_on(BoundListeners::bind_configured(
+                        &config,
+                        b"statistics",
+                        settings.access.into(),
+                    ))?
+                } else {
+                    let _entered = runtime.enter();
+                    BoundListeners::from_activation(activation)?
+                };
+                for error in bound.failures() {
+                    reports.warning(
+                        "statistics.listener.alternate",
+                        format_args!("statistics alternate listener: {error}"),
+                    );
+                }
+                reports.startup_check()?;
+                stage = "service";
+                runtime.block_on(host::run(
+                    host::Inputs {
+                        bound: &bound,
+                        parent,
+                        settings: &settings,
+                        clock: Arc::new(clock.clone()),
+                        reports: &reports,
+                    },
+                    || async {
+                        if let Some(writer) = &mut ready {
+                            writer.signal(ReadyStatus::AcceptRegistered).await.map_err(
+                                |error| gnunet_ipc_unix::IpcError::Io(io::Error::other(error)),
+                            )?;
+                        }
+                        // Preserve control as the service lifetime owner; successful
+                        // ready admission does not retain a dead one-shot write outbox.
+                        drop(ready.take());
+                        Ok(())
+                    },
+                ))
+            })()
+            .map_err(|source| Box::new(PhaseFailure { stage, source }) as Failure);
         service::retain_diagnostic(result, reports.take_failure())
     };
     let result = if result.is_err()

@@ -2,6 +2,10 @@
 use gnunet_wire::official::nat::{Address, Endian, Profile, RawAddress};
 type Result<T = ()> = std::result::Result<T, gnunet_types::Error>;
 #[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "Wire assertions follow fallible native-profile fixture encoding"
+)]
 fn windows_ipv6_retains_native_fields_and_refuses_unix_producer_profiles() -> Result {
     let address = Address::V6 {
         ip: [0x21; 16],
@@ -29,6 +33,10 @@ fn windows_ipv6_retains_native_fields_and_refuses_unix_producer_profiles() -> Re
     Ok(())
 }
 #[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "Wire assertions follow fallible native-profile fixture encoding"
+)]
 fn windows_local_address_preserves_every_native_path_byte() -> Result {
     let mut path = [0; 108];
     path[..4].copy_from_slice(b"C:\\s");

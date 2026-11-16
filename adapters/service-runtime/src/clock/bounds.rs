@@ -1,5 +1,5 @@
 //! Fixed original canonical expiry and monotonic target without a waiter.
-use super::RuntimeClock;
+use super::{AbsoluteTime, ClockSample, RuntimeClock};
 use gnunet_types::Error as Fault;
 use std::{fmt, time::Duration};
 use tokio::time::Instant;
@@ -33,37 +33,116 @@ impl std::error::Error for BoundsError {
 /// Copied targets preserve an admitted operation's original lifetime.
 #[derive(Clone, Copy, Debug)]
 pub struct Bounds {
-    /// Absolute original canonical expiry in microseconds.
-    pub expires: u64,
-    /// Independent original monotonic hard target.
-    pub hard: Instant,
+    expires: AbsoluteTime,
+    hard: Instant,
 }
 impl Bounds {
     /// Admit finite targets once before native work. No waiter or I/O is created.
     pub fn after(clock: &dyn RuntimeClock, lifetime: Duration) -> Result<Self, BoundsError> {
-        if lifetime.is_zero() {
+        let delta = u64::try_from(lifetime.as_micros()).map_err(|_| BoundsError::Overflow)?;
+        if delta == 0 {
             return Err(BoundsError::Deadline);
         }
         let hard = Instant::now()
             .checked_add(lifetime)
             .ok_or(BoundsError::Overflow)?;
         let now = clock.sample().map_err(BoundsError::Clock)?.now.as_micros();
-        let delta = u64::try_from(lifetime.as_micros()).map_err(|_| BoundsError::Overflow)?;
-        Ok(Self {
-            expires: now.checked_add(delta).ok_or(BoundsError::Overflow)?,
+        let bounds = Self::from_targets(
+            AbsoluteTime::from_micros(now.checked_add(delta).ok_or(BoundsError::Overflow)?),
             hard,
-        })
+        )?;
+        bounds.check_native()?;
+        Ok(bounds)
     }
     /// Check the unchanged native target first, then the original canonical expiry.
     pub fn check(self, clock: &dyn RuntimeClock) -> Result<u64, BoundsError> {
+        self.sample(clock).map(|sample| sample.now.as_micros())
+    }
+    /// Retain original targets; an expired target grants no admission authority.
+    ///
+    /// # Errors
+    /// Rejects the canonical never sentinel.
+    pub fn from_targets(expires: AbsoluteTime, hard: Instant) -> Result<Self, BoundsError> {
+        if expires.is_never() {
+            return Err(BoundsError::Overflow);
+        }
+        Ok(Self { expires, hard })
+    }
+    /// Capture the native interval before observing a finite canonical target.
+    ///
+    /// # Errors
+    /// Preserves source failure, original expiry and target overflow.
+    pub fn until(clock: &dyn RuntimeClock, expires: AbsoluteTime) -> Result<Self, BoundsError> {
+        let started = Instant::now();
+        let sample = clock.sample().map_err(BoundsError::Clock)?;
+        Self::at_sample(expires, started, sample)
+    }
+    pub(super) fn at_sample(
+        expires: AbsoluteTime,
+        started: Instant,
+        sample: ClockSample,
+    ) -> Result<Self, BoundsError> {
+        if expires.is_never() {
+            return Err(BoundsError::Overflow);
+        }
+        let remaining = expires
+            .as_micros()
+            .checked_sub(sample.now.as_micros())
+            .filter(|remaining| *remaining != 0)
+            .ok_or(BoundsError::Deadline)?;
+        let hard = started
+            .checked_add(Duration::from_micros(remaining))
+            .ok_or(BoundsError::Overflow)?;
+        let bounds = Self::from_targets(expires, hard)?;
+        bounds.check_native()?;
+        Ok(bounds)
+    }
+    /// Original finite canonical target in microseconds.
+    #[must_use]
+    pub const fn expires(self) -> u64 {
+        self.expires.as_micros()
+    }
+    /// Original native hard target.
+    #[must_use]
+    pub const fn hard(self) -> Instant {
+        self.hard
+    }
+    /// Intersect unchanged original targets without sampling or renewal.
+    #[must_use]
+    pub fn capped_by(self, parent: Self) -> Self {
+        self.tightened(parent.expires(), parent.hard)
+    }
+    /// Apply only stricter canonical and native limits.
+    #[must_use]
+    pub fn tightened(self, expires: u64, hard: Instant) -> Self {
+        Self {
+            expires: AbsoluteTime::from_micros(self.expires().min(expires)),
+            hard: self.hard.min(hard),
+        }
+    }
+    /// Refuse native expiry without consulting the canonical source.
+    ///
+    /// # Errors
+    /// Returns only expiry of the unchanged native target.
+    pub fn check_native(self) -> Result<(), BoundsError> {
         if Instant::now() >= self.hard {
+            Err(BoundsError::Deadline)
+        } else {
+            Ok(())
+        }
+    }
+    /// Sample the original source between checks of the same native target.
+    ///
+    /// # Errors
+    /// Preserves source failure and refuses native or canonical expiry.
+    pub fn sample(self, clock: &dyn RuntimeClock) -> Result<ClockSample, BoundsError> {
+        self.check_native()?;
+        let sample = clock.sample().map_err(BoundsError::Clock)?;
+        self.check_native()?;
+        if sample.now >= self.expires {
             return Err(BoundsError::Deadline);
         }
-        let now = clock.sample().map_err(BoundsError::Clock)?.now.as_micros();
-        if Instant::now() >= self.hard || now >= self.expires {
-            return Err(BoundsError::Deadline);
-        }
-        Ok(now)
+        Ok(sample)
     }
 }
 #[cfg(test)]
@@ -103,10 +182,11 @@ mod tests {
             delay: Duration::from_millis(4),
             failure: None,
         };
-        let bounds = Bounds::after(&clock, Duration::from_millis(1))?;
-        assert_eq!(
-            bounds.check(&clock),
-            Err(BoundsError::Deadline),
+        assert!(
+            matches!(
+                Bounds::after(&clock, Duration::from_millis(1)),
+                Err(BoundsError::Deadline)
+            ),
             "sample preparation consumes the original native lifetime"
         );
         assert_eq!(

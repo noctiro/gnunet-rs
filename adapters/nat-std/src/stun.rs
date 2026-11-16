@@ -215,7 +215,7 @@ impl Request {
             let now = self.gate.check()?;
             let mut id = [0; 12];
             getrandom::fill(&mut id).map_err(Error::Entropy)?;
-            let transaction = Transaction::new(id, server, self.gate.bounds().expires, now)?;
+            let transaction = Transaction::new(id, server, self.gate.bounds().expires(), now)?;
             let mut packet = [0; 20];
             stun::binding_request(&id, &mut packet)?;
             self.pending = Some(Attempt {

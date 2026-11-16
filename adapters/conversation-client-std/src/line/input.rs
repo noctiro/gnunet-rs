@@ -1,5 +1,6 @@
 use super::*;
 use crate::Audio;
+use gnunet_service_runtime::clock::Alarm;
 use gnunet_service_runtime::framing::ReadStep;
 
 enum Input {
@@ -348,10 +349,10 @@ impl Line {
                 if complete {
                     self.input = None;
                 } else if bytes != 0 && self.input.is_none() {
-                    self.input = Some(Bound::phase(
+                    self.input = Some(Alarm::phase(
                         self.source.clock().as_ref(),
                         self.limits.input_timeout,
-                        self.overall.targets,
+                        self.overall.bounds(),
                     )?);
                 }
                 if self.retained_bytes()? > self.limits.retained_bytes {

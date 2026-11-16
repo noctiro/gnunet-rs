@@ -331,6 +331,11 @@ impl<'id> Singleton<'id> {
             .ok_or(Fault::Capacity)?;
         let limits = self.limits.generation(available);
         limits.validate()?;
+        let bounds = keygen::Bounds::from_targets(
+            gnunet_types::AbsoluteTime::from_micros(self.original.canonical),
+            self.original.hard.into(),
+        )
+        .map_err(gnunet_client_host::ConnectError::from)?;
         let request = self
             .request
             .take()
@@ -344,10 +349,7 @@ impl<'id> Singleton<'id> {
             sources,
             request,
             limits,
-            keygen::Bounds {
-                expires: self.original.canonical,
-                hard: self.original.hard,
-            },
+            bounds,
         );
         let native = match result {
             Ok(native) => native,

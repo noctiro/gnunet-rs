@@ -23,10 +23,10 @@ impl Alarm {
         }
     }
     pub(super) fn set(&mut self, deadlines: impl Iterator<Item = Deadline>) -> Result<(), Fault> {
-        let mut hard = self.startup.map(|bound| bound.hard);
+        let mut hard = self.startup.map(|bound| bound.hard());
         let mut until = self
             .startup
-            .map(|bound| AbsoluteTime::from_micros(bound.expires));
+            .map(|bound| AbsoluteTime::from_micros(bound.expires()));
         for deadline in deadlines {
             hard = Some(hard.map_or(deadline.hard(), |old: Instant| old.min(deadline.hard())));
             let absolute = AbsoluteTime::from_micros(deadline.expires());

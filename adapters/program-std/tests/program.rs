@@ -21,6 +21,60 @@ use std::{
     },
 };
 static NEXT: AtomicU64 = AtomicU64::new(1);
+#[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "Regression checks retain typed causes while setup and reporting remain fallible"
+)]
+fn preparation_errors_preserve_typed_native_and_state_causes() -> std::io::Result<()> {
+    use std::error::Error;
+    let native = Failure::Io(std::io::Error::from_raw_os_error(13));
+    let cause = native
+        .source()
+        .and_then(|cause| cause.downcast_ref::<std::io::Error>())
+        .ok_or_else(|| std::io::Error::other("native failure lost its original cause"))?;
+    assert_eq!(cause.raw_os_error(), Some(13));
+    let state = Failure::State(gnunet_types::Error::Capacity);
+    assert_eq!(
+        state
+            .source()
+            .and_then(|cause| cause.downcast_ref::<gnunet_types::Error>()),
+        Some(&gnunet_types::Error::Capacity)
+    );
+    Ok(())
+}
+#[cfg(unix)]
+#[test]
+#[expect(
+    unsafe_code,
+    reason = "The provider is absent from a newly created directory; no native code or exports can execute"
+)]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "Regression checks native diagnostic retention while directory setup remains fallible"
+)]
+fn absent_gettext_provider_preserves_native_loader_diagnostics() -> std::io::Result<()> {
+    let directory = Directory::new()?;
+    // SAFETY: this fresh directory contains no provider at the selected path.
+    let result = unsafe {
+        gnunet_program_host::locale::ProcessLocale::load(
+            directory.0.join("missing-gettext-provider.so"),
+            gnunet_program_host::locale::AbiProfile::Libintl,
+        )
+    };
+    let error = result
+        .err()
+        .ok_or_else(|| std::io::Error::other("absent provider was loaded"))?;
+    let diagnostic = error
+        .get_ref()
+        .and_then(|cause| cause.downcast_ref::<gnunet_native::library::Diagnostic>())
+        .ok_or_else(|| std::io::Error::other("native loader diagnostic was replaced"))?;
+    assert!(
+        !diagnostic.bytes().is_empty(),
+        "loader error should retain its native diagnostic"
+    );
+    Ok(())
+}
 struct Directory(PathBuf);
 impl Directory {
     fn new() -> std::io::Result<Self> {

@@ -88,7 +88,7 @@ pub(super) fn copy(input: &[u8], maximum: usize, empty: bool) -> Result<Vec<u8>,
 }
 fn duration(us: u64) -> Result<Duration, Failure> {
     let d = Duration::from_micros(us);
-    if us == 0 || us == u64::MAX || std::time::Instant::now().checked_add(d).is_none() {
+    if us == 0 || us == u64::MAX || tokio::time::Instant::now().checked_add(d).is_none() {
         return Err("Conversation durations must be finite and representable".into());
     }
     Ok(d)

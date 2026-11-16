@@ -354,8 +354,8 @@ async fn run_command(inputs: Inputs) -> Result<(), Failure> {
         shared: shared.clone(),
     };
     let mut signals = Signals::new(parent)?;
-    let original = native::Bounds::new(clock.as_ref(), command.duration)?;
-    let hard = Instant::from_std(original.hard);
+    let original = native::Bounds::after(clock.as_ref(), command.duration)?;
+    let hard = original.hard();
     let client = Client::new(endpoint, command.query, native::Limits::default(), original)?;
     let mut owner = Native {
         client: Some(client),
@@ -459,7 +459,7 @@ async fn run_command(inputs: Inputs) -> Result<(), Failure> {
             }
             if output.pending() && row_hard.is_none() {
                 let mut at=Instant::now().checked_add(ROW).ok_or("TRANSPORT row hard overflow")?.min(hard);
-                if source_active { at=at.min(Instant::from_std(owner.get()?.native_deadline())); }
+                if source_active { at=at.min(owner.get()?.native_deadline()); }
                 row_hard=Some(at);row_alarm=Some(Box::pin(tokio::time::sleep_until(at)));cadence.as_mut().reset(Instant::now());
                 let mut state=shared.borrow_mut();state.report.output_prefix=0;state.report.output_total=output.bytes.len();
             }

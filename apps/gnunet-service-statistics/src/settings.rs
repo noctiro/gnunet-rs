@@ -1,16 +1,14 @@
 //! Official service configuration and explicit bounded deployment resources.
 use crate::Failure;
-use gnunet::{
-    config::{Configuration, Environment, ProcessEnvironment, ProjectData},
-    ipc::server::Limits as HostLimits,
-    statistics::ResourceLimits,
-    statistics_store::Limits as StoreLimits,
-};
+use gnunet_config::{Configuration, Environment, ProcessEnvironment, ProjectData};
+use gnunet_ipc_unix::server::Limits as HostLimits;
 use gnunet_service_runtime::{
     credentials::UnixAccess,
     service::{ServiceOptions, ShutdownMode},
     service_options,
 };
+use gnunet_statistics::ResourceLimits;
+use gnunet_statistics_store::Limits as StoreLimits;
 use std::{
     path::{Path, PathBuf},
     sync::Arc,

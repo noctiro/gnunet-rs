@@ -6,7 +6,6 @@ pub use gnunet_hostlist::{
 };
 pub use gnunet_types::Error as Fault;
 mod durable;
-mod gate;
 pub mod http;
 mod peerstore;
 mod publication;
@@ -61,6 +60,11 @@ impl From<Fault> for Error {
         Self::Fault(e)
     }
 }
+impl From<gnunet_service_runtime::clock::BoundsError> for Error {
+    fn from(error: gnunet_service_runtime::clock::BoundsError) -> Self {
+        gnunet_http_host::Error::from(error).into()
+    }
+}
 impl From<std::io::Error> for Error {
     fn from(e: std::io::Error) -> Self {
         Self::Io(e)
@@ -91,4 +95,19 @@ impl std::fmt::Display for Error {
         write!(f, "HOSTLIST: {self:?}")
     }
 }
-impl std::error::Error for Error {}
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(match self {
+            Self::Fault(error) | Self::Clock(error) => error,
+            Self::Io(error) => error,
+            Self::Native(error) => error,
+            Self::Transport(error) => error,
+            Self::Http(error) => error,
+            Self::HttpBuild(error) => error,
+            Self::Url(error) => error,
+            Self::Accept(error) => error,
+            Self::Store(error) => error.as_ref(),
+            Self::Initialization(error) => error,
+        })
+    }
+}

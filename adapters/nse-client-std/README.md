@@ -26,8 +26,9 @@ Clock/Resolver refusal requires explicit recovery.
 
 ## Resource and time bounds
 
-Optional total `Bounds` retain finite canonical and native targets across
-reconnection. A missing total permits continuous monitoring. Each selected
+Optional total `Bounds` use the shared runtime's immutable canonical and native
+targets across reconnection. Admission captures the native target before clock
+sampling and checks it again afterward. A missing total permits continuous monitoring. Each selected
 source still has a default 24-hour lifetime, attachment-to-first-estimate has a
 30-second native bound, and partial input has an independent ten-second bound.
 `poll_native_guard` checks these before outer output or Resolver work. Logical

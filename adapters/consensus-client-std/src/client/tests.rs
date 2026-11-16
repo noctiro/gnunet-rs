@@ -31,11 +31,11 @@ fn client(directory: &Directory, limits: Limits) -> Result<(Client, UnixListener
     let path = directory.0.join("consensus.sock");
     let listener = UnixListener::bind(&path)?;
     let source = EndpointSource::unix(path);
-    let bounds = Bounds::new(source.clock().as_ref(), Duration::from_secs(30))?;
+    let bounds = Bounds::after(source.clock().as_ref(), Duration::from_secs(30))?;
     let join = Join {
         session: [7; 64],
-        start: bounds.expires - 1_000_000,
-        deadline: bounds.expires,
+        start: bounds.expires() - 1_000_000,
+        deadline: bounds.expires(),
         peers: &[],
     };
     Ok((Client::new(source, join, limits, bounds)?, listener))
@@ -303,8 +303,8 @@ fn actual_backpressured_insert_fifo_keeps_all_original_prefix_and_unknown_facts(
             if actual.kind != expected.0
                 || actual.length != expected.1
                 || actual.written != written
-                || actual.original.hard != expected.2.hard
-                || actual.original.expires != expected.2.expires
+                || actual.original.hard() != expected.2.hard()
+                || actual.original.expires() != expected.2.expires()
                 || actual.whole
                 || actual.bytes.is_some()
                 || actual.bound.is_some()

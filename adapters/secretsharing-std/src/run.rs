@@ -213,11 +213,12 @@ impl Targets {
         value.check(clock)?;
         Ok(value)
     }
-    fn bounds(self) -> decrypt::Bounds {
-        decrypt::Bounds {
-            expires: self.canonical,
-            hard: self.hard,
-        }
+    fn bounds(self) -> Result<decrypt::Bounds, Error> {
+        Ok(decrypt::Bounds::from_targets(
+            gnunet_types::AbsoluteTime::from_micros(self.canonical),
+            self.hard.into(),
+        )
+        .map_err(gnunet_client_host::ConnectError::from)?)
     }
 }
 struct Alarm {
@@ -686,7 +687,7 @@ pub(crate) fn session(
                         sources,
                         request,
                         io.limits.decrypt,
-                        io.whole.targets.bounds(),
+                        io.whole.targets.bounds()?,
                     )?);
                     io.report.owner_started = true;
                     let done = poll_fn(|cx| {

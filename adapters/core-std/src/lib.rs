@@ -2,6 +2,7 @@
 //! sessions and the real TRANSPORT360..366 boundary. No C backend is launched.
 #![forbid(unsafe_code)]
 mod application;
+mod ingress;
 mod io;
 /// Real PILS identity feed and foreground configuration assembly.
 pub mod startup;
@@ -11,16 +12,13 @@ mod test_support;
 mod tests;
 
 use application::{Applications, PeerState};
-use gnunet_client::transport::{
-    self as tr, Request as TransportRequest, Response as TransportResponse,
-};
+use gnunet_client::transport::{self as tr, Request as TransportRequest};
 use gnunet_client_host::{ConnectionAttempt, Endpoint};
 use gnunet_core::{
-    record::ReceiveError,
     session::{Event as CryptoEvent, Identity, Phase, Session},
     wire::WordOrder,
 };
-use gnunet_crypto::{EddsaPublicKey, Entropy};
+use gnunet_crypto::Entropy;
 /// Actual native accept diagnostics from the shared Unix/TCP listener adapter.
 pub use gnunet_service_runtime::accepted::SocketEvent;
 use gnunet_service_runtime::clock::{ClockSubscription, RuntimeClock, SystemClock};
@@ -90,7 +88,14 @@ impl fmt::Display for HostError {
         }
     }
 }
-impl std::error::Error for HostError {}
+impl std::error::Error for HostError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(match self {
+            Self::Protocol(error) | Self::Clock(error) => error,
+            Self::Io(error) => error,
+        })
+    }
+}
 impl From<Error> for HostError {
     fn from(v: Error) -> Self {
         Self::Protocol(v)
@@ -217,6 +222,12 @@ pub struct Report {
     pub rejected_unsupported: u64,
     /// Failed original TRANSPORT MQs, with all their peer state retired.
     pub transport_losses: u64,
+    /// Valid peer notifications declined by the local simultaneous-peer limit.
+    pub peer_refusals: u64,
+    /// Actual receives discarded without creating a locally unadmitted session.
+    pub unadmitted_records: u64,
+    /// Most recent malformed/control-exhausted TRANSPORT input causing MQ loss.
+    pub last_protocol_loss: Option<Error>,
     /// Actual TRANSPORT disconnects of known authenticated peer associations.
     pub transport_disconnections: u64,
     /// Original Session ticks that actually expired a confirmed association.
@@ -560,158 +571,6 @@ impl<'a> Host<'a> {
         self.peer_state(id);
         Ok(())
     }
-    fn transport_frame(&mut self, bytes: &[u8], now: u64) -> Result<bool, HostError> {
-        match TransportResponse::decode(bytes)? {
-            TransportResponse::Connected(tr::PeerId(id)) => {
-                let id = PeerId(id);
-                if id == self.identity() || self.peers.contains_key(&id) {
-                    return Err(Error::Malformed.into());
-                }
-                if self.peers.len() >= self.limits.max_peers {
-                    return Err(Error::Capacity.into());
-                }
-                let session = Session::with_class(
-                    self.identity,
-                    EddsaPublicKey::from_bytes(id.0),
-                    self.order,
-                    self.info,
-                    self.class.0 as u16,
-                )?;
-                self.peers.insert(
-                    id,
-                    Peer {
-                        session,
-                        credits: tr::SEND_WINDOW,
-                        ciphertexts: VecDeque::new(),
-                        bytes: 0,
-                        state: u32::MAX,
-                        timeout: 0,
-                    },
-                );
-                self.peer_state(id);
-            }
-            TransportResponse::Disconnected(tr::PeerId(id)) => {
-                let id = PeerId(id);
-                if let Some(peer) = self.peers.get(&id)
-                    && peer.session.established()
-                {
-                    let loss = peer.loss(id, PeerLossOrigin::TransportDisconnected, now);
-                    self.peer_loss(loss);
-                }
-                self.applications.remove_peer(id);
-                if let Some(peer) = self.peers.remove(&id) {
-                    let cancelled=self.transport.as_mut().map_or(0,|link|link.cancel_unwritten(|bytes|matches!(TransportRequest::decode(bytes),Ok(TransportRequest::Send {peer,..}) if peer.0==id.0)));
-                    let owed = tr::SEND_WINDOW
-                        .checked_sub(peer.credits)
-                        .and_then(|n| n.checked_sub(u32::try_from(cancelled).ok()?))
-                        .ok_or(Error::Malformed)?;
-                    if owed > 0 {
-                        if !self.retired_credits.contains_key(&id)
-                            && self.retired_credits.len() >= self.limits.max_pending_frames
-                        {
-                            return Err(Error::Capacity.into());
-                        }
-                        let debt = self.retired_credits.entry(id).or_default();
-                        *debt = debt.checked_add(owed).ok_or(Error::Capacity)?;
-                    }
-                }
-            }
-            TransportResponse::SendCredit(tr::PeerId(id)) => {
-                let id = PeerId(id);
-                if let Some(debt) = self.retired_credits.get_mut(&id) {
-                    *debt -= 1;
-                    if *debt == 0 {
-                        self.retired_credits.remove(&id);
-                    }
-                    inc(&mut self.report.late_send_credits);
-                    return Ok(true);
-                }
-                let Some(peer) = self.peers.get_mut(&id) else {
-                    inc(&mut self.report.late_send_credits);
-                    return Ok(true);
-                };
-                if peer.credits >= tr::SEND_WINDOW {
-                    return Err(Error::Malformed.into());
-                }
-                peer.credits += 1;
-            }
-            TransportResponse::Received {
-                peer: tr::PeerId(id),
-                message,
-            } => {
-                let id = PeerId(id);
-                let peer = self.peers.get_mut(&id).ok_or(Error::Malformed)?;
-                // Data cannot exhaust all response storage. If even the bounded
-                // control reserve is exhausted, retire this MQ rather than hold
-                // a RECV forever in front of its own later SEND_OK credits.
-                if !peer.control_capacity(self.limits)
-                    || !self
-                        .transport
-                        .as_ref()
-                        .is_some_and(|t| t.control_capacity(40))
-                {
-                    return Err(Error::Capacity.into());
-                }
-                self.transport
-                    .as_mut()
-                    .ok_or(Error::Closed)?
-                    .reserve(40, true)?;
-                match peer.session.receive_classified(
-                    now,
-                    message,
-                    &mut Random,
-                    &mut self.output,
-                    &mut self.plain,
-                ) {
-                    Ok(event) => self.crypto_event(id, event)?,
-                    // The plaintext epoch is not AEAD-protected. Only an
-                    // explicit rejection from its record-policy boundary joins
-                    // this discard path; a local Stale/TooLarge stays a failure.
-                    Err(ReceiveError::RejectedEpoch(_)) => {
-                        inc(&mut self.report.rejected_records);
-                        inc(&mut self.report.rejected_epoch);
-                    }
-                    Err(ReceiveError::Failed(Error::Authentication)) => {
-                        inc(&mut self.report.rejected_records);
-                        inc(&mut self.report.rejected_authentication);
-                    }
-                    Err(ReceiveError::Failed(Error::Replay)) => {
-                        inc(&mut self.report.rejected_records);
-                        inc(&mut self.report.rejected_replay);
-                    }
-                    Err(ReceiveError::Failed(Error::Truncated)) => {
-                        inc(&mut self.report.rejected_records);
-                        inc(&mut self.report.rejected_truncated);
-                    }
-                    Err(ReceiveError::Failed(Error::Malformed)) => {
-                        inc(&mut self.report.rejected_records);
-                        inc(&mut self.report.rejected_malformed);
-                    }
-                    Err(ReceiveError::Failed(Error::InvalidInput)) => {
-                        inc(&mut self.report.rejected_records);
-                        inc(&mut self.report.rejected_invalid_input);
-                    }
-                    Err(ReceiveError::Failed(Error::Unsupported)) => {
-                        inc(&mut self.report.rejected_records);
-                        inc(&mut self.report.rejected_unsupported);
-                    }
-                    Err(ReceiveError::Failed(e)) => return Err(e.into()),
-                }
-                self.plain.fill(0);
-                let n = TransportRequest::ReceiveContinue {
-                    peer: tr::PeerId(id.0),
-                    increase: 1,
-                }
-                .encode(&mut self.output)?;
-                self.transport
-                    .as_mut()
-                    .ok_or(Error::Closed)?
-                    .enqueue_control(self.output[..n].to_vec())?;
-                inc(&mut self.report.receive_credits);
-            }
-        }
-        Ok(true)
-    }
     fn maintenance(&mut self, now: u64) -> Result<bool, HostError> {
         let mut work = false;
         self.applications.solicit()?;
@@ -918,17 +777,18 @@ impl<'a> Host<'a> {
             .map(<[u8]>::to_vec)
         {
             match self.transport_frame(&bytes, now) {
-                Ok(true) => {
-                    if let Some(t) = &mut self.transport {
-                        t.release();
+                Ok(ingress::Outcome::Consumed | ingress::Outcome::PeerRefused) => {
+                    if let Some(transport) = &mut self.transport {
+                        transport.release();
                     }
                     work = true;
                 }
-                Ok(false) => {}
-                Err(_) => {
+                Err(ingress::Failure::Source(error)) => {
+                    self.report.last_protocol_loss = Some(error);
                     self.lose_transport(now);
                     work = true;
                 }
+                Err(ingress::Failure::Host(error)) => return Poll::Ready(Err(error)),
             }
         }
         match self.maintenance(now) {

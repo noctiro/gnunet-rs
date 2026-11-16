@@ -33,7 +33,7 @@ async fn forever_clock_does_not_turn_a_waiting_peer_into_ready_work()
     host.shutdown();
     Ok(())
 }
-fn established_sessions<'a>(
+pub(super) fn established_sessions<'a>(
     a: &'a Identity,
     b: &'a Identity,
 ) -> Result<(Session<'a, 1024>, Session<'a, 1024>), Error> {

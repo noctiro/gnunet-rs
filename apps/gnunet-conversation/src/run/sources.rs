@@ -80,7 +80,7 @@ impl<'id, 'p> Sources<'id, 'p> {
             domains.lookup,
             selectors.identity.duplicate()?,
             name,
-            startup.expires,
+            startup.expires(),
             settings.identity,
         )?;
         let monitor = id::Client::monitor(

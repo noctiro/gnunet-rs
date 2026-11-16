@@ -441,11 +441,11 @@ impl<'id, 'p> State<'id, 'p> {
             .phone
             .as_ref()
             .ok_or("retired registered phone is missing")?;
-        let at = std::time::Instant::now()
+        let at = tokio::time::Instant::now()
             .checked_add(std::time::Duration::from_millis(100))
             .ok_or(gnunet_types::Error::Overflow)?
             .min(line.native_deadline());
-        self.phone_recovery = Some(Box::pin(tokio::time::sleep_until(at.into())));
+        self.phone_recovery = Some(Box::pin(tokio::time::sleep_until(at)));
         let mut facts = self.facts.borrow_mut();
         facts.phone_recovery_losses = facts.phone_recovery_losses.saturating_add(1);
         drop(facts);
@@ -707,15 +707,14 @@ impl<'id, 'p> State<'id, 'p> {
             return Err("actual newly connected call already has a control intent".into());
         }
         let clock = self.selectors.conversation.clock();
-        let mut bounds = Bounds::new(clock.as_ref(), self.settings.control)?;
+        let bounds = Bounds::after(clock.as_ref(), self.settings.control)?;
         let original = self.line_mut(self.calls[index].side)?.bounds();
-        bounds.expires = bounds.expires.min(original.expires);
-        bounds.hard = bounds.hard.min(original.hard);
+        let bounds = bounds.capped_by(original);
         self.calls[index].intent = Some(Intent {
             action: Action::Suspend,
             bounds,
             operation: None,
-            alarm: Box::pin(tokio::time::sleep_until(bounds.hard.into())),
+            alarm: Box::pin(tokio::time::sleep_until(bounds.hard())),
         });
         Ok(())
     }
@@ -724,7 +723,7 @@ impl<'id, 'p> State<'id, 'p> {
             return Err("original call already has an unsettled local control".into());
         }
         let bounds = control.bounded(self.settings.control)?;
-        let alarm = Box::pin(tokio::time::sleep_until(bounds.hard.into()));
+        let alarm = Box::pin(tokio::time::sleep_until(bounds.hard()));
         self.calls[index].intent = Some(Intent {
             action,
             bounds,
@@ -932,8 +931,8 @@ impl<'id, 'p> State<'id, 'p> {
         }
         self.audio.clear();
     }
-    pub fn begin_cleanup(&mut self, hard: std::time::Instant) {
-        self.terminal.begin_close(hard);
+    pub fn begin_cleanup(&mut self, hard: tokio::time::Instant) {
+        self.terminal.begin_close(hard.into_std());
     }
     pub fn cleanup_done(&self) -> bool {
         self.media.settled() && self.terminal.closed()

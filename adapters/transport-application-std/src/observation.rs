@@ -1,9 +1,9 @@
 //! Actual native TRANSPORT observation owner, independent of traffic/application
 //! hints. No request ID, cancellation packet, fake ACK or implicit worker exists.
-use crate::budget::Bound;
 pub use crate::{Bounds, Error};
 pub use gnunet_client_host::EndpointSource;
 use gnunet_client_host::channel::{Channel, ConnectionStep};
+use gnunet_service_runtime::clock::Alarm;
 use gnunet_service_runtime::framing::{
     Accounting, Budget, Class, Limits as FrameLimits, OwnedFrame, ReadStep,
 };
@@ -15,8 +15,9 @@ use std::{
     io,
     sync::Arc,
     task::{Context, Poll},
-    time::{Duration, Instant},
+    time::Duration,
 };
+use tokio::time::Instant;
 
 /// Original physical source epoch. Its numeric value is diagnostic only.
 #[derive(Clone, Debug)]
@@ -204,9 +205,9 @@ pub struct Client {
     channel: Channel<Origin>,
     query: Query,
     limits: Limits,
-    overall: Bound,
-    initial: Option<Bound>,
-    input: Option<Bound>,
+    overall: Alarm,
+    initial: Option<Alarm>,
+    input: Option<Alarm>,
     domain: Arc<()>,
     next: u64,
     /// Original admitted source epoch, absent when no epoch was established.
@@ -229,9 +230,12 @@ impl Client {
         limits: Limits,
         original: Bounds,
     ) -> Result<Self, Error> {
-        let overall = Bound::targets(original);
+        let overall = Alarm::new(original);
         overall.check(source.clock().as_ref())?;
-        let initial = Some(Bound::new(source.clock().as_ref(), limits.initial_timeout)?);
+        let initial = Some(Alarm::after(
+            source.clock().as_ref(),
+            limits.initial_timeout,
+        )?);
         let channel = Channel::new(source.duplicate()?, limits.framing()?)?;
         Ok(Self {
             source,
@@ -278,7 +282,7 @@ impl Client {
             return Err(Fault::Conflict.into());
         }
         self.overall.check(self.source.clock().as_ref())?;
-        let initial = Bound::new(self.source.clock().as_ref(), self.limits.initial_timeout)?;
+        let initial = Alarm::after(self.source.clock().as_ref(), self.limits.initial_timeout)?;
         let channel = Channel::new(self.source.duplicate()?, self.limits.framing()?)?;
         self.channel = channel;
         self.initial = Some(initial);
@@ -292,9 +296,9 @@ impl Client {
         Ok(())
     }
     fn guard(&mut self, cx: &mut Context<'_>) -> Result<(), Error> {
-        if self.overall.poll_native(cx)
-            || self.initial.as_mut().is_some_and(|b| b.poll_native(cx))
-            || self.input.as_mut().is_some_and(|b| b.poll_native(cx))
+        if self.overall.poll_expired(cx)
+            || self.initial.as_mut().is_some_and(|b| b.poll_expired(cx))
+            || self.input.as_mut().is_some_and(|b| b.poll_expired(cx))
         {
             return Err(Fault::Deadline.into());
         }
@@ -303,12 +307,12 @@ impl Client {
     /// Earliest unchanged native phase/source target; useful while the caller
     /// lends an owned observation to a bounded output sink.
     pub fn native_deadline(&self) -> Instant {
-        let mut hard = self.overall.targets.hard;
+        let mut hard = self.overall.bounds().hard();
         if let Some(b) = &self.initial {
-            hard = hard.min(b.targets.hard)
+            hard = hard.min(b.bounds().hard())
         }
         if let Some(b) = &self.input {
-            hard = hard.min(b.targets.hard)
+            hard = hard.min(b.bounds().hard())
         }
         hard
     }
@@ -326,10 +330,10 @@ impl Client {
     fn check(&self) -> Result<(), Error> {
         self.overall.check(self.source.clock().as_ref())?;
         if let Some(b) = &self.initial {
-            b.check(self.source.clock().as_ref())?
+            b.check(self.source.clock().as_ref())?;
         }
         if let Some(b) = &self.input {
-            b.check(self.source.clock().as_ref())?
+            b.check(self.source.clock().as_ref())?;
         }
         Ok(())
     }
@@ -423,11 +427,11 @@ impl Client {
                     self.query.encode(&mut bytes)?;
                     let framing = self.channel.framing_mut().ok_or(Fault::NotReady)?;
                     framing.reserve(40, Class::Ordinary)?;
-                    if Instant::now() >= self.overall.targets.hard
+                    if Instant::now() >= self.overall.bounds().hard()
                         || self
                             .initial
                             .as_ref()
-                            .is_some_and(|b| Instant::now() >= b.targets.hard)
+                            .is_some_and(|b| Instant::now() >= b.bounds().hard())
                     {
                         return Poll::Ready(Err(Fault::Deadline.into()));
                     }
@@ -491,7 +495,7 @@ impl Client {
             }
             Poll::Ready(Ok(ReadStep::Progress { bytes, .. })) => {
                 if bytes > 0 && self.input.is_none() {
-                    self.input = Some(Bound::new(
+                    self.input = Some(Alarm::after(
                         self.source.clock().as_ref(),
                         self.limits.input_timeout,
                     )?)

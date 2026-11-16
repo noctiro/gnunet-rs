@@ -156,15 +156,15 @@ impl<'a> Client<'a> {
                 continue;
             };
             if let Some(retirement) = state.retirement {
-                if now >= retirement.expires {
+                if now >= retirement.expires() {
                     return self.retire(LossCause::Deadline, true).map(Some);
                 }
-            } else if now >= state.bounds.expires {
+            } else if now >= state.bounds.expires() {
                 self.cancel_index(index, Reason::Deadline, Instant::now())?;
                 if self.slots[index]
                     .as_ref()
                     .and_then(|state| state.retirement)
-                    .is_some_and(|bound| now >= bound.expires)
+                    .is_some_and(|bound| now >= bound.expires())
                 {
                     return self.retire(LossCause::Deadline, true).map(Some);
                 }
@@ -179,15 +179,15 @@ impl<'a> Client<'a> {
                 continue;
             };
             if let Some(retirement) = state.retirement {
-                if now >= retirement.hard {
+                if now >= retirement.hard() {
                     return self.retire(LossCause::Deadline, true).map(Some);
                 }
-            } else if now >= state.bounds.hard {
+            } else if now >= state.bounds.hard() {
                 self.cancel_index(index, Reason::Deadline, now)?;
                 if self.slots[index]
                     .as_ref()
                     .and_then(|state| state.retirement)
-                    .is_some_and(|bound| now >= bound.hard)
+                    .is_some_and(|bound| now >= bound.hard())
                 {
                     return self.retire(LossCause::Deadline, true).map(Some);
                 }

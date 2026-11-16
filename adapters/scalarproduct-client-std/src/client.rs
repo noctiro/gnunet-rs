@@ -1,12 +1,13 @@
 //! One original computation MQ, streamed multipart input and exact raw response.
 use crate::{
     Bounds, Cause, ELEMENT_BYTES, Epoch, Error, Limits, Loss, Progress, Receipt, Response,
-    ResponseStatus, Role, budget::Bound,
+    ResponseStatus, Role,
 };
 use gnunet_client_host::{
     EndpointSource,
     channel::{Channel, ConnectionStep},
 };
+use gnunet_service_runtime::clock::Alarm;
 use gnunet_service_runtime::framing::{self, Class, OwnedFrame, ReadStep};
 use gnunet_types::Error as Fault;
 use gnunet_wire::official::scalarproduct::{ClientRequest, ClientResponse};
@@ -14,8 +15,8 @@ use std::{
     future::poll_fn,
     sync::Arc,
     task::{Context, Poll},
-    time::Instant,
 };
+use tokio::time::Instant;
 #[derive(Clone, Copy, Eq, PartialEq)]
 struct Chunk {
     start: u32,
@@ -28,10 +29,10 @@ pub struct Client {
     channel: Channel<Chunk>,
     role: Role,
     limits: Limits,
-    overall: Bound,
-    initial: Option<Bound>,
-    write: Option<Bound>,
-    input: Option<Bound>,
+    overall: Alarm,
+    initial: Option<Alarm>,
+    write: Option<Alarm>,
+    input: Option<Alarm>,
     elements: Vec<[u8; ELEMENT_BYTES]>,
     total: u32,
     offset: u32,
@@ -56,7 +57,7 @@ impl Client {
     ) -> Result<Self, Error> {
         limits.validate()?;
         original.check(source.clock().as_ref())?;
-        let initial = Bound::phase(source.clock().as_ref(), limits.initial_timeout, original)?;
+        let initial = Alarm::phase(source.clock().as_ref(), limits.initial_timeout, original)?;
         let total = u32::try_from(elements.len()).map_err(|_| Fault::TooLarge)?;
         if elements.is_empty() || elements.len() > limits.elements {
             return Err(Fault::InvalidInput.into());
@@ -106,7 +107,7 @@ impl Client {
             channel,
             role,
             limits,
-            overall: Bound::targets(original),
+            overall: Alarm::new(original),
             initial: Some(initial),
             write: None,
             input: None,
@@ -150,39 +151,29 @@ impl Client {
     /// Original native overall target, never renewed by multipart progress.
     #[must_use]
     pub fn native_deadline(&self) -> Instant {
-        self.overall.targets.hard
+        self.overall.bounds().hard()
     }
     fn expired(&mut self, cx: &mut Context<'_>) -> bool {
-        self.overall.native(cx)
-            || self.initial.as_mut().is_some_and(|b| b.native(cx))
-            || self.write.as_mut().is_some_and(|b| b.native(cx))
-            || self.input.as_mut().is_some_and(|b| b.native(cx))
+        self.overall.poll_expired(cx)
+            || self.initial.as_mut().is_some_and(|b| b.poll_expired(cx))
+            || self.write.as_mut().is_some_and(|b| b.poll_expired(cx))
+            || self.input.as_mut().is_some_and(|b| b.poll_expired(cx))
     }
     fn check(&self) -> Result<(), Error> {
         if self.closed {
             return Err(Fault::Closed.into());
         }
-        // A known native expiration fences even a failing/custom canonical
-        // provider. Check again after its sample, without renewing any target.
-        let native = Instant::now();
-        let expired = |b: &Bound| native >= b.targets.hard;
-        if expired(&self.overall)
-            || self.initial.as_ref().is_some_and(expired)
-            || self.write.as_ref().is_some_and(expired)
-            || self.input.as_ref().is_some_and(expired)
-        {
-            return Err(Fault::Deadline.into());
-        }
-        let now = self.source.clock().sample()?.now.as_micros();
-        let native = Instant::now();
-        let bad = |b: &Bound| native >= b.targets.hard || now >= b.targets.expires;
-        if bad(&self.overall)
-            || self.initial.as_ref().is_some_and(bad)
-            || self.write.as_ref().is_some_and(bad)
-            || self.input.as_ref().is_some_and(bad)
-        {
-            return Err(Fault::Deadline.into());
-        }
+        let bounds = [
+            self.initial.as_ref(),
+            self.write.as_ref(),
+            self.input.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        .fold(self.overall.bounds(), |bounds, phase| {
+            bounds.capped_by(phase.bounds())
+        });
+        bounds.check(self.source.clock().as_ref())?;
         Ok(())
     }
     fn physical_close(&mut self) {
@@ -259,10 +250,10 @@ impl Client {
         if bytes.capacity() > self.limits.frame_bytes {
             return Err(Fault::Capacity.into());
         }
-        let phase = Bound::phase(
+        let phase = Alarm::phase(
             self.source.clock().as_ref(),
             self.limits.write_timeout,
-            self.overall.targets,
+            self.overall.bounds(),
         )?;
         let chunk = Chunk {
             start: self.offset,
@@ -363,10 +354,10 @@ impl Client {
             }
             Poll::Ready(Ok(ReadStep::Progress { bytes, .. })) => {
                 if bytes > 0 && self.input.is_none() {
-                    self.input = Some(Bound::phase(
+                    self.input = Some(Alarm::phase(
                         self.source.clock().as_ref(),
                         self.limits.input_timeout,
-                        self.overall.targets,
+                        self.overall.bounds(),
                     )?);
                 }
                 self.input_bytes = self.input_bytes.checked_add(bytes).ok_or(Fault::Overflow)?;

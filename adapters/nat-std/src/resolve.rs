@@ -34,7 +34,10 @@ impl Lookup {
         }
         let now = gate.check()?;
         let lookup = resolver
-            .lookup(hostname, Duration::from_micros(gate.bounds().expires - now))?
+            .lookup(
+                hostname,
+                Duration::from_micros(gate.bounds().expires() - now),
+            )?
             .ok_or(Fault::NotReady)?;
         Ok(Self {
             lookup: Some(lookup),

@@ -12,7 +12,10 @@ default = []
 workspace = true
 
 [dependencies]
-gnunet = { path = "../../crates/gnunet", default-features = false, features = ["official-ipc", "official-config", "statistics-store"] }
+gnunet-config.workspace = true
+gnunet-ipc-unix.workspace = true
+gnunet-statistics = { workspace = true, features = ["alloc"] }
+gnunet-statistics-store.workspace = true
 tokio = { workspace = true, features = ["rt", "net", "time", "signal"] }
 gnunet-service-runtime.workspace = true
 

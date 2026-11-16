@@ -129,6 +129,14 @@ distinguishes actual expiry, overflow and clock-source failure; a clock failure
 whose cause is `Deadline` must not become an operation timeout. NAT primitives
 and helper supervision share this contract without depending on each other.
 
+Bounds have private finite targets and can only be intersected or tightened.
+`clock::Alarm` adds an exclusive lazy native timer; `clock::DeadlineGuard` owns
+the original clock, one subscription and its wake registration. The guard
+registers the native alarm before source callbacks, rechecks expiry afterward,
+and wakes its owner when either target tightens. HTTP stream leases use the
+same bounds check at each actual I/O boundary. Logical `clock::Deadline`
+remains separate for scheduling that permits rollback or an infinite target.
+
 `readiness::RegisteredListener` verifies a real stream listen role and owns its
 nonconsuming registration. Unix uses an original AsyncFd; Windows uses a private
 Tokio/Mio Winsock carrier. Native poll0 confirms cached hints without accepting

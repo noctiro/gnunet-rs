@@ -44,7 +44,7 @@ fn admit(
     application.preference(
         change.peer,
         change.cancel,
-        Bounds::new(clock, Duration::from_secs(2))?,
+        Bounds::after(clock, Duration::from_secs(2))?,
     )?;
     preferences.admitted(change)?;
     Ok(())

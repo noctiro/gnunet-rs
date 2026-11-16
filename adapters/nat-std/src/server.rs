@@ -696,7 +696,7 @@ impl Server {
                 && (p.first && now >= p.first_until
                     || p.input_until.is_some_and(|t| now >= t)
                     || p.outputs.front().is_some_and(|o| now >= o.until)
-                    || p.session.is_some_and(|b| now >= b.hard))
+                    || p.session.is_some_and(|b| now >= b.hard()))
             {
                 self.close_index(i, CloseCause::Deadline, observe);
             }
@@ -720,7 +720,7 @@ impl Server {
                     .into_iter()
                     .chain(p.input_until)
                     .chain(p.outputs.front().map(|o| o.until))
-                    .chain(p.session.map(|b| b.hard))
+                    .chain(p.session.map(|b| b.hard()))
             })
             .chain(until)
             .filter(|t| *t > now)
@@ -904,7 +904,7 @@ impl Server {
         for i in 0..self.peers.len() {
             if self.peers[i]
                 .as_ref()
-                .is_some_and(|p| p.session.is_some_and(|b| now >= b.expires))
+                .is_some_and(|p| p.session.is_some_and(|b| now >= b.expires()))
             {
                 self.close_index(i, CloseCause::Deadline, observe);
                 return Poll::Ready(Ok(Progress::Activity));

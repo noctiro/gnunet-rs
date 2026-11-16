@@ -1,3 +1,4 @@
+use tokio::time::Instant;
 mod work;
 use work::{Material, Work};
 
@@ -23,7 +24,7 @@ use std::{
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
-    time::{Duration, Instant},
+    time::Duration,
 };
 #[derive(Default)]
 pub(crate) struct Random {
@@ -212,7 +213,7 @@ impl<'a> Round1<'a> {
         let clock = sources.pils.clock();
         let native = Instant::now();
         let now = clock.sample()?.now.as_micros();
-        let expires = original.expires.min(request.deadline);
+        let expires = original.expires().min(request.deadline);
         let remaining = expires
             .checked_sub(now)
             .filter(|v| *v != 0)
@@ -220,7 +221,7 @@ impl<'a> Round1<'a> {
         let hard = native
             .checked_add(Duration::from_micros(remaining))
             .ok_or(Fault::Overflow)?
-            .min(original.hard);
+            .min(original.hard());
         if Instant::now() >= hard {
             return Err(Fault::Deadline.into());
         }
@@ -307,7 +308,7 @@ impl<'a> Round1<'a> {
             consensus: None,
             consensus_source: Some(sources.consensus),
             clock,
-            bounds: Bounds { expires, hard },
+            bounds: Bounds::from_targets(gnunet_types::AbsoluteTime::from_micros(expires), hard)?,
             limits,
             identity: observed,
             consensus_epoch: None,
@@ -382,11 +383,11 @@ impl<'a> Round1<'a> {
         if self.closed {
             return Err(Fault::Closed.into());
         }
-        if Instant::now() >= self.bounds.hard {
+        if Instant::now() >= self.bounds.hard() {
             return Err(Fault::Deadline.into());
         }
         if self.timer.is_none() {
-            self.timer = Some(Box::pin(tokio::time::sleep_until(self.bounds.hard.into())));
+            self.timer = Some(Box::pin(tokio::time::sleep_until(self.bounds.hard())));
         }
         if self
             .timer
@@ -419,7 +420,7 @@ impl<'a> Round1<'a> {
         self.account()?;
         let now = self.clock.sample()?.now.as_micros();
         self.native(cx)?;
-        if now >= self.bounds.expires {
+        if now >= self.bounds.expires() {
             return Err(Fault::Deadline.into());
         }
         if let Some(original) = self.identity {
@@ -958,7 +959,7 @@ impl<'a> Round1<'a> {
             let Some(pils) = self.pils.as_mut() else {
                 return self.failed(Fault::Closed.into());
             };
-            let mut wait = std::pin::pin!(pils.drive(Some(self.bounds.hard.into())));
+            let mut wait = std::pin::pin!(pils.drive(Some(self.bounds.hard())));
             wait.as_mut().poll(cx)
         };
         let mut activity = false;
