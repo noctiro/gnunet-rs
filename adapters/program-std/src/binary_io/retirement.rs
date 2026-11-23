@@ -74,18 +74,20 @@ impl Retired {
         }
     }
     fn transfer_successful(&self) -> bool {
-        self.transfer.as_ref().is_none_or(|value| {
-            if value.result().as_ref().is_ok_and(|count| {
-                *count <= value.requested() && (*count > 0 || value.direction() == Direction::Input)
-            }) {
-                return true;
-            }
-            #[cfg(windows)]
-            if self.cancel_requested && self.cancel_error.is_none() && value.read_cancelled() {
-                return true;
-            }
-            false
-        })
+        self.transfer
+            .as_ref()
+            .is_none_or(|value| match value.result() {
+                Ok(count) => {
+                    *count <= value.requested()
+                        && (*count > 0 || value.direction() == Direction::Input)
+                }
+                #[cfg(windows)]
+                Err(_) => {
+                    self.cancel_requested && self.cancel_error.is_none() && value.read_cancelled()
+                }
+                #[cfg(not(windows))]
+                Err(_) => false,
+            })
     }
     /// Actual matching transfer and flush/close, within the original bound.
     pub fn successful(&self) -> bool {

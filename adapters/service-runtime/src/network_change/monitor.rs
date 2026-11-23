@@ -34,24 +34,19 @@ impl RouteMonitor {
     /// Whether the platform lacks or refuses access to the notification source.
     #[must_use]
     pub fn is_unavailable(error: &io::Error) -> bool {
-        if matches!(
-            error.kind(),
-            io::ErrorKind::PermissionDenied | io::ErrorKind::Unsupported
-        ) {
+        #[cfg(unix)]
+        if gnunet_native::network::socket_family_unavailable(error)
+            || matches!(
+                error.raw_os_error(),
+                Some(libc::EPFNOSUPPORT | libc::ESOCKTNOSUPPORT | libc::ENOSYS),
+            )
+        {
             return true;
         }
-        #[cfg(unix)]
-        {
-            gnunet_native::network::socket_family_unavailable(error)
-                || matches!(
-                    error.raw_os_error(),
-                    Some(libc::EPFNOSUPPORT | libc::ESOCKTNOSUPPORT | libc::ENOSYS),
-                )
-        }
-        #[cfg(windows)]
-        {
-            false
-        }
+        matches!(
+            error.kind(),
+            io::ErrorKind::PermissionDenied | io::ErrorKind::Unsupported
+        )
     }
 
     /// Observe a coalesced hint. On a native receive failure, retire the

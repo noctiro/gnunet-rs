@@ -1,5 +1,6 @@
 //! Unix UDP destination observation and source selection.
 use super::{LocalReplyPath, invalid};
+use crate::ancillary_abi;
 use std::{
     io,
     mem::size_of,
@@ -50,7 +51,7 @@ impl Control {
             }
             // SAFETY: HEADER includes the full initialized native cmsghdr.
             let header = unsafe { records.as_ptr().cast::<libc::cmsghdr>().read_unaligned() };
-            let length = native_size(header.cmsg_len)?;
+            let length = ancillary_abi::extent(header.cmsg_len)?;
             let value = records
                 .get(HEADER..length)
                 .ok_or_else(|| invalid("bad UDP control extent"))?;
@@ -174,11 +175,7 @@ impl Control {
         if space > self.capacity() || length > space.saturating_sub(HEADER) {
             return Err(invalid("UDP reply control extent does not fit"));
         }
-        let header = libc::cmsghdr {
-            cmsg_len: (HEADER + length) as _,
-            cmsg_level: level,
-            cmsg_type: kind,
-        };
+        let header = ancillary_abi::header(HEADER + length, level, kind)?;
         // SAFETY: the caller provides an initialized integer-only record and
         // the checked header and payload extents are within the buffer.
         unsafe {
@@ -194,11 +191,6 @@ impl Control {
         }
         Ok(space)
     }
-}
-
-pub(super) fn native_size(size: impl TryInto<usize>) -> io::Result<usize> {
-    size.try_into()
-        .map_err(|_| invalid("invalid UDP control extent"))
 }
 
 fn insert<T>(slot: &mut Option<T>, value: T) -> io::Result<()> {

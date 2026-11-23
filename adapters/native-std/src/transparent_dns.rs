@@ -143,7 +143,7 @@ impl Listener {
         message.msg_iov = ptr::from_mut(&mut vector);
         message.msg_iovlen = 1;
         message.msg_control = control.as_mut_ptr();
-        message.msg_controllen = control.capacity();
+        message.msg_controllen = crate::ancillary_abi::extent(control.capacity())?;
         // SAFETY: every original output pointer above covers initialized storage
         // held exclusively until this synchronous nonblocking call returns.
         let received =
@@ -160,7 +160,8 @@ impl Listener {
         }
         let ipv4 = self.family == ListenerFamily::Ipv4;
         let peer = address::decode(&peer, message.msg_namelen, ipv4)?;
-        let observed = control.parse(message.msg_controllen, ipv4)?;
+        let observed =
+            control.parse(crate::ancillary_abi::extent(message.msg_controllen)?, ipv4)?;
         Ok(Datagram {
             bytes,
             peer,
@@ -283,7 +284,7 @@ impl ReplySocket {
         message.msg_iov = ptr::from_mut(&mut vector);
         message.msg_iovlen = 1;
         message.msg_control = control.as_mut_ptr();
-        message.msg_controllen = used;
+        message.msg_controllen = crate::ancillary_abi::extent(used)?;
         qualification.ensure_fresh()?;
         // SAFETY: original source and all borrowed input extents remain valid
         // through one atomic nonblocking send; the kernel retains no pointers.

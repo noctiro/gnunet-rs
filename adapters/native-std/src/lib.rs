@@ -156,6 +156,12 @@ pub mod nat_helper;
 #[cfg(target_os = "linux")]
 pub mod transparent_dns;
 
+#[cfg(any(
+    target_os = "linux",
+    all(feature = "socket-io", any(target_os = "macos", target_os = "freebsd"))
+))]
+mod ancillary_abi;
+
 #[cfg(target_os = "linux")]
 mod linux_netlink;
 
