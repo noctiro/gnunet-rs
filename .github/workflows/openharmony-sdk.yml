@@ -39,7 +39,7 @@ jobs:
           printf 'OHOS_SDK_ARCHIVE=%s/gnunet-openharmony/sdk.tar.gz\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
       - name: Restore the SDK archive
         id: sdk-cache
-        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ env.OHOS_SDK_ARCHIVE }}
           key: openharmony-public-sdk-${{ steps.release.outputs.sha256 }}
@@ -78,7 +78,7 @@ jobs:
           mv "$work/native" "$OHOS_NATIVE"
       - name: Cache the verified SDK archive
         if: steps.sdk-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ env.OHOS_SDK_ARCHIVE }}
           key: ${{ steps.sdk-cache.outputs.cache-primary-key }}
