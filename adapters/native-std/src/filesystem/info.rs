@@ -74,13 +74,10 @@ pub fn file_info(file: &File) -> io::Result<EntryInfo> {
 }
 #[cfg(unix)]
 pub(super) fn at(parent: &File, name: &std::ffi::OsStr) -> io::Result<EntryInfo> {
-    use nix::{
-        fcntl::AtFlags,
-        sys::stat::{SFlag, fstatat},
-    };
+    use nix::{fcntl::AtFlags, sys::stat::fstatat};
     let stat = fstatat(parent, name, AtFlags::AT_SYMLINK_NOFOLLOW)?;
-    let kind = SFlag::from_bits_truncate(stat.st_mode) & SFlag::S_IFMT;
-    if kind != SFlag::S_IFREG && kind != SFlag::S_IFDIR {
+    let kind = super::stat_file_kind(&stat);
+    if kind != libc::S_IFREG && kind != libc::S_IFDIR {
         return Ok(EntryInfo::Other);
     }
     let info = FileInfo {
@@ -93,7 +90,7 @@ pub(super) fn at(parent: &File, name: &std::ffi::OsStr) -> io::Result<EntryInfo>
             changed: i128::from(stat.st_ctime) * 1_000_000_000 + i128::from(stat.st_ctime_nsec),
         },
     };
-    Ok(if kind == SFlag::S_IFDIR {
+    Ok(if kind == libc::S_IFDIR {
         EntryInfo::Directory(info)
     } else {
         EntryInfo::File(info)

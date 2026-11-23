@@ -160,7 +160,7 @@ pub(crate) fn path_is_directory(path: &[u8]) -> io::Result<bool> {
     )]
     // SAFETY: this exact stat call returned success for this output storage.
     let value = unsafe { value.assume_init() };
-    Ok(value.st_mode & libc::S_IFMT == libc::S_IFDIR)
+    Ok(gnunet_native::filesystem::stat_file_kind(&value) == libc::S_IFDIR)
 }
 #[cfg(unix)]
 pub(crate) fn path_mkdir(path: &[u8]) -> io::Result<()> {

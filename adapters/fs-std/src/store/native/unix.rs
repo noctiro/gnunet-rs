@@ -1,5 +1,5 @@
 //! Descriptor-relative Unix operations and actual directory barriers.
-use gnunet_native::DirectorySync;
+use gnunet_native::{DirectorySync, filesystem::stat_file_kind};
 use nix::{
     errno::Errno,
     fcntl::{AtFlags, OFlag, open, openat},
@@ -119,8 +119,8 @@ impl Directory {
         let named = fstatat(&self.0, name, AtFlags::AT_SYMLINK_NOFOLLOW)?;
         if original.st_dev != named.st_dev
             || original.st_ino != named.st_ino
-            || SFlag::from_bits_truncate(original.st_mode) != kind
-            || SFlag::from_bits_truncate(named.st_mode) != kind
+            || stat_file_kind(&original) != kind.bits()
+            || stat_file_kind(&named) != kind.bits()
         {
             return Err(io::Error::other(
                 "original FS name no longer matches its held object",

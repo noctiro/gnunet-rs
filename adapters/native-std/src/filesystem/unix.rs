@@ -4,7 +4,7 @@ use crate::DirectorySync;
 use nix::{
     errno::Errno,
     fcntl::{AtFlags, OFlag, open, openat},
-    sys::stat::{Mode, SFlag, fstat, fstatat, mkdirat},
+    sys::stat::{Mode, fstat, fstatat, mkdirat},
     unistd::{UnlinkatFlags, geteuid, linkat, unlinkat},
 };
 use std::{
@@ -240,8 +240,8 @@ impl Directory {
         let named = fstatat(&self.0, name, AtFlags::AT_SYMLINK_NOFOLLOW)?;
         Ok(held.st_dev == named.st_dev
             && held.st_ino == named.st_ino
-            && SFlag::from_bits_truncate(held.st_mode) == SFlag::S_IFREG
-            && SFlag::from_bits_truncate(named.st_mode) == SFlag::S_IFREG)
+            && super::stat_file_kind(&held) == libc::S_IFREG
+            && super::stat_file_kind(&named) == libc::S_IFREG)
     }
     /// Atomically replace a child name with the original single-link source.
     /// Callers exclude namespace replacement around POSIX lookup and renameat.

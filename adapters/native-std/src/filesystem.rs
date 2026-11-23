@@ -42,6 +42,15 @@ pub use times::{FileTimes, file_times};
 #[cfg(unix)]
 pub use unix::{Directory, validate_private_file};
 
+/// Read the file-kind bits from a Unix stat result, excluding permission bits.
+#[cfg(unix)]
+pub fn stat_file_kind(stat: &libc::stat) -> libc::mode_t {
+    // On 32-bit Android the stat field is wider than mode_t. Only the file
+    // type bits are needed and all are representable by mode_t.
+    let mode: libc::mode_t = stat.st_mode as _;
+    mode & libc::S_IFMT
+}
+
 #[cfg(windows)]
 /// Qualify an ordinary file's process-user owner and restrictive DACL.
 /// Administrative principals remain trusted. This grants no namespace authority.
