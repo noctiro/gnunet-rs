@@ -1,6 +1,8 @@
 //! Index exact retained frame bytes while writing their owning checkpoint.
 
-use super::{ArchiveSink, Core, Error, Fault, Hash, Mode, Node, RetainedFrame, Selection, SliceSink};
+use super::{
+    ArchiveSink, Core, Error, Fault, Hash, Mode, Node, RetainedFrame, Selection, SliceSink,
+};
 use gnunet_crypto::hash256;
 
 /// The exact original bytes at one position in the prepared archive. The

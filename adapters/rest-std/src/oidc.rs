@@ -7,10 +7,7 @@ use crate::{
 use gnunet_gnsrecord::ZoneKey;
 use gnunet_reclaim::{AttributeList, ListLimits, PresentationList, Uri};
 use gnunet_reclaim_client_host::{Client, Iterator, Outcome, Progress, ipc};
-use gnunet_rest::{
-    base64, oidc,
-    route::Endpoint,
-};
+use gnunet_rest::{base64, oidc, route::Endpoint};
 use gnunet_service_runtime::clock::RuntimeClock;
 use gnunet_types::Error as Fault;
 use std::{cell::RefCell, future::poll_fn, rc::Rc, sync::Arc, time::Duration};
